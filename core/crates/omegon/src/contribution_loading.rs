@@ -18,6 +18,24 @@ pub(crate) struct GuardedContributionMutationDirectory {
     _mutation: ContributionMutationGuard,
 }
 
+pub(crate) struct ContributionSnapshot {
+    path: std::path::PathBuf,
+}
+
+impl ContributionSnapshot {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ContributionSnapshot {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.path) {
+            tracing::warn!(path = %self.path.display(), error = %error, "could not remove contribution snapshot");
+        }
+    }
+}
+
 impl GuardedContributionMutationDirectory {
     #[cfg(unix)]
     pub(crate) fn open_existing(
@@ -134,7 +152,7 @@ impl GuardedContributionMutationDirectory {
         let mut entries = 0_usize;
         let mut bytes = 0_u64;
         self.stage_and_replace(raw_name, overwrite, |staging| {
-            copy_source_tree(source, staging, 0, &mut entries, &mut bytes)
+            copy_source_tree(source, staging, 0, &mut entries, &mut bytes, true)
         })
     }
 
@@ -221,6 +239,29 @@ impl GuardedContributionMutationDirectory {
         }
         Ok(())
     }
+}
+
+#[cfg(unix)]
+pub(crate) fn snapshot_contribution_directory(
+    source: &File,
+) -> anyhow::Result<ContributionSnapshot> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let path = std::env::temp_dir().join(format!("omegon-plugin-{}", uuid::Uuid::new_v4()));
+    std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+    let snapshot = ContributionSnapshot { path };
+    let destination = File::open(snapshot.path())?;
+    let mut entries = 0_usize;
+    let mut bytes = 0_u64;
+    copy_source_tree(source, &destination, 0, &mut entries, &mut bytes, false)?;
+    Ok(snapshot)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn snapshot_contribution_directory(
+    _source: &File,
+) -> anyhow::Result<ContributionSnapshot> {
+    anyhow::bail!("guarded contribution snapshots require Unix")
 }
 
 impl GuardedContributionDirectory {
@@ -485,12 +526,13 @@ fn copy_source_tree(
     depth: usize,
     entries: &mut usize,
     total_bytes: &mut u64,
+    skip_hidden: bool,
 ) -> anyhow::Result<()> {
     if depth > 32 {
         anyhow::bail!("skill bundle exceeds the directory depth limit");
     }
     for raw_name in read_directory_names(source, 10_000)? {
-        if raw_name.starts_with(b".") {
+        if skip_hidden && raw_name.starts_with(b".") {
             continue;
         }
         *entries += 1;
@@ -508,7 +550,14 @@ fn copy_source_tree(
             if !created {
                 anyhow::bail!("duplicate skill bundle directory entry");
             }
-            copy_source_tree(&source_child, &child, depth + 1, entries, total_bytes)?;
+            copy_source_tree(
+                &source_child,
+                &child,
+                depth + 1,
+                entries,
+                total_bytes,
+                skip_hidden,
+            )?;
             child.sync_all()?;
         } else if mode & libc::S_IFMT == libc::S_IFREG {
             let bytes = read_file_at(source, &raw_name, 16 * 1024 * 1024)?

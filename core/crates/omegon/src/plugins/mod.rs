@@ -26,6 +26,28 @@ use manifest::PluginManifest;
 use omegon_traits::Feature;
 use std::path::{Path, PathBuf};
 
+use crate::contribution_loading::GuardedContributionDirectory;
+
+const MAX_PLUGIN_ENTRIES: usize = 10_000;
+const MAX_PLUGIN_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+
+pub struct AdmittedPlugins {
+    features: Vec<Box<dyn omegon_traits::Feature>>,
+    admissions: Vec<GuardedContributionDirectory>,
+}
+
+impl AdmittedPlugins {
+    pub fn publish<R>(self, publish: impl FnOnce(Vec<Box<dyn omegon_traits::Feature>>) -> R) -> R {
+        let Self {
+            features,
+            admissions,
+        } = self;
+        let result = publish(features);
+        drop(admissions);
+        result
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PluginSelectionFilter {
     pub enabled_extensions: Vec<String>,
@@ -58,7 +80,7 @@ impl PluginSelectionFilter {
 pub async fn discover_plugins(
     cwd: &Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
-) -> Vec<Box<dyn omegon_traits::Feature>> {
+) -> AdmittedPlugins {
     discover_plugins_filtered(cwd, secrets, &PluginSelectionFilter::default()).await
 }
 
@@ -66,86 +88,36 @@ pub async fn discover_plugins_filtered(
     cwd: &Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
     filter: &PluginSelectionFilter,
-) -> Vec<Box<dyn omegon_traits::Feature>> {
-    let plugin_dirs = plugin_search_paths(cwd);
+) -> AdmittedPlugins {
     let mut features: Vec<Box<dyn omegon_traits::Feature>> = Vec::new();
+    let mut admissions = Vec::new();
 
-    for dir in &plugin_dirs {
-        if !dir.is_dir() {
-            continue;
+    match crate::paths::omegon_home() {
+        Ok(home) => {
+            for (root, components, scope) in [
+                (home.as_path(), &[b"plugins".as_slice()][..], "user"),
+                (
+                    cwd,
+                    &[b".omegon".as_slice(), b"plugins".as_slice()][..],
+                    "project",
+                ),
+            ] {
+                match discover_guarded_plugins(root, components, &home, scope, cwd, secrets, filter)
+                    .await
+                {
+                    Ok(Some((mut loaded, admission))) => {
+                        features.append(&mut loaded);
+                        admissions.push(admission);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(scope, error = %error, "plugin discovery scope failed closed");
+                    }
+                }
+            }
         }
-
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
-            let plugin_dir = entry.path();
-            if !plugin_dir.is_dir() {
-                continue;
-            }
-            let plugin_name = entry.file_name().to_string_lossy().to_string();
-            if !filter.allows(&plugin_name) {
-                continue;
-            }
-
-            let manifest_path = if plugin_dir.join("plugin.pkl").exists() {
-                plugin_dir.join("plugin.pkl")
-            } else {
-                plugin_dir.join("plugin.toml")
-            };
-            if !manifest_path.exists() {
-                continue;
-            }
-
-            // Try armory-style manifest first (has plugin.type field),
-            // fall back to legacy HTTP-only manifest.
-            match load_armory_plugin(&manifest_path, cwd, secrets).await {
-                Ok(Some(mut loaded)) => {
-                    for f in loaded.drain(..) {
-                        tracing::info!(
-                            plugin = f.name(),
-                            path = %manifest_path.display(),
-                            "loaded armory plugin"
-                        );
-                        features.push(f);
-                    }
-                }
-                Ok(None) => {
-                    // Not active or not armory-style — try legacy
-                    match load_legacy_plugin(&manifest_path, cwd) {
-                        Ok(Some(feature)) => {
-                            tracing::info!(
-                                plugin = feature.name(),
-                                path = %manifest_path.display(),
-                                "loaded legacy plugin"
-                            );
-                            features.push(feature);
-                        }
-                        Ok(None) => {
-                            tracing::debug!(
-                                path = %manifest_path.display(),
-                                "plugin not active for current project"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                path = %manifest_path.display(),
-                                error = %e,
-                                "failed to load plugin"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %manifest_path.display(),
-                        error = %e,
-                        "failed to load armory plugin"
-                    );
-                }
-            }
+        Err(error) => {
+            tracing::warn!(error = %error, "canonical plugin discovery failed closed");
         }
     }
 
@@ -153,23 +125,197 @@ pub async fn discover_plugins_filtered(
     let project_mcp = discover_project_mcp_servers(cwd, secrets).await;
     features.extend(project_mcp);
 
-    features
+    AdmittedPlugins {
+        features,
+        admissions,
+    }
+}
+
+#[cfg(unix)]
+async fn discover_guarded_plugins(
+    root: &Path,
+    components: &[&[u8]],
+    home: &Path,
+    scope: &str,
+    cwd: &Path,
+    secrets: Option<&omegon_secrets::SecretsManager>,
+    filter: &PluginSelectionFilter,
+) -> anyhow::Result<
+    Option<(
+        Vec<Box<dyn omegon_traits::Feature>>,
+        GuardedContributionDirectory,
+    )>,
+> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let Some(admission) = GuardedContributionDirectory::open(
+        root,
+        components,
+        home,
+        omegon_maintenance_contracts::ContributionKind::Plugin,
+        scope,
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut entries = admission.entry_names(MAX_PLUGIN_ENTRIES)?;
+    entries.sort();
+    let display_root = components
+        .iter()
+        .fold(root.to_path_buf(), |path, component| {
+            path.join(std::ffi::OsStr::from_bytes(component))
+        });
+    let mut features = Vec::new();
+
+    for raw_name in entries {
+        if !admission.allows(&raw_name)? {
+            tracing::info!(
+                path = %display_root.join(std::ffi::OsStr::from_bytes(&raw_name)).display(),
+                "excluded denied plugin"
+            );
+            continue;
+        }
+        let Ok(plugin_name) = std::str::from_utf8(&raw_name) else {
+            continue;
+        };
+        if !filter.allows(plugin_name) {
+            continue;
+        }
+        let Some(plugin_dir) = admission.open_child_directory(&raw_name)? else {
+            continue;
+        };
+        let (manifest_name, content) = if let Some(content) =
+            crate::contribution_loading::read_file_at(
+                &plugin_dir,
+                b"plugin.pkl",
+                MAX_PLUGIN_MANIFEST_BYTES,
+            )? {
+            (b"plugin.pkl".as_slice(), content)
+        } else if let Some(content) = crate::contribution_loading::read_file_at(
+            &plugin_dir,
+            b"plugin.toml",
+            MAX_PLUGIN_MANIFEST_BYTES,
+        )? {
+            (b"plugin.toml".as_slice(), content)
+        } else {
+            continue;
+        };
+        let manifest_path = display_root
+            .join(std::ffi::OsStr::from_bytes(&raw_name))
+            .join(std::ffi::OsStr::from_bytes(manifest_name));
+        let content = match String::from_utf8(content) {
+            Ok(content) => content,
+            Err(error) => {
+                tracing::warn!(path = %manifest_path.display(), error = %error, "failed to load plugin");
+                continue;
+            }
+        };
+        let snapshot = if manifest_name == b"plugin.pkl"
+            || armory::ArmoryManifest::parse(&content).is_ok_and(|manifest| {
+                manifest.context.is_some()
+                    || manifest
+                        .tools
+                        .iter()
+                        .any(|tool| tool.is_script() || tool.is_oci())
+            }) {
+            let snapshot = match crate::contribution_loading::snapshot_contribution_directory(
+                &plugin_dir,
+            ) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(path = %manifest_path.display(), error = %error, "failed to snapshot plugin");
+                    continue;
+                }
+            };
+            if manifest_name == b"plugin.pkl"
+                && let Err(error) = std::fs::write(snapshot.path().join("plugin.pkl"), &content)
+            {
+                tracing::warn!(path = %manifest_path.display(), error = %error, "failed to seal admitted Pkl manifest");
+                continue;
+            }
+            Some(snapshot)
+        } else {
+            None
+        };
+        match load_plugin_manifest(&manifest_path, &content, cwd, secrets, snapshot).await {
+            Ok(mut loaded) => features.append(&mut loaded),
+            Err(error) => {
+                tracing::warn!(path = %manifest_path.display(), error = %error, "failed to load plugin");
+            }
+        }
+    }
+
+    Ok(Some((features, admission)))
+}
+
+#[cfg(not(unix))]
+async fn discover_guarded_plugins(
+    _root: &Path,
+    _components: &[&[u8]],
+    _home: &Path,
+    _scope: &str,
+    _cwd: &Path,
+    _secrets: Option<&omegon_secrets::SecretsManager>,
+    _filter: &PluginSelectionFilter,
+) -> anyhow::Result<
+    Option<(
+        Vec<Box<dyn omegon_traits::Feature>>,
+        GuardedContributionDirectory,
+    )>,
+> {
+    anyhow::bail!("guarded plugin discovery requires Unix")
+}
+
+async fn load_plugin_manifest(
+    display_path: &Path,
+    content: &str,
+    cwd: &Path,
+    secrets: Option<&omegon_secrets::SecretsManager>,
+    snapshot: Option<crate::contribution_loading::ContributionSnapshot>,
+) -> anyhow::Result<Vec<Box<dyn omegon_traits::Feature>>> {
+    let snapshot = snapshot.map(std::sync::Arc::new);
+    if let Some(loaded) =
+        load_armory_plugin(display_path, content, secrets, snapshot.as_ref()).await?
+    {
+        for feature in &loaded {
+            tracing::info!(plugin = feature.name(), path = %display_path.display(), "loaded armory plugin");
+        }
+        return Ok(loaded);
+    }
+    let snapshot_manifest;
+    let manifest_path = if let Some(snapshot) = &snapshot {
+        snapshot_manifest = snapshot.path().join(
+            display_path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("plugin manifest has no basename"))?,
+        );
+        snapshot_manifest.as_path()
+    } else {
+        display_path
+    };
+    let legacy = load_legacy_plugin_with_content(manifest_path, content, cwd)?;
+    if let Some(feature) = legacy {
+        tracing::info!(plugin = feature.name(), path = %display_path.display(), "loaded legacy plugin");
+        Ok(vec![feature])
+    } else {
+        tracing::debug!(path = %display_path.display(), "plugin not active for current project");
+        Ok(Vec::new())
+    }
 }
 
 /// Load an armory-style plugin (persona/tone/skill/extension with MCP servers).
 /// Returns None if the manifest isn't armory-style or the plugin isn't active.
 async fn load_armory_plugin(
     manifest_path: &Path,
-    _cwd: &Path,
+    content: &str,
     secrets: Option<&omegon_secrets::SecretsManager>,
+    snapshot: Option<&std::sync::Arc<crate::contribution_loading::ContributionSnapshot>>,
 ) -> anyhow::Result<Option<Vec<Box<dyn omegon_traits::Feature>>>> {
-    let content = std::fs::read_to_string(manifest_path)?;
-
     // Check if this looks like an armory manifest (has [plugin] with type field).
     // If the content contains `type =` under `[plugin]`, it's armory-style.
     // If it doesn't, fall through to legacy gracefully.
     let is_armory = content.contains("[plugin]") && content.contains("type =");
-    let manifest = match armory::ArmoryManifest::parse(&content) {
+    let manifest = match armory::ArmoryManifest::parse(content) {
         Ok(m) => m,
         Err(e) if is_armory => {
             // Looks like an armory manifest with a syntax error — surface it
@@ -194,12 +340,22 @@ async fn load_armory_plugin(
     }
 
     // Load script-backed and OCI tools via ArmoryFeature
-    let plugin_root = manifest_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("manifest has no parent directory"))?;
-    if let Some(armory_feature) =
-        armory_feature::ArmoryFeature::from_manifest(&manifest, plugin_root).await
-    {
+    let needs_snapshot = manifest.context.is_some()
+        || manifest
+            .tools
+            .iter()
+            .any(|tool| tool.is_script() || tool.is_oci());
+    let armory_feature = if needs_snapshot {
+        let snapshot = snapshot.ok_or_else(|| anyhow::anyhow!("plugin snapshot is unavailable"))?;
+        armory_feature::ArmoryFeature::from_manifest_snapshot(
+            &manifest,
+            std::sync::Arc::clone(snapshot),
+        )
+        .await
+    } else {
+        None
+    };
+    if let Some(armory_feature) = armory_feature {
         let tool_count = armory_feature.tools().len();
         tracing::info!(
             plugin = manifest.plugin.name,
@@ -221,14 +377,22 @@ fn load_legacy_plugin(
     manifest_path: &Path,
     cwd: &Path,
 ) -> anyhow::Result<Option<Box<dyn omegon_traits::Feature>>> {
+    let content = std::fs::read_to_string(manifest_path)?;
+    load_legacy_plugin_with_content(manifest_path, &content, cwd)
+}
+
+fn load_legacy_plugin_with_content(
+    manifest_path: &Path,
+    content: &str,
+    cwd: &Path,
+) -> anyhow::Result<Option<Box<dyn omegon_traits::Feature>>> {
     let manifest: PluginManifest = if manifest_path.extension().is_some_and(|e| e == "pkl") {
         rpkl::from_config_with_options(manifest_path, crate::pkl_modules::omegon_eval_options())
             .map_err(|e| {
                 anyhow::anyhow!("invalid plugin manifest {}: {e}", manifest_path.display())
             })?
     } else {
-        let content = std::fs::read_to_string(manifest_path)?;
-        toml::from_str(&content).map_err(|e| {
+        toml::from_str(content).map_err(|e| {
             anyhow::anyhow!("invalid plugin manifest {}: {e}", manifest_path.display())
         })?
     };
@@ -274,23 +438,13 @@ async fn discover_project_mcp_servers(
     features
 }
 
-/// Search paths for plugin directories (in priority order).
+/// Compatibility search paths used by persona/tone discovery.
 fn plugin_search_paths(cwd: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-
-    // 1. $OMEGON_HOME/plugins/ or ~/.omegon/plugins/ (user-level)
     if let Ok(home) = crate::paths::omegon_home() {
         paths.push(home.join("plugins"));
     }
-
-    // 2. <cwd>/.omegon/plugins/ (project-level for the targeted workspace)
     paths.push(cwd.join(".omegon").join("plugins"));
-
-    // 3. OMEGON_PLUGIN_DIR env var
-    if let Ok(dir) = std::env::var("OMEGON_PLUGIN_DIR") {
-        paths.push(PathBuf::from(dir));
-    }
-
     paths
 }
 
@@ -336,15 +490,18 @@ mod tests {
 
     #[tokio::test]
     async fn discover_in_empty_dir() {
+        let _lock = crate::test_support::env::lock_async().await;
         let dir = tempfile::tempdir().unwrap();
         let _env = EnvGuard::isolate(dir.path());
         let plugins = discover_plugins(dir.path(), None).await;
-        assert!(plugins.is_empty());
+        plugins.publish(|features| assert!(features.is_empty()));
     }
 
     #[tokio::test]
     async fn discover_plugins_filtered_honors_enabled_extensions() {
+        let _lock = crate::test_support::env::lock_async().await;
         let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(dir.path());
         std::fs::write(dir.path().join(".marker"), "").unwrap();
         let plugins_root = dir.path().join(".omegon").join("plugins");
 
@@ -392,8 +549,212 @@ mod tests {
             disabled_extensions: vec![],
         };
         let plugins = discover_plugins_filtered(dir.path(), None, &filter).await;
-        assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].name(), "Alpha Plugin");
+        plugins.publish(|features| {
+            assert_eq!(features.len(), 1);
+            assert_eq!(features[0].name(), "Alpha Plugin");
+        });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn environment_plugin_directory_is_excluded_from_startup() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        write_plugin(external.path(), "external-plugin");
+        // SAFETY: this test holds the shared process-environment test lock.
+        unsafe { std::env::set_var("OMEGON_PLUGIN_DIR", external.path()) };
+
+        discover_plugins(project.path(), None)
+            .await
+            .publish(|features| assert!(features.is_empty()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_armory_script_executes_from_admitted_snapshot() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        let plugin = project.path().join(".omegon/plugins/snapshot");
+        std::fs::create_dir_all(plugin.join("tools")).unwrap();
+        std::fs::write(
+            plugin.join("plugin.toml"),
+            r#"
+            [plugin]
+            type = "extension"
+            id = "dev.test.snapshot"
+            name = "Snapshot"
+            version = "1.0.0"
+            description = "snapshot test"
+
+            [[tools]]
+            name = "snapshot_tool"
+            description = "reports its source"
+            runner = "bash"
+            script = "tools/run.sh"
+        "#,
+        )
+        .unwrap();
+        let script = plugin.join("tools/run.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '{\"result\":\"ORIGINAL\",\"error\":null}\\n'\n",
+        )
+        .unwrap();
+
+        let admitted = discover_plugins(project.path(), None).await;
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '{\"result\":\"MUTATED\",\"error\":null}\\n'\n",
+        )
+        .unwrap();
+        let bus = admitted.publish(|features| {
+            let mut bus = crate::bus::EventBus::new();
+            for feature in features {
+                bus.register(feature);
+            }
+            bus.finalize();
+            bus
+        });
+
+        let result = bus
+            .execute_tool(
+                "snapshot_tool",
+                "snapshot-call",
+                serde_json::json!({}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let rendered = format!("{result:?}");
+        assert!(rendered.contains("ORIGINAL"));
+        assert!(!rendered.contains("MUTATED"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_plugin_discovery_excludes_exact_denied_basename() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        write_plugin(&project.path().join(".omegon/plugins"), "denied");
+        write_plugin(&project.path().join(".omegon/plugins"), "allowed");
+        deny_plugin(
+            project.path(),
+            &[b".omegon", b"plugins"],
+            home.path(),
+            "project",
+            b"denied",
+        );
+
+        discover_plugins(project.path(), None)
+            .await
+            .publish(|features| {
+                assert_eq!(features.len(), 1);
+                assert_eq!(features[0].name(), "allowed");
+            });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malformed_project_plugin_deny_fails_only_project_scope_closed() {
+        use std::io::Write;
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        write_plugin(&home.path().join("plugins"), "user-plugin");
+        write_plugin(&project.path().join(".omegon/plugins"), "project-plugin");
+        let authority = initialize_plugin_scope(
+            project.path(),
+            &[b".omegon", b"plugins"],
+            home.path(),
+            "project",
+        );
+        let state_path = home
+            .path()
+            .join("maintain/v1/deny")
+            .join(authority.to_hex())
+            .join("state.json");
+        let mut state = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(state_path)
+            .unwrap();
+        state.write_all(b"{not-json").unwrap();
+        state.sync_all().unwrap();
+
+        discover_plugins(project.path(), None)
+            .await
+            .publish(|features| {
+                assert_eq!(features.len(), 1);
+                assert_eq!(features[0].name(), "user-plugin");
+            });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_plugin_discovery_holds_locks_through_publication() {
+        use omegon_maintenance_contracts::{LockMode, MaintenanceStateV1, ProtocolLock};
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home_path = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home_path.path());
+        write_plugin(&home_path.path().join("plugins"), "user-plugin");
+        write_plugin(&project.path().join(".omegon/plugins"), "project-plugin");
+        let user_authority = plugin_scope_key(&home_path.path().join("plugins"), "user");
+        let project_authority =
+            plugin_scope_key(&project.path().join(".omegon/plugins"), "project");
+        let home = omegon_maintenance_contracts::open_secure_root(home_path.path()).unwrap();
+        let state = MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let admitted = discover_plugins(project.path(), None).await;
+
+        admitted.publish(|features| {
+            let mut bus = crate::bus::EventBus::new();
+            for feature in features {
+                bus.register(feature);
+            }
+            bus.finalize();
+            for authority in [user_authority, project_authority] {
+                let lock_name = format!("contribution-{authority}.lock");
+                assert!(
+                    ProtocolLock::acquire_at(
+                        &state.locks,
+                        lock_name.as_bytes(),
+                        LockMode::Exclusive,
+                        false,
+                        true,
+                    )
+                    .is_err()
+                );
+            }
+        });
+        for authority in [user_authority, project_authority] {
+            let lock_name = format!("contribution-{authority}.lock");
+            assert!(
+                ProtocolLock::acquire_at(
+                    &state.locks,
+                    lock_name.as_bytes(),
+                    LockMode::Exclusive,
+                    false,
+                    true,
+                )
+                .is_ok()
+            );
+        }
     }
 
     /// Test helper: load a single plugin from a test directory using load_legacy_plugin.
@@ -468,5 +829,111 @@ mod tests {
         let result = load_legacy_plugin(&plugins_dir.join("plugin.toml"), dir.path());
 
         assert!(result.is_err(), "invalid manifest should return error");
+    }
+
+    #[cfg(unix)]
+    fn write_plugin(directory: &Path, name: &str) {
+        let plugin = directory.join(name);
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("plugin.toml"),
+            format!(
+                "[plugin]\nname = \"{name}\"\n\n[activation]\nalways = true\n\n[[tools]]\nname = \"{name}_tool\"\ndescription = \"test\"\nendpoint = \"http://localhost:9999/test\"\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn initialize_plugin_scope(
+        root: &Path,
+        components: &[&[u8]],
+        home: &Path,
+        scope: &str,
+    ) -> omegon_maintenance_contracts::AuthorityKey {
+        GuardedContributionDirectory::open(
+            root,
+            components,
+            home,
+            omegon_maintenance_contracts::ContributionKind::Plugin,
+            scope,
+        )
+        .unwrap()
+        .unwrap()
+        .scope_key()
+    }
+
+    #[cfg(unix)]
+    fn plugin_scope_key(
+        directory: &Path,
+        scope: &str,
+    ) -> omegon_maintenance_contracts::AuthorityKey {
+        let directory = std::fs::File::open(directory).unwrap();
+        let parent = omegon_maintenance_contracts::path_identity(&directory).unwrap();
+        omegon_maintenance_contracts::scope_key(
+            omegon_maintenance_contracts::ContributionKind::Plugin.as_str(),
+            scope,
+            parent.key,
+        )
+    }
+
+    #[cfg(unix)]
+    fn deny_plugin(
+        root: &Path,
+        components: &[&[u8]],
+        home_path: &Path,
+        scope: &str,
+        raw_name: &[u8],
+    ) {
+        use omegon_maintenance_contracts::{
+            AuthorityKey, ContributionKind, DenyRecordV1, DenyState, DenyStateV1, SCHEMA_VERSION,
+            derive_key, entry_key, open_secure_dir_at, replace_record_at,
+        };
+        use sha2::{Digest, Sha256};
+
+        let authority = initialize_plugin_scope(root, components, home_path, scope);
+        let home = omegon_maintenance_contracts::open_secure_root(home_path).unwrap();
+        let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let deny_directory = open_secure_dir_at(&state.deny, authority.to_hex().as_bytes())
+            .unwrap()
+            .unwrap();
+        let kind = ContributionKind::Plugin;
+        let entry = entry_key(kind.as_str(), authority, raw_name);
+        let request_id = "00000000-0000-0000-0000-000000000001";
+        let record = DenyRecordV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny".into(),
+            record_id: derive_key(
+                "deny",
+                &[
+                    authority.as_bytes(),
+                    entry.as_bytes(),
+                    request_id.as_bytes(),
+                ],
+            ),
+            scope_key: authority,
+            contribution_kind: kind,
+            entry_key: entry,
+            raw_name_digest: AuthorityKey::from_bytes(Sha256::digest(raw_name).into()),
+            generation: 1,
+            state: DenyState::Denied,
+            request_id: request_id.into(),
+            created_at: "2026-08-18T00:00:00Z".into(),
+        };
+        let deny = DenyStateV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny_state".into(),
+            record_id: derive_key("deny-state", &[authority.as_bytes(), &1_u64.to_be_bytes()]),
+            scope_key: authority,
+            generation: 1,
+            entries: [(entry.to_hex(), record)].into(),
+        };
+        replace_record_at(&deny_directory, b"state.json", &deny, "deny-plugin-test").unwrap();
     }
 }

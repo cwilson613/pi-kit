@@ -1074,12 +1074,14 @@ impl AgentSetup {
         let plugins =
             crate::plugins::discover_plugins_filtered(&cwd, Some(secrets.as_ref()), &plugin_filter)
                 .await;
-        for plugin in plugins {
-            bus.register(plugin);
-        }
+        plugins.publish(|plugins| {
+            for plugin in plugins {
+                bus.register(plugin);
+            }
 
-        // ─── Finalize bus (caches tool/command definitions) ─────────────
-        bus.finalize();
+            // ─── Finalize bus (caches tool/command definitions) ─────────────
+            bus.finalize();
+        });
 
         // Wire ManageTools state so runtime filtering and list output reflect
         // the bus's finalized model-visible tool cache.

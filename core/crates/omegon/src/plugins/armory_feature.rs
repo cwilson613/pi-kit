@@ -71,6 +71,8 @@ pub struct ArmoryFeature {
     container_runtime: std::sync::OnceLock<String>,
     /// Pre-cached dynamic context (generated at load time by context script/endpoint).
     cached_context: Option<CachedContext>,
+    /// Keeps a guarded startup snapshot alive for deferred script execution.
+    _plugin_snapshot: Option<std::sync::Arc<crate::contribution_loading::ContributionSnapshot>>,
 }
 
 /// Pre-generated context from a plugin's `[context]` section.
@@ -89,6 +91,22 @@ impl ArmoryFeature {
     /// If the manifest has a `[context]` section, the context script is
     /// executed at load time and the output is cached.
     pub async fn from_manifest(manifest: &ArmoryManifest, plugin_root: &Path) -> Option<Self> {
+        Self::from_manifest_inner(manifest, plugin_root, None).await
+    }
+
+    pub(crate) async fn from_manifest_snapshot(
+        manifest: &ArmoryManifest,
+        snapshot: std::sync::Arc<crate::contribution_loading::ContributionSnapshot>,
+    ) -> Option<Self> {
+        let plugin_root = snapshot.path().to_path_buf();
+        Self::from_manifest_inner(manifest, &plugin_root, Some(snapshot)).await
+    }
+
+    async fn from_manifest_inner(
+        manifest: &ArmoryManifest,
+        plugin_root: &Path,
+        plugin_snapshot: Option<std::sync::Arc<crate::contribution_loading::ContributionSnapshot>>,
+    ) -> Option<Self> {
         let executable_tools: Vec<ToolEntry> = manifest
             .tools
             .iter()
@@ -141,6 +159,7 @@ impl ArmoryFeature {
             validator_tools,
             container_runtime: std::sync::OnceLock::new(),
             cached_context,
+            _plugin_snapshot: plugin_snapshot,
         })
     }
 

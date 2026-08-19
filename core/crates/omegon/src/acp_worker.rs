@@ -509,6 +509,9 @@ async fn worker_loop(
                         continue;
                     }
                 };
+                let active_identity = supervisor
+                    .current_identity()
+                    .expect("promoted ACP turn has identity");
                 if first_prompt {
                     first_prompt = false;
                     let title: String = active
@@ -536,8 +539,13 @@ async fn worker_loop(
                 let bridge = match crate::providers::auto_detect_bridge(&current_model).await {
                     Some(b) => b,
                     None => {
-                        let _ = supervisor
-                            .close_durable_worker(crate::runtime_turn::RuntimeTurnOutcome::Failed);
+                        let _ = supervisor.submit_loop_terminal_intent(
+                            crate::runtime_turn::LoopTerminalIntent {
+                                identity: active_identity,
+                                outcome: crate::runtime_turn::RuntimeTurnOutcome::Failed,
+                                reason_code: "provider_unavailable".into(),
+                            },
+                        );
                         let _ = response_tx.send(WorkerResponse {
                             text: String::new(),
                             error: Some(format!(
@@ -778,14 +786,29 @@ async fn worker_loop(
                         Some(humanize_agent_error(&raw, &model_name))
                     }
                 };
-                let outcome = if cancelled {
-                    crate::runtime_turn::RuntimeTurnOutcome::Revoked
+                let (outcome, reason_code) = if cancelled {
+                    (
+                        crate::runtime_turn::RuntimeTurnOutcome::Revoked,
+                        "loop_cancelled",
+                    )
                 } else if error.is_some() {
-                    crate::runtime_turn::RuntimeTurnOutcome::Failed
+                    (
+                        crate::runtime_turn::RuntimeTurnOutcome::Failed,
+                        "loop_failed",
+                    )
                 } else {
-                    crate::runtime_turn::RuntimeTurnOutcome::Completed
+                    (
+                        crate::runtime_turn::RuntimeTurnOutcome::Completed,
+                        "loop_completed",
+                    )
                 };
-                if let Err(authority_error) = supervisor.close_durable_worker(outcome) {
+                if let Err(authority_error) = supervisor.submit_loop_terminal_intent(
+                    crate::runtime_turn::LoopTerminalIntent {
+                        identity: active_identity,
+                        outcome,
+                        reason_code: reason_code.into(),
+                    },
+                ) {
                     let _ = response_tx.send(WorkerResponse {
                         text: String::new(),
                         error: Some(format!(

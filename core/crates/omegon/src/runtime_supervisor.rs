@@ -10,7 +10,8 @@ use crate::runtime_prompt::{
     ControlSurface, PromptEnvelope, PromptQueue, QueueMode, RuntimeActor, RuntimePromptSubmission,
 };
 use crate::runtime_turn::{
-    ActiveTurnMeta, ActiveTurnState, InterruptAdmission, RuntimeTurnIdentity, RuntimeTurnOutcome,
+    ActiveTurnMeta, ActiveTurnState, InterruptAdmission, LoopTerminalIntent, RuntimeTurnIdentity,
+    RuntimeTurnOutcome, TerminalSubmission,
 };
 use crate::session_authority::{
     AuthorityError, InterruptionKind, PromptAdmitted, PromptContent, SessionAuthority, TurnClosed,
@@ -36,6 +37,7 @@ pub(crate) struct InteractiveRuntimeSupervisor {
     queue: PromptQueue,
     turns: ActiveTurnState,
     authority: Option<SessionAuthority>,
+    last_settled_identity: Option<RuntimeTurnIdentity>,
 }
 
 impl InteractiveRuntimeSupervisor {
@@ -359,9 +361,61 @@ impl InteractiveRuntimeSupervisor {
         &mut self,
         outcome: RuntimeTurnOutcome,
     ) -> Result<Option<(ActiveTurnMeta, RuntimeTurnOutcome)>, AuthorityError> {
-        let Some(active) = self.turns.current() else {
+        let Some(identity) = self.current_identity() else {
             return Ok(None);
         };
+        let reason_code = match outcome {
+            RuntimeTurnOutcome::Completed => "worker_completed",
+            RuntimeTurnOutcome::Revoked => "worker_revoked",
+            RuntimeTurnOutcome::Failed => "worker_failed",
+            RuntimeTurnOutcome::TimedOut => "worker_timed_out",
+        };
+        let (_, settled) = self.commit_terminal_intent(LoopTerminalIntent {
+            identity,
+            outcome,
+            reason_code: reason_code.into(),
+        })?;
+        Ok(settled)
+    }
+
+    pub(crate) fn submit_loop_terminal_intent(
+        &mut self,
+        intent: LoopTerminalIntent,
+    ) -> Result<TerminalSubmission, AuthorityError> {
+        self.commit_terminal_intent(intent)
+            .map(|(submission, _)| submission)
+    }
+
+    fn commit_terminal_intent(
+        &mut self,
+        mut intent: LoopTerminalIntent,
+    ) -> Result<
+        (
+            TerminalSubmission,
+            Option<(ActiveTurnMeta, RuntimeTurnOutcome)>,
+        ),
+        AuthorityError,
+    > {
+        let Some(active) = self.turns.current() else {
+            let submission = if self.last_settled_identity == Some(intent.identity) {
+                TerminalSubmission::Duplicate
+            } else {
+                TerminalSubmission::Stale
+            };
+            return Ok((submission, None));
+        };
+        if self.current_identity() != Some(intent.identity) {
+            return Ok((TerminalSubmission::Stale, None));
+        }
+        if intent.outcome == RuntimeTurnOutcome::Completed
+            && matches!(
+                active.phase,
+                crate::runtime_turn::ActiveTurnPhase::Cancelling { .. }
+            )
+        {
+            intent.outcome = RuntimeTurnOutcome::Revoked;
+            intent.reason_code = "worker_revoked".into();
+        }
         if let Some(authority) = self.authority.as_mut() {
             let turn_id = active.authority_turn_id.ok_or_else(|| {
                 AuthorityError::Invalid("durable turn has no authority identity".into())
@@ -371,22 +425,18 @@ impl InteractiveRuntimeSupervisor {
                 &authority_timestamp(),
                 TurnClosed {
                     turn_id,
-                    outcome: outcome.into(),
-                    reason_code: match outcome {
-                        RuntimeTurnOutcome::Completed => "worker_completed",
-                        RuntimeTurnOutcome::Revoked => "worker_revoked",
-                        RuntimeTurnOutcome::Failed => "worker_failed",
-                        RuntimeTurnOutcome::TimedOut => "worker_timed_out",
-                    }
-                    .into(),
+                    outcome: intent.outcome.into(),
+                    reason_code: intent.reason_code,
                     recovery_rule_version: None,
                 },
             )?;
         }
-        Ok(self
+        let settled = self
             .turns
-            .finish(active.runtime_turn_id, outcome)
-            .map(|active| (active, outcome)))
+            .finish(active.runtime_turn_id, intent.outcome)
+            .map(|active| (active, intent.outcome));
+        self.last_settled_identity = Some(intent.identity);
+        Ok((TerminalSubmission::Committed, settled))
     }
 
     pub(crate) fn complete_active_turn(&mut self) -> Option<ActiveTurnMeta> {
@@ -550,6 +600,67 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(supervisor.queue_depth(), 0);
+        assert!(!supervisor.is_busy());
+    }
+
+    #[test]
+    fn loop_terminal_intents_are_identity_fenced_and_idempotent() {
+        let mut supervisor = InteractiveRuntimeSupervisor::default();
+        for text in ["first", "second"] {
+            supervisor.enqueue_prompt(
+                text.into(),
+                Vec::new(),
+                RuntimeActor::tui(),
+                ControlSurface::Tui,
+                operator_commands::PromptMetadata::default(),
+                None,
+            );
+        }
+        supervisor.maybe_start_next_turn().unwrap();
+        let first = supervisor.current_identity().unwrap();
+        let failed = LoopTerminalIntent {
+            identity: first,
+            outcome: RuntimeTurnOutcome::Failed,
+            reason_code: "loop_failed".into(),
+        };
+        assert_eq!(
+            supervisor
+                .submit_loop_terminal_intent(failed.clone())
+                .unwrap(),
+            TerminalSubmission::Committed
+        );
+        assert_eq!(
+            supervisor.submit_loop_terminal_intent(failed).unwrap(),
+            TerminalSubmission::Duplicate
+        );
+
+        supervisor.maybe_start_next_turn().unwrap();
+        let second = supervisor.current_identity().unwrap();
+        assert_eq!(
+            supervisor
+                .submit_loop_terminal_intent(LoopTerminalIntent {
+                    identity: first,
+                    outcome: RuntimeTurnOutcome::Completed,
+                    reason_code: "late_completion".into(),
+                })
+                .unwrap(),
+            TerminalSubmission::Stale
+        );
+        assert_eq!(supervisor.current_identity(), Some(second));
+
+        supervisor
+            .request_durable_interrupt(second, RuntimeActor::tui(), ControlSurface::Tui)
+            .unwrap();
+        assert_eq!(
+            supervisor
+                .submit_loop_terminal_intent(LoopTerminalIntent {
+                    identity: second,
+                    outcome: RuntimeTurnOutcome::Completed,
+                    reason_code: "late_completion".into(),
+                })
+                .unwrap(),
+            TerminalSubmission::Committed
+        );
         assert!(!supervisor.is_busy());
     }
 

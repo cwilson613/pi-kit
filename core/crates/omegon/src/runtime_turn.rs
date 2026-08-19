@@ -40,6 +40,20 @@ pub(crate) enum RuntimeTurnOutcome {
     TimedOut,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LoopTerminalIntent {
+    pub(crate) identity: RuntimeTurnIdentity,
+    pub(crate) outcome: RuntimeTurnOutcome,
+    pub(crate) reason_code: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalSubmission {
+    Committed,
+    Duplicate,
+    Stale,
+}
+
 impl ActiveTurnPhase {
     pub(crate) fn label(&self) -> &'static str {
         match self {

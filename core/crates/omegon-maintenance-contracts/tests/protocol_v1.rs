@@ -7,18 +7,20 @@ use std::{
 
 use omegon_maintenance_contracts::{
     AuditCheckpointV1, AuditFrontierV1, AuditReceiptV1, AuditRecordV1, AuthorityKey,
-    CommandSemanticsV1, ContributionSelector, DenyRecordV1, DenyStateV1, DetachObservation,
-    ErrorV1, FenceV1, FileIdentityV1, InstallationStateV1, ListScope, LockMode,
-    MaintenanceResultV1, MaintenanceStateV1, MutationResultV1, MutationState, OwnershipRecordV1,
-    PackageManifestV1, PathIdentityV1, PostStateV1, ProtocolLock, ReconciliationDecision, Record,
-    RecordObservation, ResultStatus, SCHEMA_VERSION, SessionDenyRecordV1, SessionDenyState,
-    TransactionState, TransactionStepKind, TransactionStepState, TransactionStepV1, TransactionV1,
-    append_bytes_at, canonical_digest, canonical_json, command_fingerprint,
-    create_record_no_replace_at, derive_key, normalize_workspace_path, open_secure_root,
+    CommandSemanticsV1, ContributionKind, ContributionSelector, DenyRecordV1, DenyState,
+    DenyStateV1, DetachObservation, ErrorV1, FenceState, FenceV1, FileIdentityV1,
+    InstallationStateV1, ListScope, LockMode, MaintenanceResultV1, MaintenanceStateV1,
+    MutationResultV1, MutationState, OwnershipRecordV1, PackageManifestV1, PathIdentityV1,
+    PostStateV1, ProtocolLock, ReconciliationDecision, Record, RecordObservation, ResultStatus,
+    SCHEMA_VERSION, SessionDenyRecordV1, SessionDenyState, TransactionState, TransactionStepKind,
+    TransactionStepState, TransactionStepV1, TransactionV1, append_bytes_at, canonical_digest,
+    canonical_json, command_fingerprint, contribution_domain_key, create_record_no_replace_at,
+    derive_key, entry_key, normalize_workspace_path, open_secure_dir_at, open_secure_root,
     parse_record, path_identity, read_bytes_at, read_record_at, reconcile_detach, reconcile_record,
-    record_identity_at, replace_record_at, resolve_list_scope, session_key, validate_child_name,
-    workspace_key,
+    record_identity_at, replace_record_at, resolve_list_scope, scope_key, session_key,
+    validate_child_name, workspace_key,
 };
+use sha2::{Digest, Sha256};
 
 const ZERO_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -806,6 +808,209 @@ fn lock_child_helper() {
         )
         .is_err(),
         "child unexpectedly acquired a shared lock"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn contribution_admission_initializes_state_and_holds_shared_lock() {
+    use std::fs::File;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let state = MaintenanceStateV1::bootstrap(
+        &home,
+        path_identity(&home).unwrap(),
+        "11111111-1111-1111-1111-111111111111",
+        false,
+    )
+    .unwrap();
+    let contributions = tempfile::tempdir().unwrap();
+    let parent = path_identity(&File::open(contributions.path()).unwrap()).unwrap();
+    let authority = scope_key(ContributionKind::Workflow.as_str(), "project", parent.key);
+
+    let first = state
+        .admit_contribution_scope(
+            ContributionKind::Workflow,
+            "project",
+            &parent,
+            "test-first",
+            false,
+        )
+        .unwrap();
+    assert_eq!(first.scope_key, authority);
+    assert_eq!(first.generation, 0);
+    assert!(first.allows(b"build.toml").unwrap());
+
+    let second = state
+        .admit_contribution_scope(
+            ContributionKind::Workflow,
+            "project",
+            &parent,
+            "test-second",
+            true,
+        )
+        .unwrap();
+    let lock_name = format!("contribution-{authority}.lock");
+    assert!(
+        ProtocolLock::acquire_at(
+            &state.locks,
+            lock_name.as_bytes(),
+            LockMode::Exclusive,
+            false,
+            true,
+        )
+        .is_err()
+    );
+    drop((first, second));
+
+    let deny_directory = open_secure_dir_at(&state.deny, authority.to_hex().as_bytes())
+        .unwrap()
+        .unwrap();
+    let deny: DenyStateV1 = read_record_at(&deny_directory, b"state.json")
+        .unwrap()
+        .unwrap();
+    assert_eq!(deny.scope_key, authority);
+    assert_eq!(deny.generation, 0);
+    assert!(deny.entries.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn contribution_admission_matches_deny_to_exact_raw_name() {
+    use std::fs::File;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let state = MaintenanceStateV1::bootstrap(
+        &home,
+        path_identity(&home).unwrap(),
+        "11111111-1111-1111-1111-111111111111",
+        false,
+    )
+    .unwrap();
+    let contributions = tempfile::tempdir().unwrap();
+    let parent = path_identity(&File::open(contributions.path()).unwrap()).unwrap();
+    let kind = ContributionKind::Workflow;
+    let authority = scope_key(kind.as_str(), "project", parent.key);
+    drop(
+        state
+            .admit_contribution_scope(kind, "project", &parent, "initialize", false)
+            .unwrap(),
+    );
+    let deny_directory = open_secure_dir_at(&state.deny, authority.to_hex().as_bytes())
+        .unwrap()
+        .unwrap();
+    let raw_name = b"build.toml";
+    let denied_entry = entry_key(kind.as_str(), authority, raw_name);
+    let request_id = "00000000-0000-0000-0000-000000000001";
+    let record = DenyRecordV1 {
+        schema_version: SCHEMA_VERSION,
+        record_kind: "deny".into(),
+        record_id: derive_key(
+            "deny",
+            &[
+                authority.as_bytes(),
+                denied_entry.as_bytes(),
+                request_id.as_bytes(),
+            ],
+        ),
+        scope_key: authority,
+        contribution_kind: kind,
+        entry_key: denied_entry,
+        raw_name_digest: AuthorityKey::from_bytes(Sha256::digest(raw_name).into()),
+        generation: 1,
+        state: DenyState::Denied,
+        request_id: request_id.into(),
+        created_at: "2026-08-17T00:00:00Z".into(),
+    };
+    let mut deny = DenyStateV1 {
+        schema_version: SCHEMA_VERSION,
+        record_kind: "deny_state".into(),
+        record_id: derive_key("deny-state", &[authority.as_bytes(), &1_u64.to_be_bytes()]),
+        scope_key: authority,
+        generation: 1,
+        entries: [(denied_entry.to_hex(), record)].into(),
+    };
+    replace_record_at(&deny_directory, b"state.json", &deny, "deny").unwrap();
+
+    let guard = state
+        .admit_contribution_scope(kind, "project", &parent, "read", false)
+        .unwrap();
+    assert_eq!(guard.generation, 1);
+    assert!(!guard.allows(raw_name).unwrap());
+    assert!(guard.allows(b"Build.toml").unwrap());
+    drop(guard);
+
+    deny.entries
+        .get_mut(&denied_entry.to_hex())
+        .unwrap()
+        .raw_name_digest = AuthorityKey::from_bytes(Sha256::digest(b"other.toml").into());
+    replace_record_at(&deny_directory, b"state.json", &deny, "forged-digest").unwrap();
+    let guard = state
+        .admit_contribution_scope(kind, "project", &parent, "read-forged", false)
+        .unwrap();
+    assert!(guard.allows(raw_name).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn contribution_admission_rejects_fence_and_malformed_state() {
+    use std::{fs::File, io::Write};
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = File::open(directory.path()).unwrap();
+    let state = MaintenanceStateV1::bootstrap(
+        &home,
+        path_identity(&home).unwrap(),
+        "11111111-1111-1111-1111-111111111111",
+        false,
+    )
+    .unwrap();
+    let contributions = tempfile::tempdir().unwrap();
+    let parent = path_identity(&File::open(contributions.path()).unwrap()).unwrap();
+    let kind = ContributionKind::Workflow;
+    let authority = scope_key(kind.as_str(), "project", parent.key);
+    drop(
+        state
+            .admit_contribution_scope(kind, "project", &parent, "initialize", false)
+            .unwrap(),
+    );
+    let domain = contribution_domain_key(authority);
+    let transaction = derive_key("transaction-test", &[b"test"]);
+    let fence = FenceV1 {
+        schema_version: SCHEMA_VERSION,
+        record_kind: "fence".into(),
+        record_id: derive_key("fence", &[domain.as_bytes(), transaction.as_bytes()]),
+        domain_key: domain,
+        transaction_record_id: transaction,
+        state: FenceState::Active,
+    };
+    let fence_name = format!("{domain}.json");
+    create_record_no_replace_at(&state.fences, fence_name.as_bytes(), &fence, "fence").unwrap();
+    assert!(
+        state
+            .admit_contribution_scope(kind, "project", &parent, "fenced", false)
+            .is_err()
+    );
+    std::fs::remove_file(directory.path().join("maintain/v1/fences").join(fence_name)).unwrap();
+
+    let state_path = directory
+        .path()
+        .join("maintain/v1/deny")
+        .join(authority.to_hex())
+        .join("state.json");
+    let mut malformed = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(state_path)
+        .unwrap();
+    malformed.write_all(b"{not-json").unwrap();
+    malformed.sync_all().unwrap();
+    assert!(
+        state
+            .admit_contribution_scope(kind, "project", &parent, "malformed", false)
+            .is_err()
     );
 }
 

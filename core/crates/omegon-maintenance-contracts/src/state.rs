@@ -53,10 +53,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     AUDIT_SEGMENT_RECORDS, AuditCheckpointV1, AuditFrontierV1, AuditReceiptV1, AuditRecordV1,
-    AuthorityKey, ContractError, FenceV1, FileIdentityV1, InstallationStateV1, LockMode,
-    PathIdentityV1, ProtocolLock, Record, Result, SCHEMA_VERSION, SessionDenyRecordV1,
-    canonical_digest, canonical_json, derive_key, parse_record, session_domain_key, session_key,
-    validate_child_name,
+    AuthorityKey, ContractError, ContributionKind, DenyStateV1, FenceV1, FileIdentityV1,
+    InstallationStateV1, LockMode, PathIdentityV1, ProtocolLock, Record, Result, SCHEMA_VERSION,
+    SessionDenyRecordV1, canonical_digest, canonical_json, contribution_domain_key, derive_key,
+    entry_key, parse_record, scope_key, session_domain_key, session_key, validate_child_name,
 };
 
 pub struct MaintenanceStateV1 {
@@ -77,9 +77,119 @@ pub struct SessionResumeGuard {
     pub session_key: AuthorityKey,
 }
 
+pub struct ContributionAdmissionGuard {
+    _lock: ProtocolLock,
+    pub scope_key: AuthorityKey,
+    pub generation: u64,
+    kind: ContributionKind,
+    deny: DenyStateV1,
+}
+
+impl ContributionAdmissionGuard {
+    pub fn allows(&self, raw_name: &[u8]) -> Result<bool> {
+        validate_child_name(raw_name)?;
+        let authority = entry_key(self.kind.as_str(), self.scope_key, raw_name);
+        let Some(deny) = self.deny.entries.get(&authority.to_hex()) else {
+            return Ok(true);
+        };
+        let digest = AuthorityKey::from_bytes(Sha256::digest(raw_name).into());
+        if deny.contribution_kind != self.kind
+            || deny.entry_key != authority
+            || deny.raw_name_digest != digest
+        {
+            return Err(ContractError::InvalidValue(
+                "deny entry does not match requested contribution bytes".into(),
+            ));
+        }
+        Ok(false)
+    }
+}
+
 static TEMPORARY_NONCE: AtomicU64 = AtomicU64::new(0);
 
 impl MaintenanceStateV1 {
+    pub fn admit_contribution_scope(
+        &self,
+        kind: ContributionKind,
+        scope: &str,
+        parent: &PathIdentityV1,
+        temporary_tag: &str,
+        nonblocking: bool,
+    ) -> Result<ContributionAdmissionGuard> {
+        let authority = scope_key(kind.as_str(), scope, parent.key);
+        let lock_name = format!("contribution-{authority}.lock");
+        let directory_name = authority.to_hex();
+        let mut lock = self.acquire_or_create_protocol_lock(
+            lock_name.as_bytes(),
+            LockMode::Shared,
+            nonblocking,
+        )?;
+        if open_secure_dir_at(&self.deny, directory_name.as_bytes())?.is_none() {
+            drop(lock);
+            let _exclusive = self.acquire_or_create_protocol_lock(
+                lock_name.as_bytes(),
+                LockMode::Exclusive,
+                nonblocking,
+            )?;
+            if open_secure_dir_at(&self.deny, directory_name.as_bytes())?.is_none() {
+                let directory =
+                    open_or_create_secure_dir_at(&self.deny, directory_name.as_bytes())?;
+                let empty = DenyStateV1 {
+                    schema_version: SCHEMA_VERSION,
+                    record_kind: "deny_state".into(),
+                    record_id: derive_key(
+                        "deny-state",
+                        &[authority.as_bytes(), &0_u64.to_be_bytes()],
+                    ),
+                    scope_key: authority,
+                    generation: 0,
+                    entries: Default::default(),
+                };
+                create_record_no_replace_at(&directory, b"state.json", &empty, temporary_tag)?;
+            }
+            drop(_exclusive);
+            lock = self.acquire_or_create_protocol_lock(
+                lock_name.as_bytes(),
+                LockMode::Shared,
+                nonblocking,
+            )?;
+        }
+        let fence_name = format!("{}.json", contribution_domain_key(authority));
+        if read_record_at::<FenceV1>(&self.fences, fence_name.as_bytes())?.is_some() {
+            return Err(ContractError::InvalidValue(
+                "contribution startup is blocked by an unresolved maintenance fence".into(),
+            ));
+        }
+        let directory =
+            open_secure_dir_at(&self.deny, directory_name.as_bytes())?.ok_or_else(|| {
+                ContractError::InvalidValue("initialized deny scope disappeared".into())
+            })?;
+        let deny: DenyStateV1 = read_record_at(&directory, b"state.json")?.ok_or_else(|| {
+            ContractError::InvalidValue("initialized deny scope lacks state.json".into())
+        })?;
+        if deny.scope_key != authority {
+            return Err(ContractError::InvalidValue(
+                "deny state does not belong to requested contribution scope".into(),
+            ));
+        }
+        if deny
+            .entries
+            .values()
+            .any(|entry| entry.contribution_kind != kind)
+        {
+            return Err(ContractError::InvalidValue(
+                "deny state contains a different contribution kind".into(),
+            ));
+        }
+        Ok(ContributionAdmissionGuard {
+            _lock: lock,
+            scope_key: authority,
+            generation: deny.generation,
+            kind,
+            deny,
+        })
+    }
+
     #[cfg(unix)]
     pub fn bootstrap(
         home: &File,

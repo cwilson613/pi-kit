@@ -49,7 +49,7 @@ pub(crate) struct LoopTerminalIntent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalSubmission {
-    Committed,
+    Committed { outcome: RuntimeTurnOutcome },
     Duplicate,
     Stale,
 }

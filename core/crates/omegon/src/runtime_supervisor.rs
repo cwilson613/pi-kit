@@ -436,7 +436,12 @@ impl InteractiveRuntimeSupervisor {
             .finish(active.runtime_turn_id, intent.outcome)
             .map(|active| (active, intent.outcome));
         self.last_settled_identity = Some(intent.identity);
-        Ok((TerminalSubmission::Committed, settled))
+        Ok((
+            TerminalSubmission::Committed {
+                outcome: intent.outcome,
+            },
+            settled,
+        ))
     }
 
     pub(crate) fn complete_active_turn(&mut self) -> Option<ActiveTurnMeta> {
@@ -627,7 +632,9 @@ mod tests {
             supervisor
                 .submit_loop_terminal_intent(failed.clone())
                 .unwrap(),
-            TerminalSubmission::Committed
+            TerminalSubmission::Committed {
+                outcome: RuntimeTurnOutcome::Failed
+            }
         );
         assert_eq!(
             supervisor.submit_loop_terminal_intent(failed).unwrap(),
@@ -659,7 +666,9 @@ mod tests {
                     reason_code: "late_completion".into(),
                 })
                 .unwrap(),
-            TerminalSubmission::Committed
+            TerminalSubmission::Committed {
+                outcome: RuntimeTurnOutcome::Revoked
+            }
         );
         assert!(!supervisor.is_busy());
     }

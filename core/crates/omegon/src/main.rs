@@ -171,8 +171,8 @@ use omegon_traits::AgentEvent;
 use runtime_prompt::{ControlSurface, PromptEnvelope, QueueMode, RuntimeActor, RuntimeActorKind};
 use runtime_supervisor::InteractiveRuntimeSupervisor;
 use runtime_turn::{
-    ActiveTurnMeta, InterruptAdmission, RuntimeTurnIdentity, RuntimeTurnLifecycle,
-    RuntimeTurnOutcome,
+    ActiveTurnMeta, InterruptAdmission, LoopTerminalIntent, RuntimeTurnIdentity,
+    RuntimeTurnLifecycle, RuntimeTurnOutcome, TerminalSubmission,
 };
 use tokio::sync::oneshot;
 
@@ -6420,6 +6420,7 @@ fn build_tui_secret_readiness_snapshot(
                         pending_compact.clone(),
                         events_tx.clone(),
                         active,
+                        active_identity,
                         lifecycle.clone(),
                         turn_cancel.clone(),
                     ));
@@ -6429,6 +6430,7 @@ fn build_tui_secret_readiness_snapshot(
                     let mut notified_blocked_prompt_queue = false;
                     let mut cancellation_deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
                     let mut active_command_channel = active_worker_channel::ActiveWorkerCommandChannel::new();
+                    let mut terminal_intent: Option<LoopTerminalIntent> = None;
 
                     loop {
                         tokio::select! {
@@ -6476,12 +6478,18 @@ fn build_tui_secret_readiness_snapshot(
                                 if let Err(join_err) = turn_result {
                                     let message = format_interactive_turn_task_failure(&join_err);
                                     tracing::error!("interactive turn task failed: {join_err}");
+                                    terminal_intent = Some(LoopTerminalIntent {
+                                        identity: active_identity,
+                                        outcome: RuntimeTurnOutcome::Failed,
+                                        reason_code: "worker_join_failed".into(),
+                                    });
                                     mark_interactive_session_busy(&agent.dashboard_handles, false);
                                     let _ = events_tx.send(AgentEvent::SystemNotification {
                                         message,
                                     });
                                     let _ = events_tx.send(AgentEvent::AgentEnd);
-                                } else {
+                                } else if let Ok(intent) = turn_result {
+                                    terminal_intent = Some(intent);
                                     lifecycle.transition("worker_returned", runtime.queue_depth(), &events_tx);
                                 }
                                 runtime_state = Arc::try_unwrap(state_for_turn)
@@ -6505,6 +6513,11 @@ fn build_tui_secret_readiness_snapshot(
                                     message: "The active turn ignored cancellation and was stopped after a 2s grace period. Queued prompts were preserved.".to_string(),
                                 });
                                 let _ = events_tx.send(AgentEvent::AgentEnd);
+                                terminal_intent = Some(LoopTerminalIntent {
+                                    identity: active_identity,
+                                    outcome: RuntimeTurnOutcome::Revoked,
+                                    reason_code: "cancellation_deadline".into(),
+                                });
                                 runtime_state = Arc::try_unwrap(state_for_turn)
                                     .map_err(|_| anyhow::anyhow!("aborted worker retained durable state"))?
                                     .into_inner();
@@ -6607,6 +6620,11 @@ fn build_tui_secret_readiness_snapshot(
                                         lifecycle.transition("worker_revoked", runtime.queue_depth(), &events_tx);
                                         mark_interactive_session_busy(&agent.dashboard_handles, false);
                                         let _ = events_tx.send(AgentEvent::AgentEnd);
+                                        terminal_intent = Some(LoopTerminalIntent {
+                                            identity: active_identity,
+                                            outcome: RuntimeTurnOutcome::Revoked,
+                                            reason_code: "operator_cancelled".into(),
+                                        });
                                         runtime_state = Arc::try_unwrap(state_for_turn)
                                             .map_err(|_| anyhow::anyhow!("revoked worker retained durable state"))?
                                             .into_inner();
@@ -6626,6 +6644,11 @@ fn build_tui_secret_readiness_snapshot(
                                         lifecycle.transition("worker_revoked_for_exit", runtime.queue_depth(), &events_tx);
                                         mark_interactive_session_busy(&agent.dashboard_handles, false);
                                         let _ = events_tx.send(AgentEvent::AgentEnd);
+                                        terminal_intent = Some(LoopTerminalIntent {
+                                            identity: active_identity,
+                                            outcome: RuntimeTurnOutcome::Revoked,
+                                            reason_code: "session_exit".into(),
+                                        });
                                         runtime_state = Arc::try_unwrap(state_for_turn)
                                             .map_err(|_| anyhow::anyhow!("exit-revoked worker retained durable state"))?
                                             .into_inner();
@@ -6682,8 +6705,17 @@ fn build_tui_secret_readiness_snapshot(
                         active_identity,
                     );
                     lifecycle.transition("supervisor_completing", runtime.queue_depth(), &events_tx);
-                    let settlement = match runtime.settle_durable_worker() {
-                        Ok(settlement) => settlement,
+                    let submission = match terminal_intent {
+                        Some(intent) => runtime.submit_loop_terminal_intent(intent),
+                        None => runtime
+                            .settle_durable_worker()
+                            .map(|settlement| match settlement {
+                                Some((_, outcome)) => TerminalSubmission::Committed { outcome },
+                                None => TerminalSubmission::Duplicate,
+                            }),
+                    };
+                    let submission = match submission {
+                        Ok(submission) => submission,
                         Err(error) => {
                             tracing::error!(%error, "failed to durably settle interactive turn");
                             let _ = events_tx.send(AgentEvent::SystemNotification {
@@ -6692,12 +6724,13 @@ fn build_tui_secret_readiness_snapshot(
                             break 'interactive;
                         }
                     };
-                    let terminal_phase = match settlement {
-                        Some((_, RuntimeTurnOutcome::Revoked)) => "supervisor_revoked",
-                        Some((_, RuntimeTurnOutcome::Failed)) => "supervisor_failed",
-                        Some((_, RuntimeTurnOutcome::TimedOut)) => "supervisor_timed_out",
-                        Some((_, RuntimeTurnOutcome::Completed)) => "supervisor_completed",
-                        None => "supervisor_terminal_duplicate",
+                    let terminal_phase = match submission {
+                        TerminalSubmission::Committed { outcome: RuntimeTurnOutcome::Revoked } => "supervisor_revoked",
+                        TerminalSubmission::Committed { outcome: RuntimeTurnOutcome::Failed } => "supervisor_failed",
+                        TerminalSubmission::Committed { outcome: RuntimeTurnOutcome::TimedOut } => "supervisor_timed_out",
+                        TerminalSubmission::Committed { outcome: RuntimeTurnOutcome::Completed } => "supervisor_completed",
+                        TerminalSubmission::Duplicate => "supervisor_terminal_duplicate",
+                        TerminalSubmission::Stale => "supervisor_terminal_stale",
                     };
                     lifecycle.transition(terminal_phase, runtime.queue_depth(), &events_tx);
                     emit_runtime_queue_snapshot(&runtime, &events_tx);
@@ -9880,6 +9913,26 @@ mod tests {
 
         let active = supervisor.maybe_start_next_turn().expect("active turn");
         assert_eq!(active.prompt.metadata, metadata);
+    }
+
+    #[test]
+    fn interactive_loop_failure_proposes_failed_terminal_intent() {
+        let identity = RuntimeTurnIdentity {
+            session_epoch: 1,
+            runtime_turn_id: 7,
+        };
+        let failed = interactive_loop_terminal_intent(
+            identity,
+            &Some(Err(anyhow::anyhow!("provider failed"))),
+            false,
+        );
+        assert_eq!(failed.identity, identity);
+        assert_eq!(failed.outcome, RuntimeTurnOutcome::Failed);
+        assert_eq!(failed.reason_code, "loop_failed");
+
+        let cancelled = interactive_loop_terminal_intent(identity, &Some(Ok(())), true);
+        assert_eq!(cancelled.outcome, RuntimeTurnOutcome::Revoked);
+        assert_eq!(cancelled.reason_code, "loop_cancelled");
     }
 
     #[test]

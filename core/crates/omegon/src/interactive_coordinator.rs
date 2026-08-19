@@ -21,6 +21,27 @@ fn control_surface_from_via(via: &str) -> ControlSurface {
     }
 }
 
+fn interactive_loop_terminal_intent(
+    identity: RuntimeTurnIdentity,
+    run_result: &Option<anyhow::Result<()>>,
+    cancelled: bool,
+) -> LoopTerminalIntent {
+    let (outcome, reason_code) = match run_result {
+        Some(Ok(())) if cancelled => (RuntimeTurnOutcome::Revoked, "loop_cancelled"),
+        Some(Ok(())) => (RuntimeTurnOutcome::Completed, "loop_completed"),
+        Some(Err(error)) if r#loop::is_upstream_exhausted(error) => {
+            (RuntimeTurnOutcome::Failed, "provider_exhausted")
+        }
+        Some(Err(_)) => (RuntimeTurnOutcome::Failed, "loop_failed"),
+        None => (RuntimeTurnOutcome::Revoked, "loop_abandoned"),
+    };
+    LoopTerminalIntent {
+        identity,
+        outcome,
+        reason_code: reason_code.into(),
+    }
+}
+
 fn handle_runtime_cancel_command(
     runtime: &mut InteractiveRuntimeSupervisor,
     shared_cancel: &operator_commands::SharedCancel,
@@ -214,9 +235,10 @@ async fn run_interactive_active_turn(
     pending_compact: Arc<std::sync::atomic::AtomicBool>,
     events_tx: broadcast::Sender<AgentEvent>,
     active: ActiveTurnMeta,
+    active_identity: RuntimeTurnIdentity,
     lifecycle: RuntimeTurnLifecycle,
     cancel: CancellationToken,
-) {
+) -> LoopTerminalIntent {
     let mut runtime_state = runtime_state.lock().await;
     let cancel_keeps_prompt = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut loop_config =
@@ -308,6 +330,8 @@ async fn run_interactive_active_turn(
         },
         "interactive active turn loop returned; starting post-turn cleanup"
     );
+    let terminal_intent =
+        interactive_loop_terminal_intent(active_identity, &run_result, cancel.is_cancelled());
 
     if (matches!(run_result, Some(Ok(_))) || run_result.is_none()) && cancel.is_cancelled() {
         let keep_prompt = cancel_keeps_prompt.load(std::sync::atomic::Ordering::Relaxed);
@@ -502,6 +526,7 @@ async fn run_interactive_active_turn(
         &events_tx,
         "worker",
     );
+    terminal_intent
 }
 
 async fn stop_voice_session_if_requested(

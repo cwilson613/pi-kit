@@ -46,6 +46,15 @@ to that supervisor. Accepted transitions are now synced to the adjacent
 authority stream before the owning host mutates or projects runtime state;
 whole-file conversation snapshots remain compatibility projections.
 
+Slice 1.5 adds a release-coupled compatibility adapter for loop terminal
+intents. Authority-backed loop callers submit the captured runtime-turn
+identity, explicit outcome, and reason code to the supervisor after owned
+cleanup. The supervisor rejects stale intents, treats repeated settlement as
+idempotent, and lets an admitted cancellation override a late successful loop
+return. `TurnEnd` and `AgentEnd` remain advisory projections and never drive
+durable closure. Step, message, continuation, and invocation intent reduction
+remains assigned to Slice 4 and Slice 5.
+
 ## Identities
 
 - `session_id` is the existing canonical opaque Omegon session ID. It is not

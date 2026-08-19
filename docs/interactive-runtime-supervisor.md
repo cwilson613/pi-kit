@@ -43,6 +43,12 @@ overlapping prompt, FIFO queue, interruption, and terminal semantics. The
 adjacent authority stream is synced before accepted state is projected, while
 whole-file conversation snapshots remain compatibility projections.
 
+The current loop remains a release-coupled policy driver. A compatibility
+adapter converts each authority-backed loop return into an identity-bearing
+terminal intent (`completed`, `failed`, `revoked`, or `timed_out`) after host
+cleanup. The supervisor alone commits closure; lossy `TurnEnd` and `AgentEnd`
+broadcasts cannot close a session turn.
+
 ---
 
 ## Layering

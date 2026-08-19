@@ -1,13 +1,12 @@
-# Canonical verification commands — cosign, gh attestation, etc.
+# Canonical release verification commands.
 
-cosign_verify:
+release_verify:
   cmd: |
-    cosign verify-blob omegon-0.28.0-aarch64-apple-darwin.tar.gz \
-      --signature omegon-0.28.0-aarch64-apple-darwin.tar.gz.sig \
-      --certificate omegon-0.28.0-aarch64-apple-darwin.tar.gz.pem \
-      --certificate-identity-regexp '.*' \
-      --certificate-oidc-issuer https://token.actions.githubusercontent.com
-  desc: "Verify cosign signature (keyless) — replace version with actual"
+    omegon-maintain --json release verify \
+      --archive /absolute/path/omegon-<version>-<target>.tar.gz \
+      --manifest /absolute/path/omegon-<version>-<target>.tar.gz.manifest.json \
+      --bundle /absolute/path/omegon-<version>-<target>.tar.gz.manifest.sigstore.json
+  desc: "Verify a release package offline against compiled identity policy"
 
 gh_attestation:
   cmd: "gh attestation verify omegon-*.tar.gz --repo styrene-lab/omegon"

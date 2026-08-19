@@ -1,0 +1,136 @@
+---
+import Docs from "../../layouts/Docs.astro";
+import { snippet } from "../../lib/snippets";
+---
+
+<Docs title="Maintenance & Recovery" description="Diagnose, deny, quarantine, and verify Omegon without starting the normal runtime.">
+  <h1>Maintenance &amp; Recovery</h1>
+  <p>
+    <code>omegon-maintain</code> is the release-coupled recovery companion. It remains
+    independently runnable when the normal TUI, agent loop, provider setup, project
+    configuration, plugins, extensions, MCP, mutable packs, memory, lifecycle, or
+    orchestration state is broken.
+  </p>
+  <blockquote>
+    It is a bounded data-inspection and recovery tool, not a second agent harness,
+    generic repair shell, package manager, or mode of <code>omegon</code>.
+  </blockquote>
+
+  <h2>Start With Read-Only Evidence</h2>
+  <pre><code>{snippet("maintenance.identity")}
+{snippet("maintenance.doctor")}
+{snippet("maintenance.composition_inspect")}
+{snippet("maintenance.release_inspect")}</code></pre>
+  <ul>
+    <li><code>identity</code> reports the artifact, protocol, limits, target, and compiled exclusions without loading normal runtime roots.</li>
+    <li><code>composition inspect</code> reports the compiled maintenance profile, not a live contribution graph.</li>
+    <li><code>doctor</code> runs bounded structural checks; unavailable evidence can produce a degraded result.</li>
+    <li><code>release inspect</code> inspects adjacent package metadata only. Use offline verification for signed release evidence.</li>
+  </ul>
+
+  <h2>Stable Automation Contract</h2>
+  <p>
+    With <code>--json</code>, normal termination writes exactly one JSON object to stdout;
+    logs and progress go to stderr. Status is <code>success</code>, <code>failure</code>, or
+    <code>degraded</code>.
+  </p>
+  <table>
+    <thead><tr><th>Exit</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>0</code></td><td>All requested work settled successfully.</td></tr>
+      <tr><td><code>1</code></td><td>Definite failure, refusal, invalid input, unsupported operation, or timeout before dispatch.</td></tr>
+      <tr><td><code>2</code></td><td>Degraded or partial evidence, possible-dispatch timeout, unknown settlement, or audit/output settlement failure.</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Do not treat exit <code>2</code> as success or blindly retry a mutation. Reconciliation
+    may reuse the same request UUID only for the exact same command fingerprint.
+  </p>
+
+  <h2>Roots, Deadlines, and Dry Runs</h2>
+  <ul>
+    <li><code>--workspace</code>, <code>--home</code>, and <code>--config-home</code> require existing absolute directories.</li>
+    <li>Project contribution, selected-session, and resource operations require an explicit <code>--workspace</code>.</li>
+    <li>User contribution listing uses <code>--scope user</code> without <code>--workspace</code>.</li>
+    <li>Every mutation and mutation dry run requires <code>--deadline</code>. Durations use an unsigned integer plus <code>ms</code>, <code>s</code>, or <code>m</code>, with a ten-minute maximum.</li>
+    <li>Final root symlinks, aliased roots, and group/other-writable mutation roots are rejected.</li>
+  </ul>
+  <blockquote>
+    <code>--dry-run</code> does not dispatch the requested mutation, but it may bootstrap
+    maintenance-owned state, create or acquire lock files, and append a dry-run audit record.
+  </blockquote>
+
+  <h2>Contributions</h2>
+  <pre><code>{snippet("maintenance.contribution_list_project")}
+
+{snippet("maintenance.contribution_inspect_project")}
+
+{snippet("maintenance.contribution_disable_dry_run")}
+
+{snippet("maintenance.contribution_disable")}</code></pre>
+  <p>
+    Selectors use <code>&lt;kind&gt;:&lt;id&gt;</code>, where kind is
+    <code>extension</code>, <code>plugin</code>, <code>skill</code>, <code>prompt</code>,
+    <code>catalog</code>, or <code>workflow</code>. Listing gives invalid filesystem names an
+    opaque <code>entry:sha256:&lt;hex&gt;</code> selector instead of interpreting them. IDs match
+    <code>[A-Za-z0-9][A-Za-z0-9._-]{0,127}</code>.
+  </p>
+  <p>
+    Disable affects future activation; it does not stop a running process. Quarantine first
+    settles the deny, then atomically moves a real entry on the same filesystem or unlinks a
+    contribution symlink without opening or modifying its target:
+  </p>
+  <pre><code>{snippet("maintenance.contribution_quarantine")}</code></pre>
+  <p>Restore, enable, purge, recursive deletion, and copy-delete fallback are not available.</p>
+
+  <h2>Sessions</h2>
+  <pre><code>{snippet("maintenance.session_list")}
+
+{snippet("maintenance.session_inspect")}
+
+{snippet("maintenance.session_quarantine_dry_run")}
+
+{snippet("maintenance.session_quarantine")}</code></pre>
+  <p>
+    Selection requires one exact session and workspace identity. Quarantine installs resume-deny
+    authority while preserving session and metadata bytes. It does not rewrite snapshots,
+    synthesize events, change completion state, or semantically repair a conversation.
+  </p>
+
+  <h2>Runtime Ownership Records</h2>
+  <pre><code>{snippet("maintenance.resource_list")}
+
+{snippet("maintenance.resource_prune_dry_run")}
+
+{snippet("maintenance.resource_prune")}</code></pre>
+  <p>
+    Pruning removes only records proven stale by heartbeat, boot, PID, and process-start evidence.
+    It never kills a process. Legacy, malformed, clock-skewed, or incomplete records remain
+    inspect-only or unverifiable.
+  </p>
+
+  <h2>Audit Evidence</h2>
+  <pre><code>{snippet("maintenance.audit_inspect")}
+{snippet("maintenance.audit_verify")}</code></pre>
+  <p>
+    Audit verification checks structural hash-chain continuity. It is not authenticity proof
+    against an attacker who can rewrite all user-owned maintenance state.
+  </p>
+
+  <h2>Offline Release Verification</h2>
+  <pre><code>{snippet("verify.release_verify")}</code></pre>
+  <p>
+    All operands must be absolute regular files. Verification performs no discovery or download,
+    and streams the archive without extracting or executing it. Compiled policy checks repository,
+    workflow, issuer, and tag identity while the signed manifest binds the archive digest,
+    provenance, target, version, commit, and both executable identities.
+  </p>
+
+  <h2>Not Implemented</h2>
+  <p>
+    There are no <code>fix</code>, <code>repair</code>, <code>clean</code>, <code>update</code>, or
+    <code>rollback</code> aliases. Maintenance does not edit project source/configuration, run
+    hooks or probes, kill processes, repair conversation semantics, or discover, download,
+    install, activate, switch, or roll back releases.
+  </p>
+</Docs>

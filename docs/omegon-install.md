@@ -19,7 +19,7 @@ open_questions = []
 
 ## Overview
 
-Engineers should be able to install Omegon with a single command: no git clone, no submodule init, no npm runtime, and no manual link step. The current supported product boundary is the Rust binary plus bundled skills/catalog assets.
+Engineers should be able to install Omegon with a single command: no git clone, no submodule init, no npm runtime, and no manual link step. The supported product boundary is the release-coupled `omegon` and `omegon-maintain` executable pair plus bundled skills/catalog assets.
 
 Current install surfaces:
 
@@ -28,7 +28,7 @@ Current install surfaces:
 - Homebrew: `brew tap styrene-lab/tap && brew install omegon`
 - direct GitHub release artifacts from `styrene-lab/omegon`
 
-Source checkouts use `just build` and `just link`. `just link` installs the stable development launcher into `~/.local/bin/omegon` and `~/.local/bin/om`, registers the checkout in `~/.omegon/channels/default`, and keeps a fallback copy in `~/.omegon/bin/omegon`. It does not use shell-profile aliases as the primary resolution mechanism; run `omegon --which` to inspect the resolved target.
+Source checkouts use `just build` and `just link`. `just link` builds both executables, installs stable development launchers into `~/.local/bin/omegon`, `~/.local/bin/om`, and `~/.local/bin/omegon-maintain`, registers the checkout in `~/.omegon/channels/default`, and keeps fallback copies in `~/.omegon/bin/`. It does not use shell-profile aliases as the primary resolution mechanism; run `omegon --which` and `omegon-maintain --which` to inspect the resolved targets.
 
 ## Linux runtime requirements
 
@@ -67,21 +67,22 @@ Linux install surfaces must state runtime ABI requirements explicitly. `brew ins
 
 ## Update contract
 
-Omegon is the single installed product boundary. There is no Node.js runtime package or companion TypeScript fork to update separately.
+Omegon is one release-coupled installed product boundary. There is no Node.js runtime package or companion TypeScript fork to update separately, but the independent Rust maintenance executable must match the normal runtime release.
 
 The authoritative update path therefore must:
 - mutate the installed runtime surface (`/update install`, `brew upgrade omegon`, or reinstall via `install.sh` depending on channel)
-- verify the active `omegon` / `om` executable still resolves to Omegon
+- replace and validate `omegon` plus `omegon-maintain` together
+- verify the active `omegon` / `om` and `omegon-maintain` launchers resolve to the matching release
 - stop at a deliberate restart handoff that tells the operator to relaunch `om` or `omegon`
 
 `/refresh` is intentionally narrower: it only clears transient caches and reloads extensions. It is not equivalent to `/update` after package/runtime mutation.
 
 ## Decisions
 
-### Decision: Rust binary is the product boundary
+### Decision: Rust executable pair is the product boundary
 
 **Status:** implemented
-**Rationale:** The installable product is the Rust binary plus bundled assets. This avoids Node/npm runtime dependency drift, submodule packaging failures, and multi-product update ambiguity.
+**Rationale:** The installable product is the release-coupled normal runtime and independent recovery companion plus bundled assets. This avoids Node/npm runtime dependency drift and submodule packaging failures while preserving recovery when normal startup inputs are broken.
 
 ### Decision: Release artifacts are CI-owned
 
@@ -102,7 +103,9 @@ The authoritative update path therefore must:
 ### File Scope
 
 - `site/src/pages/docs/install.astro` — public install docs
+- `site/src/pages/docs/recovery.astro` — public maintenance and recovery workflows
 - `site/snippets/install.yaml` — canonical install commands
+- `site/snippets/maintenance.yaml` and `site/snippets/verify.yaml` — canonical recovery and offline verification commands
 - `Justfile` — source build, validation, and local link recipes
 - `.github/workflows/*` — CI release/site artifact production
 - `homebrew/` — Homebrew packaging metadata
@@ -113,7 +116,8 @@ The authoritative update path therefore must:
 - Homebrew-managed installs should update through Homebrew.
 - Script-managed installs should update by rerunning the install script or using `/update`.
 - Source checkout development should use `just build` and `just link`.
+- Missing or mismatched companions fail package and update validation; never repair a pair by copying one executable from another release.
 
 ## Migration note
 
-Older TypeScript/npm/pi distribution notes are historical only. New docs, scripts, and release automation should describe the Rust binary install boundary.
+Older TypeScript/npm/pi distribution notes are historical only. New docs, scripts, and release automation should describe the release-coupled Rust executable pair.

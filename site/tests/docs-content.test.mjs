@@ -8,6 +8,7 @@ import { parseSnippetYaml } from '../scripts/load-snippets.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const docsDir = resolve(here, '../src/pages/docs');
+const snippetsDir = resolve(here, '../snippets');
 const npmRunBuild = process.platform === 'win32'
   ? { command: process.env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c', 'npm run build'] }
   : { command: 'npm', args: ['run', 'build'] };
@@ -27,10 +28,49 @@ test('install docs use canonical snippets for all channels', () => {
   assert.match(content, /snippet\("install\.quick_install"\)/);
   assert.match(content, /snippet\("install\.install_nightly"\)/);
   assert.match(content, /snippet\("install\.install_version"\)/);
+  assert.match(content, /snippet\("install\.verify_companions"\)/);
+  assert.match(content, /snippet\("verify\.release_verify"\)/);
+  assert.match(content, /href="\/docs\/recovery"/);
   assert.doesNotMatch(content, /omegon\.styrene\.dev/);
   // Auth commands use correct form
   assert.match(content, /snippet\("auth\.login_anthropic"\)/);
   assert.doesNotMatch(content, /omegon login(?! )/);
+});
+
+test('recovery docs consume canonical maintenance snippets', () => {
+  const content = readDoc('recovery.astro');
+  const required = [
+    'identity',
+    'doctor',
+    'composition_inspect',
+    'contribution_list_project',
+    'contribution_disable_dry_run',
+    'session_list',
+    'session_quarantine_dry_run',
+    'resource_list',
+    'resource_prune_dry_run',
+    'audit_verify',
+  ];
+  for (const key of required) {
+    assert.match(content, new RegExp(`snippet\\("maintenance\\.${key}"\\)`));
+  }
+  assert.match(content, /snippet\("verify\.release_verify"\)/);
+  assert.doesNotMatch(content, /omegon-maintain (fix|repair|clean|update|rollback)(\s|<)/);
+
+  const layout = readFileSync(resolve(here, '../src/layouts/Docs.astro'), 'utf8');
+  assert.match(layout, /href: "\/docs\/recovery"/);
+});
+
+test('release verification snippets do not trust arbitrary certificate identities', () => {
+  const verification = readFileSync(resolve(snippetsDir, 'verify.yaml'), 'utf8');
+  assert.doesNotMatch(verification, /certificate-identity-regexp\s+['"]?\.\*/);
+  assert.match(verification, /omegon-maintain --json release verify/);
+});
+
+test('public docs contain no destructive root deletion example', () => {
+  for (const page of readdirSync(docsDir).filter(f => f.endsWith('.astro'))) {
+    assert.doesNotMatch(readDoc(page), /rm -rf \/ --no-preserve-root/);
+  }
 });
 
 test('homepage has version selector and install section', () => {
@@ -96,6 +136,9 @@ test('site builds successfully', () => {
   const changelogHtml = readFileSync(resolve(here, '../dist/changelog/index.html'), 'utf8');
   const privacyHtml = readFileSync(resolve(here, '../dist/privacy/index.html'), 'utf8');
   const termsHtml = readFileSync(resolve(here, '../dist/terms/index.html'), 'utf8');
+  const installHtml = readFileSync(resolve(here, '../dist/docs/install/index.html'), 'utf8');
+  const recoveryHtml = readFileSync(resolve(here, '../dist/docs/recovery/index.html'), 'utf8');
+  const securityHtml = readFileSync(resolve(here, '../dist/docs/security/index.html'), 'utf8');
   const rootChangelog = readFileSync(resolve(here, '../../CHANGELOG.md'), 'utf8');
 
   assert.match(rootChangelog, /^\+\+\+/);
@@ -106,6 +149,13 @@ test('site builds successfully', () => {
     assert.doesNotMatch(rendered, /^---$/m);
   }
   assert.match(changelogHtml, /local sandbox evidence-substrate smoke suite/);
+  assert.match(installHtml, /omegon-maintain --json identity/);
+  assert.match(recoveryHtml, /omegon-maintain --json composition inspect/);
+  assert.match(recoveryHtml, /contribution disable plugin:formatter --scope project/);
+  assert.match(securityHtml, /omegon-maintain --json release verify/);
+  for (const rendered of [installHtml, recoveryHtml, securityHtml]) {
+    assert.doesNotMatch(rendered, /certificate-identity-regexp[^<]*\.\*/);
+  }
   for (const version of [
     '0.19.6',
     '0.19.5',

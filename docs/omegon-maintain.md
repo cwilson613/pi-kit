@@ -21,11 +21,11 @@ related = ["harness-architecture-parity"]
 
 ## Status
 
-This is the approved Slice-zero target contract and durable architecture
-summary. The independently runnable executable and its read-only diagnostic
-slice are implemented in the workspace but are not yet shipped. Normative
-behavior is owned by the OpenSpec maintenance requirements. Remaining
-implementation is tracked by
+This is the approved Slice-zero contract and durable architecture summary.
+The independently runnable executable, recovery workflows, offline release
+verification, and release-distribution integration are implemented in the
+workspace. Normative behavior is owned by the OpenSpec maintenance
+requirements. Remaining implementation is tracked by
 `openspec/changes/selective-kernel-decomposition/tasks.md`.
 
 Package `omegon-maintenance-contracts` implements canonical v1 records/results,
@@ -34,9 +34,10 @@ locks, crash reconciliation, and shared valid plus corruption fixtures. Package
 `omegon-maintain` builds independently with diagnostics, contribution and session
 quarantine, stale ownership pruning, durable audit workflows, and offline release
 verification. Normal Omegon now enforces session-deny authority across startup,
-headless, live interactive, and ACP resume paths. Contribution-startup consumers,
-v1 ownership writers, packaging, and launch-matrix integration remain tracked by
-tasks 0.7 through 0.10.
+headless, live interactive, and ACP resume paths, and normal contribution startup
+enforces maintenance deny/exclusion authority. Runtime ownership writers and
+release packaging/launch paths are integrated. Public install/recovery
+co-delivery remains tracked by task 0.10.
 
 ## Purpose
 
@@ -45,8 +46,9 @@ remain runnable when normal Omegon startup, project configuration, contributions
 or optional runtime services are broken.
 
 It is deliberately not a second agent harness and not a miniature package
-manager. Slice zero is a data-only diagnostic and non-destructive
-denial/quarantine utility. Broader mutation remains separately gated.
+manager. Slice zero provides data-only diagnostics plus bounded
+denial/quarantine and proven-stale record pruning. Broader mutation remains
+separately gated.
 
 ## Artifact topology
 
@@ -91,6 +93,13 @@ Maintenance startup does not evaluate or initialize:
 - memory or lifecycle stores;
 - orchestration, Workbench, delegate, or cleave state;
 - package build hooks or shell startup files.
+
+This boundary is enforced in three ways: the maintenance Cargo graph rejects
+normal-runtime, TUI, MCP, extension, memory, lifecycle, and orchestration
+packages; black-box startup tests plant malformed or executable normal-runtime
+inputs and require unchanged files with no sentinel execution; and release
+companion validation requires the exact compiled maintenance profile and
+exclusion set.
 
 ## Command tree
 
@@ -183,7 +192,19 @@ exactly one JSON object:
   "composition": {
     "profile": "maintenance",
     "generation": "sha256:...",
-    "excluded_inputs": ["project_config", "plugins", "mcp", "memory"]
+    "excluded_inputs": [
+      "default_loop",
+      "extension_runtime",
+      "lifecycle",
+      "mcp",
+      "memory",
+      "mutable_packs",
+      "orchestration",
+      "project_config",
+      "project_contributions",
+      "provider_clients",
+      "tui"
+    ]
   },
   "deadline": {
     "requested_ms": 10000,
@@ -413,8 +434,8 @@ separate requirements, safety analysis, and implementation tasks.
 
 ## Packaging and documentation
 
-Upon Slice-zero implementation, every supported package containing `omegon`
-also contains and exposes the companion. Platform archives contain both
+Every supported package containing `omegon` also contains and exposes the
+companion. Platform archives contain both
 executables at their root:
 
 ```text
@@ -427,8 +448,7 @@ independently launch-tested through source, linked development, direct install,
 platform archive, Homebrew, Nix, and OCI paths supported by the repository. Each
 path tests missing/incompatible-companion failure.
 
-The implementation lane updates this document, install/recovery architecture
-docs, `site/src/pages/docs/` install and recovery pages, canonical
-`site/snippets/` examples, CLI help, package instructions, and release procedure
-before its exit gate. This design-only contract adds no current public command,
-so no public site page changes are required until implementation begins.
+Public operator guidance is owned by the installation and Maintenance & Recovery
+site pages. Their generated command examples come from canonical install,
+maintenance, and verification snippets and are validated against the packaged
+companion behavior before this lane exits.

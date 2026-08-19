@@ -1,0 +1,109 @@
+# Canonical maintenance and recovery commands.
+
+identity:
+  cmd: "omegon-maintain --json identity"
+  desc: "Report the compiled maintenance artifact and exclusion profile"
+
+doctor:
+  cmd: "omegon-maintain --json doctor"
+  desc: "Run bounded maintenance diagnostics"
+
+composition_inspect:
+  cmd: "omegon-maintain --json composition inspect"
+  desc: "Inspect the compiled maintenance profile"
+
+release_inspect:
+  cmd: "omegon-maintain --json release inspect"
+  desc: "Inspect adjacent package metadata"
+
+contribution_list_project:
+  cmd: |
+    omegon-maintain --json \
+      --workspace /absolute/path/to/project \
+      contribution list --scope project
+  desc: "List inert project contribution metadata"
+
+contribution_inspect_project:
+  cmd: |
+    omegon-maintain --json \
+      --workspace /absolute/path/to/project \
+      contribution inspect plugin:formatter --scope project
+  desc: "Inspect one exact project contribution"
+
+contribution_disable_dry_run:
+  cmd: |
+    omegon-maintain --json --dry-run --deadline 30s \
+      --workspace /absolute/path/to/project \
+      contribution disable plugin:formatter --scope project
+  desc: "Plan a future-activation deny"
+
+contribution_disable:
+  cmd: |
+    omegon-maintain --json --deadline 30s \
+      --workspace /absolute/path/to/project \
+      contribution disable plugin:formatter --scope project
+  desc: "Deny a contribution from future activation"
+
+contribution_quarantine:
+  cmd: |
+    omegon-maintain --json --deadline 30s \
+      --workspace /absolute/path/to/project \
+      contribution quarantine plugin:formatter --scope project
+  desc: "Deny and atomically detach one contribution"
+
+session_list:
+  cmd: |
+    omegon-maintain --json \
+      --workspace /absolute/path/to/project \
+      session list
+  desc: "List sessions for an explicit workspace"
+
+session_inspect:
+  cmd: |
+    omegon-maintain --json \
+      --workspace /absolute/path/to/project \
+      session inspect <session-id>
+  desc: "Inspect one exact workspace session"
+
+session_quarantine_dry_run:
+  cmd: |
+    omegon-maintain --json --dry-run --deadline 30s \
+      --workspace /absolute/path/to/project \
+      session quarantine <session-id>
+  desc: "Plan a session resume deny"
+
+session_quarantine:
+  cmd: |
+    omegon-maintain --json --deadline 30s \
+      --workspace /absolute/path/to/project \
+      session quarantine <session-id>
+  desc: "Deny session resume without rewriting session bytes"
+
+resource_list:
+  cmd: |
+    omegon-maintain --json \
+      --workspace /absolute/path/to/project \
+      resource list
+  desc: "List runtime ownership evidence"
+
+resource_prune_dry_run:
+  cmd: |
+    omegon-maintain --json --dry-run --deadline 30s \
+      --workspace /absolute/path/to/project \
+      resource prune-stale
+  desc: "Plan stale ownership-record pruning"
+
+resource_prune:
+  cmd: |
+    omegon-maintain --json --deadline 30s \
+      --workspace /absolute/path/to/project \
+      resource prune-stale
+  desc: "Prune ownership records proven stale"
+
+audit_inspect:
+  cmd: "omegon-maintain --json audit inspect"
+  desc: "Inspect maintenance audit records"
+
+audit_verify:
+  cmd: "omegon-maintain --json audit verify"
+  desc: "Verify structural audit continuity"

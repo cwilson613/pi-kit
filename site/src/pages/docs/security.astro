@@ -11,7 +11,7 @@ import { snippet } from "../../lib/snippets";
   <table>
     <thead><tr><th>Layer</th><th>Method</th><th>What it covers</th><th>Verification</th></tr></thead>
     <tbody>
-      <tr><td>CI release artifacts</td><td>Sigstore cosign (keyless, OIDC)</td><td>Published GitHub release archives consumed by downstream packaging</td><td><code>cosign verify-blob</code></td></tr>
+      <tr><td>CI release artifacts</td><td>Sigstore bundle v0.3 (keyless, OIDC)</td><td>Archive, provenance, and both executable identities</td><td><code>omegon-maintain release verify</code></td></tr>
       <tr><td>Local macOS validation binary</td><td>Apple Developer ID (YubiKey)</td><td>Operator workstation build produced before publish</td><td><code>codesign -dvvv</code></td></tr>
       <tr><td>Provenance</td><td>GitHub Attestations (SLSA)</td><td>CI build provenance for published release assets</td><td><code>gh attestation verify</code></td></tr>
     </tbody>
@@ -22,11 +22,17 @@ import { snippet } from "../../lib/snippets";
   </p>
 
   <h3>Verify a Release</h3>
-  <pre><code># Cosign (CI-signed releases)
-{snippet("verify.cosign_verify")}
+  <pre><code># Offline package and companion verification
+{snippet("verify.release_verify")}
 
-# GitHub Attestations
+# Additional online provenance check
 {snippet("verify.gh_attestation")}</code></pre>
+  <p>
+    The offline verifier accepts only explicit absolute archive, manifest, and bundle operands.
+    It applies compiled repository, workflow, issuer, and tag policy and does not discover,
+    download, extract, or execute release content. GitHub Attestations are supplementary online
+    provenance evidence, not a substitute for package-pair verification.
+  </p>
 
   <h2>SBOM</h2>
   <p>

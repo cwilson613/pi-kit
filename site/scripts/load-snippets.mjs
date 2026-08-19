@@ -112,10 +112,37 @@ for (const file of snippetFiles) {
   }
 }
 
-const requiredKeys = ["cli.dev_clone_build"];
+const requiredKeys = [
+  "cli.dev_clone_build",
+  "install.verify_companions",
+  "maintenance.identity",
+  "maintenance.doctor",
+  "maintenance.composition_inspect",
+  "maintenance.contribution_list_project",
+  "maintenance.contribution_disable_dry_run",
+  "maintenance.session_list",
+  "maintenance.session_quarantine_dry_run",
+  "maintenance.resource_list",
+  "maintenance.resource_prune_dry_run",
+  "maintenance.audit_verify",
+  "verify.release_verify",
+];
 const missingKeys = requiredKeys.filter((key) => !merged[key]?.cmd);
 if (missingKeys.length > 0) {
   throw new Error(`Missing required snippet key(s): ${missingKeys.join(", ")}`);
+}
+
+const commandOwners = new Map();
+for (const [key, entry] of Object.entries(merged)) {
+  const owners = commandOwners.get(entry.cmd) ?? [];
+  owners.push(key);
+  commandOwners.set(entry.cmd, owners);
+}
+const duplicateCommands = [...commandOwners.values()].filter((owners) => owners.length > 1);
+if (duplicateCommands.length > 0) {
+  throw new Error(
+    `Duplicate canonical snippet command(s): ${duplicateCommands.map((owners) => owners.join(" / ")).join(", ")}`,
+  );
 }
 
 mkdirSync(dirname(OUT), { recursive: true });

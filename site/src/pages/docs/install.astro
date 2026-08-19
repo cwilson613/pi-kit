@@ -9,7 +9,7 @@ import { snippet } from "../../lib/snippets";
   <h2>Quick Install (Recommended)</h2>
   <pre><code>{snippet("install.quick_install")}</code></pre>
   <p>
-    Downloads the latest signed binary for your platform (macOS arm64/x86_64, Linux x86_64/aarch64),
+    Downloads the latest signed release pair for your platform (macOS arm64/x86_64, Linux x86_64/aarch64),
     verifies the SHA-256 checksum, and installs to <code>/usr/local/bin</code> by default.
   </p>
 
@@ -46,7 +46,7 @@ import { snippet } from "../../lib/snippets";
     Each release includes:
   </p>
   <ul>
-    <li>Pre-built binaries for macOS (arm64, x86_64) and Linux (x86_64, aarch64)</li>
+    <li>Pre-built <code>omegon</code> and <code>omegon-maintain</code> companions for macOS and Linux</li>
     <li>SHA-256 checksums</li>
     <li><a href="https://www.sigstore.dev/">Sigstore cosign</a> signatures (keyless)</li>
     <li>CycloneDX SBOM</li>
@@ -55,9 +55,18 @@ import { snippet } from "../../lib/snippets";
   </ul>
 
   <h3>Verify a Download</h3>
-  <pre><code>{snippet("verify.cosign_verify")}</code></pre>
+  <pre><code>{snippet("verify.release_verify")}</code></pre>
   <p>
-    The filenames above target the 0.28.0 release. Replace 0.28.0 with the release you downloaded.
+    This offline check binds the archive, release identity, provenance, and both executables to
+    compiled repository/workflow trust policy. It does not extract or execute the archive.
+  </p>
+
+  <h2>Verify the Installed Pair</h2>
+  <pre><code>{snippet("install.verify_companions")}</code></pre>
+  <p>
+    Supported packages install matching <code>omegon</code> and <code>omegon-maintain</code>
+    versions. A missing, incompatible, or non-launching companion is an incomplete installation.
+    Do not copy a companion from another release; reinstall through the owning channel.
   </p>
 
   <h2>Provider Setup</h2>
@@ -98,10 +107,11 @@ import { snippet } from "../../lib/snippets";
   </p>
 
   <p>
-    Omegon installs two entrypoints from the same binary:
+    Omegon installs two normal-runtime entrypoints from the same binary:
     <code>om</code> (slim, copy-friendly, familiar terminal mode) and
-    <code>omegon</code> (full harness). You can always override the startup posture with
-    <code>om --full</code> or <code>omegon --slim</code>.
+    <code>omegon</code> (full harness), plus the distinct <code>omegon-maintain</code>
+    recovery companion. You can override normal startup posture with <code>om --full</code>
+    or <code>omegon --slim</code>; maintenance is not an alias or mode.
   </p>
   <p>See <a href="/docs/providers">Providers</a> for all supported auth modes and boundaries.</p>
 
@@ -121,7 +131,12 @@ import { snippet } from "../../lib/snippets";
 
   <h3>Script installs</h3>
   <pre><code># Re-run the install script to update
-{snippet("install.update_script")}</code></pre>
+{snippet("install.quick_install")}</code></pre>
+  <p>
+    Source checkouts should run <code>just link</code>. Every update path replaces and validates
+    the pair together. See <a href="/docs/recovery">Maintenance &amp; Recovery</a> when normal
+    startup is unavailable.
+  </p>
 
   <h2>Supported Platforms</h2>
   <table>

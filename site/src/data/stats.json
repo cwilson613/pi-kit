@@ -1,5 +1,5 @@
 {
-  "crateCount": 11,
+  "crateCount": 13,
   "downloadMB": 16,
   "releaseTag": "v0.28.11",
   "providerCount": 17,
@@ -41,8 +41,8 @@
     "ollama",
     "ollama-cloud"
   ],
-  "toolFiles": 23,
+  "toolFiles": 25,
   "skillCount": 11,
   "searchProviderCount": 3,
-  "collectedAt": "2026-08-10T13:44:36.320Z"
+  "collectedAt": "2026-08-19T17:48:55.498Z"
 }

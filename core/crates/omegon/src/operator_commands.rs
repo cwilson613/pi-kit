@@ -262,7 +262,7 @@ pub enum InterfaceControlRequest {
     },
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VoicePromptMetadata {
     pub event_id: String,
     pub duration_s: Option<f64>,
@@ -271,7 +271,7 @@ pub struct VoicePromptMetadata {
     pub close_session_requested: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PromptMetadata {
     pub voice: Option<VoicePromptMetadata>,
 }

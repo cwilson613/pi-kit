@@ -144,7 +144,6 @@ mod secret_cli;
 mod semantic_route;
 mod sentry;
 mod session;
-#[allow(dead_code)] // Slice 1.2 substrate; durable ingress wiring begins in Slice 1.4.
 mod session_authority;
 mod session_router;
 pub mod settings;
@@ -4627,6 +4626,25 @@ fn build_tui_secret_readiness_snapshot(
     let _mqtt_bridge =
         maybe_start_mqtt_bridge(&agent.cwd, agent.session_id.clone(), events_tx.clone());
 
+    let session_authority = if cli.no_session {
+        None
+    } else {
+        let session_snapshot = session::sessions_dir(&agent.cwd)
+            .ok_or_else(|| anyhow::anyhow!("cannot determine interactive session directory"))?
+            .join(format!("{}.json", agent.session_id));
+        Some(session_authority::SessionAuthority::open(
+            &session_snapshot,
+            &agent.session_id,
+            &agent.workspace_state.lease.workspace_id,
+            &agent.instance_id,
+            session_authority::ActorIdentity {
+                principal: "local-operator".into(),
+                ingress: "interactive".into(),
+            },
+            &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        )?)
+    };
+
     let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
     let runtime_resources = InteractiveRuntimeResources {
@@ -4652,7 +4670,10 @@ fn build_tui_secret_readiness_snapshot(
         }
     }
 
-    let mut runtime = InteractiveRuntimeSupervisor::default();
+    let mut runtime = match session_authority {
+        Some(authority) => InteractiveRuntimeSupervisor::with_authority(authority)?,
+        None => InteractiveRuntimeSupervisor::default(),
+    };
     let mut deferred_commands = VecDeque::new();
     let mut restart_request: Option<(std::path::PathBuf, Vec<String>)> = None;
     let runtime_lifecycle_handles = agent.dashboard_handles.clone();
@@ -4672,11 +4693,20 @@ fn build_tui_secret_readiness_snapshot(
                 _ = tui_exit.cancelled() => break,
                 interrupt = runtime_interrupt_rx.recv() => match interrupt {
                     Some(identity) => {
-                        let admission = runtime.admit_interrupt(
+                        let admission = match runtime.request_durable_interrupt(
                             identity,
                             RuntimeActor::tui(),
                             ControlSurface::Tui,
-                        );
+                        ) {
+                            Ok(admission) => admission,
+                            Err(error) => {
+                                tracing::error!(%error, "failed to durably admit TUI interrupt");
+                                let _ = events_tx.send(AgentEvent::SystemNotification {
+                                    message: format!("Interrupt was not accepted because session authority could not be updated: {error}"),
+                                });
+                                continue;
+                            }
+                        };
                         if admission == InterruptAdmission::Admitted {
                             let guard = shared_cancel
                                 .lock()
@@ -6140,11 +6170,20 @@ fn build_tui_secret_readiness_snapshot(
                 };
                 let via = control_surface_from_via(prompt.via);
 
-                let prompt_id = runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
+                let prompt_id = match runtime.admit_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
                         crate::operator_commands::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
                         crate::operator_commands::PromptQueueMode::UntilReady => QueueMode::UntilReady,
                         crate::operator_commands::PromptQueueMode::Immediate => QueueMode::Immediate,
-                    }));
+                    })) {
+                        Ok(prompt_id) => prompt_id,
+                        Err(error) => {
+                            tracing::error!(%error, "failed to durably admit interactive prompt");
+                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                message: format!("Prompt was not accepted because session authority could not be updated: {error}"),
+                            });
+                            continue;
+                        }
+                    };
 
                 if runtime.is_busy() {
                     tracing::info!(
@@ -6159,7 +6198,18 @@ fn build_tui_secret_readiness_snapshot(
                     continue;
                 }
 
-                while let Some(active) = runtime.maybe_start_next_turn() {
+                loop {
+                    let active = match runtime.start_next_turn() {
+                        Ok(Some(active)) => active,
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::error!(%error, "failed to durably start interactive turn");
+                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                message: format!("Queued prompt could not start because session authority could not be updated: {error}"),
+                            });
+                            break;
+                        }
+                    };
                     let active_identity = runtime.current_identity().expect("promoted turn identity");
                     *tui_interrupt_identity
                         .lock()
@@ -6343,11 +6393,20 @@ fn build_tui_secret_readiness_snapshot(
                                             label: prompt.submitted_by.clone(),
                                         };
                                         let via = control_surface_from_via(prompt.via);
-                                        let prompt_id = runtime.enqueue_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
+                                        let prompt_id = match runtime.admit_prompt(prompt.text, prompt.image_paths, actor, via, prompt.metadata, Some(match prompt.queue_mode {
                                             crate::operator_commands::PromptQueueMode::InterruptAfterTurn => QueueMode::InterruptAfterTurn,
                                             crate::operator_commands::PromptQueueMode::UntilReady => QueueMode::UntilReady,
                                             crate::operator_commands::PromptQueueMode::Immediate => QueueMode::Immediate,
-                                        }));
+                                        })) {
+                                            Ok(prompt_id) => prompt_id,
+                                            Err(error) => {
+                                                tracing::error!(%error, "failed to durably queue interactive prompt");
+                                                let _ = events_tx.send(AgentEvent::SystemNotification {
+                                                    message: format!("Prompt was not accepted because session authority could not be updated: {error}"),
+                                                });
+                                                continue;
+                                            }
+                                        };
                                         emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
                                         if let Some(queued_prompt) = runtime.queued_prompt(prompt_id)
                                             && queued_prompt.requests_voice_close()
@@ -6358,13 +6417,15 @@ fn build_tui_secret_readiness_snapshot(
                                         }
                                     }
                                     operator_commands::OperatorCommand::CancelActiveTurn { submitted_by, via } => {
-                                        handle_runtime_cancel_command(
+                                        if !handle_runtime_cancel_command(
                                             &mut runtime,
                                             &shared_cancel,
                                             &events_tx,
                                             submitted_by,
                                             via,
-                                        );
+                                        ) {
+                                            continue;
+                                        }
                                         // Revocation is authoritative: abort the worker now rather
                                         // than treating cancellation as a request that may be ignored.
                                         // Durable state is supervisor-owned behind `state_for_turn`.
@@ -6449,7 +6510,17 @@ fn build_tui_secret_readiness_snapshot(
                         active_identity,
                     );
                     lifecycle.transition("supervisor_completing", runtime.queue_depth(), &events_tx);
-                    let terminal_phase = match runtime.settle_active_worker() {
+                    let settlement = match runtime.settle_durable_worker() {
+                        Ok(settlement) => settlement,
+                        Err(error) => {
+                            tracing::error!(%error, "failed to durably settle interactive turn");
+                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                message: format!("Turn finished locally, but session authority could not record closure: {error}"),
+                            });
+                            break 'interactive;
+                        }
+                    };
+                    let terminal_phase = match settlement {
                         Some((_, RuntimeTurnOutcome::Revoked)) => "supervisor_revoked",
                         Some((_, RuntimeTurnOutcome::Failed)) => "supervisor_failed",
                         Some((_, RuntimeTurnOutcome::Completed)) => "supervisor_completed",

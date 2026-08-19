@@ -39,11 +39,42 @@ pub(crate) struct InteractiveRuntimeSupervisor {
 }
 
 impl InteractiveRuntimeSupervisor {
-    pub(crate) fn with_authority(authority: SessionAuthority) -> Self {
-        Self {
+    pub(crate) fn with_authority(authority: SessionAuthority) -> Result<Self, AuthorityError> {
+        let mut supervisor = Self {
             authority: Some(authority),
             ..Self::default()
+        };
+        let queued = supervisor
+            .authority
+            .as_ref()
+            .expect("authority was assigned")
+            .state()
+            .queued_prompts
+            .clone();
+        for prompt in queued {
+            let queue_mode = match prompt.queue_mode {
+                crate::session_authority::QueueMode::InterruptAfterTurn => {
+                    QueueMode::InterruptAfterTurn
+                }
+                crate::session_authority::QueueMode::UntilReady => QueueMode::UntilReady,
+                crate::session_authority::QueueMode::Immediate => QueueMode::Immediate,
+            };
+            supervisor.queue.enqueue_with_authority(
+                prompt.content.text,
+                prompt
+                    .content
+                    .attachments
+                    .into_iter()
+                    .map(|attachment| PathBuf::from(attachment.storage_ref))
+                    .collect(),
+                RuntimeActor::from_submission(prompt.principal, &prompt.ingress),
+                ControlSurface::from_via(&prompt.ingress),
+                serde_json::from_value(prompt.metadata)?,
+                Some(queue_mode),
+                Some(prompt.prompt_id),
+            );
         }
+        Ok(supervisor)
     }
 
     pub(crate) fn submit(
@@ -423,8 +454,9 @@ mod tests {
     #[test]
     fn durable_supervisor_commits_before_mutating_queue_and_turn_state() {
         let temp = tempfile::tempdir().unwrap();
+        let session_path = temp.path().join("session-1.json");
         let authority = SessionAuthority::open(
-            &temp.path().join("session-1.json"),
+            &session_path,
             "session-1",
             "workspace-1",
             "generation-1",
@@ -435,7 +467,7 @@ mod tests {
             "2026-08-19T18:00:00Z",
         )
         .unwrap();
-        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority);
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
 
         let prompt_id = supervisor
             .admit_prompt(
@@ -452,6 +484,21 @@ mod tests {
             supervisor.authority.as_ref().unwrap().state().last_sequence,
             2
         );
+        drop(supervisor);
+        let authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-2",
+            ActorIdentity {
+                principal: "system".into(),
+                ingress: "resume".into(),
+            },
+            "2026-08-19T18:01:00Z",
+        )
+        .unwrap();
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
+        assert_eq!(supervisor.queue_depth(), 1);
         let active = supervisor.start_next_turn().unwrap().unwrap();
         assert_eq!(active.prompt.submitted_by.kind, RuntimeActorKind::Tui);
         assert!(active.authority_turn_id.is_some());

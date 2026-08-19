@@ -27,23 +27,38 @@ fn handle_runtime_cancel_command(
     events_tx: &broadcast::Sender<AgentEvent>,
     submitted_by: String,
     via: &'static str,
-) {
+) -> bool {
     let actor = RuntimeActor {
         kind: runtime_actor_kind_from_via(via),
         label: submitted_by,
     };
     let surface = control_surface_from_via(via);
-    let active = runtime.request_cancel(actor, surface);
-    if active.is_none() {
-        let _ = events_tx.send(AgentEvent::SystemNotification {
-            message: "Cancel requested, but no active turn is running.".to_string(),
-        });
+    let admission = match runtime.current_identity() {
+        Some(identity) => runtime.request_durable_interrupt(identity, actor, surface),
+        None => Ok(InterruptAdmission::Idle),
+    };
+    match admission {
+        Ok(InterruptAdmission::Admitted | InterruptAdmission::Duplicate) => {}
+        Ok(InterruptAdmission::Idle | InterruptAdmission::Stale) => {
+            let _ = events_tx.send(AgentEvent::SystemNotification {
+                message: "Cancel requested, but no matching active turn is running.".to_string(),
+            });
+            return false;
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to durably admit turn cancellation");
+            let _ = events_tx.send(AgentEvent::SystemNotification {
+                message: format!("Cancel was not accepted because session authority could not be updated: {error}"),
+            });
+            return false;
+        }
     }
     if let Ok(guard) = shared_cancel.lock()
         && let Some(ref cancel) = *guard
     {
         cancel.cancel();
     }
+    true
 }
 
 fn emit_runtime_queue_notification(

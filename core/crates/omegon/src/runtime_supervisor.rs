@@ -496,6 +496,64 @@ mod tests {
     }
 
     #[test]
+    fn mixed_frontend_submissions_share_one_durable_fifo() {
+        let temp = tempfile::tempdir().unwrap();
+        let authority = SessionAuthority::open(
+            &temp.path().join("session-1.json"),
+            "session-1",
+            "workspace-1",
+            "generation-1",
+            ActorIdentity {
+                principal: "operator".into(),
+                ingress: "tui".into(),
+            },
+            "2026-08-19T18:00:00Z",
+        )
+        .unwrap();
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
+        for (text, principal, ingress, surface) in [
+            ("tui", "local", "tui", ControlSurface::Tui),
+            ("ipc", "controller", "ipc", ControlSurface::Ipc),
+            ("web", "browser", "websocket", ControlSurface::WebSocket),
+            ("acp", "editor", "acp", ControlSurface::Acp),
+        ] {
+            supervisor
+                .admit_prompt(
+                    text.into(),
+                    Vec::new(),
+                    RuntimeActor::from_submission(principal.into(), ingress),
+                    surface,
+                    operator_commands::PromptMetadata::default(),
+                    None,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(supervisor.queue_depth(), 4);
+        assert_eq!(
+            supervisor
+                .authority
+                .as_ref()
+                .unwrap()
+                .state()
+                .queued_prompts
+                .iter()
+                .map(|prompt| prompt.content.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tui", "ipc", "web", "acp"]
+        );
+        for expected in ["tui", "ipc", "web", "acp"] {
+            let active = supervisor.start_next_turn().unwrap().unwrap();
+            assert_eq!(active.prompt.text, expected);
+            supervisor
+                .close_durable_worker(RuntimeTurnOutcome::Completed)
+                .unwrap();
+        }
+        assert_eq!(supervisor.queue_depth(), 0);
+        assert!(!supervisor.is_busy());
+    }
+
+    #[test]
     fn durable_supervisor_commits_before_mutating_queue_and_turn_state() {
         let temp = tempfile::tempdir().unwrap();
         let session_path = temp.path().join("session-1.json");

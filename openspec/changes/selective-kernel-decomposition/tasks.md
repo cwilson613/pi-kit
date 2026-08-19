@@ -25,7 +25,7 @@ Definition of done for every group: classify documentation impact before impleme
 - [x] 1.1 Approve the minimum semantic event vocabulary, sequence/version rules, and compatibility policy.
 - [x] 1.2 Add the approved adjacent authority stream, strict reducer/cache, and durable prompt, queue, turn, interruption, minimum invocation, recovery, and terminal facts.
 - [x] 1.3 Refactor the existing supervisor scaffold into one frontend-neutral compiled implementation instantiated once per session. Documentation impact: internal architecture only; no public commands, site pages, or snippets changed.
-- [ ] 1.4 Route interactive, ACP, daemon, Web/IPC, and bounded ingress through the owning session supervisor where semantics overlap.
+- [x] 1.4 Route interactive, ACP, daemon, Web/IPC, and bounded ingress through the owning session supervisor where semantics overlap. Documentation impact: updated private protocol/supervisor/daemon architecture and the public sessions page; no command syntax or canonical snippets changed.
 - [ ] 1.5 Add a compatibility adapter that submits loop terminal/session intents to the kernel state machine; complete loop reduction in Slice 4.
 - [ ] 1.6 Add lost/coalesced event, restart, cursor, second-turn, cancellation, and exactly-once terminal regressions.
 - [ ] 1.7 Co-deliver session protocol/recovery docs and applicable operator-facing state, resume, cancellation, and client behavior documentation.

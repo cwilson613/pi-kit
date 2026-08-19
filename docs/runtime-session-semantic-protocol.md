@@ -40,9 +40,11 @@ replay, corruption handling, and Slice-zero maintenance sidecar compatibility
 are compiled in `core/crates/omegon/src/session_authority.rs`. Slice 1.3 replaced
 the duplicate coordinator/scaffold implementations with one compiled,
 frontend-neutral in-memory supervisor while retaining stale-interrupt and
-exactly-once settlement protections. The authority store is not yet connected to
-production ingress; shared surface routing and durable fact emission begin in
-Slice 1.4.
+exactly-once settlement protections. Slice 1.4 connected interactive, ACP,
+daemon, Web/IPC, and bounded prompt, queue, interruption, and terminal ingress
+to that supervisor. Accepted transitions are now synced to the adjacent
+authority stream before the owning host mutates or projects runtime state;
+whole-file conversation snapshots remain compatibility projections.
 
 ## Identities
 

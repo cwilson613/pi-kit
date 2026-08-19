@@ -37,10 +37,11 @@ orchestration helpers. The canonical turn state preserves stale-interrupt fencin
 first-request cancellation identity, busy-until-worker-exit, and exactly-once
 terminal settlement without depending on TUI-owned prompt types.
 
-The approved durable successor is defined by
-[[runtime-session-semantic-protocol]]. Slice 1.4 connects shared ingress and the
-adjacent authority stream to this single supervisor; until then, its state remains
-an in-memory compatibility authority.
+The durable protocol is defined by [[runtime-session-semantic-protocol]].
+Interactive, ACP, daemon, Web/IPC, and bounded hosts now use this supervisor for
+overlapping prompt, FIFO queue, interruption, and terminal semantics. The
+adjacent authority stream is synced before accepted state is projected, while
+whole-file conversation snapshots remain compatibility projections.
 
 ---
 

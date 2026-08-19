@@ -61,6 +61,14 @@ test('recovery docs consume canonical maintenance snippets', () => {
   assert.match(layout, /href: "\/docs\/recovery"/);
 });
 
+test('sessions docs distinguish durable authority from conversation snapshots', () => {
+  const content = readDoc('sessions.astro');
+  assert.match(content, /Durable Turn Authority/);
+  assert.match(content, /prompt admission, FIFO queue order/);
+  assert.match(content, /Conversation JSON remains a compatibility snapshot/);
+  assert.match(content, /IPC and Web submissions received while a/);
+});
+
 test('release verification snippets do not trust arbitrary certificate identities', () => {
   const verification = readFileSync(resolve(snippetsDir, 'verify.yaml'), 'utf8');
   assert.doesNotMatch(verification, /certificate-identity-regexp\s+['"]?\.\*/);

@@ -30,6 +30,18 @@ import { snippet } from "../../lib/snippets";
     <li>Active persona and tone</li>
     <li>Turn count, tool call count, session duration</li>
   </ul>
+  <h2>Durable Turn Authority</h2>
+  <p>
+    Interactive, ACP, daemon, Web/IPC, and <code>omegon run</code> sessions record
+    prompt admission, FIFO queue order, active-turn identity, cancellation, and terminal
+    outcomes in an adjacent authority stream. IPC and Web submissions received while a
+    turn is active join the same session queue instead of creating a second active turn.
+  </p>
+  <p>
+    Conversation JSON remains a compatibility snapshot. On restart, Omegon validates the
+    authority stream, closes an interrupted active turn conservatively, and restores queued
+    prompts before accepting new work.
+  </p>
   <!-- DIAGRAM:session-lifecycle | Timeline: session start → turns accumulate → auto-save on exit → [time passes] → omegon --resume → full context restored (history, model state, working memory, persona). Show what persists vs what resets -->
 
   <h2>Disable Auto-Save</h2>

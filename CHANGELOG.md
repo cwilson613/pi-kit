@@ -28,6 +28,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Enforced maintenance contribution exclusion for project workflow templates. Workflow discovery now derives authority from the opened `.omegon/workflows` directory, holds the shared scope lock through deny lookup, descriptor-relative bounded parsing, and activation publication, excludes exact denied basename bytes, and fails closed on unresolved fences or malformed deny state.
+
 - Enforced maintenance session quarantine across startup/headless resume, live interactive `/resume`, and ACP `session/load`. Resume admission now holds the shared session lock through metadata and snapshot parsing, rejects malformed maintenance authority without silently starting fresh, and leaves an active session unchanged when a target resume is denied.
 
 - Distinguished provider transport heartbeats from semantic model progress so keepalives, unknown Codex Responses events, and repeated lifecycle markers cannot retain a stalled turn indefinitely. Streams now enforce phase-aware semantic-progress budgets plus a non-resettable absolute deadline, emit bounded stall diagnostics, and parse fragmented or CRLF SSE frames without repeatedly copying the unconsumed buffer.

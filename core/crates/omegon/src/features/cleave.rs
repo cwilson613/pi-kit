@@ -1984,30 +1984,32 @@ Directive: {}{}",
             }
         }
 
-        let config = cleave::orchestrator::CleaveConfig {
-            agent_binary,
-            bridge_path: PathBuf::new(), // Not used in native mode
-            node: String::new(),
-            model: parent_model,
-            max_parallel,
-            timeout_secs: 900,
-            idle_timeout_secs: 180,
-            max_turns: 50,
-            route_decisions,
-            inventory: self.inventory.clone().or_else(|| {
-                // Probe on demand if no inventory was injected at startup
-                Some(std::sync::Arc::new(tokio::sync::RwLock::new(
-                    crate::routing::ProviderInventory::probe(),
-                )))
-            }),
-            inherited_env: self.child_secret_env(),
-            injected_env: Vec::new(),
-            child_runtime: crate::cleave::CleaveChildRuntimeProfile::default(),
-            progress_sink,
-            workflow: crate::workflow::discover_workflow(&self.repo_path),
-            sandbox: self.sandbox,
-            dangerously_bypass_permissions: self.dangerously_bypass_permissions,
-        };
+        let config = crate::workflow::with_discovered_workflow(&self.repo_path, |workflow| {
+            cleave::orchestrator::CleaveConfig {
+                agent_binary,
+                bridge_path: PathBuf::new(), // Not used in native mode
+                node: String::new(),
+                model: parent_model,
+                max_parallel,
+                timeout_secs: 900,
+                idle_timeout_secs: 180,
+                max_turns: 50,
+                route_decisions,
+                inventory: self.inventory.clone().or_else(|| {
+                    // Probe on demand if no inventory was injected at startup
+                    Some(std::sync::Arc::new(tokio::sync::RwLock::new(
+                        crate::routing::ProviderInventory::probe(),
+                    )))
+                }),
+                inherited_env: self.child_secret_env(),
+                injected_env: Vec::new(),
+                child_runtime: crate::cleave::CleaveChildRuntimeProfile::default(),
+                progress_sink,
+                workflow,
+                sandbox: self.sandbox,
+                dangerously_bypass_permissions: self.dangerously_bypass_permissions,
+            }
+        });
 
         let result = cleave::run_cleave(
             &plan,

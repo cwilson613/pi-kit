@@ -2600,7 +2600,7 @@ async fn run_embedded_command(
     );
 
     let daemon_workflow: Option<Arc<workflow::WorkflowTemplate>> =
-        workflow::discover_workflow(&cwd).map(Arc::new);
+        workflow::with_discovered_workflow(&cwd, |workflow| workflow.map(Arc::new));
     if let Some(ref wf) = daemon_workflow {
         tracing::info!(workflow = %wf.workflow.name, "daemon loaded workflow template");
     }
@@ -3366,25 +3366,27 @@ async fn run_cleave_command(
     .await?;
     agent_setup.instance_id = paths::instance_id("cleave");
 
-    let config = cleave::orchestrator::CleaveConfig {
-        agent_binary,
-        bridge_path: PathBuf::new(), // Legacy — not used by native dispatch
-        node: String::new(),
-        model: cli.model.clone(),
-        max_parallel,
-        timeout_secs: timeout,
-        idle_timeout_secs: idle_timeout,
-        max_turns,
-        route_decisions: std::collections::BTreeMap::new(),
-        inventory: None,
-        inherited_env: agent_setup.session_secret_env.clone(),
-        injected_env: Vec::new(),
-        child_runtime: crate::cleave::CleaveChildRuntimeProfile::default(),
-        progress_sink: cleave::progress::stdout_progress_sink(),
-        workflow: workflow::discover_workflow(&cli.cwd),
-        sandbox: false, // CLI cleave — no settings context, sandbox opt-in via TUI only
-        dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
-    };
+    let config = workflow::with_discovered_workflow(&repo_path, |workflow| {
+        cleave::orchestrator::CleaveConfig {
+            agent_binary,
+            bridge_path: PathBuf::new(), // Legacy — not used by native dispatch
+            node: String::new(),
+            model: cli.model.clone(),
+            max_parallel,
+            timeout_secs: timeout,
+            idle_timeout_secs: idle_timeout,
+            max_turns,
+            route_decisions: std::collections::BTreeMap::new(),
+            inventory: None,
+            inherited_env: agent_setup.session_secret_env.clone(),
+            injected_env: Vec::new(),
+            child_runtime: crate::cleave::CleaveChildRuntimeProfile::default(),
+            progress_sink: cleave::progress::stdout_progress_sink(),
+            workflow,
+            sandbox: false, // CLI cleave — no settings context, sandbox opt-in via TUI only
+            dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
+        }
+    });
 
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();

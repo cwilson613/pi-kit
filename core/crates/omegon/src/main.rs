@@ -8860,7 +8860,36 @@ async fn run_bounded_task(
         omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
         omegon_traits::OmegonAutonomyMode::OperatorDriven,
     );
-    agent.conversation.push_user(prompt_text);
+    let session_snapshot = session::sessions_dir(&agent.cwd)
+        .ok_or_else(|| anyhow::anyhow!("cannot determine bounded session directory"))?
+        .join(format!("{}.json", agent.session_id));
+    let authority = session_authority::SessionAuthority::open(
+        &session_snapshot,
+        &agent.session_id,
+        &agent.workspace_state.lease.workspace_id,
+        &agent.instance_id,
+        session_authority::ActorIdentity {
+            principal: "bounded-runner".into(),
+            ingress: "bounded".into(),
+        },
+        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    )?;
+    let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority)?;
+    let prompt_id = supervisor.admit_prompt(
+        prompt_text,
+        Vec::new(),
+        RuntimeActor::from_submission("bounded-runner".into(), "bounded"),
+        ControlSurface::Bounded,
+        operator_commands::PromptMetadata::default(),
+        Some(QueueMode::UntilReady),
+    )?;
+    let active = supervisor
+        .start_next_turn()?
+        .ok_or_else(|| anyhow::anyhow!("bounded session did not promote its admitted prompt"))?;
+    if active.prompt.id != prompt_id {
+        anyhow::bail!("bounded session recovered older queued work before the requested prompt");
+    }
+    agent.conversation.push_user(active.prompt.text);
 
     let loop_config = bootstrap::build_loop_config(
         &shared_settings,
@@ -8931,6 +8960,25 @@ async fn run_bounded_task(
     )
     .await;
 
+    let timed_out = cancel.is_cancelled();
+    if timed_out && let Some(identity) = supervisor.current_identity() {
+        supervisor.request_durable_interrupt_with_reason(
+            identity,
+            RuntimeActor::from_submission("bounded-timeout".into(), "bounded"),
+            ControlSurface::Bounded,
+            session_authority::InterruptionKind::Revoke,
+            "wall_clock_timeout",
+        )?;
+    }
+    let authority_outcome = if timed_out {
+        RuntimeTurnOutcome::TimedOut
+    } else if loop_result.is_err() {
+        RuntimeTurnOutcome::Failed
+    } else {
+        RuntimeTurnOutcome::Completed
+    };
+    supervisor.close_durable_worker(authority_outcome)?;
+
     timeout_handle.abort();
     bridge.shutdown().await;
     drop(events_tx);
@@ -8959,23 +9007,21 @@ async fn run_bounded_task(
         .unwrap_or_default()
         .to_string();
 
-    let (status, error, exit_code) = match &loop_result {
-        Ok(()) => {
-            if cancel.is_cancelled() {
-                (
-                    "timeout".to_string(),
-                    Some("wall-clock timeout".to_string()),
-                    3,
-                )
-            } else {
-                ("completed".to_string(), None, 0)
-            }
-        }
-        Err(e) => {
-            if r#loop::is_upstream_exhausted(e) {
-                ("exhausted".to_string(), Some(e.to_string()), 2)
-            } else {
-                ("error".to_string(), Some(e.to_string()), 1)
+    let (status, error, exit_code) = if timed_out {
+        (
+            "timeout".to_string(),
+            Some("wall-clock timeout".to_string()),
+            3,
+        )
+    } else {
+        match &loop_result {
+            Ok(()) => ("completed".to_string(), None, 0),
+            Err(e) => {
+                if r#loop::is_upstream_exhausted(e) {
+                    ("exhausted".to_string(), Some(e.to_string()), 2)
+                } else {
+                    ("error".to_string(), Some(e.to_string()), 1)
+                }
             }
         }
     };

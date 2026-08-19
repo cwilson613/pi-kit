@@ -275,6 +275,23 @@ impl InteractiveRuntimeSupervisor {
         actor: RuntimeActor,
         via: ControlSurface,
     ) -> Result<InterruptAdmission, AuthorityError> {
+        self.request_durable_interrupt_with_reason(
+            identity,
+            actor,
+            via,
+            InterruptionKind::Cancel,
+            "operator_cancelled",
+        )
+    }
+
+    pub(crate) fn request_durable_interrupt_with_reason(
+        &mut self,
+        identity: RuntimeTurnIdentity,
+        actor: RuntimeActor,
+        via: ControlSurface,
+        kind: InterruptionKind,
+        reason_code: &str,
+    ) -> Result<InterruptAdmission, AuthorityError> {
         let Some(active) = self.turns.current() else {
             return Ok(InterruptAdmission::Idle);
         };
@@ -299,10 +316,10 @@ impl InteractiveRuntimeSupervisor {
                 TurnInterruptionRequested {
                     interruption_id: uuid::Uuid::new_v4(),
                     turn_id,
-                    kind: InterruptionKind::Cancel,
+                    kind,
                     principal: actor.display_label().to_string(),
                     ingress: via.label().to_string(),
-                    reason_code: "operator_cancelled".into(),
+                    reason_code: reason_code.into(),
                 },
             )?;
         }
@@ -469,6 +486,14 @@ mod tests {
     use super::*;
     use crate::runtime_prompt::RuntimeActorKind;
     use crate::session_authority::ActorIdentity;
+
+    #[test]
+    fn bounded_timeout_maps_to_durable_timeout() {
+        assert_eq!(
+            TurnOutcome::from(RuntimeTurnOutcome::TimedOut),
+            TurnOutcome::TimedOut
+        );
+    }
 
     #[test]
     fn durable_supervisor_commits_before_mutating_queue_and_turn_state() {

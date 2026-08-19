@@ -83,7 +83,10 @@ mod operator_commands;
 mod recro_coe_integration_tests;
 mod runtime_commands;
 mod runtime_composition;
+mod runtime_prompt;
 mod runtime_state;
+mod runtime_supervisor;
+mod runtime_turn;
 mod session_settings_commands;
 mod shadow_context;
 mod skills;
@@ -141,6 +144,8 @@ mod secret_cli;
 mod semantic_route;
 mod sentry;
 mod session;
+#[allow(dead_code)] // Slice 1.2 substrate; durable ingress wiring begins in Slice 1.4.
+mod session_authority;
 mod session_router;
 pub mod settings;
 mod setup;
@@ -164,6 +169,12 @@ pub mod sandbox_runtime;
 use anyhow::Context;
 use bridge::LlmBridge;
 use omegon_traits::AgentEvent;
+use runtime_prompt::{ControlSurface, PromptEnvelope, QueueMode, RuntimeActor, RuntimeActorKind};
+use runtime_supervisor::InteractiveRuntimeSupervisor;
+use runtime_turn::{
+    ActiveTurnMeta, InterruptAdmission, RuntimeTurnIdentity, RuntimeTurnLifecycle,
+    RuntimeTurnOutcome,
+};
 use tokio::sync::oneshot;
 
 /// Short version: `0.14.0 (3a4b5c6 2026-03-21)`
@@ -6139,7 +6150,7 @@ fn build_tui_secret_readiness_snapshot(
                     tracing::info!(
                         prompt_id,
                         queue_depth = runtime.queue_depth(),
-                        active_turn_id = runtime.active_turn.as_ref().map(|active| active.runtime_turn_id),
+                        active_turn_id = runtime.active_turn_id(),
                         submitted_by = prompt.submitted_by,
                         via = prompt.via,
                         "prompt queued behind active interactive turn"
@@ -6338,7 +6349,7 @@ fn build_tui_secret_readiness_snapshot(
                                             crate::operator_commands::PromptQueueMode::Immediate => QueueMode::Immediate,
                                         }));
                                         emit_runtime_queue_notification(&runtime, &events_tx, prompt_id);
-                                        if let Some(queued_prompt) = runtime.queue.iter().find(|queued| queued.id == prompt_id)
+                                        if let Some(queued_prompt) = runtime.queued_prompt(prompt_id)
                                             && queued_prompt.requests_voice_close()
                                         {
                                             let _ = events_tx.send(AgentEvent::SystemNotification {
@@ -6730,8 +6741,8 @@ fn provider_status_hint(provider: &str) -> &'static str {
     }
 }
 
-// Keep coordinator items in the binary composition module for now; the source is
-// isolated so its dependency boundary can be tightened incrementally.
+// Keep coordinator orchestration in the binary composition module while runtime
+// prompt and turn authority live in the compiled frontend-neutral supervisor.
 include!("interactive_coordinator.rs");
 
 async fn run_smoke_command(cli: &Cli) -> anyhow::Result<()> {
@@ -9195,6 +9206,7 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::conversation::ConversationState;
+    use crate::runtime_turn::ActiveTurnPhase;
     use clap::CommandFactory;
     use tempfile::tempdir;
 
@@ -9753,7 +9765,7 @@ mod tests {
         );
         let active = supervisor.maybe_start_next_turn().expect("active turn");
         let stale = RuntimeTurnIdentity {
-            session_epoch: supervisor.session_epoch,
+            session_epoch: supervisor.session_epoch(),
             runtime_turn_id: active.runtime_turn_id + 1,
         };
 
@@ -9762,7 +9774,7 @@ mod tests {
             InterruptAdmission::Stale
         );
         assert!(matches!(
-            supervisor.active_turn.as_ref().unwrap().phase,
+            supervisor.active_turn().unwrap().phase,
             ActiveTurnPhase::Running
         ));
     }
@@ -9842,7 +9854,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            supervisor.active_turn.as_ref().unwrap().runtime_turn_id,
+            supervisor.active_turn().unwrap().runtime_turn_id,
             second.runtime_turn_id
         );
     }

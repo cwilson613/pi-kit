@@ -38,7 +38,7 @@ mod tests {
     fn preparation_preserves_promoted_turn_identity() {
         let mut runtime = InteractiveRuntimeSupervisor::default();
         let active =
-            match runtime.submit(RuntimePromptSubmission::from_tui(tui::PromptSubmission {
+            match runtime.submit(RuntimePromptSubmission::from_submission(tui::PromptSubmission {
                 text: "startup contract".into(),
                 image_paths: vec!["image.png".into()],
                 submitted_by: "operator".into(),

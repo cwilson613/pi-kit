@@ -15,16 +15,16 @@ Definition of done for every group: classify documentation impact before impleme
 - [x] 0.6a Add inert contribution disable/quarantine, session quarantine, stale-record pruning, and maintenance audit workflows.
 - [x] 0.6b Integrate vetted offline Sigstore bundle-v0.3 verification, compiled Fulcio/Rekor trust roots, signed-checkpoint/SET/inclusion-proof validation, and the release fixture matrix before enabling `release verify`.
 - [x] 0.7 Integrate and test deny/exclusion locks in every normal contribution startup path, session-deny locks in every resume path, and v1 ownership-record writers.
-- [ ] 0.8 Package and launch-test source, linked-development, direct-install, platform archive, Homebrew, Nix, and OCI paths supported by the repository.
-- [ ] 0.9 Prove startup with TUI, default loop, project config/plugins, extension runtime, MCP, mutable packs, memory, lifecycle, and orchestration absent.
-- [ ] 0.10 Co-deliver maintenance architecture/operator docs, public install/recovery pages, canonical command snippets, and site validation with the artifact.
+- [x] 0.8 Package and launch-test source, linked-development, direct-install, platform archive, Homebrew, Nix, and OCI paths supported by the repository.
+- [x] 0.9 Prove startup with TUI, default loop, project config/plugins, extension runtime, MCP, mutable packs, memory, lifecycle, and orchestration absent.
+- [x] 0.10 Co-deliver maintenance architecture/operator docs, public install/recovery pages, canonical command snippets, and site validation with the artifact.
 
 ## 1. Minimum durable session authority
 <!-- specs: kernel-composition/documentation, runtime-session/authority -->
 
-- [ ] 1.1 Approve the minimum semantic event vocabulary, sequence/version rules, and compatibility policy.
-- [ ] 1.2 Add durable prompt, queue, turn, cancellation, invocation, and terminal facts plus snapshot reconstruction.
-- [ ] 1.3 Refactor the existing supervisor scaffold into one frontend-neutral compiled implementation instantiated once per session.
+- [x] 1.1 Approve the minimum semantic event vocabulary, sequence/version rules, and compatibility policy.
+- [x] 1.2 Add the approved adjacent authority stream, strict reducer/cache, and durable prompt, queue, turn, interruption, minimum invocation, recovery, and terminal facts.
+- [x] 1.3 Refactor the existing supervisor scaffold into one frontend-neutral compiled implementation instantiated once per session. Documentation impact: internal architecture only; no public commands, site pages, or snippets changed.
 - [ ] 1.4 Route interactive, ACP, daemon, Web/IPC, and bounded ingress through the owning session supervisor where semantics overlap.
 - [ ] 1.5 Add a compatibility adapter that submits loop terminal/session intents to the kernel state machine; complete loop reduction in Slice 4.
 - [ ] 1.6 Add lost/coalesced event, restart, cursor, second-turn, cancellation, and exactly-once terminal regressions.
@@ -67,7 +67,7 @@ Definition of done for every group: classify documentation impact before impleme
 <!-- specs: kernel-composition/documentation, runtime-session/authority -->
 
 - [ ] 5.1 Extend minimum supervisor facts with model-context provenance, route/schema generations, assistant stream/message, tool calls/results, and step boundaries.
-- [ ] 5.2 Define crash/interruption closure, schema evolution, unknown-event, and replay behavior.
+- [ ] 5.2 Extend the Slice-1 compatibility and recovery rules for full-spine context, route, assistant, tool, step, compaction, and projection events without redefining baseline authority semantics.
 - [ ] 5.3 Derive provider history, transcripts, frontend snapshots, and compaction checkpoints from semantic events.
 - [ ] 5.4 Migrate whole-file session snapshots, metadata checkpoints, narrative journal, and audit consumers without conflating their existing authority.
 - [ ] 5.5 Add late, lagged, disconnected, restarted, and corrupted-consumer recovery fixtures.

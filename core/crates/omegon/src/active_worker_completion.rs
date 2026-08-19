@@ -32,7 +32,7 @@ mod tests {
     fn completion_clears_active_turn_before_next_promotion() {
         let mut runtime = InteractiveRuntimeSupervisor::default();
         let active =
-            match runtime.submit(RuntimePromptSubmission::from_tui(tui::PromptSubmission {
+            match runtime.submit(RuntimePromptSubmission::from_submission(tui::PromptSubmission {
                 text: "first".into(),
                 image_paths: Vec::new(),
                 submitted_by: "operator".into(),
@@ -46,7 +46,7 @@ mod tests {
                 }
             };
 
-        runtime.submit(RuntimePromptSubmission::from_tui(tui::PromptSubmission {
+        runtime.submit(RuntimePromptSubmission::from_submission(tui::PromptSubmission {
             text: "second".into(),
             image_paths: Vec::new(),
             submitted_by: "operator".into(),

@@ -4,7 +4,7 @@
 //! and how the supervisor should queue it. They deliberately contain no I/O or
 //! supervisor loop policy.
 
-use crate::tui;
+use crate::operator_commands;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
@@ -109,11 +109,11 @@ pub(crate) enum QueueMode {
 }
 
 impl QueueMode {
-    pub(crate) fn from_tui(mode: tui::PromptQueueMode) -> Self {
+    pub(crate) fn from_submission(mode: operator_commands::PromptQueueMode) -> Self {
         match mode {
-            tui::PromptQueueMode::InterruptAfterTurn => Self::InterruptAfterTurn,
-            tui::PromptQueueMode::UntilReady => Self::UntilReady,
-            tui::PromptQueueMode::Immediate => Self::Immediate,
+            operator_commands::PromptQueueMode::InterruptAfterTurn => Self::InterruptAfterTurn,
+            operator_commands::PromptQueueMode::UntilReady => Self::UntilReady,
+            operator_commands::PromptQueueMode::Immediate => Self::Immediate,
         }
     }
 
@@ -140,45 +140,50 @@ pub(crate) struct RuntimePromptSubmission {
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) actor: RuntimeActor,
     pub(crate) via: ControlSurface,
-    pub(crate) metadata: tui::PromptMetadata,
+    pub(crate) metadata: operator_commands::PromptMetadata,
     pub(crate) queue_mode: QueueMode,
 }
 
 impl RuntimePromptSubmission {
-    pub(crate) fn from_tui(submission: tui::PromptSubmission) -> Self {
+    pub(crate) fn from_submission(submission: operator_commands::PromptSubmission) -> Self {
         Self {
             text: submission.text,
             image_paths: submission.image_paths,
             actor: RuntimeActor::from_submission(submission.submitted_by, submission.via),
             via: ControlSurface::from_via(submission.via),
             metadata: submission.metadata,
-            queue_mode: QueueMode::from_tui(submission.queue_mode),
+            queue_mode: QueueMode::from_submission(submission.queue_mode),
         }
     }
 
-    pub(crate) fn from_voice(text: String, metadata: tui::VoicePromptMetadata) -> Self {
-        Self::from_tui(tui::PromptSubmission {
+    pub(crate) fn from_voice(
+        text: String,
+        metadata: operator_commands::VoicePromptMetadata,
+    ) -> Self {
+        Self::from_submission(operator_commands::PromptSubmission {
             text: format!("🎙 {}", text.trim()),
             image_paths: Vec::new(),
             submitted_by: "voice".to_string(),
             via: "voice",
-            queue_mode: tui::PromptQueueMode::UntilReady,
-            metadata: tui::PromptMetadata {
+            queue_mode: operator_commands::PromptQueueMode::UntilReady,
+            metadata: operator_commands::PromptMetadata {
                 voice: Some(metadata),
             },
         })
     }
 
-    pub(crate) fn into_tui(self) -> tui::PromptSubmission {
-        tui::PromptSubmission {
+    pub(crate) fn into_submission(self) -> operator_commands::PromptSubmission {
+        operator_commands::PromptSubmission {
             text: self.text,
             image_paths: self.image_paths,
             submitted_by: self.actor.label,
             via: self.via.label(),
             queue_mode: match self.queue_mode {
-                QueueMode::InterruptAfterTurn => tui::PromptQueueMode::InterruptAfterTurn,
-                QueueMode::UntilReady => tui::PromptQueueMode::UntilReady,
-                QueueMode::Immediate => tui::PromptQueueMode::Immediate,
+                QueueMode::InterruptAfterTurn => {
+                    operator_commands::PromptQueueMode::InterruptAfterTurn
+                }
+                QueueMode::UntilReady => operator_commands::PromptQueueMode::UntilReady,
+                QueueMode::Immediate => operator_commands::PromptQueueMode::Immediate,
             },
             metadata: self.metadata,
         }
@@ -192,7 +197,7 @@ pub(crate) struct PromptEnvelope {
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) submitted_by: RuntimeActor,
     pub(crate) via: ControlSurface,
-    pub(crate) metadata: tui::PromptMetadata,
+    pub(crate) metadata: operator_commands::PromptMetadata,
     pub(crate) queue_mode: QueueMode,
     pub(crate) queued_at: std::time::Instant,
 }
@@ -220,7 +225,7 @@ impl PromptQueue {
         image_paths: Vec<PathBuf>,
         actor: RuntimeActor,
         via: ControlSurface,
-        metadata: tui::PromptMetadata,
+        metadata: operator_commands::PromptMetadata,
         queue_mode: Option<QueueMode>,
     ) -> u64 {
         self.next_prompt_id += 1;
@@ -335,7 +340,7 @@ mod tests {
             vec![],
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         let second = queue.enqueue(
@@ -343,7 +348,7 @@ mod tests {
             vec![],
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             Some(QueueMode::InterruptAfterTurn),
         );
 
@@ -370,7 +375,7 @@ mod tests {
             vec![PathBuf::from("image.png")],
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             Some(QueueMode::InterruptAfterTurn),
         );
 
@@ -395,7 +400,7 @@ mod tests {
                 .collect(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             Some(QueueMode::Immediate),
         );
 

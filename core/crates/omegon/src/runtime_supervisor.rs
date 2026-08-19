@@ -6,12 +6,13 @@
 
 use std::path::PathBuf;
 
-use crate::AgentEvent;
 use crate::runtime_prompt::{
     ControlSurface, PromptEnvelope, PromptQueue, QueueMode, RuntimeActor, RuntimePromptSubmission,
 };
-use crate::runtime_turn::{ActiveTurnMeta, ActiveTurnState};
-use crate::tui;
+use crate::runtime_turn::{
+    ActiveTurnMeta, ActiveTurnState, InterruptAdmission, RuntimeTurnIdentity, RuntimeTurnOutcome,
+};
+use crate::{AgentEvent, operator_commands};
 use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,7 +68,7 @@ impl InteractiveRuntimeSupervisor {
         image_paths: Vec<PathBuf>,
         actor: RuntimeActor,
         via: ControlSurface,
-        metadata: crate::tui::PromptMetadata,
+        metadata: operator_commands::PromptMetadata,
         queue_mode: Option<QueueMode>,
     ) -> u64 {
         self.queue
@@ -76,6 +77,14 @@ impl InteractiveRuntimeSupervisor {
 
     pub(crate) fn active_turn_id(&self) -> Option<u64> {
         self.turns.current().map(|active| active.runtime_turn_id)
+    }
+
+    pub(crate) fn active_turn(&self) -> Option<&ActiveTurnMeta> {
+        self.turns.current()
+    }
+
+    pub(crate) fn session_epoch(&self) -> u64 {
+        self.turns.session_epoch()
     }
 
     pub(crate) fn queued_prompt(&self, prompt_id: u64) -> Option<&PromptEnvelope> {
@@ -126,6 +135,31 @@ impl InteractiveRuntimeSupervisor {
         self.turns.request_cancel(actor, via)
     }
 
+    pub(crate) fn current_identity(&self) -> Option<RuntimeTurnIdentity> {
+        self.turns.current_identity()
+    }
+
+    pub(crate) fn admit_interrupt(
+        &mut self,
+        identity: RuntimeTurnIdentity,
+        actor: RuntimeActor,
+        via: ControlSurface,
+    ) -> InterruptAdmission {
+        self.turns.admit_interrupt(identity, actor, via)
+    }
+
+    pub(crate) fn finish_active_turn(
+        &mut self,
+        runtime_turn_id: u64,
+        outcome: RuntimeTurnOutcome,
+    ) -> Option<ActiveTurnMeta> {
+        self.turns.finish(runtime_turn_id, outcome)
+    }
+
+    pub(crate) fn settle_active_worker(&mut self) -> Option<(ActiveTurnMeta, RuntimeTurnOutcome)> {
+        self.turns.settle_worker()
+    }
+
     pub(crate) fn complete_active_turn(&mut self) -> Option<ActiveTurnMeta> {
         self.turns.complete()
     }
@@ -138,7 +172,7 @@ impl InteractiveRuntimeSupervisor {
         self.queue.push_front(prompt);
     }
 
-    pub(crate) fn cancel_shared_turn(shared_cancel: &tui::SharedCancel) {
+    pub(crate) fn cancel_shared_turn(shared_cancel: &operator_commands::SharedCancel) {
         if let Ok(guard) = shared_cancel.lock()
             && let Some(ref cancel) = *guard
         {
@@ -148,7 +182,7 @@ impl InteractiveRuntimeSupervisor {
 
     pub(crate) fn handle_cancel_command(
         &mut self,
-        shared_cancel: &tui::SharedCancel,
+        shared_cancel: &operator_commands::SharedCancel,
         events_tx: &broadcast::Sender<AgentEvent>,
         submitted_by: String,
         via: &'static str,

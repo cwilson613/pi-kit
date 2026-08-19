@@ -30,6 +30,18 @@ Define the **runtime-owned supervision model** for interactive Omegon sessions s
 
 This document covers the **inner interactive/session runtime**, not outer process supervision. Auspex remains the outer supervisor for multi-instance orchestration.
 
+The in-memory compatibility implementation is compiled from the frontend-neutral
+`runtime_prompt.rs`, `runtime_turn.rs`, and `runtime_supervisor.rs` modules and is
+instantiated once by each interactive session. The coordinator now contains only
+orchestration helpers. The canonical turn state preserves stale-interrupt fencing,
+first-request cancellation identity, busy-until-worker-exit, and exactly-once
+terminal settlement without depending on TUI-owned prompt types.
+
+The approved durable successor is defined by
+[[runtime-session-semantic-protocol]]. Slice 1.4 connects shared ingress and the
+adjacent authority stream to this single supervisor; until then, its state remains
+an in-memory compatibility authority.
+
 ---
 
 ## Layering
@@ -203,7 +215,7 @@ struct PromptEnvelope {
 
 Initial queue policy is deliberately simple:
 - FIFO
-- in-memory only
+- currently in-memory; Slice 1 persists admission and queue state before projection
 - no overwrite
 - no dedupe
 - no priority tiers

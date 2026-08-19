@@ -97,7 +97,7 @@ pub(crate) fn interpret(
 pub(crate) fn classify(command: tui::TuiCommand) -> ActiveWorkerCommand {
     match command {
         tui::TuiCommand::SubmitPrompt(prompt) => {
-            ActiveWorkerCommand::Submit(RuntimePromptSubmission::from_tui(prompt))
+            ActiveWorkerCommand::Submit(RuntimePromptSubmission::from_submission(prompt))
         }
         tui::TuiCommand::VoicePrompt { text, metadata } => {
             ActiveWorkerCommand::Submit(RuntimePromptSubmission::from_voice(text, metadata))
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn apply_submission_returns_queue_effect_and_voice_close_policy() {
         let mut runtime = InteractiveRuntimeSupervisor::default();
-        runtime.submit(RuntimePromptSubmission::from_tui(tui::PromptSubmission {
+        runtime.submit(RuntimePromptSubmission::from_submission(tui::PromptSubmission {
             text: "active".into(),
             image_paths: Vec::new(),
             submitted_by: "operator".into(),

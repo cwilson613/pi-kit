@@ -18,6 +18,27 @@ pub(crate) enum ActiveTurnPhase {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimeTurnIdentity {
+    pub(crate) session_epoch: u64,
+    pub(crate) runtime_turn_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InterruptAdmission {
+    Admitted,
+    Duplicate,
+    Stale,
+    Idle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeTurnOutcome {
+    Completed,
+    Revoked,
+    Failed,
+}
+
 impl ActiveTurnPhase {
     pub(crate) fn label(&self) -> &'static str {
         match self {
@@ -124,6 +145,7 @@ impl RuntimeTurnLifecycle {
 #[derive(Debug, Default)]
 pub(crate) struct ActiveTurnState {
     active: Option<ActiveTurnMeta>,
+    session_epoch: u64,
     next_runtime_turn_id: u64,
 }
 
@@ -134,6 +156,10 @@ impl ActiveTurnState {
 
     pub(crate) fn is_busy(&self) -> bool {
         self.active.is_some()
+    }
+
+    pub(crate) fn session_epoch(&self) -> u64 {
+        self.session_epoch
     }
 
     pub(crate) fn start(&mut self, prompt: PromptEnvelope) -> Option<ActiveTurnMeta> {
@@ -156,18 +182,74 @@ impl ActiveTurnState {
         actor: RuntimeActor,
         via: ControlSurface,
     ) -> Option<&ActiveTurnMeta> {
-        let active = self.active.as_mut()?;
-        if matches!(active.phase, ActiveTurnPhase::Running) {
-            active.phase = ActiveTurnPhase::Cancelling {
-                requested_by: actor,
-                via,
-            };
-        }
+        let identity = self.current_identity()?;
+        let _ = self.admit_interrupt(identity, actor, via);
         self.active.as_ref()
     }
 
-    pub(crate) fn complete(&mut self) -> Option<ActiveTurnMeta> {
+    pub(crate) fn current_identity(&self) -> Option<RuntimeTurnIdentity> {
+        self.active.as_ref().map(|active| RuntimeTurnIdentity {
+            session_epoch: self.session_epoch,
+            runtime_turn_id: active.runtime_turn_id,
+        })
+    }
+
+    pub(crate) fn admit_interrupt(
+        &mut self,
+        identity: RuntimeTurnIdentity,
+        actor: RuntimeActor,
+        via: ControlSurface,
+    ) -> InterruptAdmission {
+        let Some(active) = self.active.as_mut() else {
+            return InterruptAdmission::Idle;
+        };
+        if identity.session_epoch != self.session_epoch
+            || identity.runtime_turn_id != active.runtime_turn_id
+        {
+            return InterruptAdmission::Stale;
+        }
+        if matches!(active.phase, ActiveTurnPhase::Cancelling { .. }) {
+            return InterruptAdmission::Duplicate;
+        }
+        active.phase = ActiveTurnPhase::Cancelling {
+            requested_by: actor,
+            via,
+        };
+        InterruptAdmission::Admitted
+    }
+
+    pub(crate) fn finish(
+        &mut self,
+        runtime_turn_id: u64,
+        outcome: RuntimeTurnOutcome,
+    ) -> Option<ActiveTurnMeta> {
+        let active = self.active.as_ref()?;
+        if active.runtime_turn_id != runtime_turn_id {
+            return None;
+        }
+        if outcome == RuntimeTurnOutcome::Completed
+            && matches!(active.phase, ActiveTurnPhase::Cancelling { .. })
+        {
+            return None;
+        }
         self.active.take()
+    }
+
+    pub(crate) fn settle_worker(&mut self) -> Option<(ActiveTurnMeta, RuntimeTurnOutcome)> {
+        let active = self.active.as_ref()?;
+        let runtime_turn_id = active.runtime_turn_id;
+        let outcome = if matches!(active.phase, ActiveTurnPhase::Cancelling { .. }) {
+            RuntimeTurnOutcome::Revoked
+        } else {
+            RuntimeTurnOutcome::Completed
+        };
+        self.finish(runtime_turn_id, outcome)
+            .map(|active| (active, outcome))
+    }
+
+    pub(crate) fn complete(&mut self) -> Option<ActiveTurnMeta> {
+        let runtime_turn_id = self.active.as_ref()?.runtime_turn_id;
+        self.finish(runtime_turn_id, RuntimeTurnOutcome::Completed)
     }
 }
 
@@ -184,7 +266,7 @@ mod tests {
             image_paths: Vec::<PathBuf>::new(),
             submitted_by: RuntimeActor::tui(),
             via: ControlSurface::Tui,
-            metadata: crate::tui::PromptMetadata::default(),
+            metadata: crate::operator_commands::PromptMetadata::default(),
             queue_mode: QueueMode::UntilReady,
             queued_at: Instant::now(),
         }

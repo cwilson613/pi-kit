@@ -2530,15 +2530,12 @@ async fn run_embedded_command(
     {
         let ipc_cfg =
             ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"), &agent.session_id);
-        let shared_cancel: operator_commands::SharedCancel =
-            Arc::new(std::sync::Mutex::new(Some(global_cancel.clone())));
         ipc::start_ipc_server(
             ipc_cfg,
             agent.dashboard_handles.clone(),
             events_tx.clone(),
             ipc_cmd_tx,
             shared_settings.clone(),
-            shared_cancel,
             ipc_cancel.clone(),
         );
     }
@@ -3002,6 +2999,11 @@ async fn run_embedded_command(
                                 Ok(())
                             },
                         );
+                    }
+                    Some(operator_commands::OperatorCommand::CancelActiveTurn { .. }) => {
+                        // Preserve the legacy daemon cancellation behavior until
+                        // the daemon session adopts the shared turn supervisor.
+                        global_cancel.cancel();
                     }
                     Some(operator_commands::OperatorCommand::Quit { confirmed: true }) => {
                         tracing::info!("daemon: confirmed IPC shutdown requested");
@@ -4618,7 +4620,6 @@ fn build_tui_secret_readiness_snapshot(
             events_tx.clone(),
             ipc_command_tx,
             shared_settings.clone(),
-            shared_cancel.clone(),
             ipc_cancel.clone(),
         );
     }

@@ -30,7 +30,7 @@ use tracing::{debug, info, warn};
 
 use omegon_traits::{AgentEvent, IpcEnvelope, IpcErrorCode};
 
-use crate::operator_commands::{OperatorCommand as TuiCommand, SharedCancel};
+use crate::operator_commands::OperatorCommand as TuiCommand;
 use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
 
 use connection::{ConnectionConfig, IpcConnection};
@@ -74,20 +74,10 @@ pub fn start_ipc_server(
     events_tx: broadcast::Sender<AgentEvent>,
     command_tx: mpsc::Sender<TuiCommand>,
     shared_settings: crate::settings::SharedSettings,
-    shared_cancel: SharedCancel,
     cancel: CancellationToken,
 ) {
     crate::task_spawn::spawn_infra("ipc-server", async move {
-        run_server(
-            cfg,
-            handles,
-            events_tx,
-            command_tx,
-            shared_settings,
-            shared_cancel,
-            cancel,
-        )
-        .await
+        run_server(cfg, handles, events_tx, command_tx, shared_settings, cancel).await
     });
 }
 
@@ -97,7 +87,6 @@ async fn run_server(
     events_tx: broadcast::Sender<AgentEvent>,
     command_tx: mpsc::Sender<TuiCommand>,
     shared_settings: crate::settings::SharedSettings,
-    shared_cancel: SharedCancel,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     // Clean up stale socket file from a previous run.
@@ -152,7 +141,6 @@ async fn run_server(
                                     events_tx: events_tx.clone(),
                                     command_tx: command_tx.clone(),
                                     shared_settings: shared_settings.clone(),
-                                    shared_cancel: shared_cancel.clone(),
                                     has_controller: has_controller.clone(),
                                 },
                             );

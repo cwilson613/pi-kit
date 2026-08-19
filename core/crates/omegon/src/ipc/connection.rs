@@ -22,7 +22,7 @@ use omegon_traits::{
 
 use super::snapshot::build_state_snapshot;
 use super::wire::{decode_envelope, encode_envelope, read_frame};
-use crate::operator_commands::{OperatorCommand as TuiCommand, SharedCancel};
+use crate::operator_commands::OperatorCommand as TuiCommand;
 use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
 
 fn parse_caller_role(raw: Option<&str>) -> crate::control_actions::ControlRole {
@@ -44,7 +44,6 @@ pub struct ConnectionConfig {
     pub events_tx: broadcast::Sender<AgentEvent>,
     pub command_tx: mpsc::Sender<TuiCommand>,
     pub shared_settings: crate::settings::SharedSettings,
-    pub shared_cancel: SharedCancel,
     /// Cleared to `false` when this connection closes.
     pub has_controller: Arc<AtomicBool>,
 }
@@ -246,22 +245,6 @@ impl IpcConnection {
                         .await;
                         continue;
                     }
-                    let turn_busy = cfg
-                        .handles
-                        .session()
-                        .observe()
-                        .map(|session| session.busy)
-                        .unwrap_or(true);
-                    if turn_busy {
-                        send_error(
-                            &out_tx,
-                            req_id,
-                            IpcErrorCode::TurnInProgress,
-                            "the agent is still processing or unwinding the current turn",
-                        )
-                        .await;
-                        continue;
-                    }
                     let accepted = cfg
                         .command_tx
                         .send(TuiCommand::SubmitPrompt(
@@ -300,14 +283,14 @@ impl IpcConnection {
                         .await;
                         continue;
                     }
-                    let accepted = if let Ok(guard) = cfg.shared_cancel.lock()
-                        && let Some(ref cancel) = *guard
-                    {
-                        cancel.cancel();
-                        true
-                    } else {
-                        false
-                    };
+                    let accepted = cfg
+                        .command_tx
+                        .send(TuiCommand::CancelActiveTurn {
+                            submitted_by: "ipc-controller".to_string(),
+                            via: "ipc",
+                        })
+                        .await
+                        .is_ok();
                     send_response(
                         &out_tx,
                         req_id,

@@ -6,6 +6,7 @@
 //! responsive (streaming, cancel, notifications).
 
 use omegon_traits::Feature;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -272,6 +273,38 @@ pub fn spawn_worker(
     }
 }
 
+async fn await_turn_with_control<F>(
+    turn: F,
+    request_rx: &mut mpsc::Receiver<WorkerRequest>,
+    event_tx: &tokio::sync::broadcast::Sender<WorkerEvent>,
+    cancel: &CancellationToken,
+    deferred_requests: &mut VecDeque<WorkerRequest>,
+    request_channel_open: &mut bool,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    tokio::pin!(turn);
+    loop {
+        tokio::select! {
+            result = &mut turn => break result,
+            request = request_rx.recv(), if *request_channel_open => match request {
+                Some(WorkerRequest::Cancel) => {
+                    cancel.cancel();
+                    let _ = event_tx.send(WorkerEvent::TurnCancelled {
+                        reason: "operator_cancelled".to_string(),
+                    });
+                }
+                Some(request) => deferred_requests.push_back(request),
+                None => {
+                    *request_channel_open = false;
+                    cancel.cancel();
+                }
+            }
+        }
+    }
+}
+
 /// The worker's main loop — runs on a dedicated thread with its own runtime.
 #[allow(clippy::too_many_arguments)]
 async fn worker_loop(
@@ -345,9 +378,19 @@ async fn worker_loop(
     let host_ctx_arc = host_ctx.map(std::sync::Arc::new);
     tracing::info!(model = %model, "ACP worker ready");
     let mut first_prompt = true;
+    let mut deferred_requests = VecDeque::new();
+    let mut request_channel_open = true;
 
     // Process requests
-    while let Some(req) = request_rx.recv().await {
+    loop {
+        let req = match deferred_requests.pop_front() {
+            Some(request) => request,
+            None if request_channel_open => match request_rx.recv().await {
+                Some(request) => request,
+                None => break,
+            },
+            None => break,
+        };
         match req {
             WorkerRequest::Prompt { text, response_tx } => {
                 if first_prompt {
@@ -578,14 +621,21 @@ async fn worker_loop(
                     drain_post_loop_requests: false,
                 };
 
-                let result = crate::r#loop::run(
-                    bridge.as_ref(),
-                    &mut bus,
-                    &mut context_manager,
-                    &mut conversation,
-                    &loop_events_tx,
-                    cancel.clone(),
-                    &loop_config,
+                let result = await_turn_with_control(
+                    crate::r#loop::run(
+                        bridge.as_ref(),
+                        &mut bus,
+                        &mut context_manager,
+                        &mut conversation,
+                        &loop_events_tx,
+                        cancel.clone(),
+                        &loop_config,
+                    ),
+                    &mut request_rx,
+                    &event_tx,
+                    &cancel,
+                    &mut deferred_requests,
+                    &mut request_channel_open,
                 )
                 .await;
 
@@ -1517,6 +1567,42 @@ mod command_safety_tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    #[tokio::test]
+    async fn active_turn_receives_cancel_without_waiting_for_turn_completion() {
+        let (request_tx, mut request_rx) = mpsc::channel(1);
+        let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(2);
+        let cancel = CancellationToken::new();
+        let observed_cancel = cancel.clone();
+        let mut deferred = VecDeque::new();
+        let mut channel_open = true;
+        request_tx.send(WorkerRequest::Cancel).await.unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            await_turn_with_control(
+                async move {
+                    observed_cancel.cancelled().await;
+                    "cancelled"
+                },
+                &mut request_rx,
+                &event_tx,
+                &cancel,
+                &mut deferred,
+                &mut channel_open,
+            ),
+        )
+        .await
+        .expect("cancel must reach an active turn");
+
+        assert_eq!(result, "cancelled");
+        assert!(cancel.is_cancelled());
+        assert!(deferred.is_empty());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(WorkerEvent::TurnCancelled { reason }) if reason == "operator_cancelled"
+        ));
+    }
 
     struct TestCommandFeature {
         definition: CommandDefinition,

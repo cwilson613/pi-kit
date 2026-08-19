@@ -778,6 +778,187 @@ pub(crate) fn reconstruct(facts: &[SessionFact]) -> Result<SessionAuthorityState
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct SessionAuthority {
+    store: SessionAuthorityStore,
+    state: SessionAuthorityState,
+    session_id: String,
+    stream_id: Uuid,
+    runtime_generation_id: String,
+}
+
+impl SessionAuthority {
+    pub(crate) fn open(
+        session_snapshot: &Path,
+        session_id: impl Into<String>,
+        workspace_identity: impl Into<String>,
+        runtime_generation_id: impl Into<String>,
+        created_by: ActorIdentity,
+        recorded_at: &str,
+    ) -> Result<Self> {
+        let session_id = session_id.into();
+        let workspace_identity = workspace_identity.into();
+        let runtime_generation_id = runtime_generation_id.into();
+        let store = SessionAuthorityStore::adjacent_to(session_snapshot)?;
+        let mut state = store.recover(recorded_at)?;
+
+        if state.last_sequence == 0 {
+            let stream_id = Uuid::new_v4();
+            let payload = SessionFactPayload::SessionCreated(SessionCreated {
+                workspace_identity: workspace_identity.clone(),
+                created_by,
+                runtime_generation_id: runtime_generation_id.clone(),
+            });
+            append_payload(
+                &store,
+                &mut state,
+                &session_id,
+                stream_id,
+                Uuid::new_v4(),
+                recorded_at,
+                payload,
+            )?;
+        }
+
+        if state.session_id.as_deref() != Some(session_id.as_str()) {
+            return Err(AuthorityError::Invalid(
+                "authority stream belongs to a different session".into(),
+            ));
+        }
+        if state.workspace_identity.as_deref() != Some(workspace_identity.as_str()) {
+            return Err(AuthorityError::Invalid(
+                "authority stream belongs to a different workspace".into(),
+            ));
+        }
+        let stream_id = state
+            .stream_id
+            .ok_or_else(|| AuthorityError::Invalid("authority stream has no identity".into()))?;
+
+        Ok(Self {
+            store,
+            state,
+            session_id,
+            stream_id,
+            runtime_generation_id,
+        })
+    }
+
+    pub(crate) fn state(&self) -> &SessionAuthorityState {
+        &self.state
+    }
+
+    pub(crate) fn admit_prompt(
+        &mut self,
+        command_id: Uuid,
+        recorded_at: &str,
+        admission: PromptAdmitted,
+    ) -> Result<bool> {
+        self.append(
+            command_id,
+            recorded_at,
+            SessionFactPayload::PromptAdmitted(admission),
+        )
+    }
+
+    pub(crate) fn start_turn(
+        &mut self,
+        command_id: Uuid,
+        recorded_at: &str,
+        turn_id: Uuid,
+        prompt_id: Uuid,
+    ) -> Result<bool> {
+        let runtime_generation_id = self.runtime_generation_id.clone();
+        self.append(
+            command_id,
+            recorded_at,
+            SessionFactPayload::TurnStarted(TurnStarted {
+                turn_id,
+                prompt_id,
+                runtime_generation_id,
+            }),
+        )
+    }
+
+    pub(crate) fn request_interruption(
+        &mut self,
+        command_id: Uuid,
+        recorded_at: &str,
+        request: TurnInterruptionRequested,
+    ) -> Result<bool> {
+        self.append(
+            command_id,
+            recorded_at,
+            SessionFactPayload::TurnInterruptionRequested(request),
+        )
+    }
+
+    pub(crate) fn close_turn(
+        &mut self,
+        command_id: Uuid,
+        recorded_at: &str,
+        closure: TurnClosed,
+    ) -> Result<bool> {
+        self.append(
+            command_id,
+            recorded_at,
+            SessionFactPayload::TurnClosed(closure),
+        )
+    }
+
+    fn append(
+        &mut self,
+        command_id: Uuid,
+        recorded_at: &str,
+        payload: SessionFactPayload,
+    ) -> Result<bool> {
+        append_payload(
+            &self.store,
+            &mut self.state,
+            &self.session_id,
+            self.stream_id,
+            command_id,
+            recorded_at,
+            payload,
+        )
+    }
+}
+
+fn append_payload(
+    store: &SessionAuthorityStore,
+    state: &mut SessionAuthorityState,
+    session_id: &str,
+    stream_id: Uuid,
+    command_id: Uuid,
+    recorded_at: &str,
+    payload: SessionFactPayload,
+) -> Result<bool> {
+    let sequence = state
+        .last_sequence
+        .checked_add(1)
+        .ok_or_else(|| AuthorityError::Invalid("authority sequence overflow".into()))?;
+    let fingerprint = command_fingerprint(&payload)?;
+    let mut fact = SessionFact::new(
+        session_id,
+        stream_id,
+        sequence,
+        command_id,
+        fingerprint,
+        recorded_at,
+        payload,
+    );
+    fact.causation_event_id = state.last_event_id;
+    store.append(state, &fact)
+}
+
+fn command_fingerprint(payload: &SessionFactPayload) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"omegon-session-command-v1\0");
+    hasher.update(payload.event_type().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(serde_json::to_vec(&payload.to_value()?)?);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct SessionAuthorityStore {
     log_path: PathBuf,
     snapshot_path: PathBuf,
@@ -838,8 +1019,7 @@ impl SessionAuthorityStore {
             .map_err(|error| AuthorityError::Invalid(error.to_string()))?;
         let durable = reconstruct(&read_facts(&self.log_path)?)?;
         if let Some(receipt) = durable.command_receipts.get(&fact.command_id) {
-            if receipt.fingerprint == fact.command_fingerprint && receipt.event_id == fact.event_id
-            {
+            if receipt.fingerprint == fact.command_fingerprint {
                 *state = durable;
                 return Ok(false);
             }
@@ -1517,14 +1697,120 @@ mod tests {
         assert!(!store.append(&mut state, &admission).unwrap());
         assert_eq!(state.last_sequence, 2);
 
+        let mut retry = admission.clone();
+        retry.event_id = Uuid::new_v4();
+        assert!(!store.append(&mut state, &retry).unwrap());
+
         let mut conflict = admission.clone();
-        conflict.event_id = Uuid::new_v4();
+        conflict.command_fingerprint = fingerprint("different-command");
         assert!(
             store
                 .append(&mut state, &conflict)
                 .unwrap_err()
                 .to_string()
                 .contains("conflicting event or fingerprint")
+        );
+    }
+
+    #[test]
+    fn session_authority_commits_typed_transitions_and_reopens_at_same_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_path = temp.path().join("session-1.json");
+        let actor = ActorIdentity {
+            principal: "operator".into(),
+            ingress: "tui".into(),
+        };
+        let mut authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-1",
+            actor,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(authority.state().last_sequence, 1);
+
+        let prompt_id = Uuid::new_v4();
+        let admission_command = Uuid::new_v4();
+        let admission = PromptAdmitted {
+            submission_id: Uuid::new_v4(),
+            prompt_id,
+            principal: "operator".into(),
+            ingress: "tui".into(),
+            queue_mode: QueueMode::UntilReady,
+            content: PromptContent {
+                text: "inspect the workspace".into(),
+                attachments: Vec::new(),
+            },
+            metadata: serde_json::json!({}),
+        };
+        assert!(
+            authority
+                .admit_prompt(admission_command, NOW, admission.clone())
+                .unwrap()
+        );
+        assert!(
+            !authority
+                .admit_prompt(admission_command, NOW, admission)
+                .unwrap()
+        );
+
+        let turn_id = Uuid::new_v4();
+        assert!(
+            authority
+                .start_turn(Uuid::new_v4(), NOW, turn_id, prompt_id)
+                .unwrap()
+        );
+        assert!(
+            authority
+                .request_interruption(
+                    Uuid::new_v4(),
+                    NOW,
+                    TurnInterruptionRequested {
+                        interruption_id: Uuid::new_v4(),
+                        turn_id,
+                        kind: InterruptionKind::Cancel,
+                        principal: "operator".into(),
+                        ingress: "ipc".into(),
+                        reason_code: "operator_cancelled".into(),
+                    },
+                )
+                .unwrap()
+        );
+        assert!(
+            authority
+                .close_turn(
+                    Uuid::new_v4(),
+                    NOW,
+                    TurnClosed {
+                        turn_id,
+                        outcome: TurnOutcome::Revoked,
+                        reason_code: "worker_revoked".into(),
+                        recovery_rule_version: None,
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(authority.state().last_sequence, 5);
+        assert!(authority.state().active_turn.is_none());
+
+        let reopened = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-2",
+            ActorIdentity {
+                principal: "system".into(),
+                ingress: "resume".into(),
+            },
+            "2026-08-19T19:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(reopened.state().last_sequence, 5);
+        assert_eq!(
+            reopened.state().closed_turns[&turn_id].outcome,
+            TurnOutcome::Revoked
         );
     }
 

@@ -2115,10 +2115,15 @@ async fn run_daemon_turn(
     let mut first_error = None;
 
     loop {
-        let active = {
+        let (active, active_identity) = {
             let mut supervisor = runtime.supervisor.lock().await;
             match supervisor.start_next_turn()? {
-                Some(active) => active,
+                Some(active) => (
+                    active,
+                    supervisor
+                        .current_identity()
+                        .expect("promoted daemon turn has identity"),
+                ),
                 None => {
                     return match first_error {
                         Some(error) => Err(error),
@@ -2148,7 +2153,11 @@ async fn run_daemon_turn(
                     .supervisor
                     .lock()
                     .await
-                    .close_durable_worker(RuntimeTurnOutcome::Failed)?;
+                    .submit_loop_terminal_intent(LoopTerminalIntent {
+                        identity: active_identity,
+                        outcome: RuntimeTurnOutcome::Failed,
+                        reason_code: "provider_unavailable".into(),
+                    })?;
                 anyhow::bail!(
                     "No provider available for model {model}.\n\
                  Run `omegon auth login` to set up authentication."
@@ -2190,18 +2199,22 @@ async fn run_daemon_turn(
             *guard = Some(state);
         }
 
-        let outcome = if turn_cancel.is_cancelled() {
-            RuntimeTurnOutcome::Revoked
+        let (outcome, reason_code) = if turn_cancel.is_cancelled() {
+            (RuntimeTurnOutcome::Revoked, "loop_cancelled")
         } else if result.is_err() {
-            RuntimeTurnOutcome::Failed
+            (RuntimeTurnOutcome::Failed, "loop_failed")
         } else {
-            RuntimeTurnOutcome::Completed
+            (RuntimeTurnOutcome::Completed, "loop_completed")
         };
         runtime
             .supervisor
             .lock()
             .await
-            .close_durable_worker(outcome)?;
+            .submit_loop_terminal_intent(LoopTerminalIntent {
+                identity: active_identity,
+                outcome,
+                reason_code: reason_code.into(),
+            })?;
         if let Err(error) = result
             && first_error.is_none()
         {

@@ -314,6 +314,8 @@ pub struct WebState {
     pub secrets: Option<Arc<omegon_secrets::SecretsManager>>,
     /// Project-local assistant run ledger path.
     pub assistant_runs_db_path: Arc<std::path::PathBuf>,
+    /// Authoritative workspace root for project-scoped control operations.
+    pub workspace_root: Arc<std::path::PathBuf>,
     /// Received daemon/event-ingress envelopes (v1 in-memory queue).
     pub daemon_events: Arc<Mutex<Vec<DaemonEventEnvelope>>>,
     /// Shared queue/worker status for daemon event ingress.
@@ -399,6 +401,11 @@ impl WebState {
         self
     }
 
+    pub fn with_workspace_root(mut self, workspace_root: std::path::PathBuf) -> Self {
+        self.workspace_root = Arc::new(crate::setup::find_project_root(&workspace_root));
+        self
+    }
+
     pub fn with_auth_state_and_secrets(
         handles: DashboardHandles,
         events_tx: broadcast::Sender<omegon_traits::AgentEvent>,
@@ -415,6 +422,9 @@ impl WebState {
             control_plane_state: Arc::new(Mutex::new(ControlPlaneState::Starting)),
             secrets,
             assistant_runs_db_path: Arc::new(crate::paths::assistant_runs_db(
+                &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            )),
+            workspace_root: Arc::new(crate::setup::find_project_root(
                 &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             )),
             daemon_events: Arc::new(Mutex::new(Vec::new())),

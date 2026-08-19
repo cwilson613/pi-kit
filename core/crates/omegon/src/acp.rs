@@ -3975,33 +3975,31 @@ impl OmegonAcpAgent {
             }
 
             // ── Prompt definitions ───────────────────────────────
-            "prompts/list" => {
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
-                Ok(
-                    serde_json::json!({ "prompts": crate::prompts::list_structured_for_project(&cwd)? }),
-                )
-            }
+            "prompts/list" => Ok(crate::prompts::with_list_for_project(
+                &session_cwd,
+                |prompts| serde_json::json!({ "prompts": prompts }),
+            )),
             "prompts/get" => {
                 let name = params["name"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'name' field"))?;
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
-                let (manifest, body, path) = crate::prompts::get_prompt_for_project(&cwd, name)?;
-                Ok(serde_json::json!({
-                    "name": name,
-                    "id": manifest.id,
-                    "title": manifest.title,
-                    "description": manifest.description,
-                    "tags": manifest.tags,
-                    "aliases": manifest.aliases,
-                    "safety": crate::prompts::safety_verdict(&body),
-                    "body": body,
-                    "path": path.display().to_string(),
-                }))
+                crate::prompts::with_prompt_for_project(
+                    &session_cwd,
+                    name,
+                    |manifest, body, path| {
+                        serde_json::json!({
+                            "name": name,
+                            "id": &manifest.id,
+                            "title": &manifest.title,
+                            "description": &manifest.description,
+                            "tags": &manifest.tags,
+                            "aliases": &manifest.aliases,
+                            "safety": crate::prompts::safety_verdict(body),
+                            "body": body,
+                            "path": path.display().to_string(),
+                        })
+                    },
+                )
             }
             "prompts/create" => {
                 let name = params["name"]
@@ -4014,11 +4012,8 @@ impl OmegonAcpAgent {
                     .get("project_local")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
                 let path = crate::prompts::write_prompt_for_project(
-                    &cwd,
+                    &session_cwd,
                     name,
                     content,
                     project_local,
@@ -4037,11 +4032,8 @@ impl OmegonAcpAgent {
                     .get("project_local")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
                 let path = crate::prompts::write_prompt_for_project(
-                    &cwd,
+                    &session_cwd,
                     name,
                     content,
                     project_local,
@@ -4053,36 +4045,35 @@ impl OmegonAcpAgent {
                 let name = params["name"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'name' field"))?;
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
-                let scope = crate::prompts::delete_prompt_for_project(&cwd, name)?;
+                let scope = crate::prompts::delete_prompt_for_project(&session_cwd, name)?;
                 Ok(serde_json::json!({ "ok": true, "scope": scope }))
             }
             "prompts/preview" | "prompts/resolve" | "prompts/submit" => {
                 let name = params["name"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'name' field"))?;
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
-                let (_manifest, body, path) = crate::prompts::get_prompt_for_project(&cwd, name)?;
                 let deprecated = method.ends_with("/submit");
-                Ok(serde_json::json!({
-                    "ok": true,
-                    "action": "preview",
-                    "deprecated": deprecated,
-                    "replacement": if deprecated { Some("_prompts/preview") } else { None },
-                    "execution_performed": false,
-                    "safety": crate::prompts::safety_verdict(&body),
-                    "prompt": body,
-                    "path": path.display().to_string(),
-                    "note": if deprecated {
-                        "Deprecated compatibility alias for preview; no submit, queue, or execution was performed."
-                    } else {
-                        "Prompt resolved for preview; direct ACP turn enqueue requires a stronger confirmation/trust flow."
-                    }
-                }))
+                crate::prompts::with_prompt_for_project(
+                    &session_cwd,
+                    name,
+                    |_manifest, body, path| {
+                        serde_json::json!({
+                            "ok": true,
+                            "action": "preview",
+                            "deprecated": deprecated,
+                            "replacement": if deprecated { Some("_prompts/preview") } else { None },
+                            "execution_performed": false,
+                            "safety": crate::prompts::safety_verdict(body),
+                            "prompt": body,
+                            "path": path.display().to_string(),
+                            "note": if deprecated {
+                                "Deprecated compatibility alias for preview; no submit, queue, or execution was performed."
+                            } else {
+                                "Prompt resolved for preview; direct ACP turn enqueue requires a stronger confirmation/trust flow."
+                            }
+                        })
+                    },
+                )
             }
 
             // ── Control requests (TUI parity) ────────────────────

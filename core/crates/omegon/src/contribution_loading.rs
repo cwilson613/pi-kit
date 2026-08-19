@@ -83,6 +83,7 @@ impl GuardedContributionMutationDirectory {
         kind: ContributionKind,
         scope: &str,
     ) -> anyhow::Result<Self> {
+        ensure_home_exists(home_path)?;
         let root = omegon_maintenance_contracts::open_secure_root(root_path)?;
         let directory = open_or_create_relative_directory(&root, components)?;
         Self::finish_open(root, directory, components, home_path, kind, scope)
@@ -228,6 +229,48 @@ impl GuardedContributionMutationDirectory {
     pub(crate) fn entry_names(&self, limit: usize) -> anyhow::Result<Vec<Vec<u8>>> {
         self.validate_binding()?;
         read_directory_names(&self.directory, limit)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn write_file(
+        &self,
+        raw_name: &[u8],
+        bytes: &[u8],
+        overwrite: bool,
+    ) -> anyhow::Result<()> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        self.validate_binding()?;
+        if overwrite {
+            let _ = entry_exists_at(&self.directory, raw_name)?;
+        }
+        write_file_at(&self.directory, raw_name, bytes, 0o600, overwrite)?;
+        self.validate_binding()
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn remove_file(&self, raw_name: &[u8]) -> anyhow::Result<bool> {
+        use std::ffi::CString;
+
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        self.validate_binding()?;
+        if !entry_exists_at(&self.directory, raw_name)? {
+            return Ok(false);
+        }
+        let raw_name = CString::new(raw_name)?;
+        // SAFETY: the directory/name remain valid and unlinkat retains no pointer.
+        if unsafe {
+            libc::unlinkat(
+                std::os::fd::AsRawFd::as_raw_fd(&self.directory),
+                raw_name.as_ptr(),
+                0,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        self.directory.sync_all()?;
+        self.validate_binding()?;
+        Ok(true)
     }
 
     #[cfg(unix)]
@@ -517,11 +560,23 @@ fn replace_file_at(
     bytes: &[u8],
     mode: libc::mode_t,
 ) -> anyhow::Result<()> {
+    write_file_at(parent, name, bytes, mode, true)
+}
+
+#[cfg(unix)]
+fn write_file_at(
+    parent: &File,
+    name: &[u8],
+    bytes: &[u8],
+    mode: libc::mode_t,
+    overwrite: bool,
+) -> anyhow::Result<()> {
     use std::{ffi::CString, io::Write, os::fd::FromRawFd};
 
     omegon_maintenance_contracts::validate_child_name(name)?;
     let name = CString::new(name)?;
-    let temporary = CString::new(format!(".{}.tmp", uuid::Uuid::new_v4()))?;
+    let temporary_name = format!(".{}.tmp", uuid::Uuid::new_v4()).into_bytes();
+    let temporary = CString::new(temporary_name.clone())?;
     // SAFETY: parent/temporary are valid; the returned descriptor is owned below.
     let descriptor = unsafe {
         libc::openat(
@@ -547,17 +602,31 @@ fn replace_file_at(
         };
         return Err(error.into());
     }
-    // SAFETY: both names are confined to parent and renameat retains no pointer.
-    if unsafe {
-        libc::renameat(
-            std::os::fd::AsRawFd::as_raw_fd(parent),
-            temporary.as_ptr(),
-            std::os::fd::AsRawFd::as_raw_fd(parent),
-            name.as_ptr(),
+    let commit = if overwrite {
+        // SAFETY: both names are confined to parent and renameat retains no pointer.
+        if unsafe {
+            libc::renameat(
+                std::os::fd::AsRawFd::as_raw_fd(parent),
+                temporary.as_ptr(),
+                std::os::fd::AsRawFd::as_raw_fd(parent),
+                name.as_ptr(),
+            )
+        } == 0
+        {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error().into())
+        }
+    } else {
+        omegon_maintenance_contracts::rename_entry_no_replace_at(
+            parent,
+            &temporary_name,
+            parent,
+            name.as_bytes(),
         )
-    } != 0
-    {
-        let error = std::io::Error::last_os_error();
+        .map_err(Into::into)
+    };
+    if let Err(error) = commit {
         // SAFETY: parent/temporary remain valid and unlinkat retains no pointer.
         unsafe {
             libc::unlinkat(
@@ -566,7 +635,7 @@ fn replace_file_at(
                 0,
             )
         };
-        return Err(error.into());
+        return Err(error);
     }
     parent.sync_all()?;
     Ok(())
@@ -654,6 +723,38 @@ fn entry_mode_at(parent: &File, name: &[u8]) -> anyhow::Result<libc::mode_t> {
     }
     // SAFETY: fstatat succeeded and initialized metadata.
     Ok(unsafe { metadata.assume_init() }.st_mode)
+}
+
+#[cfg(unix)]
+fn entry_exists_at(parent: &File, name: &[u8]) -> anyhow::Result<bool> {
+    use std::ffi::CString;
+
+    omegon_maintenance_contracts::validate_child_name(name)?;
+    let name = CString::new(name)?;
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: fstatat initializes metadata on success and retains no pointer.
+    if unsafe {
+        libc::fstatat(
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0
+    {
+        // SAFETY: fstatat succeeded and initialized metadata.
+        let metadata = unsafe { metadata.assume_init() };
+        if metadata.st_mode & libc::S_IFMT != libc::S_IFREG {
+            anyhow::bail!("contribution entry is not a regular file");
+        }
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::NotFound {
+        Ok(false)
+    } else {
+        Err(error.into())
+    }
 }
 
 #[cfg(unix)]

@@ -484,33 +484,40 @@ async fn handle_client_command(
                     .await;
                 return;
             }
+            let cwd = state.workspace_root.as_path();
             let response = match cmd_type {
                 "prompts_list" => serde_json::json!({
                     "type": "control_result",
                     "method": cmd_type,
                     "accepted": true,
-                    "prompts": crate::prompts::list_structured().unwrap_or_default(),
+                    "prompts": crate::prompts::with_list_for_project(cwd, |prompts| prompts.to_vec()),
                 }),
                 "prompts_get" => match cmd
                     .get("name")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                 {
-                    Some(name) => match crate::prompts::get_prompt(name) {
-                        Ok((manifest, body, path)) => serde_json::json!({
-                            "type": "control_result",
-                            "method": cmd_type,
-                            "accepted": true,
-                            "name": name,
-                            "id": manifest.id,
-                            "title": manifest.title,
-                            "description": manifest.description,
-                            "tags": manifest.tags,
-                            "aliases": manifest.aliases,
-                            "safety": crate::prompts::safety_verdict(&body),
-                            "body": body,
-                            "path": path.display().to_string(),
-                        }),
+                    Some(name) => match crate::prompts::with_prompt_for_project(
+                        cwd,
+                        name,
+                        |manifest, body, path| {
+                            serde_json::json!({
+                                "type": "control_result",
+                                "method": cmd_type,
+                                "accepted": true,
+                                "name": name,
+                                "id": &manifest.id,
+                                "title": &manifest.title,
+                                "description": &manifest.description,
+                                "tags": &manifest.tags,
+                                "aliases": &manifest.aliases,
+                                "safety": crate::prompts::safety_verdict(body),
+                                "body": body,
+                                "path": path.display().to_string(),
+                            })
+                        },
+                    ) {
+                        Ok(response) => response,
                         Err(err) => serde_json::json!({
                             "type": "control_result",
                             "method": cmd_type,
@@ -530,16 +537,22 @@ async fn handle_client_command(
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                 {
-                    Some(name) => match crate::prompts::get_prompt(name) {
-                        Ok((_manifest, body, path)) => serde_json::json!({
-                            "type": "control_result",
-                            "method": cmd_type,
-                            "accepted": true,
-                            "action": "preview",
-                            "safety": crate::prompts::safety_verdict(&body),
-                            "prompt": body,
-                            "path": path.display().to_string(),
-                        }),
+                    Some(name) => match crate::prompts::with_prompt_for_project(
+                        cwd,
+                        name,
+                        |_manifest, body, path| {
+                            serde_json::json!({
+                                "type": "control_result",
+                                "method": cmd_type,
+                                "accepted": true,
+                                "action": "preview",
+                                "safety": crate::prompts::safety_verdict(body),
+                                "prompt": body,
+                                "path": path.display().to_string(),
+                            })
+                        },
+                    ) {
+                        Ok(response) => response,
                         Err(err) => serde_json::json!({
                             "type": "control_result",
                             "method": cmd_type,

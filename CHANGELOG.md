@@ -28,6 +28,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Enforced maintenance contribution exclusion for reusable prompts across registry commands, aliases, loop jobs, ACP, IPC, and web control surfaces. User and project prompt scopes now use bounded descriptor-relative reads, exact deny matching, project-root normalization, project-over-user-over-bundled precedence, admission locks held through publication, and exclusive descriptor-confined create/update/delete mutations.
 - Enforced plugin contribution exclusion for persona and tone catalogs across startup, runtime tools, TUI, CLI, ACP, control-plane listing, and delegate field kits. Catalogs now use authoritative workspace roots, hold user/project admission locks through publication, parse nested content through bounded no-follow descriptors, reject duplicate IDs, and isolate malformed scopes. Persona create/update/delete now use canonical plugin roots and exclusive scope locks; updates preserve complete bundles through atomic directory exchange.
 
 - Enforced maintenance contribution exclusion for executable plugins in canonical user and project scopes. Startup now holds shared scope locks through bounded descriptor-relative discovery and final `EventBus` publication, excludes exact denied basenames and arbitrary `OMEGON_PLUGIN_DIR` input, isolates malformed scope state, and retains descriptor-derived snapshots for Pkl evaluation and deferred Armory script execution.

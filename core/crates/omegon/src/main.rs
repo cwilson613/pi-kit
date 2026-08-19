@@ -2476,6 +2476,7 @@ async fn run_embedded_command(
     let web_authority =
         load_web_authority_config(web_trusted_proxy_identity, require_web_proxy_identity)?;
     let state = web::WebState::new(agent.dashboard_handles.clone(), events_tx.clone())
+        .with_workspace_root(cwd.clone())
         .with_web_role(web_role)
         .with_web_authority(web_authority);
     let vox_daemon_events = state.daemon_events.clone();
@@ -5579,7 +5580,8 @@ fn build_tui_secret_readiness_snapshot(
                     events_tx.clone(),
                     agent.web_auth_state.clone(),
                     Some(agent.secrets.clone()),
-                );
+                )
+                .with_workspace_root(cli.cwd.clone());
                 match web::start_server(web_state, 7842).await {
                     Ok((startup, web_cmd_rx)) => {
                         if let Ok(startup_json) = serde_json::to_value(&startup) {

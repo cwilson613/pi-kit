@@ -376,28 +376,35 @@ impl IpcConnection {
                         .await;
                         continue;
                     }
+                    let cwd = std::path::Path::new(&cfg.cwd);
                     let response = match method.as_str() {
-                        "prompts_list" => serde_json::json!({
-                            "prompts": crate::prompts::list_structured()?,
-                        }),
+                        "prompts_list" => crate::prompts::with_list_for_project(
+                            cwd,
+                            |prompts| serde_json::json!({ "prompts": prompts }),
+                        ),
                         "prompts_get" => {
                             let name = payload
                                 .get("name")
                                 .and_then(|v| v.as_str())
                                 .filter(|s| !s.is_empty())
                                 .ok_or_else(|| anyhow::anyhow!("missing name"))?;
-                            let (manifest, body, path) = crate::prompts::get_prompt(name)?;
-                            serde_json::json!({
-                                "name": name,
-                                "id": manifest.id,
-                                "title": manifest.title,
-                                "description": manifest.description,
-                                "tags": manifest.tags,
-                                "aliases": manifest.aliases,
-                                "safety": crate::prompts::safety_verdict(&body),
-                                "body": body,
-                                "path": path.display().to_string(),
-                            })
+                            crate::prompts::with_prompt_for_project(
+                                cwd,
+                                name,
+                                |manifest, body, path| {
+                                    serde_json::json!({
+                                        "name": name,
+                                        "id": &manifest.id,
+                                        "title": &manifest.title,
+                                        "description": &manifest.description,
+                                        "tags": &manifest.tags,
+                                        "aliases": &manifest.aliases,
+                                        "safety": crate::prompts::safety_verdict(body),
+                                        "body": body,
+                                        "path": path.display().to_string(),
+                                    })
+                                },
+                            )?
                         }
                         _ => {
                             let name = payload
@@ -405,14 +412,19 @@ impl IpcConnection {
                                 .and_then(|v| v.as_str())
                                 .filter(|s| !s.is_empty())
                                 .ok_or_else(|| anyhow::anyhow!("missing name"))?;
-                            let (_manifest, body, path) = crate::prompts::get_prompt(name)?;
-                            serde_json::json!({
-                                "ok": true,
-                                "action": "preview",
-                                "safety": crate::prompts::safety_verdict(&body),
-                                "prompt": body,
-                                "path": path.display().to_string(),
-                            })
+                            crate::prompts::with_prompt_for_project(
+                                cwd,
+                                name,
+                                |_manifest, body, path| {
+                                    serde_json::json!({
+                                        "ok": true,
+                                        "action": "preview",
+                                        "safety": crate::prompts::safety_verdict(body),
+                                        "prompt": body,
+                                        "path": path.display().to_string(),
+                                    })
+                                },
+                            )?
                         }
                     };
                     send_response(&out_tx, req_id, &method, response).await;

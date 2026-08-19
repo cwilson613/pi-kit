@@ -855,13 +855,17 @@ impl AgentSetup {
         bus.register(Box::new(features::usage::UsageFeature::new()));
 
         // ─── Prompt library (/prompt registry-native command surface) ───
-        bus.register(Box::new(features::prompt::PromptFeature::new()));
+        bus.register(Box::new(
+            features::prompt::PromptFeature::with_workspace_root(cwd.clone()),
+        ));
         bus.register(Box::new(features::loop_jobs::LoopFeature::new(
             &project_root,
         )));
 
         // ─── User command aliases (explicit prompt-targeted slash surfaces) ───
-        bus.register(Box::new(features::user_commands::UserCommandFeature::load()));
+        bus.register(Box::new(
+            features::user_commands::UserCommandFeature::load_for_workspace(&cwd),
+        ));
 
         // ─── Clipboard paste retention (/clipboard prune) ────────────────
         // Manual on-demand sweep surface for clipboard image pastes.

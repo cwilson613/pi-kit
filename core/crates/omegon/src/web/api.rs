@@ -2282,6 +2282,7 @@ mod tests {
                     .path()
                     .join("assistant-runs.db"),
             ),
+            workspace_root: std::sync::Arc::new(std::path::PathBuf::from(".")),
             daemon_events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             daemon_status: std::sync::Arc::new(std::sync::Mutex::new(WebDaemonStatus::default())),
             pending_permissions: std::sync::Arc::new(std::sync::Mutex::new(

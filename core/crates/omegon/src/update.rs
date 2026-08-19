@@ -509,8 +509,10 @@ pub fn is_homebrew_managed(exe: &Path) -> bool {
 struct InstallReceipt {
     version: Option<String>,
     binary: Option<PathBuf>,
+    maintenance_binary: Option<PathBuf>,
     version_dir: Option<PathBuf>,
     versioned_binary: Option<PathBuf>,
+    versioned_maintenance_binary: Option<PathBuf>,
 }
 
 impl InstallReceipt {
@@ -524,6 +526,14 @@ impl InstallReceipt {
 
     fn versions_root(&self) -> Option<PathBuf> {
         self.version_dir.as_ref()?.parent().map(Path::to_path_buf)
+    }
+
+    fn maintenance_binary_path(&self) -> Option<PathBuf> {
+        self.versioned_maintenance_binary.clone().or_else(|| {
+            self.version_dir
+                .as_ref()
+                .map(|version_dir| version_dir.join("omegon-maintain"))
+        })
     }
 }
 
@@ -571,7 +581,12 @@ fn ensure_parent_writable(path: &Path, context: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
-fn update_install_symlinks(binary_link: &Path, latest_binary: &Path) -> anyhow::Result<()> {
+fn update_install_symlinks(
+    binary_link: &Path,
+    latest_binary: &Path,
+    maintenance_link: Option<&Path>,
+    latest_maintenance_binary: &Path,
+) -> anyhow::Result<()> {
     ensure_link_repointable(binary_link)?;
     if let Some(parent) = binary_link.parent() {
         std::fs::create_dir_all(parent)?;
@@ -581,6 +596,10 @@ fn update_install_symlinks(binary_link: &Path, latest_binary: &Path) -> anyhow::
         let om_link = parent.join("om");
         ensure_link_repointable(&om_link)?;
         replace_symlink(&om_link, latest_binary)?;
+    }
+    if let Some(maintenance_link) = maintenance_link {
+        ensure_link_repointable(maintenance_link)?;
+        replace_symlink(maintenance_link, latest_maintenance_binary)?;
     }
     Ok(())
 }
@@ -614,7 +633,12 @@ fn replace_symlink(link: &Path, target: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn update_install_symlinks(_binary_link: &Path, _latest_binary: &Path) -> anyhow::Result<()> {
+fn update_install_symlinks(
+    _binary_link: &Path,
+    _latest_binary: &Path,
+    _maintenance_link: Option<&Path>,
+    _latest_maintenance_binary: &Path,
+) -> anyhow::Result<()> {
     Ok(())
 }
 
@@ -658,6 +682,7 @@ fn preflight_update_target_with_cargo_home(
 async fn update_install_receipt_for_replaced_binary(
     receipt: &Option<InstallReceipt>,
     replaced_binary: &Path,
+    replaced_maintenance_binary: &Path,
     latest: &str,
 ) -> anyhow::Result<()> {
     let Some(receipt) = receipt else {
@@ -673,6 +698,7 @@ async fn update_install_receipt_for_replaced_binary(
     let latest_dir = versions_root.join(latest);
     tokio::fs::create_dir_all(&latest_dir).await?;
     let latest_binary = latest_dir.join("omegon");
+    let latest_maintenance_binary = latest_dir.join("omegon-maintain");
     if !paths_refer_to_same_file(&latest_binary, replaced_binary) {
         tokio::fs::copy(replaced_binary, &latest_binary).await?;
         #[cfg(unix)]
@@ -682,13 +708,30 @@ async fn update_install_receipt_for_replaced_binary(
                 .await?;
         }
     }
+    if !paths_refer_to_same_file(&latest_maintenance_binary, replaced_maintenance_binary) {
+        tokio::fs::copy(replaced_maintenance_binary, &latest_maintenance_binary).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(
+                &latest_maintenance_binary,
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .await?;
+        }
+    }
 
     let mut value: serde_json::Value = match tokio::fs::read_to_string(&receipt_path).await {
         Ok(content) => serde_json::from_str(&content)?,
         Err(_) => serde_json::json!({}),
     };
     if let Some(binary_link) = receipt.binary.as_ref() {
-        update_install_symlinks(binary_link, &latest_binary)?;
+        update_install_symlinks(
+            binary_link,
+            &latest_binary,
+            receipt.maintenance_binary.as_deref(),
+            &latest_maintenance_binary,
+        )?;
     }
 
     value["version"] = serde_json::Value::String(latest.to_string());
@@ -699,8 +742,110 @@ async fn update_install_receipt_for_replaced_binary(
         .unwrap_or_else(|| serde_json::Value::String(latest_binary.display().to_string()));
     value["version_dir"] = serde_json::Value::String(latest_dir.display().to_string());
     value["versioned_binary"] = serde_json::Value::String(latest_binary.display().to_string());
+    value["versioned_maintenance_binary"] =
+        serde_json::Value::String(latest_maintenance_binary.display().to_string());
     value["installed_at"] = serde_json::Value::String(chrono::Utc::now().to_rfc3339());
     tokio::fs::write(&receipt_path, serde_json::to_string_pretty(&value)? + "\n").await?;
+    Ok(())
+}
+
+fn extract_release_pair(
+    archive_path: &Path,
+    omegon_path: &Path,
+    maintenance_path: &Path,
+) -> anyhow::Result<()> {
+    let file = std::fs::File::open(archive_path)?;
+    let gz = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(gz);
+    let mut extracted_omegon = false;
+    let mut extracted_maintenance = false;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        let (destination, extracted) = match path.as_ref() {
+            path if path == Path::new("omegon") => (omegon_path, &mut extracted_omegon),
+            path if path == Path::new("omegon-maintain") => {
+                (maintenance_path, &mut extracted_maintenance)
+            }
+            _ => continue,
+        };
+        if *extracted || !entry.header().entry_type().is_file() {
+            anyhow::bail!("Downloaded archive contains an invalid release companion pair");
+        }
+        let mut out = std::fs::File::create(destination)?;
+        std::io::copy(&mut entry, &mut out)?;
+        *extracted = true;
+    }
+    if !extracted_omegon || !extracted_maintenance {
+        anyhow::bail!("Downloaded archive did not contain the complete release companion pair");
+    }
+    Ok(())
+}
+
+async fn validate_release_pair(
+    omegon_path: &Path,
+    maintenance_path: &Path,
+    expected_version: &str,
+) -> anyhow::Result<()> {
+    let omegon_output = tokio::process::Command::new(omegon_path)
+        .arg("--version")
+        .output()
+        .await?;
+    if !omegon_output.status.success() {
+        anyhow::bail!("Downloaded omegon binary failed --version check");
+    }
+    let version_output = String::from_utf8_lossy(&omegon_output.stdout);
+    if !version_output.contains(expected_version) {
+        anyhow::bail!(
+            "Version mismatch: expected {}, got {}",
+            expected_version,
+            version_output.trim()
+        );
+    }
+
+    let maintenance_output = tokio::process::Command::new(maintenance_path)
+        .args(["--json", "identity"])
+        .output()
+        .await?;
+    if !maintenance_output.status.success() {
+        anyhow::bail!("Downloaded omegon-maintain binary failed identity check");
+    }
+    let identity: serde_json::Value = serde_json::from_slice(&maintenance_output.stdout)?;
+    if identity["status"] != "success" || identity["artifact"]["version"] != expected_version {
+        anyhow::bail!(
+            "Maintenance companion identity mismatch: expected {}",
+            expected_version
+        );
+    }
+    Ok(())
+}
+
+async fn replace_release_pair(
+    current_omegon: &Path,
+    current_maintenance: &Path,
+    new_omegon: &Path,
+    new_maintenance: &Path,
+) -> anyhow::Result<()> {
+    let omegon_backup = current_omegon.with_extension("bak");
+    let maintenance_backup = current_maintenance.with_extension("bak");
+    tokio::fs::remove_file(&omegon_backup).await.ok();
+    tokio::fs::remove_file(&maintenance_backup).await.ok();
+    tokio::fs::rename(current_omegon, &omegon_backup).await?;
+    if let Err(error) = tokio::fs::rename(current_maintenance, &maintenance_backup).await {
+        let _ = tokio::fs::rename(&omegon_backup, current_omegon).await;
+        return Err(error.into());
+    }
+    if let Err(error) = tokio::fs::rename(new_omegon, current_omegon).await {
+        let _ = tokio::fs::rename(&maintenance_backup, current_maintenance).await;
+        let _ = tokio::fs::rename(&omegon_backup, current_omegon).await;
+        return Err(error.into());
+    }
+    if let Err(error) = tokio::fs::rename(new_maintenance, current_maintenance).await {
+        let _ = tokio::fs::remove_file(current_omegon).await;
+        let _ = tokio::fs::rename(&maintenance_backup, current_maintenance).await;
+        let _ = tokio::fs::rename(&omegon_backup, current_omegon).await;
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -724,6 +869,13 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
         );
     }
     preflight_update_target(&current_exe)?;
+    let current_maintenance = current_exe.with_file_name("omegon-maintain");
+    if !current_maintenance.is_file() {
+        anyhow::bail!(
+            "The installed omegon-maintain companion is missing; re-run the installer before updating"
+        );
+    }
+    ensure_parent_writable(&current_maintenance, "maintenance companion directory")?;
     let install_receipt = read_install_receipt().ok();
     let managed_install = install_receipt
         .as_ref()
@@ -731,10 +883,10 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
         .is_some_and(|path| paths_refer_to_same_file(&path, &current_exe));
 
     let tmp_path = current_exe.with_extension("new");
+    let maintenance_tmp_path = current_maintenance.with_extension("new");
     let archive_path = current_exe.with_extension("tar.gz");
     let signature_path = current_exe.with_extension("tar.gz.sig");
     let certificate_path = current_exe.with_extension("tar.gz.pem");
-    let backup_path = current_exe.with_extension("bak");
 
     tracing::info!(url = %info.download_url, "downloading update archive");
 
@@ -751,25 +903,13 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
 
     let archive_path_clone = archive_path.clone();
     let tmp_path_clone = tmp_path.clone();
+    let maintenance_tmp_path_clone = maintenance_tmp_path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let file = std::fs::File::open(&archive_path_clone)?;
-        let gz = flate2::read::GzDecoder::new(file);
-        let mut archive = tar::Archive::new(gz);
-        let mut extracted = false;
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?;
-            if path.file_name().and_then(|n| n.to_str()) == Some("omegon") {
-                let mut out = std::fs::File::create(&tmp_path_clone)?;
-                std::io::copy(&mut entry, &mut out)?;
-                extracted = true;
-                break;
-            }
-        }
-        if !extracted {
-            anyhow::bail!("Downloaded archive did not contain omegon binary");
-        }
-        Ok(())
+        extract_release_pair(
+            &archive_path_clone,
+            &tmp_path_clone,
+            &maintenance_tmp_path_clone,
+        )
     })
     .await??;
 
@@ -782,39 +922,30 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
     {
         use std::os::unix::fs::PermissionsExt;
         tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).await?;
-    }
-
-    // Verify the new binary runs
-    let output = tokio::process::Command::new(&tmp_path)
-        .arg("--version")
-        .output()
+        tokio::fs::set_permissions(
+            &maintenance_tmp_path,
+            std::fs::Permissions::from_mode(0o755),
+        )
         .await?;
-
-    if !output.status.success() {
-        tokio::fs::remove_file(&tmp_path).await.ok();
-        anyhow::bail!("Downloaded binary failed --version check");
     }
 
-    let version_output = String::from_utf8_lossy(&output.stdout);
-    if !version_output.contains(&info.latest) {
-        tokio::fs::remove_file(&tmp_path).await.ok();
-        anyhow::bail!(
-            "Version mismatch: expected {}, got {}",
-            info.latest,
-            version_output.trim()
-        );
-    }
-
-    // Atomic replace: current → backup, new → current
-    if backup_path.exists() {
-        tokio::fs::remove_file(&backup_path).await.ok();
-    }
-    tokio::fs::rename(&current_exe, &backup_path).await?;
-    tokio::fs::rename(&tmp_path, &current_exe).await?;
+    validate_release_pair(&tmp_path, &maintenance_tmp_path, &info.latest).await?;
+    replace_release_pair(
+        &current_exe,
+        &current_maintenance,
+        &tmp_path,
+        &maintenance_tmp_path,
+    )
+    .await?;
 
     if managed_install {
-        update_install_receipt_for_replaced_binary(&install_receipt, &current_exe, &info.latest)
-            .await?;
+        update_install_receipt_for_replaced_binary(
+            &install_receipt,
+            &current_exe,
+            &current_maintenance,
+            &info.latest,
+        )
+        .await?;
     }
 
     tracing::info!("binary replaced: {} → {}", info.current, info.latest);
@@ -892,8 +1023,12 @@ mod tests {
         let receipt = InstallReceipt {
             version: Some("0.27.0".into()),
             binary: Some(PathBuf::from("/usr/local/bin/omegon")),
+            maintenance_binary: Some(PathBuf::from("/usr/local/bin/omegon-maintain")),
             version_dir: Some(PathBuf::from("/home/me/.omegon/versions/0.27.0")),
             versioned_binary: Some(PathBuf::from("/home/me/.omegon/versions/0.27.0/omegon")),
+            versioned_maintenance_binary: Some(PathBuf::from(
+                "/home/me/.omegon/versions/0.27.0/omegon-maintain",
+            )),
         };
 
         assert_eq!(
@@ -911,13 +1046,86 @@ mod tests {
         let receipt = InstallReceipt {
             version: Some("0.27.0".into()),
             binary: None,
+            maintenance_binary: None,
             version_dir: Some(PathBuf::from("/home/me/.omegon/versions/0.27.0")),
             versioned_binary: None,
+            versioned_maintenance_binary: None,
         };
 
         assert_eq!(
             receipt.versioned_binary_path().as_deref(),
             Some(Path::new("/home/me/.omegon/versions/0.27.0/omegon"))
+        );
+        assert_eq!(
+            receipt.maintenance_binary_path().as_deref(),
+            Some(Path::new(
+                "/home/me/.omegon/versions/0.27.0/omegon-maintain"
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn replacement_updates_both_release_companions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let current_omegon = temp.path().join("omegon");
+        let current_maintenance = temp.path().join("omegon-maintain");
+        let new_omegon = temp.path().join("omegon.new");
+        let new_maintenance = temp.path().join("omegon-maintain.new");
+        std::fs::write(&current_omegon, "old omegon").expect("old omegon");
+        std::fs::write(&current_maintenance, "old maintenance").expect("old maintenance");
+        std::fs::write(&new_omegon, "new omegon").expect("new omegon");
+        std::fs::write(&new_maintenance, "new maintenance").expect("new maintenance");
+
+        replace_release_pair(
+            &current_omegon,
+            &current_maintenance,
+            &new_omegon,
+            &new_maintenance,
+        )
+        .await
+        .expect("replace pair");
+
+        assert_eq!(
+            std::fs::read_to_string(current_omegon).unwrap(),
+            "new omegon"
+        );
+        assert_eq!(
+            std::fs::read_to_string(current_maintenance).unwrap(),
+            "new maintenance"
+        );
+    }
+
+    #[test]
+    fn archive_extraction_rejects_missing_companion() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archive_path = temp.path().join("release.tar.gz");
+        let archive_file = std::fs::File::create(&archive_path).expect("archive");
+        let encoder = flate2::write::GzEncoder::new(archive_file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let bytes = b"omegon";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "omegon", &bytes[..])
+            .expect("archive member");
+        archive
+            .into_inner()
+            .expect("finish archive")
+            .finish()
+            .expect("gzip");
+
+        let error = extract_release_pair(
+            &archive_path,
+            &temp.path().join("omegon.new"),
+            &temp.path().join("omegon-maintain.new"),
+        )
+        .expect_err("missing companion must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("complete release companion pair")
         );
     }
 

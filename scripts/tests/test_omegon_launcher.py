@@ -33,15 +33,16 @@ def fix_root_from(stdout: str) -> Path:
     raise AssertionError(f"no fix line in {stdout!r}")
 
 
-def run(args, cwd, home, env=None):
+def run(args, cwd, home, env=None, launcher=LAUNCHER):
     e = os.environ.copy()
     e.pop("OMEGON_BIN", None)
+    e.pop("OMEGON_MAINTAIN_BIN", None)
     e.pop("OMEGON_DEV_ROOT", None)
     e.pop("OMEGON_CHANNEL", None)
     e["HOME"] = str(home)
     if env:
         e.update(env)
-    return subprocess.run([str(LAUNCHER), *args], cwd=cwd, env=e, text=True, capture_output=True)
+    return subprocess.run([str(launcher), *args], cwd=cwd, env=e, text=True, capture_output=True)
 
 
 def test_env_omegon_bin_wins():
@@ -102,6 +103,31 @@ def test_fallback_used_without_checkout_or_channel():
         base = Path(td); home = base / "home"; cwd = base / "outside"; cwd.mkdir(); home.mkdir()
         fallback = home / ".omegon/bin/omegon"; make_bin(fallback, "fallback")
         res = run(["--which"], cwd, home)
+        assert res.returncode == 0, res.stderr
+        assert "reason: fallback-installed" in res.stdout
+        assert same_target(res.stdout, fallback)
+
+
+def test_maintenance_launcher_uses_maintenance_override_and_fallback():
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td); home = base / "home"; cwd = base / "outside"; cwd.mkdir(); home.mkdir()
+        launcher = base / "omegon-maintain"
+        launcher.symlink_to(LAUNCHER)
+        exact = base / "exact" / "omegon-maintain"; make_bin(exact, "maintain exact")
+        fallback = home / ".omegon/bin/omegon-maintain"; make_bin(fallback, "maintain fallback")
+
+        res = run(
+            ["--which"],
+            cwd,
+            home,
+            {"OMEGON_MAINTAIN_BIN": str(exact)},
+            launcher,
+        )
+        assert res.returncode == 0, res.stderr
+        assert "reason: env:OMEGON_MAINTAIN_BIN" in res.stdout
+        assert same_target(res.stdout, exact)
+
+        res = run(["--which"], cwd, home, launcher=launcher)
         assert res.returncode == 0, res.stderr
         assert "reason: fallback-installed" in res.stdout
         assert same_target(res.stdout, fallback)

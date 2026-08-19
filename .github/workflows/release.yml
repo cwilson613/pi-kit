@@ -464,8 +464,8 @@ jobs:
           set -euo pipefail
           mkdir -p abi-artifacts/unpacked
           tar xzf "$(ls abi-artifacts/omegon-[0-9]*.tar.gz | head -1)" -C abi-artifacts/unpacked
-          ls -lh abi-artifacts/unpacked/omegon
-          file abi-artifacts/unpacked/omegon
+          ls -lh abi-artifacts/unpacked/omegon abi-artifacts/unpacked/omegon-maintain
+          file abi-artifacts/unpacked/omegon abi-artifacts/unpacked/omegon-maintain
 
       - name: Validate binary in ${{ matrix.name }} container
         run: |
@@ -478,6 +478,8 @@ jobs:
               ${{ matrix.install_cmd }}
               ldd --version || true
               /work/omegon --version
+              /work/omegon-maintain --version
+              /work/omegon-maintain --json identity | grep -q '"status":"success"'
             '
 
   # ── Release (publishes as soon as primary builds pass) ─────────

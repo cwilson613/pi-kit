@@ -2,8 +2,8 @@
 # frozen_string_literal: true
 
 class Omegon < Formula
-  desc "Terminal-native AI agent harness — single binary, ten providers, zero dependencies"
-  homepage "https://omegon.styrene.dev"
+  desc "Terminal-native AI agent harness with an independent recovery companion"
+  homepage "https://omegon.styrene.io"
   license "BUSL-1.1"
   version "0.15.11"
 
@@ -36,28 +36,32 @@ class Omegon < Formula
   def install
     check_linux_glibc_requirement!
     bin.install "omegon"
+    bin.install "omegon-maintain"
     bin.install_symlink "omegon" => "om"
   end
 
   def caveats
     <<~EOS
-      Two entrypoints are installed:
+      Three entrypoints are installed:
         omegon  # full harness
         om      # slim harness (same binary, alias-based mode)
+        omegon-maintain  # offline maintenance and recovery companion
 
       To get started:
         export ANTHROPIC_API_KEY="sk-ant-..."
         om
 
       Or authenticate with Claude Pro/Max:
-        omegon login
+        omegon auth login anthropic
 
-      Documentation: https://omegon.styrene.dev/docs/
+      Documentation: https://omegon.styrene.io/docs/
     EOS
   end
 
   test do
     assert_match "omegon", shell_output("#{bin}/omegon --version")
+    assert_match "omegon-maintain", shell_output("#{bin}/omegon-maintain --version")
+    assert_match '"status":"success"', shell_output("#{bin}/omegon-maintain --json identity")
   end
 
   private
@@ -76,7 +80,7 @@ class Omegon < Formula
       Homebrew on Linux does not upgrade your host glibc to satisfy Omegon's runtime ABI.
       Use a newer Linux distribution, container, or VM with a compatible glibc baseline.
 
-      See: https://omegon.styrene.dev/docs/install/
+      See: https://omegon.styrene.io/docs/install/
     EOS
   end
 

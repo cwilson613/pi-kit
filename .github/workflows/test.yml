@@ -61,6 +61,21 @@ jobs:
           cargo test -p omegon-memory --no-default-features
           cargo test -p omegon-secrets --no-default-features
 
+  maintenance-boundary:
+    name: Maintenance composition boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Validate maintenance dependency boundary
+        run: python3 scripts/check_maintenance_dependency_boundary.py
+      - name: Test maintenance contracts and companion
+        run: |
+          cargo test -p omegon-maintenance-contracts --locked
+          cargo test -p omegon-maintain --locked
+
   extension-install-integration:
     name: Extension install integration tests
     runs-on: ubuntu-latest

@@ -46,7 +46,7 @@ let
       # Let toolchain/debug smoke commands behave like ordinary OCI images.
       # Normal runs remain omegon-first via the final `exec omegon "$@"`.
       case "''${1:-}" in
-        bash|sh|/bin/bash|/bin/sh)
+        bash|sh|/bin/bash|/bin/sh|omegon-maintain)
           exec "$@"
           ;;
       esac

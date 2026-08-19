@@ -22,6 +22,7 @@ set -eu
 
 REPO="styrene-lab/omegon"
 BINARY="omegon"
+MAINTAIN_BINARY="omegon-maintain"
 # Default install dir: prefer /usr/local/bin if writable, else ~/.local/bin.
 # This avoids requiring sudo on systems where /usr/local/bin isn't writable.
 if [ -z "${INSTALL_DIR:-}" ]; then
@@ -341,30 +342,39 @@ step "Extracting..."
 tar xzf "${TMP}/${ARCHIVE}" -C "$TMP" 2>/dev/null || \
   die "failed to extract ${ARCHIVE} — the download may be corrupted"
 
-if [ ! -f "${TMP}/${BINARY}" ]; then
-  die "binary '${BINARY}' not found in archive — unexpected archive structure"
-fi
+for REQUIRED_BINARY in "$BINARY" "$MAINTAIN_BINARY"; do
+  if [ ! -f "${TMP}/${REQUIRED_BINARY}" ]; then
+    die "binary '${REQUIRED_BINARY}' not found in archive — release companion pair is incomplete"
+  fi
+done
 
 # ── Validate binary ───────────────────────────────────────────
 
-FIRST_BYTES=$(head -c 4 "${TMP}/${BINARY}" | xxd -p 2>/dev/null || od -A n -t x1 -N 4 "${TMP}/${BINARY}" | tr -d ' ')
+for REQUIRED_BINARY in "$BINARY" "$MAINTAIN_BINARY"; do
+  FIRST_BYTES=$(head -c 4 "${TMP}/${REQUIRED_BINARY}" | xxd -p 2>/dev/null || od -A n -t x1 -N 4 "${TMP}/${REQUIRED_BINARY}" | tr -d ' ')
+  case "$OS_NAME" in
+    darwin)
+      case "$FIRST_BYTES" in
+        feedface*|feedfacf*|cafebabe*|cffaedfe*|cffa*) ;;
+        *) die "downloaded ${REQUIRED_BINARY} is not a valid macOS binary (magic: ${FIRST_BYTES})" ;;
+      esac
+      ;;
+    linux)
+      case "$FIRST_BYTES" in
+        7f454c46*) ;;
+        *) die "downloaded ${REQUIRED_BINARY} is not a valid Linux binary (magic: ${FIRST_BYTES})" ;;
+      esac
+      ;;
+  esac
+  chmod +x "${TMP}/${REQUIRED_BINARY}"
+done
 
-case "$OS_NAME" in
-  darwin)
-    case "$FIRST_BYTES" in
-      feedface*|feedfacf*|cafebabe*|cffaedfe*|cffa*) ;;
-      *) die "downloaded file is not a valid macOS binary (magic: ${FIRST_BYTES})" ;;
-    esac
-    ;;
-  linux)
-    case "$FIRST_BYTES" in
-      7f454c46*) ;;
-      *) die "downloaded file is not a valid Linux binary (magic: ${FIRST_BYTES})" ;;
-    esac
-    ;;
-esac
-
-ok "Binary validated"
+OMEGON_STAGED_VERSION=$("${TMP}/${BINARY}" --version 2>/dev/null | head -1 | awk '{print $2}') || die "staged omegon failed to launch"
+MAINTAIN_STAGED_VERSION=$("${TMP}/${MAINTAIN_BINARY}" --version 2>/dev/null | head -1 | awk '{print $2}') || die "staged omegon-maintain failed to launch"
+if [ -z "$OMEGON_STAGED_VERSION" ] || [ "$OMEGON_STAGED_VERSION" != "$MAINTAIN_STAGED_VERSION" ]; then
+  die "release companion version mismatch: omegon=${OMEGON_STAGED_VERSION:-missing}, omegon-maintain=${MAINTAIN_STAGED_VERSION:-missing}"
+fi
+ok "Release companion pair validated"
 
 # ── NixOS compatibility check ────────────────────────────────
 
@@ -388,6 +398,7 @@ fi
 
 VERSION_DIR="${HOME}/.omegon/versions/${VERSION}"
 INSTALL_TARGET="${INSTALL_DIR}/${BINARY}"
+MAINTAIN_INSTALL_TARGET="${INSTALL_DIR}/${MAINTAIN_BINARY}"
 
 step "Installing ${VERSION}..."
 
@@ -427,6 +438,8 @@ fi
 # Install new version to versioned directory
 mv "${TMP}/${BINARY}" "${VERSION_DIR}/${BINARY}"
 chmod +x "${VERSION_DIR}/${BINARY}" || die "could not make binary executable"
+mv "${TMP}/${MAINTAIN_BINARY}" "${VERSION_DIR}/${MAINTAIN_BINARY}"
+chmod +x "${VERSION_DIR}/${MAINTAIN_BINARY}" || die "could not make companion executable"
 
 # Create install directory if needed
 if [ ! -d "$INSTALL_DIR" ]; then
@@ -435,6 +448,17 @@ if [ ! -d "$INSTALL_DIR" ]; then
   else
     mkdir -p "$INSTALL_DIR"
   fi
+fi
+
+# Expose the release-coupled maintenance companion beside the main launcher.
+if [ "$NEEDS_SUDO" = true ]; then
+  sudo rm -f "$MAINTAIN_INSTALL_TARGET"
+  sudo ln -s "${VERSION_DIR}/${MAINTAIN_BINARY}" "$MAINTAIN_INSTALL_TARGET" || \
+    die "could not create companion symlink at ${MAINTAIN_INSTALL_TARGET}"
+else
+  rm -f "$MAINTAIN_INSTALL_TARGET"
+  ln -s "${VERSION_DIR}/${MAINTAIN_BINARY}" "$MAINTAIN_INSTALL_TARGET" || \
+    die "could not create companion symlink at ${MAINTAIN_INSTALL_TARGET}"
 fi
 
 # Create or update symlink at install location
@@ -481,8 +505,10 @@ cat > "${RECEIPT_DIR}/install-receipt.json" 2>/dev/null <<EOF || true
   "platform": "${PLATFORM}",
   "install_dir": "${INSTALL_DIR}",
   "binary": "${INSTALL_DIR}/${BINARY}",
+  "maintenance_binary": "${INSTALL_DIR}/${MAINTAIN_BINARY}",
   "version_dir": "${VERSION_DIR}",
   "versioned_binary": "${VERSION_DIR}/${BINARY}",
+  "versioned_maintenance_binary": "${VERSION_DIR}/${MAINTAIN_BINARY}",
   "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "source": "https://github.com/${REPO}/releases/tag/${VERSION}",
   "installer": "https://omegon.styrene.io/install.sh",
@@ -523,6 +549,10 @@ elif [ -x "${INSTALL_DIR}/${BINARY}" ]; then
 else
   die "installation failed — ${INSTALL_DIR}/${BINARY} is not executable"
 fi
+if [ ! -x "${INSTALL_DIR}/${MAINTAIN_BINARY}" ]; then
+  die "installation failed — ${INSTALL_DIR}/${MAINTAIN_BINARY} is not executable"
+fi
+ok "Companion available at ${BOLD}${INSTALL_DIR}/${MAINTAIN_BINARY}${RESET}"
 
 # ── Summary ───────────────────────────────────────────────────
 

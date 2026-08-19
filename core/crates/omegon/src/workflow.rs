@@ -5,7 +5,9 @@
 //! and cleave orchestrator consult these when dispatching work.
 
 use serde::{Deserialize, Serialize};
-use std::{fs::File, path::Path};
+use std::path::Path;
+
+use crate::contribution_loading::GuardedContributionDirectory;
 
 const MAX_WORKFLOW_BYTES: usize = 1024 * 1024;
 const MAX_WORKFLOW_ENTRIES: usize = 10_000;
@@ -89,7 +91,7 @@ pub fn with_discovered_workflow<R>(
 
 struct AdmittedWorkflow {
     template: WorkflowTemplate,
-    _admission: omegon_maintenance_contracts::ContributionAdmissionGuard,
+    _admission: GuardedContributionDirectory,
 }
 
 impl AdmittedWorkflow {
@@ -107,31 +109,17 @@ fn discover_workflow_with_home(
     cwd: &Path,
     home_path: &Path,
 ) -> anyhow::Result<Option<AdmittedWorkflow>> {
-    let cwd_directory = omegon_maintenance_contracts::open_secure_root(cwd)?;
-    let Some(omegon_directory) = open_child_directory(&cwd_directory, b".omegon")? else {
-        return Ok(None);
-    };
-    let Some(workflows_directory) = open_child_directory(&omegon_directory, b"workflows")? else {
-        return Ok(None);
-    };
-    let parent_identity = omegon_maintenance_contracts::path_identity(&workflows_directory)?;
-    ensure_home_exists(home_path)?;
-    let home = omegon_maintenance_contracts::open_secure_root(home_path)?;
-    let home_identity = omegon_maintenance_contracts::path_identity(&home)?;
-    let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
-        &home,
-        home_identity,
-        &uuid::Uuid::new_v4().to_string(),
-        false,
-    )?;
-    let admission = state.admit_contribution_scope(
+    let Some(admission) = GuardedContributionDirectory::open(
+        cwd,
+        &[b".omegon", b"workflows"],
+        home_path,
         omegon_maintenance_contracts::ContributionKind::Workflow,
         "project",
-        &parent_identity,
-        &uuid::Uuid::new_v4().to_string(),
-        false,
-    )?;
-    let mut entries = read_directory_names(&workflows_directory, MAX_WORKFLOW_ENTRIES)?;
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut entries = admission.entry_names(MAX_WORKFLOW_ENTRIES)?;
     entries.retain(|name| name.ends_with(b".toml"));
     entries.sort();
     for raw_name in entries {
@@ -140,7 +128,7 @@ fn discover_workflow_with_home(
             continue;
         }
         let display_path = display_workflow_path(cwd, &raw_name);
-        let Some(bytes) = read_file_at(&workflows_directory, &raw_name, MAX_WORKFLOW_BYTES)? else {
+        let Some(bytes) = admission.read_file(&raw_name, MAX_WORKFLOW_BYTES)? else {
             continue;
         };
         match WorkflowTemplate::parse(&bytes) {
@@ -173,156 +161,6 @@ fn discover_workflow_with_home(
     _home_path: &Path,
 ) -> anyhow::Result<Option<AdmittedWorkflow>> {
     anyhow::bail!("guarded workflow discovery requires Unix")
-}
-
-#[cfg(unix)]
-fn ensure_home_exists(path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-
-    if !path.exists()
-        && let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(path)
-        && error.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(error.into());
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn open_child_directory(parent: &File, name: &[u8]) -> anyhow::Result<Option<File>> {
-    use std::{ffi::CString, os::fd::FromRawFd};
-
-    omegon_maintenance_contracts::validate_child_name(name)?;
-    let name = CString::new(name)?;
-    // SAFETY: parent/name are valid for this call; the returned descriptor is owned below.
-    let descriptor = unsafe {
-        libc::openat(
-            std::os::fd::AsRawFd::as_raw_fd(parent),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if descriptor < 0 {
-        let error = std::io::Error::last_os_error();
-        return if error.kind() == std::io::ErrorKind::NotFound {
-            Ok(None)
-        } else {
-            Err(error.into())
-        };
-    }
-    // SAFETY: openat returned a new owned descriptor.
-    Ok(Some(unsafe { File::from_raw_fd(descriptor) }))
-}
-
-#[cfg(unix)]
-fn read_directory_names(directory: &File, limit: usize) -> anyhow::Result<Vec<Vec<u8>>> {
-    use std::{ffi::CStr, os::fd::AsRawFd};
-
-    // SAFETY: dup returns a new descriptor consumed by fdopendir.
-    let duplicate = unsafe { libc::dup(directory.as_raw_fd()) };
-    if duplicate < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    // SAFETY: duplicate is an owned directory descriptor.
-    let stream = unsafe { libc::fdopendir(duplicate) };
-    if stream.is_null() {
-        // SAFETY: fdopendir did not consume duplicate on failure.
-        unsafe { libc::close(duplicate) };
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let mut entries = Vec::new();
-    loop {
-        clear_errno();
-        // SAFETY: stream remains valid until it is closed below.
-        let entry = unsafe { libc::readdir(stream) };
-        if entry.is_null() {
-            let error = current_errno();
-            // SAFETY: stream is a live DIR pointer and closed exactly once.
-            unsafe { libc::closedir(stream) };
-            return if error == 0 {
-                Ok(entries)
-            } else {
-                Err(std::io::Error::from_raw_os_error(error).into())
-            };
-        }
-        // SAFETY: d_name is NUL-terminated for a successful readdir result.
-        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
-        if matches!(name, b"." | b"..") {
-            continue;
-        }
-        entries.push(name.to_vec());
-        if entries.len() > limit {
-            // SAFETY: stream is a live DIR pointer and closed exactly once.
-            unsafe { libc::closedir(stream) };
-            anyhow::bail!("workflow directory exceeds {limit} entries");
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn clear_errno() {
-    // SAFETY: __error returns the calling thread's errno pointer.
-    unsafe { *libc::__error() = 0 };
-}
-
-#[cfg(target_os = "macos")]
-fn current_errno() -> i32 {
-    // SAFETY: __error returns the calling thread's errno pointer.
-    unsafe { *libc::__error() }
-}
-
-#[cfg(target_os = "linux")]
-fn clear_errno() {
-    // SAFETY: __errno_location returns the calling thread's errno pointer.
-    unsafe { *libc::__errno_location() = 0 };
-}
-
-#[cfg(target_os = "linux")]
-fn current_errno() -> i32 {
-    // SAFETY: __errno_location returns the calling thread's errno pointer.
-    unsafe { *libc::__errno_location() }
-}
-
-#[cfg(unix)]
-fn read_file_at(parent: &File, name: &[u8], limit: usize) -> anyhow::Result<Option<Vec<u8>>> {
-    use std::{ffi::CString, io::Read, os::fd::FromRawFd};
-
-    omegon_maintenance_contracts::validate_child_name(name)?;
-    let name = CString::new(name)?;
-    // SAFETY: parent/name are valid for this call; the returned descriptor is owned below.
-    let descriptor = unsafe {
-        libc::openat(
-            std::os::fd::AsRawFd::as_raw_fd(parent),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if descriptor < 0 {
-        let error = std::io::Error::last_os_error();
-        return if error.kind() == std::io::ErrorKind::NotFound {
-            Ok(None)
-        } else {
-            Err(error.into())
-        };
-    }
-    // SAFETY: openat returned a new owned descriptor.
-    let mut file = unsafe { File::from_raw_fd(descriptor) };
-    if !file.metadata()?.is_file() {
-        anyhow::bail!("workflow entry is not a regular file");
-    }
-    let before = omegon_maintenance_contracts::file_identity(&file)?;
-    if before.size > limit as u64 {
-        anyhow::bail!("workflow file exceeds the {limit}-byte limit");
-    }
-    let mut bytes = Vec::with_capacity(before.size as usize);
-    file.by_ref()
-        .take(limit as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    let after = omegon_maintenance_contracts::file_identity(&file)?;
-    if bytes.len() > limit || before != after {
-        anyhow::bail!("workflow file exceeded its limit or changed during read");
-    }
-    Ok(Some(bytes))
 }
 
 #[cfg(unix)]
@@ -408,6 +246,7 @@ pub fn apply_phase_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     const EXAMPLE_TOML: &str = r#"
 [workflow]
@@ -563,7 +402,7 @@ model = "ollama:llama3"
         let admitted = discover_workflow_with_home(project.path(), home_path.path())
             .unwrap()
             .unwrap();
-        let authority = admitted._admission.scope_key;
+        let authority = admitted._admission.scope_key();
         let home = omegon_maintenance_contracts::open_secure_root(home_path.path()).unwrap();
         let state = MaintenanceStateV1::bootstrap(
             &home,

@@ -108,6 +108,7 @@ pub mod capabilities;
 mod catalog;
 mod checkpoint;
 mod child_agent;
+mod contribution_loading;
 mod conversation;
 mod eval;
 mod evidence;

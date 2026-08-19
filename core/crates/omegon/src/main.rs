@@ -1831,23 +1831,25 @@ async fn main() -> anyhow::Result<()> {
         },
         Some(Commands::Persona { ref action }) => match action {
             PersonaAction::List => {
-                let (personas, tones) = plugins::persona_loader::scan_available();
-                if personas.is_empty() && tones.is_empty() {
-                    println!("No personas or tones installed.");
-                    return Ok(());
-                }
-                if !personas.is_empty() {
-                    println!("Personas ({}):\n", personas.len());
-                    for p in &personas {
-                        println!("  {:<32} {}", p.id, p.description);
+                let cwd = std::fs::canonicalize(&cli.cwd)?;
+                plugins::persona_loader::with_available(&cwd, |personas, tones| {
+                    if personas.is_empty() && tones.is_empty() {
+                        println!("No personas or tones installed.");
+                    } else {
+                        if !personas.is_empty() {
+                            println!("Personas ({}):\n", personas.len());
+                            for p in personas {
+                                println!("  {:<32} {}", p.id, p.description);
+                            }
+                        }
+                        if !tones.is_empty() {
+                            println!("\nTones ({}):\n", tones.len());
+                            for t in tones {
+                                println!("  {:<32} {}", t.id, t.description);
+                            }
+                        }
                     }
-                }
-                if !tones.is_empty() {
-                    println!("\nTones ({}):\n", tones.len());
-                    for t in &tones {
-                        println!("  {:<32} {}", t.id, t.description);
-                    }
-                }
+                });
                 Ok(())
             }
             PersonaAction::Create {
@@ -1866,51 +1868,25 @@ async fn main() -> anyhow::Result<()> {
                 if slug.is_empty() {
                     anyhow::bail!("invalid persona name");
                 }
-                let home = paths::omegon_home()?;
-                let persona_dir = home.join("armory/personas").join(&slug);
-                std::fs::create_dir_all(&persona_dir)?;
-
                 let id = format!("user.{slug}");
-                let mut plugin = toml::Table::new();
-                let mut plugin_section = toml::Table::new();
-                plugin_section.insert("type".into(), "persona".into());
-                plugin_section.insert("id".into(), id.clone().into());
-                plugin_section.insert("name".into(), name.as_str().into());
-                plugin_section.insert("version".into(), "1.0.0".into());
-                plugin_section.insert("description".into(), description.as_str().into());
-                plugin.insert("plugin".into(), toml::Value::Table(plugin_section));
-
-                let mut persona = toml::Table::new();
-                let mut identity = toml::Table::new();
-                identity.insert("directive".into(), "PERSONA.md".into());
-                persona.insert("identity".into(), toml::Value::Table(identity));
-                if let Some(b) = badge {
-                    let mut style = toml::Table::new();
-                    style.insert("badge".into(), b.as_str().into());
-                    persona.insert("style".into(), toml::Value::Table(style));
-                }
-                plugin.insert("persona".into(), toml::Value::Table(persona));
-
-                std::fs::write(
-                    persona_dir.join("plugin.toml"),
-                    toml::to_string_pretty(&plugin)?,
+                let cwd = std::fs::canonicalize(&cli.cwd)?;
+                let persona_dir = plugins::persona_loader::create_user_persona(
+                    &cwd,
+                    &slug,
+                    name,
+                    description,
+                    badge.as_deref(),
+                    &[],
+                    &directive_content,
                 )?;
-                std::fs::write(persona_dir.join("PERSONA.md"), &directive_content)?;
                 println!("Created persona '{id}' at {}", persona_dir.display());
                 Ok(())
             }
             PersonaAction::Delete { id } => {
-                let (personas, _) = plugins::persona_loader::scan_available();
-                match personas.iter().find(|p| p.id == *id) {
-                    Some(p) => {
-                        if p.path.exists() {
-                            std::fs::remove_dir_all(&p.path)?;
-                        }
-                        println!("Deleted persona '{id}'");
-                        Ok(())
-                    }
-                    None => anyhow::bail!("persona '{id}' not found"),
-                }
+                let cwd = std::fs::canonicalize(&cli.cwd)?;
+                plugins::persona_loader::delete_persona(&cwd, id)?;
+                println!("Deleted persona '{id}'");
+                Ok(())
             }
         },
         Some(Commands::Task { ref action }) => {

@@ -950,10 +950,10 @@ impl AgentSetup {
             .ok()
             .or_else(|| startup_profile.persona.clone())
         {
-            activate_startup_persona(&mut persona_registry, &persona_name);
+            activate_startup_persona(&mut persona_registry, &cwd, &persona_name);
         }
         if let Some(tone_name) = startup_profile.tone.clone() {
-            activate_startup_tone(&mut persona_registry, &tone_name);
+            activate_startup_tone(&mut persona_registry, &cwd, &tone_name);
         }
 
         let shared_augment_registry =
@@ -2038,50 +2038,44 @@ fn extension_state_disabled(path: &Path) -> bool {
 
 fn activate_startup_persona(
     registry: &mut crate::plugins::registry::AugmentRegistry,
+    cwd: &Path,
     persona_name: &str,
 ) {
-    let (personas, _) = crate::plugins::persona_loader::scan_available();
     let target = persona_name.to_lowercase();
-    if let Some(available) = personas
-        .iter()
-        .find(|p| p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target))
-    {
-        match crate::plugins::persona_loader::load_persona(&available.path) {
-            Ok(loaded) => {
-                tracing::info!(persona = %loaded.name, "activating startup persona");
-                registry.activate_persona(loaded);
-            }
-            Err(e) => {
-                tracing::warn!(persona = %persona_name, error = %e, "startup persona load failed");
-            }
+    crate::plugins::persona_loader::with_available(cwd, |personas, _| {
+        if let Some(loaded) = personas
+            .iter()
+            .find(|p| p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target))
+            .and_then(|available| available.persona())
+            .cloned()
+        {
+            tracing::info!(persona = %loaded.name, "activating startup persona");
+            registry.activate_persona(loaded);
+        } else {
+            tracing::warn!(persona = %persona_name, "startup persona not found");
         }
-    } else {
-        tracing::warn!(persona = %persona_name, "startup persona not found");
-    }
+    });
 }
 
 fn activate_startup_tone(
     registry: &mut crate::plugins::registry::AugmentRegistry,
+    cwd: &Path,
     tone_name: &str,
 ) {
-    let (_, tones) = crate::plugins::persona_loader::scan_available();
     let target = tone_name.to_lowercase();
-    if let Some(available) = tones
-        .iter()
-        .find(|t| t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target))
-    {
-        match crate::plugins::persona_loader::load_tone(&available.path) {
-            Ok(loaded) => {
-                tracing::info!(tone = %loaded.name, "activating startup tone");
-                registry.activate_tone(loaded);
-            }
-            Err(e) => {
-                tracing::warn!(tone = %tone_name, error = %e, "startup tone load failed");
-            }
+    crate::plugins::persona_loader::with_available(cwd, |_, tones| {
+        if let Some(loaded) = tones
+            .iter()
+            .find(|t| t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target))
+            .and_then(|available| available.tone())
+            .cloned()
+        {
+            tracing::info!(tone = %loaded.name, "activating startup tone");
+            registry.activate_tone(loaded);
+        } else {
+            tracing::warn!(tone = %tone_name, "startup tone not found");
         }
-    } else {
-        tracing::warn!(tone = %tone_name, "startup tone not found");
-    }
+    });
 }
 
 #[cfg(test)]

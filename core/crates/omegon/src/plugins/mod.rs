@@ -36,6 +36,59 @@ pub struct AdmittedPlugins {
     admissions: Vec<GuardedContributionDirectory>,
 }
 
+pub(crate) struct GuardedPluginScope {
+    pub(crate) scope: &'static str,
+    pub(crate) display_root: PathBuf,
+    pub(crate) admission: GuardedContributionDirectory,
+}
+
+pub(crate) fn open_guarded_plugin_scopes(cwd: &Path, home: &Path) -> Vec<GuardedPluginScope> {
+    let mut scopes = Vec::new();
+    let project_root = crate::setup::find_project_root(cwd);
+    for (root, components, scope) in [
+        (home, &[b"plugins".as_slice()][..], "user"),
+        (
+            project_root.as_path(),
+            &[b".omegon".as_slice(), b"plugins".as_slice()][..],
+            "project",
+        ),
+    ] {
+        match GuardedContributionDirectory::open(
+            root,
+            components,
+            home,
+            omegon_maintenance_contracts::ContributionKind::Plugin,
+            scope,
+        ) {
+            Ok(Some(admission)) => {
+                let display_root = components
+                    .iter()
+                    .fold(root.to_path_buf(), |path, component| {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::ffi::OsStrExt;
+                            path.join(std::ffi::OsStr::from_bytes(component))
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            path.join(String::from_utf8_lossy(component).as_ref())
+                        }
+                    });
+                scopes.push(GuardedPluginScope {
+                    scope,
+                    display_root,
+                    admission,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(scope, error = %error, "plugin discovery scope failed closed");
+            }
+        }
+    }
+    scopes
+}
+
 impl AdmittedPlugins {
     pub fn publish<R>(self, publish: impl FnOnce(Vec<Box<dyn omegon_traits::Feature>>) -> R) -> R {
         let Self {
@@ -94,24 +147,16 @@ pub async fn discover_plugins_filtered(
 
     match crate::paths::omegon_home() {
         Ok(home) => {
-            for (root, components, scope) in [
-                (home.as_path(), &[b"plugins".as_slice()][..], "user"),
-                (
-                    cwd,
-                    &[b".omegon".as_slice(), b"plugins".as_slice()][..],
-                    "project",
-                ),
-            ] {
-                match discover_guarded_plugins(root, components, &home, scope, cwd, secrets, filter)
-                    .await
-                {
+            for scope in open_guarded_plugin_scopes(cwd, &home) {
+                let scope_name = scope.scope;
+                match discover_guarded_plugins(scope, cwd, secrets, filter).await {
                     Ok(Some((mut loaded, admission))) => {
                         features.append(&mut loaded);
                         admissions.push(admission);
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        tracing::warn!(scope, error = %error, "plugin discovery scope failed closed");
+                        tracing::warn!(scope = scope_name, error = %error, "plugin discovery scope failed closed");
                     }
                 }
             }
@@ -133,10 +178,7 @@ pub async fn discover_plugins_filtered(
 
 #[cfg(unix)]
 async fn discover_guarded_plugins(
-    root: &Path,
-    components: &[&[u8]],
-    home: &Path,
-    scope: &str,
+    scope: GuardedPluginScope,
     cwd: &Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
     filter: &PluginSelectionFilter,
@@ -148,26 +190,19 @@ async fn discover_guarded_plugins(
 > {
     use std::os::unix::ffi::OsStrExt;
 
-    let Some(admission) = GuardedContributionDirectory::open(
-        root,
-        components,
-        home,
-        omegon_maintenance_contracts::ContributionKind::Plugin,
-        scope,
-    )?
-    else {
-        return Ok(None);
-    };
+    let GuardedPluginScope {
+        display_root,
+        admission,
+        ..
+    } = scope;
     let mut entries = admission.entry_names(MAX_PLUGIN_ENTRIES)?;
     entries.sort();
-    let display_root = components
-        .iter()
-        .fold(root.to_path_buf(), |path, component| {
-            path.join(std::ffi::OsStr::from_bytes(component))
-        });
     let mut features = Vec::new();
 
     for raw_name in entries {
+        if crate::contribution_loading::is_internal_contribution_entry(&raw_name) {
+            continue;
+        }
         if !admission.allows(&raw_name)? {
             tracing::info!(
                 path = %display_root.join(std::ffi::OsStr::from_bytes(&raw_name)).display(),
@@ -250,10 +285,7 @@ async fn discover_guarded_plugins(
 
 #[cfg(not(unix))]
 async fn discover_guarded_plugins(
-    _root: &Path,
-    _components: &[&[u8]],
-    _home: &Path,
-    _scope: &str,
+    _scope: GuardedPluginScope,
     _cwd: &Path,
     _secrets: Option<&omegon_secrets::SecretsManager>,
     _filter: &PluginSelectionFilter,
@@ -436,16 +468,6 @@ async fn discover_project_mcp_servers(
     }
 
     features
-}
-
-/// Compatibility search paths used by persona/tone discovery.
-fn plugin_search_paths(cwd: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Ok(home) = crate::paths::omegon_home() {
-        paths.push(home.join("plugins"));
-    }
-    paths.push(cwd.join(".omegon").join("plugins"));
-    paths
 }
 
 #[cfg(test)]
@@ -757,6 +779,256 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_persona_catalog_excludes_denied_entries_and_holds_scope_locks() {
+        use omegon_maintenance_contracts::{LockMode, MaintenanceStateV1, ProtocolLock};
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home_path = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home_path.path());
+        write_persona(
+            &home_path.path().join("plugins"),
+            "user-persona",
+            "USER_PERSONA",
+        );
+        write_persona(
+            &project.path().join(".omegon/plugins"),
+            "denied-persona",
+            "DENIED_PERSONA",
+        );
+        write_persona(
+            &project.path().join(".omegon/plugins"),
+            "project-persona",
+            "PROJECT_PERSONA",
+        );
+        deny_plugin(
+            project.path(),
+            &[b".omegon", b"plugins"],
+            home_path.path(),
+            "project",
+            b"denied-persona",
+        );
+        let user_authority = plugin_scope_key(&home_path.path().join("plugins"), "user");
+        let project_authority =
+            plugin_scope_key(&project.path().join(".omegon/plugins"), "project");
+        let home = omegon_maintenance_contracts::open_secure_root(home_path.path()).unwrap();
+        let state = MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+
+        crate::plugins::persona_loader::with_available(project.path(), |personas, tones| {
+            assert!(tones.is_empty());
+            assert_eq!(personas.len(), 2);
+            let directives = personas
+                .iter()
+                .filter_map(|persona| persona.persona())
+                .map(|persona| persona.directive.as_str())
+                .collect::<Vec<_>>();
+            assert!(
+                directives
+                    .iter()
+                    .any(|directive| directive.contains("USER_PERSONA"))
+            );
+            assert!(
+                directives
+                    .iter()
+                    .any(|directive| directive.contains("PROJECT_PERSONA"))
+            );
+            assert!(
+                !directives
+                    .iter()
+                    .any(|directive| directive.contains("DENIED_PERSONA"))
+            );
+            for authority in [user_authority, project_authority] {
+                let lock_name = format!("contribution-{authority}.lock");
+                assert!(
+                    ProtocolLock::acquire_at(
+                        &state.locks,
+                        lock_name.as_bytes(),
+                        LockMode::Exclusive,
+                        false,
+                        true,
+                    )
+                    .is_err()
+                );
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_persona_catalog_skips_nested_symlink_content() {
+        use std::os::unix::fs::symlink;
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        let plugins = project.path().join(".omegon/plugins");
+        write_persona(&plugins, "valid", "VALID_PERSONA");
+        write_persona(&plugins, "linked", "REPLACED_PERSONA");
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), "OUTSIDE_PERSONA").unwrap();
+        std::fs::remove_file(plugins.join("linked/PERSONA.md")).unwrap();
+        symlink(outside.path(), plugins.join("linked/PERSONA.md")).unwrap();
+
+        crate::plugins::persona_loader::with_available(project.path(), |personas, _| {
+            assert_eq!(personas.len(), 1);
+            assert_eq!(personas[0].id, "dev.test.valid");
+            assert!(
+                personas[0]
+                    .persona()
+                    .unwrap()
+                    .directive
+                    .contains("VALID_PERSONA")
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_persona_catalog_rejects_duplicate_ids_across_scopes() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        write_persona_with_id(
+            &home.path().join("plugins"),
+            "user-copy",
+            "dev.test.duplicate",
+            "USER_DUPLICATE",
+        );
+        write_persona_with_id(
+            &project.path().join(".omegon/plugins"),
+            "project-copy",
+            "dev.test.duplicate",
+            "PROJECT_DUPLICATE",
+        );
+
+        crate::plugins::persona_loader::with_available(project.path(), |personas, _| {
+            assert!(personas.is_empty());
+        });
+        assert!(
+            crate::plugins::persona_loader::delete_persona(project.path(), "dev.test.duplicate",)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_persona_catalog_isolates_malformed_project_scope() {
+        use std::io::Write;
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        write_persona(&home.path().join("plugins"), "user-persona", "USER_PERSONA");
+        write_persona(
+            &project.path().join(".omegon/plugins"),
+            "project-persona",
+            "PROJECT_PERSONA",
+        );
+        let authority = initialize_plugin_scope(
+            project.path(),
+            &[b".omegon", b"plugins"],
+            home.path(),
+            "project",
+        );
+        let state_path = home
+            .path()
+            .join("maintain/v1/deny")
+            .join(authority.to_hex())
+            .join("state.json");
+        let mut state = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(state_path)
+            .unwrap();
+        state.write_all(b"{not-json").unwrap();
+        state.sync_all().unwrap();
+
+        crate::plugins::persona_loader::with_available(project.path(), |personas, _| {
+            assert_eq!(personas.len(), 1);
+            assert_eq!(personas[0].id, "dev.test.user-persona");
+        });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_persona_catalog_uses_project_root_from_nested_workspace_path() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        std::fs::write(project.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        write_persona(
+            &project.path().join(".omegon/plugins"),
+            "root-persona",
+            "ROOT_PERSONA",
+        );
+        let nested = project.path().join("src/nested");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        crate::plugins::persona_loader::with_available(&nested, |personas, _| {
+            assert_eq!(personas.len(), 1);
+            assert_eq!(personas[0].id, "dev.test.root-persona");
+        });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn persona_mutations_use_canonical_guarded_user_scope() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        let path = crate::plugins::persona_loader::create_user_persona(
+            project.path(),
+            "mutable",
+            "Mutable",
+            "before",
+            None,
+            &[],
+            "INITIAL_DIRECTIVE",
+        )
+        .unwrap();
+        assert_eq!(path, home.path().join("plugins/mutable"));
+        std::fs::write(path.join(".persona-state"), "preserve").unwrap();
+        crate::plugins::persona_loader::update_persona(
+            project.path(),
+            "user.mutable",
+            crate::plugins::persona_loader::PersonaUpdate {
+                directive: Some("UPDATED_DIRECTIVE"),
+                description: Some("after"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::plugins::persona_loader::with_available(project.path(), |personas, _| {
+            let persona = personas
+                .iter()
+                .find(|persona| persona.id == "user.mutable")
+                .unwrap();
+            assert_eq!(persona.description, "after");
+            assert_eq!(persona.persona().unwrap().directive, "UPDATED_DIRECTIVE");
+        });
+        assert_eq!(
+            std::fs::read_to_string(path.join(".persona-state")).unwrap(),
+            "preserve"
+        );
+        crate::plugins::persona_loader::delete_persona(project.path(), "user.mutable").unwrap();
+        assert!(!path.exists());
+    }
+
     /// Test helper: load a single plugin from a test directory using load_legacy_plugin.
     /// Avoids unsafe env var manipulation that causes flaky tests in parallel runners.
     #[test]
@@ -839,6 +1111,25 @@ mod tests {
             plugin.join("plugin.toml"),
             format!(
                 "[plugin]\nname = \"{name}\"\n\n[activation]\nalways = true\n\n[[tools]]\nname = \"{name}_tool\"\ndescription = \"test\"\nendpoint = \"http://localhost:9999/test\"\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn write_persona(directory: &Path, name: &str, directive: &str) {
+        write_persona_with_id(directory, name, &format!("dev.test.{name}"), directive);
+    }
+
+    #[cfg(unix)]
+    fn write_persona_with_id(directory: &Path, name: &str, id: &str, directive: &str) {
+        let plugin = directory.join(name);
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("PERSONA.md"), directive).unwrap();
+        std::fs::write(
+            plugin.join("plugin.toml"),
+            format!(
+                "[plugin]\ntype = \"persona\"\nid = \"{id}\"\nname = \"{name}\"\nversion = \"1.0.0\"\ndescription = \"test\"\n\n[persona.identity]\ndirective = \"PERSONA.md\"\n"
             ),
         )
         .unwrap();

@@ -22,6 +22,18 @@ pub(crate) struct ContributionSnapshot {
     path: std::path::PathBuf,
 }
 
+pub(crate) fn is_internal_contribution_entry(raw_name: &[u8]) -> bool {
+    let Some(stem) = raw_name.strip_prefix(b".").and_then(|name| {
+        name.strip_suffix(b".tmp")
+            .or_else(|| name.strip_suffix(b".old"))
+    }) else {
+        return false;
+    };
+    std::str::from_utf8(stem)
+        .ok()
+        .is_some_and(|stem| uuid::Uuid::parse_str(stem).is_ok())
+}
+
 impl ContributionSnapshot {
     pub(crate) fn path(&self) -> &Path {
         &self.path
@@ -142,6 +154,23 @@ impl GuardedContributionMutationDirectory {
     }
 
     #[cfg(unix)]
+    pub(crate) fn write_files_directory(
+        &self,
+        raw_name: &[u8],
+        files: &[(&[u8], &[u8], libc::mode_t)],
+        overwrite: bool,
+    ) -> anyhow::Result<()> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        self.stage_and_replace(raw_name, overwrite, |staging| {
+            for (name, bytes, mode) in files {
+                omegon_maintenance_contracts::validate_child_name(name)?;
+                replace_file_at(staging, name, bytes, *mode)?;
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg(unix)]
     pub(crate) fn import_directory(
         &self,
         raw_name: &[u8],
@@ -153,6 +182,20 @@ impl GuardedContributionMutationDirectory {
         let mut bytes = 0_u64;
         self.stage_and_replace(raw_name, overwrite, |staging| {
             copy_source_tree(source, staging, 0, &mut entries, &mut bytes, true)
+        })
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn replace_from_snapshot(
+        &self,
+        raw_name: &[u8],
+        source: &File,
+    ) -> anyhow::Result<()> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        let mut entries = 0_usize;
+        let mut bytes = 0_u64;
+        self.stage_and_replace(raw_name, true, |staging| {
+            copy_source_tree(source, staging, 0, &mut entries, &mut bytes, false)
         })
     }
 
@@ -172,6 +215,19 @@ impl GuardedContributionMutationDirectory {
             tracing::warn!(error = %error, "removed contribution but could not clean detached tree");
         }
         Ok(true)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn open_directory(&self, raw_name: &[u8]) -> anyhow::Result<Option<File>> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        self.validate_binding()?;
+        open_child_directory(&self.directory, raw_name)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn entry_names(&self, limit: usize) -> anyhow::Result<Vec<Vec<u8>>> {
+        self.validate_binding()?;
+        read_directory_names(&self.directory, limit)
     }
 
     #[cfg(unix)]
@@ -199,17 +255,13 @@ impl GuardedContributionMutationDirectory {
             let _ = remove_tree_at(&self.directory, &staging_name);
             return Err(error);
         }
-        let backup_name = format!(".{}.old", uuid::Uuid::new_v4()).into_bytes();
-        if open_child_directory(&self.directory, raw_name)?.is_some()
-            && let Err(error) = rename_at(&self.directory, raw_name, &backup_name)
-        {
-            let _ = remove_tree_at(&self.directory, &staging_name);
-            return Err(error);
-        }
-        if let Err(error) = rename_at(&self.directory, &staging_name, raw_name) {
-            if open_child_directory(&self.directory, &backup_name)?.is_some() {
-                let _ = rename_at(&self.directory, &backup_name, raw_name);
-            }
+        let replaced = open_child_directory(&self.directory, raw_name)?.is_some();
+        let commit = if replaced {
+            exchange_at(&self.directory, &staging_name, raw_name)
+        } else {
+            rename_at(&self.directory, &staging_name, raw_name)
+        };
+        if let Err(error) = commit {
             let _ = remove_tree_at(&self.directory, &staging_name);
             return Err(error);
         }
@@ -217,8 +269,9 @@ impl GuardedContributionMutationDirectory {
             anyhow::bail!("contribution was replaced but parent durability is uncertain: {error}");
         }
         self.validate_binding()?;
-        if open_child_directory(&self.directory, &backup_name)?.is_some()
-            && let Err(error) = remove_tree_at(&self.directory, &backup_name)
+        if replaced
+            && open_child_directory(&self.directory, &staging_name)?.is_some()
+            && let Err(error) = remove_tree_at(&self.directory, &staging_name)
         {
             tracing::warn!(error = %error, "committed contribution but could not remove prior staging tree");
         }
@@ -351,7 +404,7 @@ pub(crate) fn read_file_at(
         libc::openat(
             std::os::fd::AsRawFd::as_raw_fd(parent),
             name.as_ptr(),
-            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )
     };
     if descriptor < 0 {
@@ -626,6 +679,51 @@ fn rename_at(parent: &File, source: &[u8], destination: &[u8]) -> anyhow::Result
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn exchange_at(parent: &File, source: &[u8], destination: &[u8]) -> anyhow::Result<()> {
+    use std::ffi::CString;
+
+    let source = CString::new(source)?;
+    let destination = CString::new(destination)?;
+    // SAFETY: names and the directory descriptor remain valid for this syscall.
+    if unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            source.as_ptr(),
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            destination.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn exchange_at(parent: &File, source: &[u8], destination: &[u8]) -> anyhow::Result<()> {
+    use std::ffi::CString;
+
+    let source = CString::new(source)?;
+    let destination = CString::new(destination)?;
+    // SAFETY: names and the directory descriptor remain valid for this call.
+    if unsafe {
+        libc::renameatx_np(
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            source.as_ptr(),
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            destination.as_ptr(),
+            libc::RENAME_SWAP,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn remove_tree_at(parent: &File, name: &[u8]) -> anyhow::Result<()> {
     use std::ffi::CString;
@@ -692,7 +790,7 @@ fn entry_is_directory_at(parent: &File, name: &[u8]) -> anyhow::Result<bool> {
 }
 
 #[cfg(unix)]
-fn open_child_directory(parent: &File, name: &[u8]) -> anyhow::Result<Option<File>> {
+pub(crate) fn open_child_directory(parent: &File, name: &[u8]) -> anyhow::Result<Option<File>> {
     use std::{ffi::CString, os::fd::FromRawFd};
 
     omegon_maintenance_contracts::validate_child_name(name)?;
@@ -718,12 +816,12 @@ fn open_child_directory(parent: &File, name: &[u8]) -> anyhow::Result<Option<Fil
 }
 
 #[cfg(not(unix))]
-fn open_child_directory(_parent: &File, _name: &[u8]) -> anyhow::Result<Option<File>> {
+pub(crate) fn open_child_directory(_parent: &File, _name: &[u8]) -> anyhow::Result<Option<File>> {
     anyhow::bail!("guarded contribution loading requires Unix")
 }
 
 #[cfg(unix)]
-fn read_directory_names(directory: &File, limit: usize) -> anyhow::Result<Vec<Vec<u8>>> {
+pub(crate) fn read_directory_names(directory: &File, limit: usize) -> anyhow::Result<Vec<Vec<u8>>> {
     use std::{ffi::CStr, os::fd::AsRawFd};
 
     // SAFETY: dup returns a new descriptor consumed by fdopendir.
@@ -768,7 +866,10 @@ fn read_directory_names(directory: &File, limit: usize) -> anyhow::Result<Vec<Ve
 }
 
 #[cfg(not(unix))]
-fn read_directory_names(_directory: &File, _limit: usize) -> anyhow::Result<Vec<Vec<u8>>> {
+pub(crate) fn read_directory_names(
+    _directory: &File,
+    _limit: usize,
+) -> anyhow::Result<Vec<Vec<u8>>> {
     anyhow::bail!("guarded contribution loading requires Unix")
 }
 

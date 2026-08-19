@@ -493,7 +493,7 @@ pub(crate) async fn execute_stateless_control(
         ControlRequest::PermissionTrustRemove { path } => {
             permission_trust_remove_response(shared_settings, cwd, path).await
         }
-        ControlRequest::PersonaList => persona_list_response(handles).await,
+        ControlRequest::PersonaList => persona_list_response(handles, cwd).await,
         ControlRequest::PersonaSwitch { name } => persona_switch_response(name).await,
         _ => return None,
     };
@@ -4044,41 +4044,40 @@ fn render_profile_export(
 
 pub async fn persona_list_response(
     handles: &crate::runtime_state::RuntimeStateHandles,
+    cwd: &Path,
 ) -> SlashCommandResponse {
-    let (personas, tones) = crate::plugins::persona_loader::scan_available();
-
     let active_id = handles
         .observe_harness()
         .ok()
         .flatten()
         .and_then(|h| h.active_persona.map(|p| p.id));
 
-    let persona_list: Vec<serde_json::Value> = personas
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "id": p.id,
-                "name": p.name,
-                "description": p.description,
-                "active": active_id.as_deref() == Some(&p.id),
+    let output = crate::plugins::persona_loader::with_available(cwd, |personas, tones| {
+        let persona_list: Vec<serde_json::Value> = personas
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id,
+                    "name": p.name,
+                    "description": p.description,
+                    "active": active_id.as_deref() == Some(&p.id),
+                })
             })
-        })
-        .collect();
-
-    let tone_list: Vec<serde_json::Value> = tones
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "id": t.id,
-                "name": t.name,
-                "description": t.description,
+            .collect();
+        let tone_list: Vec<serde_json::Value> = tones
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "name": t.name,
+                    "description": t.description,
+                })
             })
+            .collect();
+        serde_json::json!({
+            "personas": persona_list,
+            "tones": tone_list,
         })
-        .collect();
-
-    let output = serde_json::json!({
-        "personas": persona_list,
-        "tones": tone_list,
     });
 
     SlashCommandResponse {

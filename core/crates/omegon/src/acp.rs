@@ -2650,6 +2650,11 @@ impl OmegonAcpAgent {
         use crate::extensions::{ExtensionManifest, ExtensionState, config_store};
 
         let extensions_dir = crate::extension_cli::extensions_dir()?;
+        let session_cwd = self
+            .session_cwd
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
 
         match method {
             "runtime/status" => Ok(self.runtime_status_json()),
@@ -3631,88 +3636,70 @@ impl OmegonAcpAgent {
             }
 
             // ── Personas ──────────────────────────────────────────
-            "personas/list" => {
-                let (personas, tones) = crate::plugins::persona_loader::scan_available();
-                let persona_entries: Vec<serde_json::Value> = personas
-                    .iter()
-                    .map(|p| {
-                        let directive =
-                            std::fs::read_to_string(p.path.join("PERSONA.md")).unwrap_or_default();
-                        serde_json::json!({
-                            "id": p.id,
-                            "name": p.name,
-                            "description": p.description,
-                            "directive_preview": if directive.len() > 500 {
-                                format!("{}...", crate::util::truncate_str(&directive, 500))
-                            } else {
-                                directive
-                            },
-                            "path": p.path.display().to_string(),
+            "personas/list" => Ok(crate::plugins::persona_loader::with_available(
+                &session_cwd,
+                |personas, tones| {
+                    let persona_entries: Vec<serde_json::Value> = personas
+                        .iter()
+                        .map(|p| {
+                            let directive = p
+                                .persona()
+                                .map(|persona| persona.directive.as_str())
+                                .unwrap_or("");
+                            serde_json::json!({
+                                "id": p.id,
+                                "name": p.name,
+                                "description": p.description,
+                                "directive_preview": if directive.len() > 500 {
+                                    format!("{}...", crate::util::truncate_str(directive, 500))
+                                } else {
+                                    directive.to_string()
+                                },
+                                "path": p.path.display().to_string(),
+                            })
                         })
-                    })
-                    .collect();
-                let tone_entries: Vec<serde_json::Value> = tones
-                    .iter()
-                    .map(|t| {
-                        serde_json::json!({
-                            "id": t.id,
-                            "name": t.name,
-                            "description": t.description,
-                            "path": t.path.display().to_string(),
+                        .collect();
+                    let tone_entries: Vec<serde_json::Value> = tones
+                        .iter()
+                        .map(|t| {
+                            serde_json::json!({
+                                "id": t.id,
+                                "name": t.name,
+                                "description": t.description,
+                                "path": t.path.display().to_string(),
+                            })
                         })
+                        .collect();
+                    serde_json::json!({
+                        "personas": persona_entries,
+                        "tones": tone_entries,
                     })
-                    .collect();
-                Ok(serde_json::json!({
-                    "personas": persona_entries,
-                    "tones": tone_entries,
-                }))
-            }
+                },
+            )),
 
             "personas/get" => {
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'id' field"))?;
-                let (personas, _) = crate::plugins::persona_loader::scan_available();
-                let p = personas
-                    .iter()
-                    .find(|p| p.id == id)
-                    .ok_or_else(|| anyhow::anyhow!("persona '{id}' not found"))?;
-                let directive =
-                    std::fs::read_to_string(p.path.join("PERSONA.md")).unwrap_or_default();
-                let manifest_content =
-                    std::fs::read_to_string(p.path.join("plugin.toml")).unwrap_or_default();
-
-                // Parse disabled_tools and badge from manifest
-                let manifest =
-                    crate::plugins::armory::ArmoryManifest::parse(&manifest_content).ok();
-                let disabled_tools: Vec<String> = manifest
-                    .as_ref()
-                    .and_then(|m| m.persona.as_ref())
-                    .and_then(|p| p.tools.as_ref())
-                    .map(|t| t.disable.clone())
-                    .unwrap_or_default();
-                let activated_skills: Vec<String> = manifest
-                    .as_ref()
-                    .and_then(|m| m.persona.as_ref())
-                    .and_then(|p| p.skills.as_ref())
-                    .map(|s| s.activate.clone())
-                    .unwrap_or_default();
-                let badge = manifest
-                    .as_ref()
-                    .and_then(|m| m.persona.as_ref())
-                    .and_then(|p| p.style.as_ref())
-                    .and_then(|s| s.badge.clone());
-
-                Ok(serde_json::json!({
-                    "id": p.id,
-                    "name": p.name,
-                    "description": p.description,
-                    "directive": directive,
-                    "disabled_tools": disabled_tools,
-                    "activated_skills": activated_skills,
-                    "badge": badge,
-                    "path": p.path.display().to_string(),
-                }))
+                crate::plugins::persona_loader::with_available(&session_cwd, |personas, _| {
+                    let p = personas
+                        .iter()
+                        .find(|p| p.id == id)
+                        .ok_or_else(|| anyhow::anyhow!("persona '{id}' not found"))?;
+                    let loaded = p
+                        .persona()
+                        .ok_or_else(|| anyhow::anyhow!("persona '{id}' content is unavailable"))?;
+                    Ok(serde_json::json!({
+                        "id": p.id,
+                        "name": p.name,
+                        "description": p.description,
+                        "directive": loaded.directive,
+                        "disabled_tools": loaded.disabled_tools,
+                        "activated_skills": loaded.activated_skills,
+                        "badge": loaded.badge,
+                        "path": p.path.display().to_string(),
+                    }))
+                })
             }
 
             "personas/create" => {
@@ -3746,54 +3733,16 @@ impl OmegonAcpAgent {
                 if slug.is_empty() || slug.contains("..") {
                     anyhow::bail!("invalid persona name — must contain alphanumeric characters");
                 }
-                let home = crate::paths::omegon_home()?;
-                let persona_dir = home.join("armory/personas").join(&slug);
-                std::fs::create_dir_all(&persona_dir)?;
-
                 let id = format!("user.{slug}");
-
-                // Build plugin.toml via toml serialization to prevent injection
-                let mut plugin = toml::Table::new();
-                let mut plugin_section = toml::Table::new();
-                plugin_section.insert("type".into(), "persona".into());
-                plugin_section.insert("id".into(), id.clone().into());
-                plugin_section.insert("name".into(), name.into());
-                plugin_section.insert("version".into(), "1.0.0".into());
-                plugin_section.insert("description".into(), description.into());
-                plugin.insert("plugin".into(), toml::Value::Table(plugin_section));
-
-                let mut persona = toml::Table::new();
-                let mut identity = toml::Table::new();
-                identity.insert("directive".into(), "PERSONA.md".into());
-                persona.insert("identity".into(), toml::Value::Table(identity));
-
-                if !disabled_tools.is_empty() {
-                    let mut tools = toml::Table::new();
-                    tools.insert(
-                        "disable".into(),
-                        toml::Value::Array(
-                            disabled_tools
-                                .iter()
-                                .map(|s| toml::Value::String(s.clone()))
-                                .collect(),
-                        ),
-                    );
-                    persona.insert("tools".into(), toml::Value::Table(tools));
-                }
-
-                if let Some(b) = badge {
-                    let mut style = toml::Table::new();
-                    style.insert("badge".into(), b.into());
-                    persona.insert("style".into(), toml::Value::Table(style));
-                }
-
-                plugin.insert("persona".into(), toml::Value::Table(persona));
-
-                std::fs::write(
-                    persona_dir.join("plugin.toml"),
-                    toml::to_string_pretty(&plugin)?,
+                let persona_dir = crate::plugins::persona_loader::create_user_persona(
+                    &session_cwd,
+                    &slug,
+                    name,
+                    description,
+                    badge,
+                    &disabled_tools,
+                    directive,
                 )?;
-                std::fs::write(persona_dir.join("PERSONA.md"), directive)?;
 
                 Ok(serde_json::json!({
                     "ok": true,
@@ -3806,108 +3755,41 @@ impl OmegonAcpAgent {
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'id' field"))?;
-                let (personas, _) = crate::plugins::persona_loader::scan_available();
-                match personas.iter().find(|p| p.id == id) {
-                    Some(p) => {
-                        if p.path.exists() {
-                            std::fs::remove_dir_all(&p.path)?;
-                        }
-                        Ok(serde_json::json!({ "ok": true }))
-                    }
-                    None => anyhow::bail!("persona '{id}' not found"),
-                }
+                crate::plugins::persona_loader::delete_persona(&session_cwd, id)?;
+                Ok(serde_json::json!({ "ok": true }))
             }
 
             "personas/update" => {
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'id' field"))?;
-                let (personas, _) = crate::plugins::persona_loader::scan_available();
-                let p = personas
-                    .iter()
-                    .find(|p| p.id == id)
-                    .ok_or_else(|| anyhow::anyhow!("persona '{id}' not found"))?;
-                if !p.path.exists() {
-                    anyhow::bail!("persona directory not found at {}", p.path.display());
-                }
-
-                // Update directive if provided
-                if let Some(directive) = params.get("directive").and_then(|v| v.as_str()) {
-                    std::fs::write(p.path.join("PERSONA.md"), directive)?;
-                }
-
-                // Update manifest fields if any are provided
-                let manifest_path = p.path.join("plugin.toml");
-                let manifest_content = std::fs::read_to_string(&manifest_path)?;
-                let mut manifest: toml::Table = toml::from_str(&manifest_content)?;
-
-                if let Some(name) = params.get("name").and_then(|v| v.as_str())
-                    && let Some(plugin) = manifest.get_mut("plugin").and_then(|v| v.as_table_mut())
-                {
-                    plugin.insert("name".into(), name.into());
-                }
-                if let Some(desc) = params.get("description").and_then(|v| v.as_str())
-                    && let Some(plugin) = manifest.get_mut("plugin").and_then(|v| v.as_table_mut())
-                {
-                    plugin.insert("description".into(), desc.into());
-                }
-                if let Some(badge) = params.get("badge").and_then(|v| v.as_str()) {
-                    let persona = manifest
-                        .entry("persona")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    let style = persona
-                        .entry("style")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    style.insert("badge".into(), badge.into());
-                }
-                if let Some(disabled_tools) =
-                    params.get("disabled_tools").and_then(|v| v.as_array())
-                {
-                    let tools_arr: Vec<toml::Value> = disabled_tools
-                        .iter()
-                        .filter_map(|v| v.as_str().map(|s| toml::Value::String(s.to_string())))
-                        .collect();
-                    let persona = manifest
-                        .entry("persona")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    let tools = persona
-                        .entry("tools")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    tools.insert("disable".into(), toml::Value::Array(tools_arr));
-                }
-                if let Some(activated_skills) =
-                    params.get("activated_skills").and_then(|v| v.as_array())
-                {
-                    let skills_arr: Vec<toml::Value> = activated_skills
-                        .iter()
-                        .filter_map(|v| v.as_str().map(|s| toml::Value::String(s.to_string())))
-                        .collect();
-                    let persona = manifest
-                        .entry("persona")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    let skills = persona
-                        .entry("skills")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    skills.insert("activate".into(), toml::Value::Array(skills_arr));
-                }
-
-                std::fs::write(&manifest_path, toml::to_string_pretty(&manifest)?)?;
+                let string_array = |name: &str| {
+                    params
+                        .get(name)
+                        .and_then(|value| value.as_array())
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(String::from))
+                                .collect()
+                        })
+                };
+                let path = crate::plugins::persona_loader::update_persona(
+                    &session_cwd,
+                    id,
+                    crate::plugins::persona_loader::PersonaUpdate {
+                        directive: params.get("directive").and_then(|v| v.as_str()),
+                        name: params.get("name").and_then(|v| v.as_str()),
+                        description: params.get("description").and_then(|v| v.as_str()),
+                        badge: params.get("badge").and_then(|v| v.as_str()),
+                        disabled_tools: string_array("disabled_tools"),
+                        activated_skills: string_array("activated_skills"),
+                    },
+                )?;
 
                 Ok(serde_json::json!({
                     "ok": true,
-                    "path": p.path.display().to_string(),
+                    "path": path.display().to_string(),
                 }))
             }
 

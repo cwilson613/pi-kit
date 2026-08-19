@@ -154,58 +154,50 @@ impl Feature for PersonaFeature {
                     }
                 }
 
-                let (personas, _) = persona_loader::scan_available();
                 let target = name.to_lowercase();
-
-                match personas.iter().find(|p| {
-                    p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target)
-                }) {
-                    Some(available) => {
-                        match persona_loader::load_persona(&available.path) {
-                            Ok(loaded_persona) => {
-                                let badge =
-                                    loaded_persona.badge.clone().unwrap_or_else(|| "⚙".into());
-                                let fact_count = loaded_persona.mind_facts.len();
-                                let pname = loaded_persona.name.clone();
-                                let skills = loaded_persona.activated_skills.join(", ");
-
-                                // Actually activate the persona
-                                let activation_result =
-                                    self.registry.lock().activate_persona(loaded_persona);
-                                self.refresh_status_pending.store(true, Ordering::Relaxed);
-
-                                let mut message = format!(
-                                    "{badge} Persona activated: {pname}\n  Mind facts: {fact_count}\n  Skills: {skills}\n\n\
-                                    Note: The persona directive and mind facts are now active in the system prompt."
-                                );
-
-                                if let Some(prev) = activation_result.previous_id {
-                                    message.push_str(&format!(
-                                        "\n\nPrevious persona ({}) was deactivated.",
-                                        prev
-                                    ));
-                                }
-
-                                Ok(text_result(&message))
+                let result = persona_loader::with_available(&self.workspace_root, |personas, _| {
+                    match personas
+                        .iter()
+                        .find(|p| {
+                            p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target)
+                        })
+                        .and_then(|available| available.persona())
+                        .cloned()
+                    {
+                        Some(loaded_persona) => {
+                            let badge = loaded_persona.badge.clone().unwrap_or_else(|| "⚙".into());
+                            let fact_count = loaded_persona.mind_facts.len();
+                            let pname = loaded_persona.name.clone();
+                            let skills = loaded_persona.activated_skills.join(", ");
+                            let activation_result =
+                                self.registry.lock().activate_persona(loaded_persona);
+                            self.refresh_status_pending.store(true, Ordering::Relaxed);
+                            let mut message = format!(
+                                "{badge} Persona activated: {pname}\n  Mind facts: {fact_count}\n  Skills: {skills}\n\n\
+                                Note: The persona directive and mind facts are now active in the system prompt."
+                            );
+                            if let Some(prev) = activation_result.previous_id {
+                                message.push_str(&format!(
+                                    "\n\nPrevious persona ({prev}) was deactivated."
+                                ));
                             }
-                            Err(e) => Ok(error_result(&format!(
-                                "Failed to load persona '{name}': {e}"
-                            ))),
+                            text_result(&message)
+                        }
+                        None => {
+                            let available_names: Vec<_> =
+                                personas.iter().map(|p| p.name.as_str()).collect();
+                            error_result(&format!(
+                                "Persona '{name}' not found. Available: {}",
+                                if available_names.is_empty() {
+                                    "none installed".into()
+                                } else {
+                                    available_names.join(", ")
+                                }
+                            ))
                         }
                     }
-                    None => {
-                        let available_names: Vec<_> =
-                            personas.iter().map(|p| p.name.as_str()).collect();
-                        Ok(error_result(&format!(
-                            "Persona '{name}' not found. Available: {}",
-                            if available_names.is_empty() {
-                                "none installed".into()
-                            } else {
-                                available_names.join(", ")
-                            }
-                        )))
-                    }
-                }
+                });
+                Ok(result)
             }
 
             crate::tool_registry::persona::SWITCH_TONE => {
@@ -223,94 +215,98 @@ impl Feature for PersonaFeature {
                     }
                 }
 
-                let (_, tones) = persona_loader::scan_available();
                 let target = name.to_lowercase();
-
-                match tones.iter().find(|t| {
-                    t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target)
-                }) {
-                    Some(available) => {
-                        match persona_loader::load_tone(&available.path) {
-                            Ok(loaded_tone) => {
-                                let tname = loaded_tone.name.clone();
-                                let exemplar_count = loaded_tone.exemplars.len();
-
-                                // Actually activate the tone
-                                let previous = self.registry.lock().activate_tone(loaded_tone);
-                                self.refresh_status_pending.store(true, Ordering::Relaxed);
-
-                                let mut message = format!(
-                                    "♪ Tone activated: {tname}\n  Exemplars: {exemplar_count}\n\n\
-                                    Note: The tone directive is now active in the system prompt."
-                                );
-
-                                if let Some(prev) = previous {
-                                    message.push_str(&format!(
-                                        "\n\nPrevious tone ({}) was deactivated.",
-                                        prev
-                                    ));
+                let result = persona_loader::with_available(&self.workspace_root, |_, tones| {
+                    match tones
+                        .iter()
+                        .find(|t| {
+                            t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target)
+                        })
+                        .and_then(|available| available.tone())
+                        .cloned()
+                    {
+                        Some(loaded_tone) => {
+                            let tname = loaded_tone.name.clone();
+                            let exemplar_count = loaded_tone.exemplars.len();
+                            let previous = self.registry.lock().activate_tone(loaded_tone);
+                            self.refresh_status_pending.store(true, Ordering::Relaxed);
+                            let mut message = format!(
+                                "♪ Tone activated: {tname}\n  Exemplars: {exemplar_count}\n\n\
+                                Note: The tone directive is now active in the system prompt."
+                            );
+                            if let Some(prev) = previous {
+                                message.push_str(&format!(
+                                    "\n\nPrevious tone ({prev}) was deactivated."
+                                ));
+                            }
+                            text_result(&message)
+                        }
+                        None => {
+                            let available_names: Vec<_> =
+                                tones.iter().map(|t| t.name.as_str()).collect();
+                            error_result(&format!(
+                                "Tone '{name}' not found. Available: {}",
+                                if available_names.is_empty() {
+                                    "none installed".into()
+                                } else {
+                                    available_names.join(", ")
                                 }
-
-                                Ok(text_result(&message))
-                            }
-                            Err(e) => {
-                                Ok(error_result(&format!("Failed to load tone '{name}': {e}")))
-                            }
+                            ))
                         }
                     }
-                    None => {
-                        let available_names: Vec<_> =
-                            tones.iter().map(|t| t.name.as_str()).collect();
-                        Ok(error_result(&format!(
-                            "Tone '{name}' not found. Available: {}",
-                            if available_names.is_empty() {
-                                "none installed".into()
-                            } else {
-                                available_names.join(", ")
-                            }
-                        )))
-                    }
-                }
+                });
+                Ok(result)
             }
 
             crate::tool_registry::persona::LIST_PERSONAS => {
-                let (personas, tones) = persona_loader::scan_available();
-                let registry = self.registry.lock();
-                let active_persona = registry.active_persona().map(|p| &p.id);
-                let active_tone = registry.active_tone().map(|t| &t.id);
+                let (active_persona, active_tone) = {
+                    let registry = self.registry.lock();
+                    (
+                        registry.active_persona().map(|p| p.id.clone()),
+                        registry.active_tone().map(|t| t.id.clone()),
+                    )
+                };
+                let out =
+                    persona_loader::with_available(&self.workspace_root, |personas, tones| {
+                        let mut out = String::new();
 
-                let mut out = String::new();
-
-                out.push_str("## Personas\n\n");
-                if personas.is_empty() {
-                    out.push_str("No personas installed.\n");
-                } else {
-                    for p in &personas {
-                        let marker = if active_persona == Some(&p.id) {
-                            " ● (active)"
+                        out.push_str("## Personas\n\n");
+                        if personas.is_empty() {
+                            out.push_str("No personas installed.\n");
                         } else {
-                            ""
-                        };
-                        out.push_str(&format!("- **{}**{}: {}\n", p.name, marker, p.description));
-                    }
-                }
+                            for p in personas {
+                                let marker = if active_persona.as_ref() == Some(&p.id) {
+                                    " ● (active)"
+                                } else {
+                                    ""
+                                };
+                                out.push_str(&format!(
+                                    "- **{}**{}: {}\n",
+                                    p.name, marker, p.description
+                                ));
+                            }
+                        }
 
-                out.push_str("\n## Tones\n\n");
-                if tones.is_empty() {
-                    out.push_str("No tones installed.\n");
-                } else {
-                    for t in &tones {
-                        let marker = if active_tone == Some(&t.id) {
-                            " ● (active)"
+                        out.push_str("\n## Tones\n\n");
+                        if tones.is_empty() {
+                            out.push_str("No tones installed.\n");
                         } else {
-                            ""
-                        };
-                        out.push_str(&format!("- **{}**{}: {}\n", t.name, marker, t.description));
-                    }
-                }
+                            for t in tones {
+                                let marker = if active_tone.as_ref() == Some(&t.id) {
+                                    " ● (active)"
+                                } else {
+                                    ""
+                                };
+                                out.push_str(&format!(
+                                    "- **{}**{}: {}\n",
+                                    t.name, marker, t.description
+                                ));
+                            }
+                        }
 
-                out.push_str("\nInstall plugins with: `omegon plugin install <git-url>`");
-
+                        out.push_str("\nInstall plugins with: `omegon plugin install <git-url>`");
+                        out
+                    });
                 Ok(text_result(&out))
             }
 

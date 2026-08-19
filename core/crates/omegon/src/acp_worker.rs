@@ -931,25 +931,26 @@ async fn handle_control_request(
         }
 
         "persona_list" => {
-            let (personas, tones) = crate::plugins::persona_loader::scan_available();
-            let mut out = String::new();
-            if personas.is_empty() && tones.is_empty() {
-                out.push_str("No personas or tones found.");
-            } else {
-                if !personas.is_empty() {
-                    out.push_str(&format!("Personas ({}):\n", personas.len()));
-                    for p in &personas {
-                        out.push_str(&format!("  {} — {}\n", p.name, p.description));
+            crate::plugins::persona_loader::with_available(cwd, |personas, tones| {
+                let mut out = String::new();
+                if personas.is_empty() && tones.is_empty() {
+                    out.push_str("No personas or tones found.");
+                } else {
+                    if !personas.is_empty() {
+                        out.push_str(&format!("Personas ({}):\n", personas.len()));
+                        for p in personas {
+                            out.push_str(&format!("  {} — {}\n", p.name, p.description));
+                        }
+                    }
+                    if !tones.is_empty() {
+                        out.push_str(&format!("\nTones ({}):\n", tones.len()));
+                        for t in tones {
+                            out.push_str(&format!("  {} — {}\n", t.name, t.description));
+                        }
                     }
                 }
-                if !tones.is_empty() {
-                    out.push_str(&format!("\nTones ({}):\n", tones.len()));
-                    for t in &tones {
-                        out.push_str(&format!("  {} — {}\n", t.name, t.description));
-                    }
-                }
-            }
-            out
+                out
+            })
         }
 
         "persona_switch" => {

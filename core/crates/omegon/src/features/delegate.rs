@@ -1151,28 +1151,31 @@ If blocked, say the blocker plainly.\n",
         // Assemble field kit: load persona mind if specified
         let mut field_kit_context = String::new();
         if let Some(ref persona_id) = mind {
-            // Try to find the persona in installed plugins and load its directive + facts
-            let (personas, _) = crate::plugins::persona_loader::scan_available();
-            if let Some(available) = personas.iter().find(|p| {
-                p.id.contains(persona_id)
-                    || p.name.to_lowercase().contains(&persona_id.to_lowercase())
-            }) && let Ok(persona) = crate::plugins::persona_loader::load_persona(&available.path)
-            {
-                field_kit_context.push_str(&format!(
-                    "\n## Persona: {}\n{}\n",
-                    persona.name, persona.directive
-                ));
-                if !persona.mind_facts.is_empty() {
+            crate::plugins::persona_loader::with_available(&self.cwd, |personas, _| {
+                if let Some(persona) = personas
+                    .iter()
+                    .find(|p| {
+                        p.id.contains(persona_id)
+                            || p.name.to_lowercase().contains(&persona_id.to_lowercase())
+                    })
+                    .and_then(|available| available.persona())
+                {
                     field_kit_context.push_str(&format!(
-                        "\n## Mind Facts ({} facts)\n",
-                        persona.mind_facts.len()
+                        "\n## Persona: {}\n{}\n",
+                        persona.name, persona.directive
                     ));
-                    for fact in &persona.mind_facts {
-                        field_kit_context
-                            .push_str(&format!("- [{}] {}\n", fact.section, fact.content));
+                    if !persona.mind_facts.is_empty() {
+                        field_kit_context.push_str(&format!(
+                            "\n## Mind Facts ({} facts)\n",
+                            persona.mind_facts.len()
+                        ));
+                        for fact in &persona.mind_facts {
+                            field_kit_context
+                                .push_str(&format!("- [{}] {}\n", fact.section, fact.content));
+                        }
                     }
                 }
-            }
+            });
         }
         if let Some(ref fact_list) = facts
             && !fact_list.is_empty()

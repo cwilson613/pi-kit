@@ -37,6 +37,36 @@ struct ScopedHomeEnv {
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
+struct ScopedOmegonHomeEnv {
+    prev: Option<std::ffi::OsString>,
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl ScopedOmegonHomeEnv {
+    fn set(home: &Path) -> Self {
+        let guard = crate::test_support::env::lock();
+        let prev = std::env::var_os("OMEGON_HOME");
+        // SAFETY: serialized by the shared process-environment test lock.
+        unsafe { std::env::set_var("OMEGON_HOME", home) };
+        Self {
+            prev,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for ScopedOmegonHomeEnv {
+    fn drop(&mut self) {
+        // SAFETY: the shared process-environment test lock is still held.
+        unsafe {
+            match self.prev.take() {
+                Some(value) => std::env::set_var("OMEGON_HOME", value),
+                None => std::env::remove_var("OMEGON_HOME"),
+            }
+        }
+    }
+}
+
 impl ScopedHomeEnv {
     fn set(home: &Path) -> Self {
         let guard = crate::auth::TEST_AUTH_ENV_LOCK
@@ -4573,6 +4603,7 @@ fn slash_compact_is_unknown() {
 #[test]
 fn slash_persona_no_args_opens_selector() {
     let dir = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(dir.path());
     let plugin_dir = dir.path().join(".omegon/plugins/test-persona");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("PERSONA.md"), "Be useful.\n").unwrap();
@@ -4592,9 +4623,8 @@ directive = "PERSONA.md"
     )
     .unwrap();
 
-    let _cwd = push_current_dir(dir.path());
-
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().display().to_string();
     let tx = test_tx();
     let result = app.handle_slash_command("/persona", &tx);
 
@@ -4624,6 +4654,7 @@ fn slash_persona_off_deactivates() {
 #[test]
 fn slash_tone_no_args_opens_selector() {
     let dir = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(dir.path());
     let plugin_dir = dir.path().join(".omegon/plugins/test-tone");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("TONE.md"), "Stay concise.\n").unwrap();
@@ -4643,9 +4674,8 @@ directive = "TONE.md"
     )
     .unwrap();
 
-    let _cwd = push_current_dir(dir.path());
-
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().display().to_string();
     let tx = test_tx();
     let result = app.handle_slash_command("/tone", &tx);
 
@@ -5193,6 +5223,7 @@ fn context_selector_confirm_changes_settings() {
 #[test]
 fn persona_selector_confirm_activates_selected_persona() {
     let dir = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(dir.path());
     let plugin_dir = dir.path().join(".omegon/plugins/test-persona");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("PERSONA.md"), "Be useful.\n").unwrap();
@@ -5212,9 +5243,8 @@ directive = "PERSONA.md"
     )
     .unwrap();
 
-    let _cwd = push_current_dir(dir.path());
-
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().display().to_string();
     app.open_persona_selector();
     let tx = test_tx();
     let message = app.confirm_selector(&tx);
@@ -5234,6 +5264,7 @@ directive = "PERSONA.md"
 #[test]
 fn tone_selector_confirm_activates_selected_tone() {
     let dir = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(dir.path());
     let plugin_dir = dir.path().join(".omegon/plugins/test-tone");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("TONE.md"), "Stay concise.\n").unwrap();
@@ -5253,9 +5284,8 @@ directive = "TONE.md"
     )
     .unwrap();
 
-    let _cwd = push_current_dir(dir.path());
-
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().display().to_string();
     app.open_tone_selector();
     let tx = test_tx();
     let message = app.confirm_selector(&tx);

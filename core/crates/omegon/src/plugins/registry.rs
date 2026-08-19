@@ -369,6 +369,9 @@ impl AugmentRegistry {
         let mut entries = directory.entry_names(MAX_SKILL_ENTRIES)?;
         entries.sort();
         for raw_name in entries {
+            if crate::contribution_loading::is_internal_contribution_entry(&raw_name) {
+                continue;
+            }
             if !directory.allows(&raw_name)? {
                 tracing::info!(scope, skill = %String::from_utf8_lossy(&raw_name), "excluded denied skill");
                 continue;

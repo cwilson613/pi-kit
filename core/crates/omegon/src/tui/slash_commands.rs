@@ -719,14 +719,23 @@ Scroll transcript:
                     SlashResult::Handled
                 } else {
                     // Activate by name (case-insensitive match)
-                    let (personas, _) = crate::plugins::persona_loader::scan_available();
                     let target = args.to_lowercase();
-                    match personas.iter().find(|p| {
-                        p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target)
-                    }) {
-                        Some(available) => {
-                            match crate::plugins::persona_loader::load_persona(&available.path) {
-                                Ok(persona) => {
+                    let cwd = self.cwd().to_path_buf();
+                    let persona = crate::plugins::persona_loader::with_available(
+                        &cwd,
+                        |personas, _| {
+                            personas
+                                .iter()
+                                .find(|p| {
+                                    p.name.to_lowercase() == target
+                                        || p.id.to_lowercase().contains(&target)
+                                })
+                                .and_then(|available| available.persona())
+                                .cloned()
+                        },
+                    );
+                    match persona {
+                        Some(persona) => {
                                     let name = persona.name.clone();
                                     let badge = persona.badge.clone().unwrap_or_else(|| "⚙".into());
                                     let fact_count = persona.mind_facts.len();
@@ -736,11 +745,6 @@ Scroll transcript:
                                     SlashResult::Display(format!(
                                         "{badge} Persona activated: {name} ({fact_count} mind facts)"
                                     ))
-                                }
-                                Err(e) => {
-                                    SlashResult::Display(format!("Failed to load persona: {e}"))
-                                }
-                            }
                         }
                         None => SlashResult::Display(format!(
                             "Persona '{args}' not found. Run /persona list to see available, or /persona create to build one."
@@ -764,22 +768,25 @@ Scroll transcript:
                     self.open_tone_selector();
                     SlashResult::Handled
                 } else {
-                    let (_, tones) = crate::plugins::persona_loader::scan_available();
                     let target = args.to_lowercase();
-                    match tones.iter().find(|t| {
-                        t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target)
-                    }) {
-                        Some(available) => {
-                            match crate::plugins::persona_loader::load_tone(&available.path) {
-                                Ok(tone) => {
+                    let cwd = self.cwd().to_path_buf();
+                    let tone = crate::plugins::persona_loader::with_available(&cwd, |_, tones| {
+                        tones
+                            .iter()
+                            .find(|t| {
+                                t.name.to_lowercase() == target
+                                    || t.id.to_lowercase().contains(&target)
+                            })
+                            .and_then(|available| available.tone())
+                            .cloned()
+                    });
+                    match tone {
+                        Some(tone) => {
                                     let name = tone.name.clone();
                                     if let Some(ref mut registry) = self.augment_registry {
                                         registry.activate_tone(tone);
                                     }
                                     SlashResult::Display(format!("♪ Tone activated: {name}"))
-                                }
-                                Err(e) => SlashResult::Display(format!("Failed to load tone: {e}")),
-                            }
                         }
                         None => SlashResult::Display(format!(
                             "Tone '{args}' not found. Run /tone to list available."

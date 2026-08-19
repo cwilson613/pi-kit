@@ -511,6 +511,74 @@ pub(crate) fn import_skill_at_root(
     })
 }
 
+pub(crate) fn import_project_skill_guarded(
+    path: &std::path::Path,
+    project_root: &std::path::Path,
+    home: &std::path::Path,
+    force: bool,
+) -> anyhow::Result<SkillImportSummary> {
+    let source = path.canonicalize()?;
+    let (source_dir, skill_file) = if source.is_dir() {
+        (source.clone(), source.join("SKILL.md"))
+    } else {
+        let parent = source
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("skill file has no parent directory"))?
+            .to_path_buf();
+        (parent, source.clone())
+    };
+    if !skill_file.is_file() {
+        anyhow::bail!("{} does not contain SKILL.md", source.display());
+    }
+    let source_parent = omegon_maintenance_contracts::open_secure_root(&source_dir)?;
+    let skill_name = skill_file
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("skill file has no basename"))?
+        .as_encoded_bytes();
+    let content =
+        crate::contribution_loading::read_file_at(&source_parent, skill_name, 4 * 1024 * 1024)?
+            .ok_or_else(|| anyhow::anyhow!("skill file disappeared"))?;
+    let content = String::from_utf8(content)?;
+    let (manifest, _body) = parse_skill_file(&content);
+    let fallback_name = source_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("skill");
+    let name = if manifest.name.trim().is_empty() {
+        fallback_name
+    } else {
+        &manifest.name
+    };
+    let slug = validate_skill_name(name)?;
+    let directory =
+        crate::contribution_loading::GuardedContributionMutationDirectory::open_or_create(
+            project_root,
+            &[b".omegon", b"skills"],
+            home,
+            omegon_maintenance_contracts::ContributionKind::Skill,
+            "project",
+        )?;
+    if source.is_dir() {
+        directory.import_directory(slug.as_bytes(), &source_parent, force)?;
+    } else {
+        directory.write_single_file_directory(
+            slug.as_bytes(),
+            b"SKILL.md",
+            content.as_bytes(),
+            force,
+        )?;
+    }
+    let destination = project_root.join(".omegon/skills").join(&slug);
+    let bundle = omegon_skills::summarize_imported_skill(&destination, &slug, &[]);
+    Ok(SkillImportSummary {
+        name: slug,
+        scope: "project".into(),
+        source,
+        destination,
+        bundle,
+    })
+}
+
 pub fn cmd_import(path: &std::path::Path, project: bool, force: bool) -> anyhow::Result<()> {
     let summary = import_skill(path, project, force)?;
     println!(
@@ -973,6 +1041,50 @@ pub(crate) fn delete_external_skill_at_root(
     }
 
     anyhow::bail!("external skill '{slug}' not found")
+}
+
+pub(crate) fn delete_project_skill_guarded(
+    name: &str,
+    project_root: &std::path::Path,
+    home: &std::path::Path,
+) -> anyhow::Result<Option<SkillDeleteSummary>> {
+    let slug = validate_skill_name(name)?;
+    let Some(directory) =
+        crate::contribution_loading::GuardedContributionMutationDirectory::open_existing(
+            project_root,
+            &[b".omegon", b"skills"],
+            home,
+            omegon_maintenance_contracts::ContributionKind::Skill,
+            "project",
+        )?
+    else {
+        return Ok(None);
+    };
+    if !directory.remove_directory(slug.as_bytes())? {
+        return Ok(None);
+    }
+    Ok(Some(SkillDeleteSummary {
+        name: slug.clone(),
+        scope: "project".into(),
+        path: project_root.join(".omegon/skills").join(slug),
+    }))
+}
+
+pub(crate) fn delete_user_skill_at_home(
+    name: &str,
+    home: &std::path::Path,
+) -> anyhow::Result<SkillDeleteSummary> {
+    let slug = validate_skill_name(name)?;
+    let path = home.join("skills").join(&slug);
+    if !path.exists() {
+        anyhow::bail!("external skill '{slug}' not found");
+    }
+    std::fs::remove_dir_all(&path)?;
+    Ok(SkillDeleteSummary {
+        name: slug,
+        scope: "user".into(),
+        path,
+    })
 }
 
 /// Read a single skill's resolved manifest, body content, and listing metadata.

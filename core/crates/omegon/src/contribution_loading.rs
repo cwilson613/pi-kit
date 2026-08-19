@@ -20,6 +20,32 @@ pub(crate) struct GuardedContributionMutationDirectory {
 
 impl GuardedContributionMutationDirectory {
     #[cfg(unix)]
+    pub(crate) fn open_existing(
+        root_path: &Path,
+        components: &[&[u8]],
+        home_path: &Path,
+        kind: ContributionKind,
+        scope: &str,
+    ) -> anyhow::Result<Option<Self>> {
+        let root = omegon_maintenance_contracts::open_secure_root(root_path)?;
+        let Some(directory) = open_relative_directory(&root, components)? else {
+            return Ok(None);
+        };
+        Self::finish_open(root, directory, components, home_path, kind, scope).map(Some)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn open_existing(
+        _root_path: &Path,
+        _components: &[&[u8]],
+        _home_path: &Path,
+        _kind: ContributionKind,
+        _scope: &str,
+    ) -> anyhow::Result<Option<Self>> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
+    #[cfg(unix)]
     pub(crate) fn open_or_create(
         root_path: &Path,
         components: &[&[u8]],
@@ -29,6 +55,18 @@ impl GuardedContributionMutationDirectory {
     ) -> anyhow::Result<Self> {
         let root = omegon_maintenance_contracts::open_secure_root(root_path)?;
         let directory = open_or_create_relative_directory(&root, components)?;
+        Self::finish_open(root, directory, components, home_path, kind, scope)
+    }
+
+    #[cfg(unix)]
+    fn finish_open(
+        root: File,
+        directory: File,
+        components: &[&[u8]],
+        home_path: &Path,
+        kind: ContributionKind,
+        scope: &str,
+    ) -> anyhow::Result<Self> {
         let parent_identity = omegon_maintenance_contracts::path_identity(&directory)?;
         let directory_identity = parent_identity.clone();
         ensure_home_exists(home_path)?;
@@ -80,6 +118,51 @@ impl GuardedContributionMutationDirectory {
     ) -> anyhow::Result<()> {
         omegon_maintenance_contracts::validate_child_name(raw_name)?;
         omegon_maintenance_contracts::validate_child_name(file_name)?;
+        self.stage_and_replace(raw_name, overwrite, |staging| {
+            replace_file_at(staging, file_name, bytes, 0o600)
+        })
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn import_directory(
+        &self,
+        raw_name: &[u8],
+        source: &File,
+        overwrite: bool,
+    ) -> anyhow::Result<()> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        let mut entries = 0_usize;
+        let mut bytes = 0_u64;
+        self.stage_and_replace(raw_name, overwrite, |staging| {
+            copy_source_tree(source, staging, 0, &mut entries, &mut bytes)
+        })
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn remove_directory(&self, raw_name: &[u8]) -> anyhow::Result<bool> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        self.validate_binding()?;
+        let Some(existing) = open_child_directory(&self.directory, raw_name)? else {
+            return Ok(false);
+        };
+        drop(existing);
+        let backup_name = format!(".{}.old", uuid::Uuid::new_v4()).into_bytes();
+        rename_at(&self.directory, raw_name, &backup_name)?;
+        self.directory.sync_all()?;
+        self.validate_binding()?;
+        if let Err(error) = remove_tree_at(&self.directory, &backup_name) {
+            tracing::warn!(error = %error, "removed contribution but could not clean detached tree");
+        }
+        Ok(true)
+    }
+
+    #[cfg(unix)]
+    fn stage_and_replace(
+        &self,
+        raw_name: &[u8],
+        overwrite: bool,
+        populate: impl FnOnce(&File) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         self.validate_binding()?;
         let existing = open_child_directory(&self.directory, raw_name)?;
         if existing.is_some() && !overwrite {
@@ -94,7 +177,7 @@ impl GuardedContributionMutationDirectory {
         if !created {
             anyhow::bail!("contribution staging directory already exists");
         }
-        if let Err(error) = replace_file_at(&staging, file_name, bytes) {
+        if let Err(error) = populate(&staging) {
             let _ = remove_tree_at(&self.directory, &staging_name);
             return Err(error);
         }
@@ -334,7 +417,12 @@ fn open_or_create_child_directory(parent: &File, name: &[u8]) -> anyhow::Result<
 }
 
 #[cfg(unix)]
-fn replace_file_at(parent: &File, name: &[u8], bytes: &[u8]) -> anyhow::Result<()> {
+fn replace_file_at(
+    parent: &File,
+    name: &[u8],
+    bytes: &[u8],
+    mode: libc::mode_t,
+) -> anyhow::Result<()> {
     use std::{ffi::CString, io::Write, os::fd::FromRawFd};
 
     omegon_maintenance_contracts::validate_child_name(name)?;
@@ -346,7 +434,7 @@ fn replace_file_at(parent: &File, name: &[u8], bytes: &[u8]) -> anyhow::Result<(
             std::os::fd::AsRawFd::as_raw_fd(parent),
             temporary.as_ptr(),
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
+            mode as libc::c_uint,
         )
     };
     if descriptor < 0 {
@@ -388,6 +476,82 @@ fn replace_file_at(parent: &File, name: &[u8], bytes: &[u8]) -> anyhow::Result<(
     }
     parent.sync_all()?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn copy_source_tree(
+    source: &File,
+    destination: &File,
+    depth: usize,
+    entries: &mut usize,
+    total_bytes: &mut u64,
+) -> anyhow::Result<()> {
+    if depth > 32 {
+        anyhow::bail!("skill bundle exceeds the directory depth limit");
+    }
+    for raw_name in read_directory_names(source, 10_000)? {
+        if raw_name.starts_with(b".") {
+            continue;
+        }
+        *entries += 1;
+        if *entries > 10_000 {
+            anyhow::bail!("skill bundle exceeds the entry limit");
+        }
+        let mode = entry_mode_at(source, &raw_name)?;
+        if mode & libc::S_IFMT == libc::S_IFLNK {
+            continue;
+        }
+        if mode & libc::S_IFMT == libc::S_IFDIR {
+            let source_child = open_child_directory(source, &raw_name)?
+                .ok_or_else(|| anyhow::anyhow!("skill source directory disappeared"))?;
+            let (child, created) = open_or_create_child_directory(destination, &raw_name)?;
+            if !created {
+                anyhow::bail!("duplicate skill bundle directory entry");
+            }
+            copy_source_tree(&source_child, &child, depth + 1, entries, total_bytes)?;
+            child.sync_all()?;
+        } else if mode & libc::S_IFMT == libc::S_IFREG {
+            let bytes = read_file_at(source, &raw_name, 16 * 1024 * 1024)?
+                .ok_or_else(|| anyhow::anyhow!("skill source file disappeared"))?;
+            *total_bytes = total_bytes
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| anyhow::anyhow!("skill bundle size overflow"))?;
+            if *total_bytes > 128 * 1024 * 1024 {
+                anyhow::bail!("skill bundle exceeds the total size limit");
+            }
+            let executable = mode & 0o111 != 0;
+            replace_file_at(
+                destination,
+                &raw_name,
+                &bytes,
+                if executable { 0o700 } else { 0o600 },
+            )?;
+        }
+    }
+    destination.sync_all()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn entry_mode_at(parent: &File, name: &[u8]) -> anyhow::Result<libc::mode_t> {
+    use std::ffi::CString;
+
+    let name = CString::new(name)?;
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: fstatat initializes metadata on success and retains no pointer.
+    if unsafe {
+        libc::fstatat(
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: fstatat succeeded and initialized metadata.
+    Ok(unsafe { metadata.assume_init() }.st_mode)
 }
 
 #[cfg(unix)]

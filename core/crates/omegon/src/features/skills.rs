@@ -217,8 +217,13 @@ impl Feature for SkillsFeature {
                 };
                 let scope = skill_scope(&args);
                 let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
-                let project_root = (scope == SkillToolScope::Project).then_some(self.cwd.as_path());
-                let summary = crate::skills::import_skill_at_root(&path, project_root, force)?;
+                let summary = if scope == SkillToolScope::Project {
+                    crate::skills::import_project_skill_guarded(
+                        &path, &self.cwd, &self.home, force,
+                    )?
+                } else {
+                    crate::skills::import_skill_at_root(&path, None, force)?
+                };
                 self.reload_skills();
                 Ok(text_result_with_details(
                     &format!(
@@ -271,7 +276,12 @@ impl Feature for SkillsFeature {
             }
             crate::tool_registry::skills::SKILLS_DELETE => {
                 let name = required_str(&args, "name")?;
-                let summary = crate::skills::delete_external_skill_at_root(name, &self.cwd)?;
+                let summary =
+                    match crate::skills::delete_project_skill_guarded(name, &self.cwd, &self.home)?
+                    {
+                        Some(summary) => summary,
+                        None => crate::skills::delete_user_skill_at_home(name, &self.home)?,
+                    };
                 self.reload_skills();
                 Ok(text_result_with_details(
                     &format!(
@@ -581,5 +591,100 @@ mod tests {
         assert!(content.contains("REPLACEMENT_MARKER"));
         assert!(!content.contains("INITIAL_MARKER"));
         assert!(!stale.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_import_replaces_bundle_and_skips_source_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(
+            source.path().join("SKILL.md"),
+            "---\nname: imported\ndescription: Imported skill\n---\n\nIMPORTED_MARKER",
+        )
+        .unwrap();
+        let scripts = source.path().join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let script = scripts.join("run.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        symlink(outside.path(), scripts.join("outside-link")).unwrap();
+
+        crate::skills::import_project_skill_guarded(
+            source.path(),
+            project.path(),
+            home.path(),
+            false,
+        )
+        .unwrap();
+        let destination = project.path().join(".omegon/skills/imported");
+        std::fs::write(destination.join("stale.txt"), "stale").unwrap();
+        crate::skills::import_project_skill_guarded(
+            source.path(),
+            project.path(),
+            home.path(),
+            true,
+        )
+        .unwrap();
+
+        assert!(!destination.join("stale.txt").exists());
+        assert!(!destination.join("scripts/outside-link").exists());
+        assert_ne!(
+            std::fs::metadata(destination.join("scripts/run.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o100,
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_delete_unlinks_nested_symlinks_without_following_them() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let skill = project.path().join(".omegon/skills/removable");
+        std::fs::create_dir_all(skill.join("nested")).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "REMOVABLE").unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        symlink(outside.path(), skill.join("nested/outside-link")).unwrap();
+
+        let summary =
+            crate::skills::delete_project_skill_guarded("removable", project.path(), home.path())
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(summary.scope, "project");
+        assert!(!skill.exists());
+        assert!(outside.path().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_delete_rejects_symlinked_contribution_root() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_skill = outside.path().join("skills/escaped");
+        std::fs::create_dir_all(&outside_skill).unwrap();
+        std::fs::write(outside_skill.join("SKILL.md"), "OUTSIDE").unwrap();
+        symlink(outside.path(), project.path().join(".omegon")).unwrap();
+
+        assert!(
+            crate::skills::delete_project_skill_guarded("escaped", project.path(), home.path(),)
+                .is_err()
+        );
+        assert!(outside_skill.join("SKILL.md").exists());
     }
 }

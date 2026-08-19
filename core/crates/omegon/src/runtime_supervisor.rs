@@ -359,6 +359,7 @@ impl InteractiveRuntimeSupervisor {
                         RuntimeTurnOutcome::Completed => "worker_completed",
                         RuntimeTurnOutcome::Revoked => "worker_revoked",
                         RuntimeTurnOutcome::Failed => "worker_failed",
+                        RuntimeTurnOutcome::TimedOut => "worker_timed_out",
                     }
                     .into(),
                     recovery_rule_version: None,
@@ -454,6 +455,7 @@ impl From<RuntimeTurnOutcome> for TurnOutcome {
             RuntimeTurnOutcome::Completed => Self::Completed,
             RuntimeTurnOutcome::Revoked => Self::Revoked,
             RuntimeTurnOutcome::Failed => Self::Failed,
+            RuntimeTurnOutcome::TimedOut => Self::TimedOut,
         }
     }
 }

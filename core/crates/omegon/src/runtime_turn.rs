@@ -37,6 +37,7 @@ pub(crate) enum RuntimeTurnOutcome {
     Completed,
     Revoked,
     Failed,
+    TimedOut,
 }
 
 impl ActiveTurnPhase {

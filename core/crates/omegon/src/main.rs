@@ -6524,6 +6524,7 @@ fn build_tui_secret_readiness_snapshot(
                     let terminal_phase = match settlement {
                         Some((_, RuntimeTurnOutcome::Revoked)) => "supervisor_revoked",
                         Some((_, RuntimeTurnOutcome::Failed)) => "supervisor_failed",
+                        Some((_, RuntimeTurnOutcome::TimedOut)) => "supervisor_timed_out",
                         Some((_, RuntimeTurnOutcome::Completed)) => "supervisor_completed",
                         None => "supervisor_terminal_duplicate",
                     };

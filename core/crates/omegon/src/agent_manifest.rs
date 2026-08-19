@@ -186,11 +186,29 @@ fn pkl_available() -> bool {
 /// Prefers `agent.pkl` when the `pkl` binary is available; falls back to
 /// `agent.toml` otherwise. Resolves all file references before returning.
 pub fn load(bundle_dir: &Path) -> anyhow::Result<ResolvedManifest> {
+    load_with_options(bundle_dir, crate::pkl_modules::omegon_eval_options())
+}
+
+pub(crate) fn load_with_catalog_snapshots(
+    bundle_dir: &Path,
+    snapshots: std::collections::HashMap<String, PathBuf>,
+) -> anyhow::Result<ResolvedManifest> {
+    load_with_options(
+        bundle_dir,
+        crate::pkl_modules::omegon_eval_options_for_catalog(snapshots),
+    )
+}
+
+fn load_with_options(
+    bundle_dir: &Path,
+    options: rpkl::api::evaluator::EvaluatorOptions,
+) -> anyhow::Result<ResolvedManifest> {
     let pkl_path = bundle_dir.join("agent.pkl");
     let toml_path = bundle_dir.join("agent.toml");
 
     let manifest: AgentManifest = if pkl_path.exists() && pkl_available() {
-        rpkl::from_config_with_options(&pkl_path, crate::pkl_modules::omegon_eval_options())
+        validate_pkl_module_references(&pkl_path)?;
+        rpkl::from_config_with_options(&pkl_path, options)
             .map_err(|e| anyhow::anyhow!("agent.pkl: {e}"))?
     } else if toml_path.exists() {
         let content = std::fs::read_to_string(&toml_path)?;
@@ -213,13 +231,19 @@ pub fn load(bundle_dir: &Path) -> anyhow::Result<ResolvedManifest> {
     resolve(manifest, bundle_dir)
 }
 
+fn validate_pkl_module_references(path: &Path) -> anyhow::Result<()> {
+    let content = read_bounded_text(path)?;
+    crate::pkl_modules::validate_catalog_pkl_module(&content)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
 /// Resolve file references in a manifest.
 fn resolve(manifest: AgentManifest, bundle_dir: &Path) -> anyhow::Result<ResolvedManifest> {
     let persona_directive = if let Some(ref persona) = manifest.persona {
         let base = if let Some(ref path) = persona.directive {
-            let full = bundle_dir.join(path);
+            let full = confined_bundle_path(bundle_dir, path)?;
             Some(
-                std::fs::read_to_string(&full)
+                read_bounded_text(&full)
                     .map_err(|e| anyhow::anyhow!("persona directive {}: {e}", full.display()))?,
             )
         } else {
@@ -230,8 +254,8 @@ fn resolve(manifest: AgentManifest, bundle_dir: &Path) -> anyhow::Result<Resolve
         if let Some(ref extend_paths) = persona.directive_extend {
             let mut parts: Vec<String> = base.into_iter().collect();
             for path in extend_paths {
-                let full = bundle_dir.join(path);
-                let content = std::fs::read_to_string(&full)
+                let full = confined_bundle_path(bundle_dir, path)?;
+                let content = read_bounded_text(&full)
                     .map_err(|e| anyhow::anyhow!("directive_extend {}: {e}", full.display()))?;
                 parts.push(content);
             }
@@ -251,8 +275,8 @@ fn resolve(manifest: AgentManifest, bundle_dir: &Path) -> anyhow::Result<Resolve
         if let Some(ref paths) = persona.mind_facts {
             let mut all = String::new();
             for path in paths {
-                let full = bundle_dir.join(path);
-                let content = std::fs::read_to_string(&full)
+                let full = confined_bundle_path(bundle_dir, path)?;
+                let content = read_bounded_text(&full)
                     .map_err(|e| anyhow::anyhow!("mind facts {}: {e}", full.display()))?;
                 if !all.is_empty() && !all.ends_with('\n') {
                     all.push('\n');
@@ -275,11 +299,46 @@ fn resolve(manifest: AgentManifest, bundle_dir: &Path) -> anyhow::Result<Resolve
     })
 }
 
+fn confined_bundle_path(bundle_dir: &Path, relative: &str) -> anyhow::Result<PathBuf> {
+    let relative = Path::new(relative);
+    if relative.components().next().is_none()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("bundle reference must be a confined relative path: {relative:?}");
+    }
+    Ok(bundle_dir.join(relative))
+}
+
+fn read_bounded_text(path: &Path) -> anyhow::Result<String> {
+    const MAX_REFERENCED_FILE_BYTES: u64 = 16 * 1024 * 1024;
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() || metadata.len() > MAX_REFERENCED_FILE_BYTES {
+        anyhow::bail!("bundle reference is not a bounded regular file");
+    }
+    Ok(std::fs::read_to_string(path)?)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pkl_module_validation_rejects_filesystem_escape() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agent.pkl");
+        std::fs::write(&path, "amends \"../denied/agent.pkl\"\n").unwrap();
+        assert!(validate_pkl_module_references(&path).is_err());
+        std::fs::write(&path, "amends \"omegon://catalog/base/agent.pkl\"\n").unwrap();
+        validate_pkl_module_references(&path).unwrap();
+        std::fs::write(&path, "import(\"pkl:reflect\")\n").unwrap();
+        assert!(validate_pkl_module_references(&path).is_err());
+        std::fs::write(&path, "read(\"env:HOME\")\n").unwrap();
+        assert!(validate_pkl_module_references(&path).is_err());
+    }
 
     #[test]
     fn parse_toml_manifest() {

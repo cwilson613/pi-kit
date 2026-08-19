@@ -3492,8 +3492,9 @@ impl OmegonAcpAgent {
 
             "catalog/list" => {
                 let home = crate::paths::omegon_home()?;
-                let entries: Vec<serde_json::Value> = crate::catalog::list(&home)
-                    .into_iter()
+                let listing = crate::catalog::list(&home)?;
+                let entries: Vec<serde_json::Value> = listing
+                    .iter()
                     .map(|e| {
                         serde_json::json!({
                             "id": e.id,
@@ -3520,7 +3521,7 @@ impl OmegonAcpAgent {
                     "version": m.agent.version,
                     "description": m.agent.description,
                     "domain": m.agent.domain,
-                    "path": resolved.bundle_dir.display().to_string(),
+                    "path": resolved.display_bundle_dir().display().to_string(),
                 });
                 let obj = result.as_object_mut().unwrap();
                 if let Some(ref persona) = m.persona {
@@ -3583,28 +3584,8 @@ impl OmegonAcpAgent {
                 let agent_id = params["id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'id' field"))?;
-                if agent_id.contains('/')
-                    || agent_id.contains('\\')
-                    || agent_id.contains("..")
-                    || agent_id.contains('\0')
-                {
-                    anyhow::bail!("invalid agent ID: path traversal rejected");
-                }
                 let home = crate::paths::omegon_home()?;
-                let catalog_dir = home.join("catalog");
-                // Find by directory name or by agent.id in manifests
-                let entries = crate::catalog::list(&home);
-                let entry = entries
-                    .iter()
-                    .find(|e| e.id == agent_id)
-                    .ok_or_else(|| anyhow::anyhow!("catalog agent '{agent_id}' not found"))?;
-                if entry.bundle_dir.exists() {
-                    // Safety: ensure we're only removing from within catalog/
-                    if !entry.bundle_dir.starts_with(&catalog_dir) {
-                        anyhow::bail!("refusing to remove agent outside catalog directory");
-                    }
-                    std::fs::remove_dir_all(&entry.bundle_dir)?;
-                }
+                crate::catalog::remove(&home, agent_id)?;
                 Ok(serde_json::json!({ "ok": true }))
             }
 
@@ -5849,19 +5830,20 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-    let extension_metadata = if let Some(id) = agent_id {
+    let (extension_metadata, _admitted_manifest) = if let Some(id) = agent_id {
         let shared_settings = crate::settings::shared(model);
-        crate::apply_agent_manifest_pre_setup(id, cwd, &shared_settings)?;
-        crate::setup::AgentSetup::new_with_safety(
+        let admitted = crate::apply_agent_manifest_pre_setup(id, cwd, &shared_settings)?;
+        let metadata = crate::setup::AgentSetup::new_with_safety(
             cwd,
             None,
             Some(shared_settings),
             dangerously_bypass_permissions,
         )
         .await?
-        .extension_metadata
+        .extension_metadata;
+        (metadata, Some(admitted))
     } else {
-        Default::default()
+        (Default::default(), None)
     };
 
     let agent = Rc::new(OmegonAcpAgent::new_with_extension_metadata_and_safety(
@@ -5869,6 +5851,7 @@ pub async fn run(
         extension_metadata,
         dangerously_bypass_permissions,
     ));
+    drop(_admitted_manifest);
 
     let stdout = tokio::io::stdout().compat_write();
     let stdin = tokio::io::stdin().compat();

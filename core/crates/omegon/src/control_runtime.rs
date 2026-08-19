@@ -4909,7 +4909,15 @@ pub async fn catalog_view_response() -> SlashCommandResponse {
             };
         }
     };
-    let entries = crate::catalog::list(&home);
+    let entries = match crate::catalog::list(&home) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return SlashCommandResponse {
+                accepted: false,
+                output: Some(format!("Catalog discovery failed: {error}")),
+            };
+        }
+    };
     if entries.is_empty() {
         return SlashCommandResponse {
             accepted: true,
@@ -4919,7 +4927,7 @@ pub async fn catalog_view_response() -> SlashCommandResponse {
         };
     }
     let mut out = format!("Catalog agents ({}):\n\n", entries.len());
-    for entry in &entries {
+    for entry in entries.iter() {
         out.push_str(&format!(
             "  {:<32} {}\n    {}\n\n",
             entry.id, entry.domain, entry.description
@@ -4945,12 +4953,6 @@ pub async fn catalog_install_response() -> SlashCommandResponse {
 }
 
 pub async fn catalog_remove_response(id: &str) -> SlashCommandResponse {
-    if id.contains('/') || id.contains('\\') || id.contains("..") || id.contains('\0') {
-        return SlashCommandResponse {
-            accepted: false,
-            output: Some("Invalid agent ID: path traversal rejected".into()),
-        };
-    }
     let home = match crate::paths::omegon_home() {
         Ok(h) => h,
         Err(e) => {
@@ -4960,30 +4962,14 @@ pub async fn catalog_remove_response(id: &str) -> SlashCommandResponse {
             };
         }
     };
-    let catalog_dir = home.join("catalog");
-    let entries = crate::catalog::list(&home);
-    match entries.iter().find(|e| e.id == id) {
-        Some(entry) => {
-            if !entry.bundle_dir.starts_with(&catalog_dir) {
-                return SlashCommandResponse {
-                    accepted: false,
-                    output: Some("Refusing to remove agent outside catalog directory".into()),
-                };
-            }
-            match std::fs::remove_dir_all(&entry.bundle_dir) {
-                Ok(()) => SlashCommandResponse {
-                    accepted: true,
-                    output: Some(format!("Removed catalog agent '{id}'")),
-                },
-                Err(e) => SlashCommandResponse {
-                    accepted: false,
-                    output: Some(format!("Failed to remove: {e}")),
-                },
-            }
-        }
-        None => SlashCommandResponse {
+    match crate::catalog::remove(&home, id) {
+        Ok(()) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!("Removed catalog agent '{id}'")),
+        },
+        Err(error) => SlashCommandResponse {
             accepted: false,
-            output: Some(format!("Catalog agent '{id}' not found")),
+            output: Some(format!("Failed to remove catalog agent: {error}")),
         },
     }
 }

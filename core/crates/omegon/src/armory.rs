@@ -561,17 +561,25 @@ fn item_from_manifest(
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct InstalledState {
     home: Option<PathBuf>,
     cwd: PathBuf,
+    catalog_ids: std::collections::HashSet<String>,
 }
 
 impl InstalledState {
     fn collect(cwd: &Path) -> Self {
+        let home = crate::paths::omegon_home().ok();
+        let catalog_ids = home
+            .as_deref()
+            .and_then(|home| crate::catalog::list(home).ok())
+            .map(|catalog| catalog.iter().map(|entry| entry.id.clone()).collect())
+            .unwrap_or_default();
         Self {
-            home: crate::paths::omegon_home().ok(),
+            home,
             cwd: cwd.to_path_buf(),
+            catalog_ids,
         }
     }
 
@@ -582,9 +590,7 @@ impl InstalledState {
     }
 
     fn agent(&self, id: &str) -> bool {
-        self.home
-            .as_ref()
-            .is_some_and(|home| home.join("catalog").join(id).join("agent.toml").exists())
+        self.catalog_ids.contains(id)
     }
 
     fn skill(&self, slug: &str) -> bool {

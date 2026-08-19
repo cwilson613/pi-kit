@@ -273,9 +273,7 @@ pub fn remove(params: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
     validate_package_id(&id)?;
     match parse_kind_hint(params.get("kind").and_then(|value| value.as_str()))? {
         PackageKindHint::Extension => crate::extension_cli::remove(&id)?,
-        PackageKindHint::Agent => {
-            remove_from_dir(crate::paths::omegon_home()?.join("catalog"), &id)?
-        }
+        PackageKindHint::Agent => crate::catalog::remove(&crate::paths::omegon_home()?, &id)?,
         PackageKindHint::Skill => {
             remove_from_dir(crate::paths::omegon_home()?.join("skills"), &id)?
         }

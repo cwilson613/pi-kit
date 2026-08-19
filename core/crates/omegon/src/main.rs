@@ -1811,20 +1811,8 @@ async fn main() -> anyhow::Result<()> {
             CatalogAction::List => catalog::cmd_list(),
             CatalogAction::Install { offline } => catalog::cmd_install(*offline).await,
             CatalogAction::Remove { id } => {
-                if id.contains('/') || id.contains('\\') || id.contains("..") || id.contains('\0') {
-                    anyhow::bail!("invalid agent ID: path traversal rejected");
-                }
                 let home = paths::omegon_home()?;
-                let catalog_dir = home.join("catalog");
-                let entries = catalog::list(&home);
-                let entry = entries
-                    .iter()
-                    .find(|e| e.id == *id)
-                    .ok_or_else(|| anyhow::anyhow!("catalog agent '{id}' not found"))?;
-                if !entry.bundle_dir.starts_with(&catalog_dir) {
-                    anyhow::bail!("refusing to remove agent outside catalog directory");
-                }
-                std::fs::remove_dir_all(&entry.bundle_dir)?;
+                catalog::remove(&home, id)?;
                 println!("Removed catalog agent '{id}'");
                 Ok(())
             }
@@ -2151,7 +2139,7 @@ pub(crate) fn apply_agent_manifest_pre_setup(
     agent_id: &str,
     cwd: &std::path::Path,
     shared_settings: &settings::SharedSettings,
-) -> anyhow::Result<agent_manifest::ResolvedManifest> {
+) -> anyhow::Result<catalog::AdmittedResolvedManifest> {
     let omegon_home = paths::omegon_home().unwrap_or_else(|_| cwd.join(".omegon"));
     let resolved = catalog::resolve(&omegon_home, agent_id)?;
 
@@ -2435,6 +2423,7 @@ async fn run_embedded_command(
             }
         }
     }
+    drop(agent_manifest_resolved);
 
     let mut model = shared_settings
         .lock()

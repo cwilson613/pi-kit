@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::agents::{AgentBundleSummary, list_agent_bundle_summaries_from_dir};
+use super::agents::{AgentBundleSummary, agent_bundle_summary};
 use super::armory::{ArmoryProfileSummary, list_armory_profiles_from_root};
 use super::extensions::{
     ExtensionCapabilitySummary, list_installed_extension_capabilities_from_dir,
@@ -110,7 +110,16 @@ pub fn build_capability_inventory_snapshot_with_secrets(
     let installed_extensions =
         list_installed_extension_capabilities_from_dir(roots.extensions_dir)?;
     let armory_profiles = list_armory_profiles_from_root(roots.armory_root)?;
-    let agent_bundles = list_agent_bundle_summaries_from_dir(roots.catalog_dir)?;
+    let catalog_home = roots
+        .catalog_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("catalog directory has no home parent"))?;
+    let admitted_catalog = crate::catalog::resolved_manifests(catalog_home)?;
+    let agent_bundles = admitted_catalog
+        .iter()
+        .cloned()
+        .map(agent_bundle_summary)
+        .collect::<Vec<_>>();
     let graph = build_capability_graph(&installed_extensions, &armory_profiles, &agent_bundles);
     let secret_readiness_snapshot =
         build_secret_readiness_snapshot(&installed_extensions, &agent_bundles, secret_inputs);

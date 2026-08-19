@@ -51,6 +51,7 @@ impl ActiveTurnPhase {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ActiveTurnMeta {
     pub(crate) runtime_turn_id: u64,
+    pub(crate) authority_turn_id: Option<uuid::Uuid>,
     pub(crate) prompt: PromptEnvelope,
     pub(crate) phase: ActiveTurnPhase,
     pub(crate) started_at: Instant,
@@ -162,13 +163,18 @@ impl ActiveTurnState {
         self.session_epoch
     }
 
-    pub(crate) fn start(&mut self, prompt: PromptEnvelope) -> Option<ActiveTurnMeta> {
+    pub(crate) fn start(
+        &mut self,
+        prompt: PromptEnvelope,
+        authority_turn_id: Option<uuid::Uuid>,
+    ) -> Option<ActiveTurnMeta> {
         if self.active.is_some() {
             return None;
         }
         self.next_runtime_turn_id = self.next_runtime_turn_id.saturating_add(1);
         let active = ActiveTurnMeta {
             runtime_turn_id: self.next_runtime_turn_id,
+            authority_turn_id,
             prompt,
             phase: ActiveTurnPhase::Running,
             started_at: Instant::now(),
@@ -262,6 +268,7 @@ mod tests {
     fn prompt(id: u64) -> PromptEnvelope {
         PromptEnvelope {
             id,
+            authority_prompt_id: None,
             text: format!("prompt-{id}"),
             image_paths: Vec::<PathBuf>::new(),
             submitted_by: RuntimeActor::tui(),
@@ -275,16 +282,16 @@ mod tests {
     #[test]
     fn start_allocates_monotonic_turn_ids_and_blocks_overlap() {
         let mut state = ActiveTurnState::default();
-        assert_eq!(state.start(prompt(1)).unwrap().runtime_turn_id, 1);
-        assert!(state.start(prompt(2)).is_none());
+        assert_eq!(state.start(prompt(1), None).unwrap().runtime_turn_id, 1);
+        assert!(state.start(prompt(2), None).is_none());
         assert_eq!(state.complete().unwrap().prompt.id, 1);
-        assert_eq!(state.start(prompt(2)).unwrap().runtime_turn_id, 2);
+        assert_eq!(state.start(prompt(2), None).unwrap().runtime_turn_id, 2);
     }
 
     #[test]
     fn cancel_is_idempotent_and_preserves_first_requester() {
         let mut state = ActiveTurnState::default();
-        state.start(prompt(1)).unwrap();
+        state.start(prompt(1), None).unwrap();
         state.request_cancel(RuntimeActor::auspex(), ControlSurface::Ipc);
         state.request_cancel(
             RuntimeActor {
@@ -306,7 +313,7 @@ mod tests {
     #[test]
     fn lifecycle_snapshots_increment_sequence_and_preserve_contract_fields() {
         let mut state = ActiveTurnState::default();
-        let active = state.start(prompt(7)).unwrap();
+        let active = state.start(prompt(7), None).unwrap();
         let mut lifecycle = RuntimeTurnLifecycle::new(&active, "promoted");
         let (events_tx, mut events_rx) = broadcast::channel(4);
 

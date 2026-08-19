@@ -9533,6 +9533,7 @@ mod tests {
     fn prompt_envelope_requires_over_and_out_for_voice_close_request() {
         let prompt = PromptEnvelope {
             id: 1,
+            authority_prompt_id: None,
             text: "🎙 stop listening".to_string(),
             image_paths: Vec::new(),
             submitted_by: RuntimeActor::tui(),

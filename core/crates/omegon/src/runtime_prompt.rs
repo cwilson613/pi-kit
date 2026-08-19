@@ -193,6 +193,7 @@ impl RuntimePromptSubmission {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PromptEnvelope {
     pub(crate) id: u64,
+    pub(crate) authority_prompt_id: Option<uuid::Uuid>,
     pub(crate) text: String,
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) submitted_by: RuntimeActor,
@@ -228,10 +229,24 @@ impl PromptQueue {
         metadata: operator_commands::PromptMetadata,
         queue_mode: Option<QueueMode>,
     ) -> u64 {
+        self.enqueue_with_authority(text, image_paths, actor, via, metadata, queue_mode, None)
+    }
+
+    pub(crate) fn enqueue_with_authority(
+        &mut self,
+        text: String,
+        image_paths: Vec<PathBuf>,
+        actor: RuntimeActor,
+        via: ControlSurface,
+        metadata: operator_commands::PromptMetadata,
+        queue_mode: Option<QueueMode>,
+        authority_prompt_id: Option<uuid::Uuid>,
+    ) -> u64 {
         self.next_prompt_id += 1;
         let prompt_id = self.next_prompt_id;
         self.prompts.push_back(PromptEnvelope {
             id: prompt_id,
+            authority_prompt_id,
             text,
             image_paths,
             submitted_by: actor,

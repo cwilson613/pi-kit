@@ -9106,6 +9106,9 @@ async fn run_bounded_task(
     if active.prompt.id != prompt_id {
         anyhow::bail!("bounded session recovered older queued work before the requested prompt");
     }
+    let active_identity = supervisor
+        .current_identity()
+        .expect("promoted bounded turn has identity");
     agent.conversation.push_user(active.prompt.text);
 
     let loop_config = bootstrap::build_loop_config(
@@ -9178,9 +9181,9 @@ async fn run_bounded_task(
     .await;
 
     let timed_out = cancel.is_cancelled();
-    if timed_out && let Some(identity) = supervisor.current_identity() {
+    if timed_out {
         supervisor.request_durable_interrupt_with_reason(
-            identity,
+            active_identity,
             RuntimeActor::from_submission("bounded-timeout".into(), "bounded"),
             ControlSurface::Bounded,
             session_authority::InterruptionKind::Revoke,
@@ -9194,7 +9197,18 @@ async fn run_bounded_task(
     } else {
         RuntimeTurnOutcome::Completed
     };
-    supervisor.close_durable_worker(authority_outcome)?;
+    supervisor.submit_loop_terminal_intent(LoopTerminalIntent {
+        identity: active_identity,
+        outcome: authority_outcome,
+        reason_code: if timed_out {
+            "wall_clock_timeout"
+        } else if loop_result.is_err() {
+            "loop_failed"
+        } else {
+            "loop_completed"
+        }
+        .into(),
+    })?;
 
     timeout_handle.abort();
     bridge.shutdown().await;

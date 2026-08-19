@@ -599,7 +599,7 @@ fn identity_diagnostics(result: &mut MaintenanceResultV1) {
                 "inventory_entries": MAX_ENTRIES,
                 "output_bytes": MAX_OUTPUT_BYTES,
             },
-            "release_verification": "fail_closed_pending_bundle_v0_3",
+            "release_verification": "offline_bundle_v0_3",
         })),
     );
 }
@@ -1172,6 +1172,7 @@ fn session_diagnostics(
                 continue;
             };
             if id.ends_with(".meta")
+                || id.ends_with(".authority.snapshot")
                 || entries
                     .iter()
                     .any(|candidate| candidate.name == format!("{id}.meta.json").as_bytes())

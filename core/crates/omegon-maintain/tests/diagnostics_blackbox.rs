@@ -8,6 +8,20 @@ use omegon_maintenance_contracts::{
 };
 use serde_json::Value;
 
+const EXPECTED_EXCLUSIONS: &[&str] = &[
+    "default_loop",
+    "extension_runtime",
+    "lifecycle",
+    "mcp",
+    "memory",
+    "mutable_packs",
+    "orchestration",
+    "project_config",
+    "project_contributions",
+    "provider_clients",
+    "tui",
+];
+
 fn binary() -> std::path::PathBuf {
     std::env::var_os("CARGO_BIN_EXE_omegon-maintain")
         .map(Into::into)
@@ -135,6 +149,11 @@ where
         .args(args)
         .current_dir(cwd)
         .env_remove("OMEGON_HOME")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("GEMINI_API_KEY")
+        .env_remove("OLLAMA_HOST")
+        .env_remove("TERM")
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -147,35 +166,76 @@ where
 #[test]
 fn identity_starts_without_normal_runtime_inputs() {
     let root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(root.path().join(".omegon")).unwrap();
-    fs::write(root.path().join(".omegon/config.toml"), b"not = [valid").unwrap();
     let home = root.path().join("home");
     let config = root.path().join("config");
+    let workspace = root.path().join("workspace");
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&config).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
 
-    let (code, output, stderr) = run_json(
-        [
+    let sentinel = root.path().join("normal-runtime-started");
+    let sentinel_command = format!("touch {}", sentinel.display());
+    let poisoned_inputs = [
+        (
+            workspace.join(".omegon/config.toml"),
+            "not = [valid".to_owned(),
+        ),
+        (
+            workspace.join(".omegon/plugins/poison/plugin.toml"),
+            format!("startup = {sentinel_command:?}"),
+        ),
+        (
+            home.join("extensions/poison/manifest.toml"),
+            format!("command = {sentinel_command:?}"),
+        ),
+        (
+            config.join("omegon/mcp.toml"),
+            format!("command = {sentinel_command:?}"),
+        ),
+        (
+            home.join("skills/poison/SKILL.md"),
+            format!("---\nname: poison\nhook: {sentinel_command}\n---\n"),
+        ),
+        (home.join("memory.db"), "not a database".to_owned()),
+        (
+            workspace.join("openspec/changes/poison/tasks.md"),
+            "not lifecycle state".to_owned(),
+        ),
+        (
+            workspace.join(".omegon/workbench.json"),
+            "not orchestration state".to_owned(),
+        ),
+    ];
+    for (path, contents) in &poisoned_inputs {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
+    for command in [vec!["identity"], vec!["composition", "inspect"]] {
+        let mut args = vec![
             "--json",
             "--home",
             home.to_str().unwrap(),
             "--config-home",
             config.to_str().unwrap(),
-            "identity",
-        ],
-        root.path(),
-    );
-    assert_eq!(code, 0, "{stderr}");
-    assert_eq!(output["command"], "identity");
-    assert_eq!(output["status"], "success");
-    assert_eq!(output["composition"]["profile"], "maintenance");
-    assert!(
-        output["composition"]["excluded_inputs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value == "project_config")
-    );
+            "--workspace",
+            workspace.to_str().unwrap(),
+        ];
+        args.extend(command);
+        let (code, output, stderr) = run_json(args, root.path());
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(output["status"], "success");
+        assert_eq!(output["composition"]["profile"], "maintenance");
+        assert_eq!(
+            output["composition"]["excluded_inputs"],
+            serde_json::json!(EXPECTED_EXCLUSIONS)
+        );
+    }
+
+    assert!(!sentinel.exists(), "normal runtime command was executed");
+    for (path, contents) in poisoned_inputs {
+        assert_eq!(fs::read_to_string(path).unwrap(), contents);
+    }
 }
 
 #[cfg(unix)]
@@ -260,6 +320,67 @@ fn session_inspect_validates_pair_and_workspace() {
             .unwrap()
             .iter()
             .any(|diagnostic| { diagnostic["code"] == "session_pair_valid" })
+    );
+}
+
+#[test]
+fn session_list_ignores_semantic_authority_sidecars() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let config = root.path().join("config");
+    let workspace = root.path().join("workspace");
+    let sessions = config.join("sessions/legacy-slug");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&sessions).unwrap();
+    let id = "2026-08-17T00-00-00_00000000";
+    fs::write(
+        sessions.join(format!("{id}.meta.json")),
+        serde_json::to_vec(&serde_json::json!({
+            "session_id": id,
+            "cwd": workspace.to_str().unwrap()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        sessions.join(format!("{id}.json")),
+        br#"{"schema_version":1}"#,
+    )
+    .unwrap();
+    fs::write(
+        sessions.join(format!("{id}.authority.jsonl")),
+        b"authority record bytes are not inspected",
+    )
+    .unwrap();
+    fs::write(
+        sessions.join(format!("{id}.authority.snapshot.json")),
+        b"authority cache bytes are not inspected",
+    )
+    .unwrap();
+
+    let (code, output, stderr) = run_json(
+        [
+            "--json",
+            "--home",
+            home.to_str().unwrap(),
+            "--config-home",
+            config.to_str().unwrap(),
+            "--workspace",
+            workspace.to_str().unwrap(),
+            "session",
+            "list",
+        ],
+        root.path(),
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(output["status"], "success");
+    assert!(
+        output["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| { entry["code"] != "session_pair_invalid" })
     );
 }
 

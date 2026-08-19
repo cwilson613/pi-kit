@@ -59,18 +59,20 @@ impl InteractiveRuntimeSupervisor {
                 crate::session_authority::QueueMode::UntilReady => QueueMode::UntilReady,
                 crate::session_authority::QueueMode::Immediate => QueueMode::Immediate,
             };
-            supervisor.queue.enqueue_with_authority(
-                prompt.content.text,
-                prompt
-                    .content
-                    .attachments
-                    .into_iter()
-                    .map(|attachment| PathBuf::from(attachment.storage_ref))
-                    .collect(),
-                RuntimeActor::from_submission(prompt.principal, &prompt.ingress),
-                ControlSurface::from_via(&prompt.ingress),
-                serde_json::from_value(prompt.metadata)?,
-                Some(queue_mode),
+            supervisor.queue.enqueue_submission(
+                RuntimePromptSubmission {
+                    text: prompt.content.text,
+                    image_paths: prompt
+                        .content
+                        .attachments
+                        .into_iter()
+                        .map(|attachment| PathBuf::from(attachment.storage_ref))
+                        .collect(),
+                    actor: RuntimeActor::from_submission(prompt.principal, &prompt.ingress),
+                    via: ControlSurface::from_via(&prompt.ingress),
+                    metadata: serde_json::from_value(prompt.metadata)?,
+                    queue_mode,
+                },
                 Some(prompt.prompt_id),
             );
         }
@@ -153,13 +155,15 @@ impl InteractiveRuntimeSupervisor {
         } else {
             None
         };
-        Ok(self.queue.enqueue_with_authority(
-            text,
-            image_paths,
-            actor,
-            via,
-            metadata,
-            queue_mode,
+        Ok(self.queue.enqueue_submission(
+            RuntimePromptSubmission {
+                text,
+                image_paths,
+                actor,
+                via,
+                metadata,
+                queue_mode: queue_mode.unwrap_or_default(),
+            },
             authority_prompt_id,
         ))
     }

@@ -229,17 +229,22 @@ impl PromptQueue {
         metadata: operator_commands::PromptMetadata,
         queue_mode: Option<QueueMode>,
     ) -> u64 {
-        self.enqueue_with_authority(text, image_paths, actor, via, metadata, queue_mode, None)
+        self.enqueue_submission(
+            RuntimePromptSubmission {
+                text,
+                image_paths,
+                actor,
+                via,
+                metadata,
+                queue_mode: queue_mode.unwrap_or(self.default_queue_mode),
+            },
+            None,
+        )
     }
 
-    pub(crate) fn enqueue_with_authority(
+    pub(crate) fn enqueue_submission(
         &mut self,
-        text: String,
-        image_paths: Vec<PathBuf>,
-        actor: RuntimeActor,
-        via: ControlSurface,
-        metadata: operator_commands::PromptMetadata,
-        queue_mode: Option<QueueMode>,
+        submission: RuntimePromptSubmission,
         authority_prompt_id: Option<uuid::Uuid>,
     ) -> u64 {
         self.next_prompt_id += 1;
@@ -247,12 +252,12 @@ impl PromptQueue {
         self.prompts.push_back(PromptEnvelope {
             id: prompt_id,
             authority_prompt_id,
-            text,
-            image_paths,
-            submitted_by: actor,
-            via,
-            metadata,
-            queue_mode: queue_mode.unwrap_or(self.default_queue_mode),
+            text: submission.text,
+            image_paths: submission.image_paths,
+            submitted_by: submission.actor,
+            via: submission.via,
+            metadata: submission.metadata,
+            queue_mode: submission.queue_mode,
             queued_at: std::time::Instant::now(),
         });
         prompt_id

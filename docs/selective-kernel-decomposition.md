@@ -13,7 +13,7 @@ visibility = "private"
 
 [data]
 dependencies = ["binary-composition-and-kernel-admission", "harness-architecture-parity"]
-open_questions = ["Which semantic session events form the minimum append-only compatibility contract before persistence migration begins?"]
+open_questions = []
 related = ["coding-harness-philosophies"]
 +++
 
@@ -562,13 +562,21 @@ exists before extraction can make the normal product less reliable.
 
 ### Slice 1: minimum durable session authority
 
-- Define the minimum semantic facts for session identity, prompt admission,
-  queue changes, turn start, cancellation request, invocation identity, and
-  terminal closure.
-- Add monotonic ordering, cursor, snapshot reconstruction, compatibility, and
-  crash-closure rules before publishing corresponding live snapshots.
+- Use the approved v1 facts `session.created`, `prompt.admitted`,
+  `prompt.rejected`, `prompt.removed`, `turn.started`,
+  `turn.interruption_requested`, `invocation.registered`,
+  `invocation.classified_unknown`, `invocation.settled`, and `turn.closed`.
+- Apply the strict contiguous ordering, idempotency, compatibility,
+  deterministic recovery, and snapshot rules in
+  [`runtime-session-semantic-protocol.md`](runtime-session-semantic-protocol.md)
+  before publishing corresponding live snapshots.
+- Persist a separate adjacent authority stream and reducer cache. Existing
+  conversation snapshots, metadata checkpoints, journals, and audit streams
+  remain compatibility projections rather than historical semantic truth.
 - Refactor the existing uncompiled supervisor/prompt/turn extraction scaffold
-  into one frontend-neutral implementation compiled into the runtime.
+  into one frontend-neutral implementation compiled into the runtime without
+  losing the included coordinator's stale-interrupt and exactly-once settlement
+  protections.
 - Instantiate it once per session and route interactive, ACP, daemon, Web/IPC,
   and bounded ingress through it where semantics overlap.
 - Remove included coordinator duplicates only after parity tests pass.

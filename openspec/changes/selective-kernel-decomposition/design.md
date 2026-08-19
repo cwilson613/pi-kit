@@ -100,11 +100,32 @@ Before the shared supervisor becomes authoritative, define minimum append-only f
 - invocation preparation and terminal settlement;
 - turn completion, failure, cancellation, timeout, or unknown outcome.
 
-Each event has a monotonic sequence and compatibility version. A snapshot records the last applied sequence and can reconstruct queue, active-turn, cancellation, and terminal state without relying on broadcast replay.
+The approved v1 vocabulary is `session.created`, `prompt.admitted`,
+`prompt.rejected`, `prompt.removed`, `turn.started`,
+`turn.interruption_requested`, `invocation.registered`,
+`invocation.classified_unknown`, `invocation.settled`, and `turn.closed`.
+Prompt admission and FIFO insertion are one transition; turn start atomically
+promotes the queue head. Each event has a contiguous session-wide sequence and
+immutable compatibility version. A snapshot records its stream, reducer, last
+sequence, and last event identity and can reconstruct queue, active-turn,
+cancellation, invocation, and terminal state without broadcast replay.
+
+The append-only authority sidecar is distinct from current whole-file
+conversation snapshots, metadata checkpoints, journals, and audit streams.
+Legacy projections are not converted into fictional historical facts. Strict
+replay rejects gaps, conflicts, invalid transitions, and unsupported authority
+events or versions. The full envelope, reducer, recovery, and compatibility
+contract is recorded in `docs/runtime-session-semantic-protocol.md`.
 
 One supervisor implementation is instantiated per session. Cross-session hosts may own many supervisors, but TUI, ACP, daemon, Web/IPC, and bounded ingress submit to the owning session instance. Frontend busy and streaming state is a projection of supervisor state.
 
 The default loop is a policy driver. It proposes typed step, message, invocation, continuation, and terminal intents. The kernel session state machine validates and commits each transition exactly once. The loop does not independently mutate canonical session truth or publish terminal completion.
+
+Slice 1 registers invocation identity and conservatively classifies registered
+unsettled invocations as unknown after runtime loss. Slice 3 owns durable
+prepared/dispatched/acknowledged lease states and safe late settlement. Slice 5
+adds complete model-context, route, assistant, tool, step, and compaction facts;
+neither later slice redefines Slice-1 sequencing or closure semantics.
 
 ## Contribution lifecycle
 
@@ -201,6 +222,12 @@ A lane cannot pass its exit gate until implemented behavior, source design, Open
 - Strict cleanup claims are limited to process trees inside the host ownership boundary.
 - Documentation and applicable public site/snippet changes pass within the same lane as their behavior.
 
-## Open design gate
+## Slice-1 design gate
 
-Before implementation beyond the maintenance artifact begins, approve the exact minimum semantic event vocabulary, serialized evolution policy, and snapshot reconstruction contract for Slice 1.
+The minimum semantic vocabulary, serialized evolution policy, strict replay
+rules, snapshot reconstruction contract, deterministic interruption closure,
+and Slice 1/3/5 ownership split are approved in
+`docs/runtime-session-semantic-protocol.md` and the runtime-session authority
+spec. Implementation proceeds with an adjacent authority sidecar and must not
+weaken the stronger stale-interrupt and exactly-once settlement behavior in the
+currently compiled interactive coordinator.

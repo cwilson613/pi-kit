@@ -335,6 +335,16 @@ impl InteractiveRuntimeSupervisor {
         } else {
             RuntimeTurnOutcome::Completed
         };
+        self.close_durable_worker(outcome)
+    }
+
+    pub(crate) fn close_durable_worker(
+        &mut self,
+        outcome: RuntimeTurnOutcome,
+    ) -> Result<Option<(ActiveTurnMeta, RuntimeTurnOutcome)>, AuthorityError> {
+        let Some(active) = self.turns.current() else {
+            return Ok(None);
+        };
         if let Some(authority) = self.authority.as_mut() {
             let turn_id = active.authority_turn_id.ok_or_else(|| {
                 AuthorityError::Invalid("durable turn has no authority identity".into())
@@ -355,7 +365,10 @@ impl InteractiveRuntimeSupervisor {
                 },
             )?;
         }
-        Ok(self.turns.settle_worker())
+        Ok(self
+            .turns
+            .finish(active.runtime_turn_id, outcome)
+            .map(|active| (active, outcome)))
     }
 
     pub(crate) fn complete_active_turn(&mut self) -> Option<ActiveTurnMeta> {
@@ -528,6 +541,27 @@ mod tests {
         assert_eq!(
             supervisor.authority.as_ref().unwrap().state().last_sequence,
             5
+        );
+
+        supervisor
+            .admit_prompt(
+                "fail explicitly".into(),
+                Vec::new(),
+                RuntimeActor::tui(),
+                ControlSurface::Tui,
+                operator_commands::PromptMetadata::default(),
+                None,
+            )
+            .unwrap();
+        supervisor.start_next_turn().unwrap().unwrap();
+        let (_, outcome) = supervisor
+            .close_durable_worker(RuntimeTurnOutcome::Failed)
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, RuntimeTurnOutcome::Failed);
+        assert_eq!(
+            supervisor.authority.as_ref().unwrap().state().last_sequence,
+            8
         );
     }
 }

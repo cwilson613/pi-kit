@@ -888,14 +888,14 @@ async fn run_agent_task(
         s.set_model(model);
     }
 
-    let mut agent = crate::setup::AgentSetup::new_with_safety(
+    let mut agent = crate::setup::AgentSetup::new_with_safety_and_mode(
         cwd,
         None,
         Some(shared_settings.clone()),
         dangerously_bypass_permissions,
+        "sentry",
     )
     .await?;
-    agent.instance_id = crate::paths::instance_id("sentry");
     crate::bootstrap::apply_runtime_posture(
         &mut agent,
         omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
@@ -983,8 +983,6 @@ async fn run_agent_task(
     if let Err(e) = crate::session::save_session(&agent.conversation, cwd, None) {
         tracing::debug!(error = %e, "failed to save sentry session");
     }
-
-    crate::workspace::runtime::cleanup_instance(cwd, &agent.instance_id);
 
     let elapsed = start.elapsed();
     let in_tokens = total_in.load(std::sync::atomic::Ordering::Relaxed);

@@ -5830,14 +5830,17 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+    let _runtime_ownership = crate::workspace::runtime::RuntimeOwnership::start(cwd, "acp-stdio")?;
+
     let (extension_metadata, _admitted_manifest) = if let Some(id) = agent_id {
         let shared_settings = crate::settings::shared(model);
         let admitted = crate::apply_agent_manifest_pre_setup(id, cwd, &shared_settings)?;
-        let metadata = crate::setup::AgentSetup::new_with_safety(
+        let metadata = crate::setup::AgentSetup::new_with_safety_and_mode(
             cwd,
             None,
             Some(shared_settings),
             dangerously_bypass_permissions,
+            "acp",
         )
         .await?
         .extension_metadata;
@@ -5881,6 +5884,8 @@ pub async fn run_server(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
+
+    let _runtime_ownership = crate::workspace::runtime::RuntimeOwnership::start(cwd, "acp-server")?;
 
     let bind_addr: std::net::SocketAddr = addr
         .parse()

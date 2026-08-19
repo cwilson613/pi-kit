@@ -54,6 +54,8 @@ pub struct AgentSetup {
     pub session_id: String,
     /// Instance identifier for runtime state isolation (`tui-{pid}`, `acp-{pid}`, etc.).
     pub instance_id: String,
+    /// Durable v1 runtime ownership and heartbeat lifecycle.
+    pub runtime_ownership: crate::workspace::runtime::RuntimeOwnership,
     /// Skill activation/resolution events produced while loading startup augments.
     pub startup_skill_activation_events: Vec<omegon_traits::SkillActivationEvent>,
     /// Shared context metrics — updated each turn, read by ContextProvider
@@ -364,7 +366,23 @@ impl AgentSetup {
         settings: Option<crate::settings::SharedSettings>,
         dangerously_bypass_permissions: bool,
     ) -> anyhow::Result<Self> {
-        let instance_id = crate::paths::instance_id("agent");
+        Self::new_with_safety_and_mode(
+            cwd,
+            resume,
+            settings,
+            dangerously_bypass_permissions,
+            "agent",
+        )
+        .await
+    }
+
+    pub async fn new_with_safety_and_mode(
+        cwd: &Path,
+        resume: Option<Option<&str>>,
+        settings: Option<crate::settings::SharedSettings>,
+        dangerously_bypass_permissions: bool,
+        runtime_mode: &str,
+    ) -> anyhow::Result<Self> {
         let cwd = std::fs::canonicalize(cwd)?;
         // Canonical project root — extensions read this instead of
         // embedder-specific env vars (FLYNT_VAULT, CODEX_VAULT).
@@ -1460,6 +1478,9 @@ impl AgentSetup {
         if !pruned.is_empty() {
             tracing::debug!(?pruned, "pruned stale instance directories");
         }
+        let runtime_ownership =
+            crate::workspace::runtime::RuntimeOwnership::start(&cwd, runtime_mode)?;
+        let instance_id = runtime_ownership.runtime_id().to_string();
         let _ =
             crate::workspace::runtime::write_workspace_lease(&cwd, &instance_id, &workspace_lease);
         let _ = crate::workspace::runtime::write_workspace_registry(&cwd, &workspace_registry);
@@ -1484,6 +1505,7 @@ impl AgentSetup {
             bus,
             session_id,
             instance_id,
+            runtime_ownership,
             startup_skill_activation_events: Vec::new(),
             context_metrics,
             command_tx,

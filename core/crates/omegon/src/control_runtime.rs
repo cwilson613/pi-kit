@@ -5980,6 +5980,7 @@ mod context_compaction_tests {
         InteractiveAgentHost {
             session_id: crate::session::allocate_session_id(),
             instance_id: "test-instance".into(),
+            runtime_ownership: None,
             context_metrics: crate::features::context::SharedContextMetrics::new(),
             cwd: cwd.clone(),
             secrets,

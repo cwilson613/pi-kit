@@ -297,6 +297,7 @@ pub(crate) struct InteractiveAgentState {
 pub(crate) struct InteractiveAgentHost {
     pub(crate) session_id: String,
     pub(crate) instance_id: String,
+    pub(crate) runtime_ownership: Option<crate::workspace::runtime::RuntimeOwnership>,
     pub(crate) context_metrics:
         std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
     pub(crate) cwd: PathBuf,
@@ -328,6 +329,7 @@ fn split_interactive_agent(
     let host = InteractiveAgentHost {
         session_id: agent.session_id,
         instance_id: agent.instance_id,
+        runtime_ownership: Some(agent.runtime_ownership),
         context_metrics: agent.context_metrics,
         cwd: agent.cwd,
         secrets: agent.secrets,

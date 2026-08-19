@@ -82,6 +82,10 @@ fn main() {
     println!("cargo:rustc-env=OMEGON_BUILD_DATE={date}");
     println!("cargo:rustc-env=OMEGON_GIT_DESCRIBE={describe_display}");
     println!("cargo:rustc-env=OMEGON_NEXT_VERSION={next_version}");
+    println!(
+        "cargo:rustc-env=OMEGON_BUILD_TARGET={}",
+        std::env::var("TARGET").unwrap_or_else(|_| "unknown-target".into())
+    );
 
     // Only re-run when the commit changes (HEAD moves), not on every
     // git status/stage/stash. Watching .git/index causes full recompiles

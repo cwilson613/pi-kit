@@ -1352,13 +1352,13 @@ fn resource_diagnostics(context: &Context, result: &mut MaintenanceResultV1) {
             }
         };
         examined += children.len();
-        if children.iter().any(|child| child.name == b"workspace.json") {
-            diagnose_legacy_resource(result);
-        }
         let Some(ownership) = children
             .iter()
             .find(|child| child.name == b"ownership-v1.json")
         else {
+            if children.iter().any(|child| child.name == b"workspace.json") {
+                diagnose_legacy_resource(result);
+            }
             diagnose_invalid_resource(
                 result,
                 &format!("runtime {runtime_id} has no v1 ownership record"),

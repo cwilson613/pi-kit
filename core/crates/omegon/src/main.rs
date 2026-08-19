@@ -2390,14 +2390,14 @@ async fn run_embedded_command(
         None
     };
 
-    let mut agent = setup::AgentSetup::new_with_safety(
+    let mut agent = setup::AgentSetup::new_with_safety_and_mode(
         &cwd,
         None,
         Some(shared_settings.clone()),
         dangerously_bypass_permissions,
+        "embedded",
     )
     .await?;
-    agent.instance_id = paths::instance_id("embedded");
     bootstrap::apply_runtime_posture(
         &mut agent,
         omegon_traits::OmegonRuntimeProfile::LongRunningDaemon,
@@ -3324,14 +3324,14 @@ async fn run_cleave_command(
 
     // Resolve self binary path for spawning children
     let agent_binary = std::env::current_exe()?;
-    let mut agent_setup = setup::AgentSetup::new_with_safety(
+    let agent_setup = setup::AgentSetup::new_with_safety_and_mode(
         &repo_path,
         None,
         None,
         cli.dangerously_bypass_permissions,
+        "cleave",
     )
     .await?;
-    agent_setup.instance_id = paths::instance_id("cleave");
 
     let config = workflow::with_discovered_workflow(&repo_path, |workflow| {
         cleave::orchestrator::CleaveConfig {
@@ -3427,6 +3427,7 @@ async fn run_cleave_command(
 
     // Exit with error if any children did not complete successfully.
     if failed > 0 || upstream_exhausted > 0 || unfinished > 0 {
+        drop(agent_setup);
         std::process::exit(1);
     }
     Ok(())
@@ -4112,8 +4113,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     // Fresh by default. --resume opts into session restore; --resume with no value
     // means "most recent" and --fresh forces a clean start.
     let resume = interactive_resume_mode(cli);
-    let mut agent = setup::AgentSetup::new_with_safety(&cli.cwd, resume, Some(shared_settings.clone()), cli.dangerously_bypass_permissions).await?;
-    agent.instance_id = paths::instance_id("tui");
+    let mut agent = setup::AgentSetup::new_with_safety_and_mode(&cli.cwd, resume, Some(shared_settings.clone()), cli.dangerously_bypass_permissions, "tui").await?;
     bootstrap::apply_runtime_posture(
         &mut agent,
         omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
@@ -6550,6 +6550,7 @@ fn build_tui_secret_readiness_snapshot(
 
     if let Some((binary, args)) = restart_request {
         let args = restart_args_for_session(args, &agent.session_id);
+        drop(agent.runtime_ownership.take());
         crate::update::exec_restart(&binary, &args)?;
     }
     Ok(())
@@ -6983,14 +6984,14 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     }
 
     let resume = cli.resume.as_ref().map(|r| r.as_deref());
-    let mut agent = setup::AgentSetup::new_with_safety(
+    let mut agent = setup::AgentSetup::new_with_safety_and_mode(
         &cli.cwd,
         resume,
         Some(shared_settings.clone()),
         cli.dangerously_bypass_permissions,
+        "run",
     )
     .await?;
-    agent.instance_id = paths::instance_id("run");
     bootstrap::apply_runtime_posture(
         &mut agent,
         omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
@@ -7228,9 +7229,11 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
                 // child failed due to upstream provider exhaustion, not a logic error.
                 // The orchestrator may retry with a cross-provider fallback.
                 eprintln!("upstream exhausted: {e}");
+                drop(agent);
                 std::process::exit(2);
             }
             eprintln!("Error: {e}");
+            drop(agent);
             std::process::exit(1);
         }
     }
@@ -7280,14 +7283,14 @@ async fn maybe_run_injected_cleave_smoke_child(
                     s.set_requested_context_class(class);
                 }
             }
-            let mut agent = setup::AgentSetup::new_with_safety(
+            let agent = setup::AgentSetup::new_with_safety_and_mode(
                 cwd,
                 None,
                 Some(shared_settings.clone()),
                 std::env::var("OMEGON_BYPASS_PERMISSIONS").is_ok(),
+                "cleave",
             )
             .await?;
-            agent.instance_id = paths::instance_id("cleave");
             let status = agent.initial_harness_status.clone();
             let tool_names: Vec<String> = agent
                 .bus
@@ -8415,7 +8418,8 @@ async fn run_sentry_command(
         &state_dir.join("state.db"),
     )?);
 
-    let instance_id = paths::instance_id("sentry");
+    let _runtime_ownership = workspace::runtime::RuntimeOwnership::start(&cwd, "sentry-server")?;
+    let instance_id = _runtime_ownership.runtime_id().to_string();
 
     // Auto-detect board:
     //   1. .omegon/tasks/ (task tree) takes precedence
@@ -8759,14 +8763,14 @@ async fn run_bounded_task(
         s.set_model(model);
     }
 
-    let mut agent = setup::AgentSetup::new_with_safety(
+    let mut agent = setup::AgentSetup::new_with_safety_and_mode(
         cwd,
         None,
         Some(shared_settings.clone()),
         cli.dangerously_bypass_permissions,
+        "run",
     )
     .await?;
-    agent.instance_id = paths::instance_id("run");
     bootstrap::apply_runtime_posture(
         &mut agent,
         omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
@@ -8931,6 +8935,7 @@ async fn run_bounded_task(
         }
     }
 
+    drop(agent);
     std::process::exit(exit_code);
 }
 
@@ -9133,6 +9138,8 @@ async fn run_sandboxed(cli: &Cli) -> anyhow::Result<()> {
     cmd.arg("-e");
     cmd.arg("OMEGON_INSIDE_OCI=1");
     cmd.arg("-e");
+    cmd.arg(format!("OMEGON_HOST_WORKSPACE={}", cwd.display()));
+    cmd.arg("-e");
     cmd.arg("OMEGON_RUNTIME_CONTEXT=host-shim-oci");
     cmd.arg("-e");
     cmd.arg("OMEGON_OCI_LAUNCHER=omegon");
@@ -9246,6 +9253,7 @@ mod tests {
             bus: crate::bus::EventBus::new(),
             session_id: "test-session".into(),
             instance_id: "test-instance".into(),
+            runtime_ownership: crate::workspace::runtime::RuntimeOwnership::test_stub(),
             startup_skill_activation_events: Vec::new(),
             context_metrics: crate::features::context::SharedContextMetrics::new(),
             command_tx: crate::features::context::new_shared_command_tx(),
@@ -10086,6 +10094,7 @@ mod tests {
 
         assert_eq!(host.session_id, expected_session_id);
         assert_eq!(host.cwd, expected_cwd);
+        assert!(host.runtime_ownership.is_some());
         assert_eq!(
             host.resume_info.as_ref().map(|r| r.session_id.clone()),
             expected_resume

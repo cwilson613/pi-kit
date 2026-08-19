@@ -192,6 +192,49 @@ impl GuardedContributionMutationDirectory {
     }
 
     #[cfg(unix)]
+    pub(crate) fn import_extension_directory(
+        &self,
+        raw_name: &[u8],
+        source: &File,
+        binary_path: Option<&Path>,
+        expected_manifest: &[u8],
+        overwrite: bool,
+    ) -> anyhow::Result<()> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        let binary = binary_path.map(relative_path_components).transpose()?;
+        let mut entries = 0_usize;
+        let mut bytes = 0_u64;
+        self.stage_and_replace(raw_name, overwrite, |staging| {
+            copy_extension_source_tree(
+                source,
+                staging,
+                &mut Vec::new(),
+                binary.as_deref(),
+                &mut entries,
+                &mut bytes,
+            )?;
+            let copied_manifest = read_file_at(staging, b"manifest.toml", 1024 * 1024)?
+                .ok_or_else(|| anyhow::anyhow!("extension manifest disappeared during import"))?;
+            if copied_manifest != expected_manifest {
+                anyhow::bail!("extension manifest changed during import");
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn import_extension_directory(
+        &self,
+        _raw_name: &[u8],
+        _source: &File,
+        _binary_path: Option<&Path>,
+        _expected_manifest: &[u8],
+        _overwrite: bool,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
+    #[cfg(unix)]
     pub(crate) fn replace_from_snapshot(
         &self,
         raw_name: &[u8],
@@ -224,10 +267,60 @@ impl GuardedContributionMutationDirectory {
     }
 
     #[cfg(unix)]
+    pub(crate) fn remove_entry(&self, raw_name: &[u8]) -> anyhow::Result<bool> {
+        use std::ffi::CString;
+
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        self.validate_binding()?;
+        let mode = match entry_mode_at(&self.directory, raw_name) {
+            Ok(mode) => mode,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        };
+        if mode & libc::S_IFMT == libc::S_IFDIR {
+            return self.remove_directory(raw_name);
+        }
+        if mode & libc::S_IFMT != libc::S_IFLNK {
+            anyhow::bail!("contribution entry is neither a directory nor a symlink");
+        }
+        let raw_name = CString::new(raw_name)?;
+        // SAFETY: the validated name is confined to the held directory descriptor.
+        if unsafe {
+            libc::unlinkat(
+                std::os::fd::AsRawFd::as_raw_fd(&self.directory),
+                raw_name.as_ptr(),
+                0,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        self.directory.sync_all()?;
+        self.validate_binding()?;
+        Ok(true)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn remove_entry(&self, _raw_name: &[u8]) -> anyhow::Result<bool> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
+    #[cfg(unix)]
     pub(crate) fn open_directory(&self, raw_name: &[u8]) -> anyhow::Result<Option<File>> {
         omegon_maintenance_contracts::validate_child_name(raw_name)?;
         self.validate_binding()?;
         open_child_directory(&self.directory, raw_name)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn open_directory(&self, _raw_name: &[u8]) -> anyhow::Result<Option<File>> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
     }
 
     #[cfg(unix)]
@@ -307,6 +400,96 @@ impl GuardedContributionMutationDirectory {
             anyhow::bail!("contribution identity changed during nested file mutation");
         }
         Ok(())
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn write_file_in_directory(
+        &self,
+        _raw_name: &[u8],
+        _child_name: &[u8],
+        _file_name: &[u8],
+        _bytes: &[u8],
+        _expected_identity: &omegon_maintenance_contracts::PathIdentityV1,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn read_file_in_directory(
+        &self,
+        raw_name: &[u8],
+        child_name: &[u8],
+        file_name: &[u8],
+        limit: usize,
+    ) -> anyhow::Result<(
+        omegon_maintenance_contracts::PathIdentityV1,
+        Option<Vec<u8>>,
+    )> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        omegon_maintenance_contracts::validate_child_name(child_name)?;
+        omegon_maintenance_contracts::validate_child_name(file_name)?;
+        self.validate_binding()?;
+        let directory = open_child_directory(&self.directory, raw_name)?
+            .ok_or_else(|| anyhow::anyhow!("contribution directory not found"))?;
+        let identity = omegon_maintenance_contracts::path_identity(&directory)?;
+        let Some(child) = open_child_directory(&directory, child_name)? else {
+            return Ok((identity, None));
+        };
+        let bytes = read_file_at(&child, file_name, limit)?;
+        self.validate_binding()?;
+        Ok((identity, bytes))
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn read_file_in_directory(
+        &self,
+        _raw_name: &[u8],
+        _child_name: &[u8],
+        _file_name: &[u8],
+        _limit: usize,
+    ) -> anyhow::Result<(
+        omegon_maintenance_contracts::PathIdentityV1,
+        Option<Vec<u8>>,
+    )> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn write_file_in_existing_directory(
+        &self,
+        raw_name: &[u8],
+        file_name: &[u8],
+        bytes: &[u8],
+        expected_identity: &omegon_maintenance_contracts::PathIdentityV1,
+    ) -> anyhow::Result<()> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        omegon_maintenance_contracts::validate_child_name(file_name)?;
+        self.validate_binding()?;
+        let directory = open_child_directory(&self.directory, raw_name)?
+            .ok_or_else(|| anyhow::anyhow!("contribution directory disappeared during mutation"))?;
+        if &omegon_maintenance_contracts::path_identity(&directory)? != expected_identity {
+            anyhow::bail!("contribution identity changed before file mutation");
+        }
+        replace_file_at(&directory, file_name, bytes, 0o600)?;
+        directory.sync_all()?;
+        self.validate_binding()?;
+        let current = open_child_directory(&self.directory, raw_name)?
+            .ok_or_else(|| anyhow::anyhow!("contribution directory disappeared during mutation"))?;
+        if &omegon_maintenance_contracts::path_identity(&current)? != expected_identity {
+            anyhow::bail!("contribution identity changed during file mutation");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn write_file_in_existing_directory(
+        &self,
+        _raw_name: &[u8],
+        _file_name: &[u8],
+        _bytes: &[u8],
+        _expected_identity: &omegon_maintenance_contracts::PathIdentityV1,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
     }
 
     #[cfg(unix)]
@@ -687,6 +870,103 @@ fn write_file_at(
         return Err(error);
     }
     parent.sync_all()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn relative_path_components(path: &Path) -> anyhow::Result<Vec<Vec<u8>>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let components = path
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(component) => Ok(component.as_bytes().to_vec()),
+            _ => anyhow::bail!("extension binary must be a relative path within its bundle"),
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if components.is_empty() {
+        anyhow::bail!("extension binary path is empty");
+    }
+    if components
+        .first()
+        .is_some_and(|component| matches!(component.as_slice(), b".git" | b".omegon"))
+    {
+        anyhow::bail!("extension binary cannot be stored in VCS or Omegon state directories");
+    }
+    Ok(components)
+}
+
+#[cfg(unix)]
+fn copy_extension_source_tree(
+    source: &File,
+    destination: &File,
+    path: &mut Vec<Vec<u8>>,
+    binary: Option<&[Vec<u8>]>,
+    entries: &mut usize,
+    total_bytes: &mut u64,
+) -> anyhow::Result<()> {
+    if path.len() > 32 {
+        anyhow::bail!("extension bundle exceeds the directory depth limit");
+    }
+    for raw_name in read_directory_names(source, 10_000)? {
+        if path.is_empty()
+            && raw_name.starts_with(b".")
+            && !binary.is_some_and(|binary| binary.first() == Some(&raw_name))
+        {
+            continue;
+        }
+        path.push(raw_name.clone());
+        let restricted_root = path
+            .first()
+            .is_some_and(|component| component == b"target" || component.starts_with(b"."));
+        let mode = entry_mode_at(source, &raw_name)?;
+        let include = if restricted_root {
+            binary.is_some_and(|binary| {
+                if mode & libc::S_IFMT == libc::S_IFDIR {
+                    binary.starts_with(path)
+                } else {
+                    binary == path.as_slice()
+                }
+            })
+        } else {
+            true
+        };
+        if !include || mode & libc::S_IFMT == libc::S_IFLNK {
+            path.pop();
+            continue;
+        }
+        *entries += 1;
+        if *entries > 10_000 {
+            anyhow::bail!("extension bundle exceeds the entry limit");
+        }
+        if mode & libc::S_IFMT == libc::S_IFDIR {
+            let source_child = open_child_directory(source, &raw_name)?
+                .ok_or_else(|| anyhow::anyhow!("extension source directory disappeared"))?;
+            let (child, created) = open_or_create_child_directory(destination, &raw_name)?;
+            if !created {
+                anyhow::bail!("duplicate extension bundle directory entry");
+            }
+            copy_extension_source_tree(&source_child, &child, path, binary, entries, total_bytes)?;
+            child.sync_all()?;
+        } else if mode & libc::S_IFMT == libc::S_IFREG {
+            let bytes = read_file_at(source, &raw_name, 256 * 1024 * 1024)?
+                .ok_or_else(|| anyhow::anyhow!("extension source file disappeared"))?;
+            *total_bytes = total_bytes
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| anyhow::anyhow!("extension bundle size overflow"))?;
+            if *total_bytes > 512 * 1024 * 1024 {
+                anyhow::bail!("extension bundle exceeds the total size limit");
+            }
+            replace_file_at(
+                destination,
+                &raw_name,
+                &bytes,
+                if mode & 0o111 != 0 { 0o700 } else { 0o600 },
+            )?;
+        }
+        path.pop();
+    }
+    destination.sync_all()?;
     Ok(())
 }
 

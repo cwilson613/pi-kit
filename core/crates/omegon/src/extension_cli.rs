@@ -12,7 +12,7 @@
 //! omegon extension install https://example.com/my-extension-v1.0-aarch64-apple-darwin.tar.gz
 //! ```
 //!
-//! Git URIs are cloned. Local paths are symlinked (development mode).
+//! Git URIs are cloned. Local paths are copied into the admitted extension root.
 //! Tarball URLs (.tar.gz) are downloaded and extracted — no build step required.
 //!
 //! ## List
@@ -208,12 +208,11 @@ async fn main() {{
 /// Install an extension from a git URI or local path.
 pub fn install(uri: &str) -> anyhow::Result<()> {
     let extensions_dir = extensions_dir()?;
-    std::fs::create_dir_all(&extensions_dir)?;
 
     let local_path = Path::new(uri);
 
     if local_path.exists() && local_path.join("manifest.toml").exists() {
-        install_local(&extensions_dir, local_path)
+        install_local(local_path)
     } else if uri.ends_with(".tar.gz") || uri.ends_with(".tgz") {
         install_tarball(&extensions_dir, uri)
     } else if uri.contains("://") || uri.contains("git@") || uri.ends_with(".git") {
@@ -312,25 +311,12 @@ pub fn list() -> anyhow::Result<()> {
 /// Remove an installed extension by name.
 pub fn remove(name: &str) -> anyhow::Result<()> {
     validate_name(name)?;
-    let extensions_dir = extensions_dir()?;
-    let ext_path = extensions_dir.join(name);
-
-    if !ext_path.exists() && !ext_path.is_symlink() {
-        anyhow::bail!(
-            "Extension '{}' not found in {}",
-            name,
-            extensions_dir.display()
-        );
+    let mutation = extension_mutation_directory(false)?
+        .ok_or_else(|| anyhow::anyhow!("Extension '{name}' not found"))?;
+    if !mutation.remove_entry(name.as_bytes())? {
+        anyhow::bail!("Extension '{name}' not found");
     }
-
-    if ext_path.is_symlink() {
-        std::fs::remove_file(&ext_path)?;
-        println!("Removed symlink: {name}");
-    } else {
-        std::fs::remove_dir_all(&ext_path)?;
-        println!("Removed extension: {name}");
-    }
-
+    println!("Removed extension: {name}");
     Ok(())
 }
 
@@ -420,34 +406,125 @@ pub fn update(name: Option<&str>) -> anyhow::Result<()> {
 
 /// Enable a disabled extension.
 pub fn enable(name: &str) -> anyhow::Result<()> {
-    let ext_dir = extension_dir(name)?;
-    let mut state = ExtensionState::load(&ext_dir)?;
+    let state = mutate_extension_state(name, |state| {
+        if state.enabled {
+            return false;
+        }
+        state.mark_enabled();
+        true
+    })?;
 
-    if state.enabled {
+    if !state {
         println!("Extension '{name}' is already enabled.");
         return Ok(());
     }
-
-    state.mark_enabled();
-    state.save(&ext_dir)?;
     println!("Enabled extension '{name}'.");
     Ok(())
 }
 
 /// Disable an extension (prevents spawning on next startup).
 pub fn disable(name: &str) -> anyhow::Result<()> {
-    let ext_dir = extension_dir(name)?;
-    let mut state = ExtensionState::load(&ext_dir)?;
+    let state = mutate_extension_state(name, |state| {
+        if !state.enabled {
+            return false;
+        }
+        state.mark_disabled();
+        true
+    })?;
 
-    if !state.enabled {
+    if !state {
         println!("Extension '{name}' is already disabled.");
         return Ok(());
     }
-
-    state.mark_disabled();
-    state.save(&ext_dir)?;
     println!("Disabled extension '{name}'.");
     Ok(())
+}
+
+pub(crate) fn set_config(name: &str, key: &str, value: &str) -> anyhow::Result<()> {
+    validate_name(name)?;
+    let mutation = extension_mutation_directory(false)?
+        .ok_or_else(|| anyhow::anyhow!("Extension '{name}' not found"))?;
+    let directory = mutation
+        .open_directory(name.as_bytes())?
+        .ok_or_else(|| anyhow::anyhow!("Extension '{name}' not found"))?;
+    let identity = omegon_maintenance_contracts::path_identity(&directory)?;
+    let manifest =
+        crate::contribution_loading::read_file_at(&directory, b"manifest.toml", 1024 * 1024)?
+            .ok_or_else(|| anyhow::anyhow!("extension '{name}' has no manifest"))?;
+    let manifest: ExtensionManifest = toml::from_str(std::str::from_utf8(&manifest)?)?;
+    if !manifest.config.is_empty() {
+        let field = manifest.config.get(key).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown config key '{key}' for extension '{name}'. Declared keys: {:?}",
+                manifest.config.keys().collect::<Vec<_>>()
+            )
+        })?;
+        crate::extensions::config_store::validate_field(field, value)?;
+    }
+    let mut table =
+        match crate::contribution_loading::read_file_at(&directory, b"config.toml", 1024 * 1024)? {
+            Some(bytes) => toml::from_str(std::str::from_utf8(&bytes)?)?,
+            None => toml::Table::new(),
+        };
+    table.insert(key.to_string(), toml::Value::String(value.to_string()));
+    let content = toml::to_string_pretty(&table)?;
+    mutation.write_file_in_existing_directory(
+        name.as_bytes(),
+        b"config.toml",
+        content.as_bytes(),
+        &identity,
+    )
+}
+
+fn mutate_extension_state(
+    name: &str,
+    mutate: impl FnOnce(&mut ExtensionState) -> bool,
+) -> anyhow::Result<bool> {
+    validate_name(name)?;
+    let mutation = extension_mutation_directory(false)?
+        .ok_or_else(|| anyhow::anyhow!("Extension '{name}' not found"))?;
+    let (identity, state) =
+        mutation.read_file_in_directory(name.as_bytes(), b".omegon", b"state.toml", 1024 * 1024)?;
+    let mut state = match state {
+        Some(bytes) => toml::from_str(std::str::from_utf8(&bytes)?)?,
+        None => ExtensionState::new(),
+    };
+    if !mutate(&mut state) {
+        return Ok(false);
+    }
+    let content = toml::to_string_pretty(&state)?;
+    mutation.write_file_in_directory(
+        name.as_bytes(),
+        b".omegon",
+        b"state.toml",
+        content.as_bytes(),
+        &identity,
+    )?;
+    Ok(true)
+}
+
+fn extension_mutation_directory(
+    create: bool,
+) -> anyhow::Result<Option<crate::contribution_loading::GuardedContributionMutationDirectory>> {
+    let home = crate::paths::omegon_home()?;
+    if create {
+        return Ok(Some(
+            crate::contribution_loading::GuardedContributionMutationDirectory::open_or_create(
+                &home,
+                &[b"extensions"],
+                &home,
+                omegon_maintenance_contracts::ContributionKind::Extension,
+                "user",
+            )?,
+        ));
+    }
+    crate::contribution_loading::GuardedContributionMutationDirectory::open_existing(
+        &home,
+        &[b"extensions"],
+        &home,
+        omegon_maintenance_contracts::ContributionKind::Extension,
+        "user",
+    )
 }
 
 pub(crate) fn extensions_dir() -> anyhow::Result<PathBuf> {
@@ -473,18 +550,14 @@ fn validate_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn extension_dir(name: &str) -> anyhow::Result<PathBuf> {
-    validate_name(name)?;
-    let dir = extensions_dir()?.join(name);
-    if !dir.exists() {
-        anyhow::bail!("Extension '{name}' not found at {}", dir.display());
-    }
-    Ok(dir)
-}
-
-fn install_local(extensions_dir: &Path, local_path: &Path) -> anyhow::Result<()> {
-    let manifest = ExtensionManifest::from_file(&local_path.join("manifest.toml"))?;
+fn install_local(local_path: &Path) -> anyhow::Result<()> {
+    let source = std::fs::File::open(local_path)?;
+    let manifest_bytes =
+        crate::contribution_loading::read_file_at(&source, b"manifest.toml", 1024 * 1024)?
+            .ok_or_else(|| anyhow::anyhow!("local extension has no manifest.toml"))?;
+    let manifest: ExtensionManifest = toml::from_str(std::str::from_utf8(&manifest_bytes)?)?;
     let name = &manifest.extension.name;
+    validate_name(name)?;
 
     // Verify binary exists for native extensions
     if manifest.is_native() {
@@ -498,24 +571,22 @@ fn install_local(extensions_dir: &Path, local_path: &Path) -> anyhow::Result<()>
         }
     }
 
-    let target = extensions_dir.join(name);
-    if target.exists() || target.is_symlink() {
-        anyhow::bail!(
-            "Extension '{}' already installed at {}. Remove first with: omegon extension remove {}",
-            name,
-            target.display(),
-            name
-        );
-    }
+    let binary_path = match &manifest.runtime {
+        crate::extensions::manifest::RuntimeConfig::Native { binary, .. } => {
+            Some(Path::new(binary.as_str()))
+        }
+        crate::extensions::manifest::RuntimeConfig::Oci { .. } => None,
+    };
+    let mutation = extension_mutation_directory(true)?.expect("create returns a mutation root");
+    mutation.import_extension_directory(
+        name.as_bytes(),
+        &source,
+        binary_path,
+        &manifest_bytes,
+        false,
+    )?;
 
-    let canonical = std::fs::canonicalize(local_path)?;
-
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&canonical, &target)?;
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(&canonical, &target)?;
-
-    println!("Linked extension '{}' → {}", name, canonical.display());
+    println!("Installed local extension '{}'", name);
 
     print_secrets_hint(&manifest);
 
@@ -819,6 +890,30 @@ fn load_extension_summary(dir: &Path) -> anyhow::Result<ExtensionSummary> {
 mod tests {
     use super::*;
 
+    struct EnvGuard(Option<std::ffi::OsString>);
+
+    impl EnvGuard {
+        fn isolate(home: &Path) -> Self {
+            let previous = std::env::var_os("OMEGON_HOME");
+            // SAFETY: guarded extension tests hold the shared environment lock.
+            unsafe { std::env::set_var("OMEGON_HOME", home) };
+            Self(previous)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: guarded extension tests hold the shared environment lock.
+            unsafe {
+                if let Some(previous) = self.0.take() {
+                    std::env::set_var("OMEGON_HOME", previous);
+                } else {
+                    std::env::remove_var("OMEGON_HOME");
+                }
+            }
+        }
+    }
+
     #[test]
     fn infer_extension_name_from_https() {
         let name = infer_extension_name("https://github.com/styrene-lab/vox.git").unwrap();
@@ -918,8 +1013,74 @@ binary = "bin/test"
         assert_eq!(state.status_text(), "enabled");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn install_local_symlinks_extension() {
+    fn guarded_extension_state_config_and_remove_roundtrip() {
+        let _lock = crate::test_support::env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        let ext = home.path().join("extensions/test-ext");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            ext.join("manifest.toml"),
+            r#"
+[extension]
+name = "test-ext"
+version = "0.1.0"
+description = "Test"
+
+[runtime]
+type = "native"
+binary = "bin/test"
+
+[config.mode]
+type = "string"
+label = "Mode"
+description = "Execution mode"
+default = "safe"
+"#,
+        )
+        .unwrap();
+
+        disable("test-ext").unwrap();
+        assert!(!ExtensionState::load(&ext).unwrap().enabled);
+        enable("test-ext").unwrap();
+        assert!(ExtensionState::load(&ext).unwrap().enabled);
+        set_config("test-ext", "mode", "fast").unwrap();
+        assert_eq!(
+            crate::extensions::config_store::read_config(&ext)
+                .unwrap()
+                .get("mode")
+                .map(String::as_str),
+            Some("fast")
+        );
+        remove("test-ext").unwrap();
+        assert!(!ext.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_remove_unlinks_legacy_extension_symlink_only() {
+        use std::os::unix::fs::symlink;
+
+        let _lock = crate::test_support::env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        std::fs::create_dir_all(home.path().join("extensions")).unwrap();
+        let link = home.path().join("extensions/linked");
+        symlink(external.path(), &link).unwrap();
+
+        remove("linked").unwrap();
+
+        assert!(!link.exists());
+        assert!(external.path().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_local_copies_extension_into_guarded_root() {
+        let _lock = crate::test_support::env::lock();
         let tmp = tempfile::tempdir().unwrap();
         let ext = tmp.path().join("test-ext");
         std::fs::create_dir_all(&ext).unwrap();
@@ -937,13 +1098,25 @@ binary = "target/release/test-ext"
 "#,
         )
         .unwrap();
+        std::fs::create_dir_all(ext.join("target/release")).unwrap();
+        std::fs::create_dir_all(ext.join("target/debug/incremental")).unwrap();
+        std::fs::write(ext.join("target/release/test-ext"), "release-binary").unwrap();
+        std::fs::write(ext.join("target/debug/incremental/junk"), "junk").unwrap();
 
-        let ext_dir = tempfile::tempdir().unwrap();
-        install_local(ext_dir.path(), &ext).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        install_local(&ext).unwrap();
 
-        let link = ext_dir.path().join("test-ext");
-        assert!(link.exists(), "symlink should exist");
-        assert!(link.is_symlink(), "should be a symlink");
+        let installed = home.path().join("extensions/test-ext");
+        assert!(installed.is_dir());
+        assert!(!installed.is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(installed.join("target/release/test-ext")).unwrap(),
+            "release-binary"
+        );
+        assert!(!installed.join("target/debug").exists());
+        std::fs::write(ext.join("source-only"), "changed").unwrap();
+        assert!(!installed.join("source-only").exists());
     }
 
     #[test]

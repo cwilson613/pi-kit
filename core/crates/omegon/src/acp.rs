@@ -3214,22 +3214,7 @@ impl OmegonAcpAgent {
                 let value = params["value"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'value' field"))?;
-                let ext_dir = extensions_dir.join(ext_name);
-                if !ext_dir.exists() {
-                    anyhow::bail!("extension '{ext_name}' not found");
-                }
-                let manifest = ExtensionManifest::from_extension_dir(&ext_dir)?;
-                if !manifest.config.is_empty() {
-                    let field = manifest.config.get(key).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "unknown config key '{key}' for extension '{ext_name}'. \
-                             Declared keys: {:?}",
-                            manifest.config.keys().collect::<Vec<_>>()
-                        )
-                    })?;
-                    config_store::validate_field(field, value)?;
-                }
-                config_store::write_config_value(&ext_dir, key, value)?;
+                crate::extension_cli::set_config(ext_name, key, value)?;
                 Ok(serde_json::json!({ "ok": true }))
             }
 
@@ -3383,13 +3368,7 @@ impl OmegonAcpAgent {
                 let ext_name = params["extension"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'extension' field"))?;
-                let ext_dir = extensions_dir.join(ext_name);
-                if !ext_dir.exists() {
-                    anyhow::bail!("extension '{ext_name}' not found");
-                }
-                let mut state = ExtensionState::load(&ext_dir).unwrap_or_default();
-                state.mark_enabled();
-                state.save(&ext_dir)?;
+                crate::extension_cli::enable(ext_name)?;
                 Ok(serde_json::json!({ "ok": true }))
             }
 
@@ -3397,13 +3376,7 @@ impl OmegonAcpAgent {
                 let ext_name = params["extension"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'extension' field"))?;
-                let ext_dir = extensions_dir.join(ext_name);
-                if !ext_dir.exists() {
-                    anyhow::bail!("extension '{ext_name}' not found");
-                }
-                let mut state = ExtensionState::load(&ext_dir).unwrap_or_default();
-                state.mark_disabled();
-                state.save(&ext_dir)?;
+                crate::extension_cli::disable(ext_name)?;
                 Ok(serde_json::json!({ "ok": true }))
             }
 

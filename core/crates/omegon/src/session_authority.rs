@@ -16,6 +16,7 @@ const EVENT_VERSION: u16 = 1;
 const SNAPSHOT_VERSION: u16 = 1;
 const REDUCER_VERSION: u16 = 1;
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
+const MAX_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
 const RECOVERY_NAMESPACE: Uuid = Uuid::from_u128(0x5907_b852_acde_4b53_a6b1_2d1a_c964_868a);
 
 #[derive(Debug, thiserror::Error)]
@@ -846,6 +847,10 @@ impl SessionAuthority {
         &self.state
     }
 
+    pub(crate) fn stage_attachment(&self, source: &Path) -> Result<AttachmentRef> {
+        self.store.stage_attachment(source)
+    }
+
     pub(crate) fn admit_prompt(
         &mut self,
         command_id: Uuid,
@@ -962,6 +967,7 @@ fn command_fingerprint(payload: &SessionFactPayload) -> Result<String> {
 pub(crate) struct SessionAuthorityStore {
     log_path: PathBuf,
     snapshot_path: PathBuf,
+    attachment_dir: PathBuf,
 }
 
 impl SessionAuthorityStore {
@@ -976,12 +982,14 @@ impl SessionAuthorityStore {
         Ok(Self {
             log_path: parent.join(format!("{stem}.authority.jsonl")),
             snapshot_path: parent.join(format!("{stem}.authority.snapshot.json")),
+            attachment_dir: parent.join(format!("{stem}.authority.attachments")),
         })
     }
 
     #[cfg(test)]
     fn from_paths(log_path: PathBuf, snapshot_path: PathBuf) -> Self {
         Self {
+            attachment_dir: log_path.with_extension("attachments"),
             log_path,
             snapshot_path,
         }
@@ -1080,6 +1088,55 @@ impl SessionAuthorityStore {
         Ok(state)
     }
 
+    fn stage_attachment(&self, source: &Path) -> Result<AttachmentRef> {
+        let mut source_file = File::open(source)?;
+        let metadata = source_file.metadata()?;
+        if !metadata.is_file() {
+            return Err(AuthorityError::Invalid(
+                "prompt attachment must be a regular file".into(),
+            ));
+        }
+        if metadata.len() > MAX_ATTACHMENT_BYTES {
+            return Err(AuthorityError::Invalid(format!(
+                "prompt attachment exceeds {} MiB",
+                MAX_ATTACHMENT_BYTES / (1024 * 1024)
+            )));
+        }
+
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        std::io::Read::read_to_end(&mut source_file, &mut bytes)?;
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        fs::create_dir_all(&self.attachment_dir)?;
+        let stored = self.attachment_dir.join(&digest);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&stored)
+        {
+            Ok(mut file) => {
+                file.write_all(&bytes)?;
+                file.flush()?;
+                file.sync_all()?;
+                sync_parent(&stored)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if fs::read(&stored)? != bytes {
+                    return Err(AuthorityError::Invalid(
+                        "stored attachment digest collision".into(),
+                    ));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        Ok(AttachmentRef {
+            digest,
+            media_type: attachment_media_type(source).to_string(),
+            byte_length: metadata.len(),
+            storage_ref: stored.to_string_lossy().into_owned(),
+        })
+    }
+
     fn append_record(&self, encoded: &[u8]) -> Result<()> {
         if let Some(parent) = self.log_path.parent() {
             fs::create_dir_all(parent)?;
@@ -1103,6 +1160,21 @@ impl SessionAuthorityStore {
         let snapshot: SessionAuthoritySnapshot = serde_json::from_slice(&bytes)?;
         snapshot.validate()?;
         Ok(snapshot)
+    }
+}
+
+fn attachment_media_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
     }
 }
 
@@ -1811,6 +1883,38 @@ mod tests {
         assert_eq!(
             reopened.state().closed_turns[&turn_id].outcome,
             TurnOutcome::Revoked
+        );
+    }
+
+    #[test]
+    fn session_authority_stages_attachments_by_content_digest() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_path = temp.path().join("session-1.json");
+        let source = temp.path().join("capture.png");
+        fs::write(&source, b"stable-image-bytes").unwrap();
+        let authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-1",
+            ActorIdentity {
+                principal: "operator".into(),
+                ingress: "tui".into(),
+            },
+            NOW,
+        )
+        .unwrap();
+
+        let first = authority.stage_attachment(&source).unwrap();
+        let second = authority.stage_attachment(&source).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.media_type, "image/png");
+        assert_eq!(first.byte_length, 18);
+        assert_eq!(fs::read(&first.storage_ref).unwrap(), b"stable-image-bytes");
+        assert!(
+            Path::new(&first.storage_ref)
+                .file_name()
+                .is_some_and(|name| name == first.digest.as_str())
         );
     }
 

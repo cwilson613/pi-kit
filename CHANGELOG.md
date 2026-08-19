@@ -28,7 +28,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
-- Enforced maintenance contribution exclusion for user and project skills during startup and runtime reload. Skill loading now holds each shared scope lock through descriptor-relative bounded parsing and registry publication, preserves child skill allowlists and session workspace binding on reload, and serves agent-facing list/get operations from the admitted immutable snapshot instead of reopening denied or replaced files.
+- Enforced maintenance contribution exclusion for user and project skills during startup and runtime reload. Skill loading now holds each shared scope lock through descriptor-relative bounded parsing and registry publication, preserves child skill allowlists and session workspace binding on reload, and serves agent-facing list/get operations from the admitted immutable snapshot instead of reopening denied or replaced files. Project `skills_create` writes now hold the exclusive scope lock and atomically replace a descriptor-confined staged directory without retaining stale bundle assets.
 
 - Enforced maintenance contribution exclusion for project workflow templates. Workflow discovery now derives authority from the opened `.omegon/workflows` directory, holds the shared scope lock through deny lookup, descriptor-relative bounded parsing, and activation publication, excludes exact denied basename bytes, and fails closed on unresolved fences or malformed deny state.
 

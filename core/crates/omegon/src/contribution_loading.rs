@@ -1,12 +1,143 @@
 use std::{fs::File, path::Path};
 
 use omegon_maintenance_contracts::{
-    AuthorityKey, ContributionAdmissionGuard, ContributionKind, MaintenanceStateV1,
+    AuthorityKey, ContributionAdmissionGuard, ContributionKind, ContributionMutationGuard,
+    MaintenanceStateV1,
 };
 
 pub(crate) struct GuardedContributionDirectory {
     directory: File,
     admission: ContributionAdmissionGuard,
+}
+
+pub(crate) struct GuardedContributionMutationDirectory {
+    root: File,
+    components: Vec<Vec<u8>>,
+    directory: File,
+    directory_identity: omegon_maintenance_contracts::PathIdentityV1,
+    _mutation: ContributionMutationGuard,
+}
+
+impl GuardedContributionMutationDirectory {
+    #[cfg(unix)]
+    pub(crate) fn open_or_create(
+        root_path: &Path,
+        components: &[&[u8]],
+        home_path: &Path,
+        kind: ContributionKind,
+        scope: &str,
+    ) -> anyhow::Result<Self> {
+        let root = omegon_maintenance_contracts::open_secure_root(root_path)?;
+        let directory = open_or_create_relative_directory(&root, components)?;
+        let parent_identity = omegon_maintenance_contracts::path_identity(&directory)?;
+        let directory_identity = parent_identity.clone();
+        ensure_home_exists(home_path)?;
+        let home = omegon_maintenance_contracts::open_secure_root(home_path)?;
+        let home_identity = omegon_maintenance_contracts::path_identity(&home)?;
+        let state = MaintenanceStateV1::bootstrap(
+            &home,
+            home_identity,
+            &uuid::Uuid::new_v4().to_string(),
+            false,
+        )?;
+        let mutation = state.lock_contribution_scope_mutation(
+            kind,
+            scope,
+            &parent_identity,
+            &uuid::Uuid::new_v4().to_string(),
+            false,
+        )?;
+        Ok(Self {
+            root,
+            components: components
+                .iter()
+                .map(|component| component.to_vec())
+                .collect(),
+            directory,
+            directory_identity,
+            _mutation: mutation,
+        })
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn open_or_create(
+        _root_path: &Path,
+        _components: &[&[u8]],
+        _home_path: &Path,
+        _kind: ContributionKind,
+        _scope: &str,
+    ) -> anyhow::Result<Self> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn write_single_file_directory(
+        &self,
+        raw_name: &[u8],
+        file_name: &[u8],
+        bytes: &[u8],
+        overwrite: bool,
+    ) -> anyhow::Result<()> {
+        omegon_maintenance_contracts::validate_child_name(raw_name)?;
+        omegon_maintenance_contracts::validate_child_name(file_name)?;
+        self.validate_binding()?;
+        let existing = open_child_directory(&self.directory, raw_name)?;
+        if existing.is_some() && !overwrite {
+            anyhow::bail!(
+                "contribution '{}' already exists",
+                String::from_utf8_lossy(raw_name)
+            );
+        }
+        drop(existing);
+        let staging_name = format!(".{}.tmp", uuid::Uuid::new_v4()).into_bytes();
+        let (staging, created) = open_or_create_child_directory(&self.directory, &staging_name)?;
+        if !created {
+            anyhow::bail!("contribution staging directory already exists");
+        }
+        if let Err(error) = replace_file_at(&staging, file_name, bytes) {
+            let _ = remove_tree_at(&self.directory, &staging_name);
+            return Err(error);
+        }
+        let backup_name = format!(".{}.old", uuid::Uuid::new_v4()).into_bytes();
+        if open_child_directory(&self.directory, raw_name)?.is_some()
+            && let Err(error) = rename_at(&self.directory, raw_name, &backup_name)
+        {
+            let _ = remove_tree_at(&self.directory, &staging_name);
+            return Err(error);
+        }
+        if let Err(error) = rename_at(&self.directory, &staging_name, raw_name) {
+            if open_child_directory(&self.directory, &backup_name)?.is_some() {
+                let _ = rename_at(&self.directory, &backup_name, raw_name);
+            }
+            let _ = remove_tree_at(&self.directory, &staging_name);
+            return Err(error);
+        }
+        if let Err(error) = self.directory.sync_all() {
+            anyhow::bail!("contribution was replaced but parent durability is uncertain: {error}");
+        }
+        self.validate_binding()?;
+        if open_child_directory(&self.directory, &backup_name)?.is_some()
+            && let Err(error) = remove_tree_at(&self.directory, &backup_name)
+        {
+            tracing::warn!(error = %error, "committed contribution but could not remove prior staging tree");
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn validate_binding(&self) -> anyhow::Result<()> {
+        let components = self
+            .components
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        let current = open_relative_directory(&self.root, &components)?
+            .ok_or_else(|| anyhow::anyhow!("contribution root disappeared during mutation"))?;
+        if omegon_maintenance_contracts::path_identity(&current)? != self.directory_identity {
+            anyhow::bail!("contribution root identity changed during mutation");
+        }
+        Ok(())
+    }
 }
 
 impl GuardedContributionDirectory {
@@ -159,6 +290,192 @@ fn open_relative_directory(root: &File, components: &[&[u8]]) -> anyhow::Result<
         current = next;
     }
     Ok(Some(current))
+}
+
+#[cfg(unix)]
+fn open_or_create_relative_directory(root: &File, components: &[&[u8]]) -> anyhow::Result<File> {
+    let mut current = root.try_clone()?;
+    for component in components {
+        current = open_or_create_child_directory(&current, component)?.0;
+    }
+    Ok(current)
+}
+
+#[cfg(unix)]
+fn open_or_create_child_directory(parent: &File, name: &[u8]) -> anyhow::Result<(File, bool)> {
+    use std::ffi::CString;
+
+    if let Some(directory) = open_child_directory(parent, name)? {
+        return Ok((directory, false));
+    }
+    omegon_maintenance_contracts::validate_child_name(name)?;
+    let encoded = CString::new(name)?;
+    // SAFETY: parent/name are valid for this call and no pointers are retained.
+    let created = if unsafe {
+        libc::mkdirat(
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            encoded.as_ptr(),
+            0o700,
+        )
+    } == 0
+    {
+        parent.sync_all()?;
+        true
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error.into());
+        }
+        false
+    };
+    let directory = open_child_directory(parent, name)?
+        .ok_or_else(|| anyhow::anyhow!("contribution directory disappeared after creation"))?;
+    Ok((directory, created))
+}
+
+#[cfg(unix)]
+fn replace_file_at(parent: &File, name: &[u8], bytes: &[u8]) -> anyhow::Result<()> {
+    use std::{ffi::CString, io::Write, os::fd::FromRawFd};
+
+    omegon_maintenance_contracts::validate_child_name(name)?;
+    let name = CString::new(name)?;
+    let temporary = CString::new(format!(".{}.tmp", uuid::Uuid::new_v4()))?;
+    // SAFETY: parent/temporary are valid; the returned descriptor is owned below.
+    let descriptor = unsafe {
+        libc::openat(
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            temporary.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: openat returned a new owned descriptor.
+    let mut file = unsafe { File::from_raw_fd(descriptor) };
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        // SAFETY: parent/temporary remain valid and unlinkat retains no pointer.
+        unsafe {
+            libc::unlinkat(
+                std::os::fd::AsRawFd::as_raw_fd(parent),
+                temporary.as_ptr(),
+                0,
+            )
+        };
+        return Err(error.into());
+    }
+    // SAFETY: both names are confined to parent and renameat retains no pointer.
+    if unsafe {
+        libc::renameat(
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            temporary.as_ptr(),
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            name.as_ptr(),
+        )
+    } != 0
+    {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: parent/temporary remain valid and unlinkat retains no pointer.
+        unsafe {
+            libc::unlinkat(
+                std::os::fd::AsRawFd::as_raw_fd(parent),
+                temporary.as_ptr(),
+                0,
+            )
+        };
+        return Err(error.into());
+    }
+    parent.sync_all()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn rename_at(parent: &File, source: &[u8], destination: &[u8]) -> anyhow::Result<()> {
+    use std::ffi::CString;
+
+    omegon_maintenance_contracts::validate_child_name(source)?;
+    omegon_maintenance_contracts::validate_child_name(destination)?;
+    let source = CString::new(source)?;
+    let destination = CString::new(destination)?;
+    // SAFETY: both names are confined to parent and renameat retains no pointer.
+    if unsafe {
+        libc::renameat(
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            source.as_ptr(),
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            destination.as_ptr(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_tree_at(parent: &File, name: &[u8]) -> anyhow::Result<()> {
+    use std::ffi::CString;
+
+    let directory = open_child_directory(parent, name)?
+        .ok_or_else(|| anyhow::anyhow!("contribution cleanup directory disappeared"))?;
+    for child in read_directory_names(&directory, 10_000)? {
+        if entry_is_directory_at(&directory, &child)? {
+            remove_tree_at(&directory, &child)?;
+        } else {
+            let child = CString::new(child)?;
+            // SAFETY: directory/child are valid and unlinkat retains no pointer.
+            if unsafe {
+                libc::unlinkat(
+                    std::os::fd::AsRawFd::as_raw_fd(&directory),
+                    child.as_ptr(),
+                    0,
+                )
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+    }
+    directory.sync_all()?;
+    let name = CString::new(name)?;
+    // SAFETY: parent/name are valid and unlinkat retains no pointer.
+    if unsafe {
+        libc::unlinkat(
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            name.as_ptr(),
+            libc::AT_REMOVEDIR,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    parent.sync_all()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn entry_is_directory_at(parent: &File, name: &[u8]) -> anyhow::Result<bool> {
+    use std::ffi::CString;
+
+    omegon_maintenance_contracts::validate_child_name(name)?;
+    let name = CString::new(name)?;
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: fstatat initializes metadata on success and retains no pointer.
+    if unsafe {
+        libc::fstatat(
+            std::os::fd::AsRawFd::as_raw_fd(parent),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: fstatat succeeded and initialized metadata.
+    let metadata = unsafe { metadata.assume_init() };
+    Ok(metadata.st_mode & libc::S_IFMT == libc::S_IFDIR)
 }
 
 #[cfg(unix)]

@@ -326,23 +326,7 @@ fn create_skill_file(
     let body = required_str(args, "body")?;
     let slug = crate::skills::validate_skill_name(name)?;
     let scope = skill_scope(args);
-    let base = match scope {
-        SkillToolScope::Project => cwd.join(".omegon/skills"),
-        SkillToolScope::User => home.join("skills"),
-    };
-    let destination = base.join(&slug);
     let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
-    if destination.exists() {
-        if !force {
-            anyhow::bail!(
-                "skill '{}' already exists at {}; pass force=true to overwrite",
-                slug,
-                destination.display()
-            );
-        }
-        std::fs::remove_dir_all(&destination)?;
-    }
-
     let manifest = omegon_skills::SkillManifest {
         name: slug.clone(),
         description: description.to_string(),
@@ -374,9 +358,42 @@ fn create_skill_file(
             .map(ToOwned::to_owned),
         provenance: None,
     };
-
-    std::fs::create_dir_all(&destination)?;
-    std::fs::write(destination.join("SKILL.md"), manifest.to_skill_file(body))?;
+    let content = manifest.to_skill_file(body);
+    let destination = match scope {
+        SkillToolScope::Project => {
+            let directory =
+                crate::contribution_loading::GuardedContributionMutationDirectory::open_or_create(
+                    cwd,
+                    &[b".omegon", b"skills"],
+                    home,
+                    omegon_maintenance_contracts::ContributionKind::Skill,
+                    "project",
+                )?;
+            directory.write_single_file_directory(
+                slug.as_bytes(),
+                b"SKILL.md",
+                content.as_bytes(),
+                force,
+            )?;
+            cwd.join(".omegon/skills").join(&slug)
+        }
+        SkillToolScope::User => {
+            let destination = home.join("skills").join(&slug);
+            if destination.exists() {
+                if !force {
+                    anyhow::bail!(
+                        "skill '{}' already exists at {}; pass force=true to overwrite",
+                        slug,
+                        destination.display()
+                    );
+                }
+                std::fs::remove_dir_all(&destination)?;
+            }
+            std::fs::create_dir_all(&destination)?;
+            std::fs::write(destination.join("SKILL.md"), content)?;
+            destination
+        }
+    };
 
     let details = json!({
         "name": slug,
@@ -504,5 +521,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(listed.details.as_array().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_create_rejects_symlinked_contribution_root() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), project.path().join(".omegon")).unwrap();
+        let args = json!({
+            "name": "escaped",
+            "description": "must not escape",
+            "body": "ESCAPE_MARKER",
+            "scope": "project",
+        });
+
+        assert!(create_skill_file(&args, project.path(), home.path()).is_err());
+        assert!(!outside.path().join("skills/escaped/SKILL.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_create_is_atomic_and_requires_force_to_replace() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let initial = json!({
+            "name": "atomic",
+            "description": "initial",
+            "body": "INITIAL_MARKER",
+            "scope": "project",
+        });
+        create_skill_file(&initial, project.path(), home.path()).unwrap();
+        let replacement = json!({
+            "name": "atomic",
+            "description": "replacement",
+            "body": "REPLACEMENT_MARKER",
+            "scope": "project",
+        });
+        assert!(create_skill_file(&replacement, project.path(), home.path()).is_err());
+        let path = project.path().join(".omegon/skills/atomic/SKILL.md");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("INITIAL_MARKER")
+        );
+        let stale = project
+            .path()
+            .join(".omegon/skills/atomic/scripts/stale.sh");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(&stale, "#!/bin/sh\nexit 1\n").unwrap();
+
+        let mut forced = replacement;
+        forced["force"] = Value::Bool(true);
+        create_skill_file(&forced, project.path(), home.path()).unwrap();
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("REPLACEMENT_MARKER"));
+        assert!(!content.contains("INITIAL_MARKER"));
+        assert!(!stale.exists());
     }
 }

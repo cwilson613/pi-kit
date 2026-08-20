@@ -44,9 +44,10 @@ import { snippet } from "../../lib/snippets";
   </p>
   <p>
     Conversation JSON remains a compatibility snapshot. On restart, Omegon validates the
-    authority stream, closes an interrupted active turn conservatively, and restores prompts that
-    reached durable admission. Corrupt or unsupported authority data fails recovery instead of
-    being repaired from conversation JSON. A maintenance resume deny fails before conversation
+    authority stream, closes an interrupted active turn conservatively, and restores eligible
+    queued prompts that reached durable admission. ACP withdraws orphaned queued requests when
+    their client response channel was lost. Corrupt or unsupported authority data fails recovery
+    instead of being repaired from conversation JSON. A maintenance resume deny fails before conversation
     loading; follow the <a href="/docs/recovery">recovery guide</a> to inspect it.
   </p>
   <!-- DIAGRAM:session-lifecycle | Timeline: session start -> durable turn facts plus conversation snapshot on orderly exit -> resume validates authority -> interrupted work closes conservatively -> recent history and summarized older context load. Show project memory as separate persistence. -->

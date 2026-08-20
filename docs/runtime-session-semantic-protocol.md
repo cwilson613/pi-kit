@@ -50,6 +50,14 @@ supervisor commits the corresponding fact, and daemon or ACP work may wait in
 host scheduling before durable prompt admission. Clients reconcile from later
 authority-backed queue and lifecycle projections.
 
+An opened authority retains a nonblocking writer lease for its lifetime. A
+second process cannot recover or append to that stream while the owner is live,
+and session/workspace identity is validated before recovery can append an
+interrupted closure. Recovered content-addressed attachments are revalidated by
+storage location, type, length, and digest before projection. ACP durably
+withdraws queued requests whose response channels were lost with the prior ACP
+worker rather than executing them under a later request's waiter.
+
 Slice 1.5 adds a release-coupled compatibility adapter for loop terminal
 intents. Authority-backed loop callers submit the captured runtime-turn
 identity, explicit outcome, and reason code to the supervisor after owned

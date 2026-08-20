@@ -490,6 +490,13 @@ impl SessionAuthorityState {
             return self
                 .transition_error(fact.sequence, "duplicate command ID in authority stream");
         }
+        if self
+            .command_receipts
+            .values()
+            .any(|receipt| receipt.event_id == fact.event_id)
+        {
+            return self.transition_error(fact.sequence, "duplicate event ID in authority stream");
+        }
 
         if self.last_sequence == 0 {
             let SessionFactPayload::SessionCreated(created) = &fact.payload else {
@@ -1645,7 +1652,8 @@ mod tests {
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
         let mut state = SessionAuthorityState::default();
-        state.apply(&created(session, stream)).unwrap();
+        let creation = created(session, stream);
+        state.apply(&creation).unwrap();
         let gap = admitted(session, stream, 3, first, "gap");
         assert!(
             state
@@ -1657,6 +1665,15 @@ mod tests {
         state
             .apply(&admitted(session, stream, 2, first, "first"))
             .unwrap();
+        let mut reused_event = admitted(session, stream, 3, second, "reused-event");
+        reused_event.event_id = creation.event_id;
+        assert!(
+            state
+                .apply(&reused_event)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate event ID")
+        );
         state
             .apply(&admitted(session, stream, 3, second, "second"))
             .unwrap();
@@ -1782,6 +1799,38 @@ mod tests {
                 .to_string()
                 .contains("conflicting event or fingerprint")
         );
+    }
+
+    #[test]
+    fn store_discards_valid_cache_when_cursor_or_state_mismatches_stream() {
+        let temp = tempfile::tempdir().unwrap();
+        let store =
+            SessionAuthorityStore::adjacent_to(&temp.path().join("session-1.json")).unwrap();
+        let session = "session-1";
+        let stream = Uuid::new_v4();
+        let prompt = Uuid::new_v4();
+        let mut expected = SessionAuthorityState::default();
+        store
+            .append(&mut expected, &created(session, stream))
+            .unwrap();
+        store
+            .append(&mut expected, &admitted(session, stream, 2, prompt, "work"))
+            .unwrap();
+        let log_before = fs::read(&store.log_path).unwrap();
+        let valid: SessionAuthoritySnapshot =
+            serde_json::from_slice(&fs::read(&store.snapshot_path).unwrap()).unwrap();
+
+        let mut wrong_event = valid.clone();
+        wrong_event.last_event_id = Uuid::new_v4();
+        wrong_event.state.last_event_id = Some(wrong_event.last_event_id);
+        write_snapshot(&store.snapshot_path, &wrong_event).unwrap();
+        assert_eq!(store.load().unwrap(), expected);
+
+        let mut wrong_state = valid;
+        wrong_state.state.queued_prompts.clear();
+        write_snapshot(&store.snapshot_path, &wrong_state).unwrap();
+        assert_eq!(store.load().unwrap(), expected);
+        assert_eq!(fs::read(&store.log_path).unwrap(), log_before);
     }
 
     #[test]

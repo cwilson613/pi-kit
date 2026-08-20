@@ -156,35 +156,6 @@ fn stable_feature_component(name: &str) -> String {
 fn adapted_tool_effects(definition: &ToolDefinition) -> Vec<omegon_traits::RuntimeEffect> {
     use omegon_traits::{RuntimeEffect, ToolCapability};
 
-    if definition.name == crate::tool_registry::core::BASH {
-        return vec![
-            RuntimeEffect::FilesystemRead,
-            RuntimeEffect::FilesystemWrite,
-            RuntimeEffect::ProcessSpawn,
-            RuntimeEffect::NetworkAccess,
-            RuntimeEffect::SecretDelivery,
-            RuntimeEffect::TerminalAccess,
-            RuntimeEffect::DurableStateWrite,
-            RuntimeEffect::RuntimeControl,
-        ];
-    }
-    if definition.name == crate::tool_registry::core::PLAN {
-        return vec![
-            RuntimeEffect::DurableStateWrite,
-            RuntimeEffect::RuntimeControl,
-        ];
-    }
-    if definition.name == crate::tool_registry::core::WAIT_FOR_OPERATOR {
-        return vec![RuntimeEffect::RuntimeControl];
-    }
-    if definition.name == crate::tool_registry::core::WHOAMI {
-        return vec![
-            RuntimeEffect::FilesystemRead,
-            RuntimeEffect::ProcessSpawn,
-            RuntimeEffect::NetworkAccess,
-            RuntimeEffect::SecretDelivery,
-        ];
-    }
     if definition.capabilities.is_empty() {
         return vec![
             RuntimeEffect::FilesystemRead,
@@ -234,6 +205,44 @@ fn adapted_tool_effects(definition: &ToolDefinition) -> Vec<omegon_traits::Runti
         }
     }
     effects.into_iter().collect()
+}
+
+fn adapted_tool_policy(definition: &ToolDefinition) -> omegon_traits::RuntimeToolPolicy {
+    use omegon_traits::{
+        RuntimeDeduplication, RuntimeExecutionPolicy, RuntimeIdempotency, RuntimeParallelism,
+        RuntimePrincipalClass, RuntimeRetryClass, RuntimeTimeoutClass, RuntimeTransactionBehavior,
+        ToolCapability,
+    };
+
+    let effects = adapted_tool_effects(definition);
+    let mutates = effects.iter().any(|effect| {
+        matches!(
+            effect,
+            omegon_traits::RuntimeEffect::FilesystemWrite
+                | omegon_traits::RuntimeEffect::DurableStateWrite
+                | omegon_traits::RuntimeEffect::RuntimeControl
+        )
+    });
+    let rollback = definition.capabilities.contains(&ToolCapability::Mutation);
+    omegon_traits::RuntimeToolPolicy {
+        effects,
+        execution: RuntimeExecutionPolicy {
+            principals: vec![RuntimePrincipalClass::Model],
+            timeout_class: RuntimeTimeoutClass::Interactive,
+            retry_class: RuntimeRetryClass::Never,
+            idempotency: RuntimeIdempotency::NonIdempotent,
+            deduplication: RuntimeDeduplication::Unsupported,
+            parallelism: RuntimeParallelism::Serial,
+            transaction: if rollback {
+                RuntimeTransactionBehavior::BestEffortRollback
+            } else if mutates {
+                RuntimeTransactionBehavior::IndependentMutation
+            } else {
+                RuntimeTransactionBehavior::None
+            },
+            max_attempts: None,
+        },
+    }
 }
 
 fn adapted_command_effects(definition: &CommandDefinition) -> Vec<omegon_traits::RuntimeEffect> {
@@ -606,8 +615,9 @@ impl EventBus {
             RuntimeDeduplication, RuntimeExecutionPolicy, RuntimeFailureDisposition,
             RuntimeIdempotency, RuntimeInvocationBinding, RuntimeInvocationBindingRole,
             RuntimeLifecyclePolicy, RuntimeLifecycleRequirement, RuntimeOwnerTier,
-            RuntimePlatformRequirements, RuntimeProtocolRange, RuntimeRetryClass, RuntimeSurface,
-            RuntimeTimeoutClass, RuntimeTrustRequest,
+            RuntimeParallelism, RuntimePlatformRequirements, RuntimePrincipalClass,
+            RuntimeProtocolRange, RuntimeRetryClass, RuntimeSurface, RuntimeTimeoutClass,
+            RuntimeTransactionBehavior, RuntimeTrustRequest,
         };
 
         struct FrozenFeature {
@@ -619,6 +629,7 @@ impl EventBus {
             commands: Vec<CommandDefinition>,
             command_aliases: Vec<omegon_traits::CommandAlias>,
             internal_tools: Vec<String>,
+            tool_policies: BTreeMap<String, omegon_traits::RuntimeToolPolicy>,
             lifecycle: Option<RuntimeLifecyclePolicy>,
             composition_transition: Option<RuntimeCompositionTransitionPolicy>,
         }
@@ -678,15 +689,25 @@ impl EventBus {
                 .map(|(name, _)| name.clone())
                 .collect::<Vec<_>>();
             internal_tools.sort();
+            let tools = feature.tools();
+            let tool_policies = tools
+                .iter()
+                .filter_map(|tool| {
+                    feature
+                        .runtime_tool_policy(&tool.name)
+                        .map(|policy| (tool.name.clone(), policy))
+                })
+                .collect();
             frozen.push(FrozenFeature {
                 contribution_id,
                 feature_index,
                 name: feature.name().to_string(),
                 provenance: feature.tool_provenance(),
-                tools: feature.tools(),
+                tools,
                 commands: feature.commands(),
                 command_aliases: feature.command_aliases(),
                 internal_tools,
+                tool_policies,
                 lifecycle: feature.runtime_lifecycle_policy(),
                 composition_transition: feature.runtime_transition_policy(),
             });
@@ -764,11 +785,21 @@ impl EventBus {
             })
             .collect::<Vec<_>>();
 
-        let policy = |effects: &[omegon_traits::RuntimeEffect]| {
+        let policy = |effects: &[omegon_traits::RuntimeEffect],
+                      principal: RuntimePrincipalClass| {
             let idempotent = effects
                 .iter()
                 .all(|effect| matches!(effect, omegon_traits::RuntimeEffect::FilesystemRead));
+            let mutates = effects.iter().any(|effect| {
+                matches!(
+                    effect,
+                    omegon_traits::RuntimeEffect::FilesystemWrite
+                        | omegon_traits::RuntimeEffect::DurableStateWrite
+                        | omegon_traits::RuntimeEffect::RuntimeControl
+                )
+            });
             RuntimeExecutionPolicy {
+                principals: vec![principal],
                 timeout_class: RuntimeTimeoutClass::Interactive,
                 retry_class: if idempotent {
                     RuntimeRetryClass::IdempotentFailure
@@ -781,6 +812,12 @@ impl EventBus {
                     RuntimeIdempotency::NonIdempotent
                 },
                 deduplication: RuntimeDeduplication::Unsupported,
+                parallelism: RuntimeParallelism::Serial,
+                transaction: if mutates {
+                    RuntimeTransactionBehavior::IndependentMutation
+                } else {
+                    RuntimeTransactionBehavior::None
+                },
                 max_attempts: None,
             }
         };
@@ -865,10 +902,18 @@ impl EventBus {
                         .tools
                         .iter()
                         .map(|tool| {
-                            let effects = if external {
-                                conservative_external_effects()
+                            let tool_policy = if external {
+                                let effects = conservative_external_effects();
+                                omegon_traits::RuntimeToolPolicy {
+                                    execution: policy(&effects, RuntimePrincipalClass::Model),
+                                    effects,
+                                }
                             } else {
-                                adapted_tool_effects(tool)
+                                feature
+                                    .tool_policies
+                                    .get(&tool.name)
+                                    .cloned()
+                                    .unwrap_or_else(|| adapted_tool_policy(tool))
                             };
                             RuntimeContributionCapabilityDeclaration {
                                 id: RuntimeCapabilityId::tool(&tool.name),
@@ -878,8 +923,8 @@ impl EventBus {
                                     name: tool.name.clone(),
                                     role: RuntimeInvocationBindingRole::Canonical,
                                 }],
-                                execution: policy(&effects),
-                                effects,
+                                effects: tool_policy.effects,
+                                execution: tool_policy.execution,
                                 transition: transition(),
                                 surfaces: vec![RuntimeSurface::Model],
                             }
@@ -906,7 +951,7 @@ impl EventBus {
                                     id: RuntimeCapabilityId::action(&canonical),
                                     kind: RuntimeCapabilityKind::OperatorAction,
                                     bindings,
-                                    execution: policy(&effects),
+                                    execution: policy(&effects, RuntimePrincipalClass::Operator),
                                     effects,
                                     transition: transition(),
                                     surfaces,
@@ -934,7 +979,7 @@ impl EventBus {
                             name: name.clone(),
                             role: RuntimeInvocationBindingRole::Canonical,
                         }],
-                        execution: policy(&effects),
+                        execution: policy(&effects, RuntimePrincipalClass::Internal),
                         effects,
                         transition: transition(),
                         surfaces: vec![RuntimeSurface::Internal],

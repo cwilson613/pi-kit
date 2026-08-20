@@ -2463,6 +2463,12 @@ pub trait Feature: Send + Sync {
         None
     }
 
+    /// Capability authority frozen into the declaration for one owned tool.
+    /// Returning `None` selects the host's conservative legacy adapter.
+    fn runtime_tool_policy(&self, _tool_name: &str) -> Option<RuntimeToolPolicy> {
+        None
+    }
+
     /// Tool definitions this feature provides. Called once at startup.
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![]
@@ -3235,6 +3241,13 @@ pub struct SessionStats {
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
     fn tools(&self) -> Vec<ToolDefinition>;
+
+    /// Capability authority frozen into the declaration for one owned tool.
+    /// Returning `None` selects the host's conservative legacy adapter.
+    fn runtime_tool_policy(&self, _tool_name: &str) -> Option<RuntimeToolPolicy> {
+        None
+    }
+
     async fn execute(
         &self,
         tool_name: &str,

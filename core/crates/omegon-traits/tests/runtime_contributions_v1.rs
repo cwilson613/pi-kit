@@ -32,6 +32,21 @@ fn declaration_v1_fixture_round_trips() {
 }
 
 #[test]
+fn execution_policy_defaults_are_conservative_and_validate_fail_closed() {
+    let raw = include_str!("fixtures/runtime-contribution-declaration-v1.json")
+        .replace("\n        \"principals\": [\"model\"],", "")
+        .replace("\n        \"parallelism\": \"parallel_safe\",", "");
+    let declaration: RuntimeContributionDeclaration = serde_json::from_str(&raw).unwrap();
+    let execution = &declaration.capabilities[0].execution;
+    assert!(execution.principals.is_empty());
+    assert_eq!(
+        execution.parallelism,
+        omegon_traits::RuntimeParallelism::Serial
+    );
+    assert!(declaration.validate().is_err());
+}
+
+#[test]
 fn generation_v1_fixture_round_trips() {
     assert_fixture_round_trip::<RuntimeCompositionGeneration>(include_str!(
         "fixtures/runtime-composition-generation-v1.json"

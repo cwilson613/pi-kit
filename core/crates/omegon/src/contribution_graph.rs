@@ -790,10 +790,13 @@ mod tests {
                 }],
                 effects: vec![RuntimeEffect::FilesystemRead],
                 execution: RuntimeExecutionPolicy {
+                    principals: vec![omegon_traits::RuntimePrincipalClass::Model],
                     timeout_class: RuntimeTimeoutClass::Interactive,
                     retry_class: RuntimeRetryClass::IdempotentFailure,
                     idempotency: RuntimeIdempotency::Idempotent,
                     deduplication: RuntimeDeduplication::OwnerEnforcedStableCallId,
+                    parallelism: omegon_traits::RuntimeParallelism::ParallelSafe,
+                    transaction: omegon_traits::RuntimeTransactionBehavior::None,
                     max_attempts: Some(2),
                 },
                 transition: RuntimeCapabilityTransitionPolicy {

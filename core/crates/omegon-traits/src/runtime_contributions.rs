@@ -422,14 +422,98 @@ pub enum RuntimeDeduplication {
     OwnerEnforcedStableCallId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePrincipalClass {
+    Model,
+    Operator,
+    Service,
+    Internal,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeParallelism {
+    #[default]
+    Serial,
+    ParallelSafe,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTransactionBehavior {
+    #[default]
+    None,
+    IndependentMutation,
+    BestEffortRollback,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeExecutionPolicy {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub principals: Vec<RuntimePrincipalClass>,
     pub timeout_class: RuntimeTimeoutClass,
     pub retry_class: RuntimeRetryClass,
     pub idempotency: RuntimeIdempotency,
     pub deduplication: RuntimeDeduplication,
+    #[serde(default, skip_serializing_if = "is_serial_execution")]
+    pub parallelism: RuntimeParallelism,
+    #[serde(default, skip_serializing_if = "is_non_transactional")]
+    pub transaction: RuntimeTransactionBehavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_attempts: Option<u16>,
+}
+
+fn is_serial_execution(value: &RuntimeParallelism) -> bool {
+    *value == RuntimeParallelism::Serial
+}
+
+fn is_non_transactional(value: &RuntimeTransactionBehavior) -> bool {
+    *value == RuntimeTransactionBehavior::None
+}
+
+impl RuntimeExecutionPolicy {
+    pub fn validate(&self, effects: &[RuntimeEffect]) -> Result<(), &'static str> {
+        if self.principals.is_empty() {
+            return Err("execution policy must admit at least one principal class");
+        }
+        if self.max_attempts == Some(0) {
+            return Err("execution policy max_attempts must be non-zero");
+        }
+        if self.retry_class != RuntimeRetryClass::Never
+            && self.idempotency == RuntimeIdempotency::NonIdempotent
+            && self.deduplication == RuntimeDeduplication::Unsupported
+        {
+            return Err("retryable non-idempotent execution requires owner-enforced deduplication");
+        }
+        if self.parallelism == RuntimeParallelism::ParallelSafe
+            && self.transaction == RuntimeTransactionBehavior::BestEffortRollback
+        {
+            return Err("best-effort rollback execution must be serial");
+        }
+
+        let mutates = effects.iter().any(|effect| {
+            matches!(
+                effect,
+                RuntimeEffect::FilesystemWrite
+                    | RuntimeEffect::DurableStateWrite
+                    | RuntimeEffect::RuntimeControl
+            )
+        });
+        if mutates && self.transaction == RuntimeTransactionBehavior::None {
+            return Err("mutating execution must declare transaction behavior");
+        }
+        if !mutates && self.transaction != RuntimeTransactionBehavior::None {
+            return Err("non-mutating execution cannot declare mutation transaction behavior");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeToolPolicy {
+    pub effects: Vec<RuntimeEffect>,
+    pub execution: RuntimeExecutionPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -588,7 +672,11 @@ pub struct RuntimeContributionDeclaration {
 
 impl RuntimeContributionDeclaration {
     pub fn validate(&self) -> Result<(), &'static str> {
-        self.protocol.validate()
+        self.protocol.validate()?;
+        for capability in &self.capabilities {
+            capability.execution.validate(&capability.effects)?;
+        }
+        Ok(())
     }
 }
 

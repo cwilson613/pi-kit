@@ -55,10 +55,12 @@
       ],
       "effects": ["filesystem_read"],
       "execution": {
+        "principals": ["model"],
         "timeout_class": "interactive",
         "retry_class": "idempotent_failure",
         "idempotency": "idempotent",
         "deduplication": "owner_enforced_stable_call_id",
+        "parallelism": "parallel_safe",
         "max_attempts": 2
       },
       "transition": {

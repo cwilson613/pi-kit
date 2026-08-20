@@ -35,6 +35,10 @@ impl Feature for ToolAdapter {
         self.provider.tools()
     }
 
+    fn runtime_tool_policy(&self, tool_name: &str) -> Option<omegon_traits::RuntimeToolPolicy> {
+        self.provider.runtime_tool_policy(tool_name)
+    }
+
     async fn execute(
         &self,
         tool_name: &str,
@@ -116,6 +120,10 @@ impl Feature for ToolContextAdapter {
 
     fn tools(&self) -> Vec<ToolDefinition> {
         self.tool_provider.tools()
+    }
+
+    fn runtime_tool_policy(&self, tool_name: &str) -> Option<omegon_traits::RuntimeToolPolicy> {
+        self.tool_provider.runtime_tool_policy(tool_name)
     }
 
     async fn execute(

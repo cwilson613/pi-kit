@@ -164,6 +164,8 @@ MCP connection and discovery now use one absolute per-server readiness deadline 
 
 Extension transport recovery now uses a generation-local restart controller. Failures consume a fixed restart budget, apply deterministic capped exponential backoff, and transition to terminal quarantine when the budget is exhausted; later invocations cannot silently start another process. Constructing a changed extension generation creates a fresh controller, while ordinary successful respawn does not erase prior crash evidence.
 
+Armory context, script-tool, and OCI-tool processes now remain under explicit child ownership while output is drained. They run as dedicated process groups with kill-on-drop backstops; timeout and cancellation kill the complete group, wait for the child, and settle output tasks before returning. Script paths must be normal relative paths inside the admitted snapshot, preventing absolute-path and parent-traversal execution.
+
 ### Design laws
 
 1. **Composition is not admission.** Compiled or installed capability means resident, not callable or visible.

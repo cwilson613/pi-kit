@@ -26,7 +26,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use async_trait::async_trait;
 use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
@@ -198,7 +198,7 @@ impl ArmoryFeature {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("script tool '{}' has no script path", tool.name))?;
 
-        let script_path = self.plugin_root.join(script);
+        let script_path = confined_script_path(&self.plugin_root, script)?;
         if !script_path.exists() {
             anyhow::bail!("script not found: {}", script_path.display());
         }
@@ -217,12 +217,15 @@ impl ArmoryFeature {
         let timeout = Duration::from_secs(tool.timeout_secs);
         let input = serde_json::to_string(args)?;
 
-        let mut child = tokio::process::Command::new(cmd)
+        let mut command = tokio::process::Command::new(cmd);
+        command
             .arg(script_str)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(&self.plugin_root)
+            .current_dir(&self.plugin_root);
+        configure_owned_process(&mut command);
+        let mut child = command
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn {cmd} {script_str}: {e}"))?;
 
@@ -235,20 +238,8 @@ impl ArmoryFeature {
         // is wall-clock dependent).
         write_stdin_best_effort(child.stdin.take(), input.as_bytes()).await;
 
-        // Wait with timeout + cancellation
-        let wait_fut = child.wait_with_output();
-        tokio::pin!(wait_fut);
-
-        let output = tokio::select! {
-            result = tokio::time::timeout(timeout, &mut wait_fut) => {
-                result.map_err(|_| anyhow::anyhow!(
-                    "tool '{}' timed out after {}s", tool.name, tool.timeout_secs
-                ))??
-            }
-            _ = cancel.cancelled() => {
-                anyhow::bail!("tool '{}' cancelled", tool.name);
-            }
-        };
+        let output =
+            wait_owned_output(child, timeout, cancel, format!("tool '{}'", tool.name)).await?;
 
         parse_tool_output(&tool.name, &output)
     }
@@ -296,11 +287,14 @@ impl ArmoryFeature {
         // Image
         cmd_args.push(image.clone());
 
-        let mut child = tokio::process::Command::new(runtime)
+        let mut command = tokio::process::Command::new(runtime);
+        command
             .args(&cmd_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_owned_process(&mut command);
+        let mut child = command
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn {runtime} run: {e}"))?;
 
@@ -308,22 +302,96 @@ impl ArmoryFeature {
         // there for the rationale.
         write_stdin_best_effort(child.stdin.take(), input.as_bytes()).await;
 
-        let wait_fut = child.wait_with_output();
-        tokio::pin!(wait_fut);
-
-        let output = tokio::select! {
-            result = tokio::time::timeout(timeout, &mut wait_fut) => {
-                result.map_err(|_| anyhow::anyhow!(
-                    "OCI tool '{}' timed out after {}s", tool.name, tool.timeout_secs
-                ))??
-            }
-            _ = cancel.cancelled() => {
-                anyhow::bail!("OCI tool '{}' cancelled", tool.name);
-            }
-        };
+        let output =
+            wait_owned_output(child, timeout, cancel, format!("OCI tool '{}'", tool.name)).await?;
 
         parse_tool_output(&tool.name, &output)
     }
+}
+
+fn confined_script_path(plugin_root: &Path, script: &str) -> anyhow::Result<PathBuf> {
+    let relative = Path::new(script);
+    if relative.as_os_str().is_empty()
+        || !relative
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("plugin script path must remain relative to its admitted snapshot");
+    }
+    Ok(plugin_root.join(relative))
+}
+
+fn configure_owned_process(command: &mut tokio::process::Command) {
+    command.kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+}
+
+#[cfg(unix)]
+fn kill_owned_process_group(pid: Option<u32>) {
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    // SAFETY: Armory children are spawned as leaders of dedicated process groups.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_owned_process_group(_pid: Option<u32>) {}
+
+async fn wait_owned_output(
+    mut child: tokio::process::Child,
+    timeout: Duration,
+    cancel: tokio_util::sync::CancellationToken,
+    label: String,
+) -> anyhow::Result<std::process::Output> {
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("{label} has no stdout pipe"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("{label} has no stderr pipe"))?;
+    let mut stdout_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let mut stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+
+    let status = tokio::select! {
+        result = tokio::time::timeout(timeout, child.wait()) => match result {
+            Ok(status) => status?,
+            Err(_) => {
+                kill_owned_process_group(child.id());
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                let _ = (&mut stdout_task).await;
+                let _ = (&mut stderr_task).await;
+                anyhow::bail!("{label} timed out after {}s", timeout.as_secs());
+            }
+        },
+        _ = cancel.cancelled() => {
+            kill_owned_process_group(child.id());
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = (&mut stdout_task).await;
+            let _ = (&mut stderr_task).await;
+            anyhow::bail!("{label} cancelled");
+        }
+    };
+    let stdout = stdout_task.await??;
+    let stderr = stderr_task.await??;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 /// Write `input` to a child process's stdin and close it, tolerating
@@ -448,7 +516,7 @@ async fn generate_context(
             other => anyhow::bail!("unsupported context runner: {other}"),
         };
 
-        let script_path = plugin_root.join(script);
+        let script_path = confined_script_path(plugin_root, script)?;
         if !script_path.exists() {
             anyhow::bail!("context script not found: {}", script_path.display());
         }
@@ -457,17 +525,22 @@ async fn generate_context(
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("non-UTF-8 path"))?;
 
-        let output = tokio::time::timeout(
+        let mut command = tokio::process::Command::new(cmd);
+        command
+            .arg(script_str)
+            .current_dir(plugin_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_owned_process(&mut command);
+        let child = command.spawn()?;
+        let output = wait_owned_output(
+            child,
             Duration::from_secs(15),
-            tokio::process::Command::new(cmd)
-                .arg(script_str)
-                .current_dir(plugin_root)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output(),
+            tokio_util::sync::CancellationToken::new(),
+            "context script".into(),
         )
-        .await
-        .map_err(|_| anyhow::anyhow!("context script timed out after 15s"))??;
+        .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1129,5 +1202,64 @@ print(json.dumps({"result": f"got {args.get('name', 'nobody')}", "error": None})
             feature.unwrap().cached_context.is_none(),
             "context should be None on failure"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn owned_process_timeout_kills_and_reaps_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let descendant_pid = temp.path().join("descendant-pid");
+        let mut command = tokio::process::Command::new("bash");
+        command
+            .args([
+                "-c",
+                &format!(
+                    "sleep 30 & child=$!; printf '%s\\n' $child > '{}'; wait",
+                    descendant_pid.display()
+                ),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_owned_process(&mut command);
+        let child = command.spawn().unwrap();
+
+        let error = wait_owned_output(
+            child,
+            Duration::from_millis(100),
+            tokio_util::sync::CancellationToken::new(),
+            "test process".into(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        let pid = std::fs::read_to_string(descendant_pid)
+            .unwrap()
+            .trim()
+            .to_string();
+        for _ in 0..20 {
+            if !std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()
+                .unwrap()
+                .success()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("descendant process {pid} survived timeout cleanup");
+    }
+
+    #[test]
+    fn script_paths_must_remain_inside_admitted_snapshot() {
+        let root = Path::new("/tmp/plugin-snapshot");
+        assert_eq!(
+            confined_script_path(root, "tools/run.sh").unwrap(),
+            root.join("tools/run.sh")
+        );
+        assert!(confined_script_path(root, "../escape.sh").is_err());
+        assert!(confined_script_path(root, "/tmp/escape.sh").is_err());
+        assert!(confined_script_path(root, "").is_err());
     }
 }

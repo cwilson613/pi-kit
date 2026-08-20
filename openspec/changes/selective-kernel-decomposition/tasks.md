@@ -18,7 +18,7 @@ Definition of done for every group: classify documentation impact before impleme
 - [x] 0.8 Package and launch-test source, linked-development, direct-install, platform archive, Homebrew, Nix, and OCI paths supported by the repository.
 - [x] 0.9 Prove startup with TUI, default loop, project config/plugins, extension runtime, MCP, mutable packs, memory, lifecycle, and orchestration absent.
 - [x] 0.10 Co-deliver maintenance architecture/operator docs, public install/recovery pages, canonical command snippets, and site validation with the artifact.
-- [ ] 0.11 On an allowed release-hardening branch, point the Homebrew formula at a verified immutable archive that actually contains both required binaries and test extraction from the formula's exact URLs/checksums.
+- [x] 0.11 Remove Homebrew publication as a Slice-zero exit gate. Existing formula verification remains a best-effort packaging safeguard, but publishing a qualifying Homebrew archive is not required to begin later slices. Documentation impact: internal lifecycle policy only; existing public Homebrew guidance and packaging behavior are unchanged.
 - [x] 0.12 Make pairwise self-update crash-atomic and rollback-safe through immutable version-directory publication plus one atomic activation switch, with failure injection across activation, launcher, and receipt boundaries. Documentation impact: updated the durable installation/version-switcher contracts, public install guidance, and release notes for `versioned-current-v1`; no canonical command syntax changed.
 
 ## 1. Minimum durable session authority

@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use omegon_traits::{
     RuntimeCapabilityId, RuntimeCapabilityTransitionPolicy, RuntimeCompositionGenerationId,
-    RuntimeContributionGenerationId, RuntimeContributionId, RuntimeEffect, RuntimeInvocationKind,
-    RuntimeSurface,
+    RuntimeContributionGenerationId, RuntimeContributionId, RuntimeEffect, RuntimeExecutionPolicy,
+    RuntimeInvocationKind, RuntimePrincipalClass, RuntimeSurface, RuntimeTimeoutClass,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -22,6 +22,7 @@ use crate::permissions::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InvocationScope {
     pub principal: String,
+    pub principal_class: RuntimePrincipalClass,
     pub surface: RuntimeSurface,
     pub session_id: Option<String>,
     pub turn_id: Option<Uuid>,
@@ -31,6 +32,7 @@ impl Default for InvocationScope {
     fn default() -> Self {
         Self {
             principal: "model".into(),
+            principal_class: RuntimePrincipalClass::Model,
             surface: RuntimeSurface::Model,
             session_id: None,
             turn_id: None,
@@ -47,6 +49,7 @@ pub(crate) struct ResolvedInvocation {
     pub owner_generation_id: RuntimeContributionGenerationId,
     pub composition_generation_id: RuntimeCompositionGenerationId,
     pub effects: Vec<RuntimeEffect>,
+    pub execution: RuntimeExecutionPolicy,
     pub transition: RuntimeCapabilityTransitionPolicy,
     pub surfaces: Vec<RuntimeSurface>,
 }
@@ -103,6 +106,7 @@ pub(crate) struct ExecutionLease {
     pub invocation_id: Uuid,
     pub call_id: String,
     pub principal: String,
+    pub principal_class: RuntimePrincipalClass,
     pub surface: RuntimeSurface,
     pub session_id: Option<String>,
     pub turn_id: Option<Uuid>,
@@ -113,7 +117,9 @@ pub(crate) struct ExecutionLease {
     pub owner_generation_id: RuntimeContributionGenerationId,
     pub issue_generation_id: RuntimeCompositionGenerationId,
     pub admitted_effects: Vec<RuntimeEffect>,
+    pub execution: RuntimeExecutionPolicy,
     pub transition: RuntimeCapabilityTransitionPolicy,
+    pub surfaces: Vec<RuntimeSurface>,
     terminal: Arc<AtomicU8>,
 }
 
@@ -124,6 +130,7 @@ impl ExecutionLease {
             invocation_id: Uuid::new_v4(),
             call_id: call_id.to_string(),
             principal: scope.principal,
+            principal_class: scope.principal_class,
             surface: scope.surface,
             session_id: scope.session_id,
             turn_id: scope.turn_id,
@@ -134,7 +141,9 @@ impl ExecutionLease {
             owner_generation_id: resolved.owner_generation_id,
             issue_generation_id: resolved.composition_generation_id,
             admitted_effects: resolved.effects,
+            execution: resolved.execution,
             transition: resolved.transition,
+            surfaces: resolved.surfaces,
             terminal: Arc::new(AtomicU8::new(LeaseTerminal::Open as u8)),
         }
     }
@@ -147,6 +156,22 @@ impl ExecutionLease {
             3 => LeaseTerminal::Failed,
             _ => LeaseTerminal::Revoked,
         }
+    }
+
+    pub fn execution_timeout(&self, args: &Value) -> std::time::Duration {
+        let declared_seconds = match self.execution.timeout_class {
+            RuntimeTimeoutClass::Immediate => 30,
+            RuntimeTimeoutClass::Interactive => 300,
+            RuntimeTimeoutClass::Background => 900,
+            RuntimeTimeoutClass::LongRunning => 21_600,
+        };
+        let requested_seconds = args
+            .get("timeout_secs")
+            .and_then(Value::as_u64)
+            .or_else(|| args.get("timeout").and_then(Value::as_u64));
+        std::time::Duration::from_secs(requested_seconds.map_or(declared_seconds, |requested| {
+            requested.min(declared_seconds)
+        }))
     }
 
     pub fn claim_dispatch(&self, call_id: &str, name: &str) -> Result<(), InvocationDenial> {
@@ -274,14 +299,23 @@ impl InvocationService {
                 "declared capability does not support this invocation surface",
             ));
         }
+        if !resolved
+            .execution
+            .principals
+            .contains(&request.scope.principal_class)
+        {
+            return InvocationAdmission::Denied(denial(
+                InvocationDenialCode::RbacDenied,
+                "declared capability does not admit this principal class",
+            ));
+        }
         if let Some(role) = request.permission_role
-            && !crate::permissions::styrene_role_allows_tool(role, request.visible_tool_name)
+            && !crate::permissions::styrene_role_allows_effects(role, &resolved.effects)
         {
             return InvocationAdmission::Denied(InvocationDenial {
                 code: InvocationDenialCode::RbacDenied,
                 message: format!(
-                    "{} requires a Styrene capability not held by role {}",
-                    request.visible_tool_name,
+                    "declared effects require a Styrene capability not held by role {}",
                     role.as_str()
                 ),
                 policy_layer: None,
@@ -364,6 +398,21 @@ mod tests {
         assert_eq!(lease.terminal(), LeaseTerminal::Open);
     }
 
+    #[test]
+    fn declared_timeout_is_a_ceiling_and_caller_may_only_narrow_it() {
+        let mut resolved = fixture_resolution();
+        resolved.execution.timeout_class = RuntimeTimeoutClass::Immediate;
+        let lease = ExecutionLease::issue("call-1", InvocationScope::default(), resolved);
+        assert_eq!(
+            lease.execution_timeout(&serde_json::json!({"timeout": 600})),
+            std::time::Duration::from_secs(30)
+        );
+        assert_eq!(
+            lease.execution_timeout(&serde_json::json!({"timeout_secs": 5})),
+            std::time::Duration::from_secs(5)
+        );
+    }
+
     fn fixture_resolution() -> ResolvedInvocation {
         ResolvedInvocation {
             kind: RuntimeInvocationKind::Tool,
@@ -375,6 +424,16 @@ mod tests {
             composition_generation_id: RuntimeCompositionGenerationId::new("composition:test")
                 .unwrap(),
             effects: vec![RuntimeEffect::FilesystemRead],
+            execution: RuntimeExecutionPolicy {
+                principals: vec![RuntimePrincipalClass::Model],
+                timeout_class: RuntimeTimeoutClass::Interactive,
+                retry_class: omegon_traits::RuntimeRetryClass::Never,
+                idempotency: omegon_traits::RuntimeIdempotency::NonIdempotent,
+                deduplication: omegon_traits::RuntimeDeduplication::Unsupported,
+                parallelism: omegon_traits::RuntimeParallelism::Serial,
+                transaction: omegon_traits::RuntimeTransactionBehavior::None,
+                max_attempts: None,
+            },
             transition: RuntimeCapabilityTransitionPolicy {
                 authority_narrowing: omegon_traits::RuntimeAuthorityNarrowing::DrainExisting,
                 active_call_timeout_ms: 1_000,

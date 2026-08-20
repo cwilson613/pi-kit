@@ -1426,6 +1426,7 @@ impl EventBus {
             owner_generation_id: declaration.generation_id.clone(),
             composition_generation_id,
             effects: capability.effects.clone(),
+            execution: capability.execution.clone(),
             transition: capability.transition.clone(),
             surfaces: capability.surfaces.clone(),
         })
@@ -1467,6 +1468,9 @@ impl EventBus {
             || current.contribution_id != lease.contribution_id
             || current.owner_generation_id != lease.owner_generation_id
             || current.effects != lease.admitted_effects
+            || current.execution != lease.execution
+            || current.transition != lease.transition
+            || current.surfaces != lease.surfaces
         {
             lease.revoke();
             return Err(denial(
@@ -1717,8 +1721,37 @@ impl EventBus {
     ) -> anyhow::Result<omegon_traits::ToolResult> {
         self.validate_execution_lease(lease, call_id, tool_name)
             .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
-        self.execute_tool_with_context(tool_name, call_id, args, cancel, sink, context)
-            .await
+        let timeout = lease.execution_timeout(&args);
+        for (idx, def) in &self.tool_defs {
+            if def.name == tool_name {
+                let execution_cancel = cancel.child_token();
+                let execution = self.features[*idx].execute_with_context(
+                    tool_name,
+                    call_id,
+                    args,
+                    execution_cancel.clone(),
+                    sink,
+                    context,
+                );
+                return match tokio::time::timeout(timeout, execution).await {
+                    Ok(result) => result,
+                    Err(_elapsed) => {
+                        execution_cancel.cancel();
+                        Ok(omegon_traits::ToolResult {
+                            content: vec![omegon_traits::ContentBlock::Text {
+                                text: format!(
+                                    "Tool '{}' timed out after {} seconds. The operation was cancelled.",
+                                    tool_name,
+                                    timeout.as_secs()
+                                ),
+                            }],
+                            details: serde_json::json!({"is_error": true}),
+                        })
+                    }
+                };
+            }
+        }
+        anyhow::bail!("no feature provides tool '{tool_name}'")
     }
 
     /// Execute an internal tool that may not be in the LLM-visible tool_defs.
@@ -2008,6 +2041,71 @@ mod tests {
             _cancel: tokio_util::sync::CancellationToken,
         ) -> anyhow::Result<ToolResult> {
             panic!("stale lease reached its owner")
+        }
+    }
+
+    struct DeclaredPolicyFeature {
+        feature_name: &'static str,
+        tool_name: &'static str,
+        effects: Vec<omegon_traits::RuntimeEffect>,
+        principals: Vec<omegon_traits::RuntimePrincipalClass>,
+    }
+
+    #[async_trait]
+    impl Feature for DeclaredPolicyFeature {
+        fn name(&self) -> &str {
+            self.feature_name
+        }
+
+        fn tools(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: self.tool_name.into(),
+                label: self.tool_name.into(),
+                description: "declared authority test".into(),
+                parameters: json!({"type": "object", "properties": {}}),
+                capabilities: vec![],
+            }]
+        }
+
+        fn runtime_tool_policy(
+            &self,
+            _tool_name: &str,
+        ) -> Option<omegon_traits::RuntimeToolPolicy> {
+            let mutates = self.effects.iter().any(|effect| {
+                matches!(
+                    effect,
+                    omegon_traits::RuntimeEffect::FilesystemWrite
+                        | omegon_traits::RuntimeEffect::DurableStateWrite
+                        | omegon_traits::RuntimeEffect::RuntimeControl
+                )
+            });
+            Some(omegon_traits::RuntimeToolPolicy {
+                effects: self.effects.clone(),
+                execution: omegon_traits::RuntimeExecutionPolicy {
+                    principals: self.principals.clone(),
+                    timeout_class: omegon_traits::RuntimeTimeoutClass::Immediate,
+                    retry_class: omegon_traits::RuntimeRetryClass::Never,
+                    idempotency: omegon_traits::RuntimeIdempotency::NonIdempotent,
+                    deduplication: omegon_traits::RuntimeDeduplication::Unsupported,
+                    parallelism: omegon_traits::RuntimeParallelism::Serial,
+                    transaction: if mutates {
+                        omegon_traits::RuntimeTransactionBehavior::IndependentMutation
+                    } else {
+                        omegon_traits::RuntimeTransactionBehavior::None
+                    },
+                    max_attempts: None,
+                },
+            })
+        }
+
+        async fn execute(
+            &self,
+            _tool_name: &str,
+            _call_id: &str,
+            _args: serde_json::Value,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<ToolResult> {
+            panic!("admission-only test reached owner")
         }
     }
 
@@ -2322,6 +2420,89 @@ mod tests {
             denial.code,
             crate::invocation_service::InvocationDenialCode::RbacDenied
         );
+    }
+
+    #[test]
+    fn rbac_authority_comes_from_declared_effects_not_tool_name() {
+        let admission = |feature: DeclaredPolicyFeature| {
+            let tool_name = feature.tool_name;
+            let mut bus = EventBus::new();
+            bus.register(Box::new(feature));
+            bus.finalize();
+            crate::invocation_service::InvocationService::admit_tool(
+                &bus,
+                tool_name,
+                crate::invocation_service::InvocationAdmissionRequest {
+                    call_id: "rbac-call",
+                    visible_tool_name: tool_name,
+                    args: &json!({}),
+                    scope: crate::invocation_service::InvocationScope::default(),
+                    permission_policy: None,
+                    permission_role: styrene_rbac::Role::from_name("monitor"),
+                },
+            )
+        };
+
+        assert!(matches!(
+            admission(DeclaredPolicyFeature {
+                feature_name: "benign-name-writer",
+                tool_name: "lookup",
+                effects: vec![omegon_traits::RuntimeEffect::FilesystemWrite],
+                principals: vec![omegon_traits::RuntimePrincipalClass::Model],
+            }),
+            crate::invocation_service::InvocationAdmission::Denied(
+                crate::invocation_service::InvocationDenial {
+                    code: crate::invocation_service::InvocationDenialCode::RbacDenied,
+                    ..
+                }
+            )
+        ));
+        assert!(matches!(
+            admission(DeclaredPolicyFeature {
+                feature_name: "dangerous-name-reader",
+                tool_name: "bash",
+                effects: vec![omegon_traits::RuntimeEffect::FilesystemRead],
+                principals: vec![omegon_traits::RuntimePrincipalClass::Model],
+            }),
+            crate::invocation_service::InvocationAdmission::Lease(_)
+        ));
+    }
+
+    #[test]
+    fn principal_display_label_cannot_widen_declared_principal_class() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(DeclaredPolicyFeature {
+            feature_name: "operator-only",
+            tool_name: "operator_task",
+            effects: vec![],
+            principals: vec![omegon_traits::RuntimePrincipalClass::Operator],
+        }));
+        bus.finalize();
+        let scope = crate::invocation_service::InvocationScope {
+            principal: "admin".into(),
+            ..Default::default()
+        };
+        let admission = crate::invocation_service::InvocationService::admit_tool(
+            &bus,
+            "operator_task",
+            crate::invocation_service::InvocationAdmissionRequest {
+                call_id: "principal-call",
+                visible_tool_name: "operator_task",
+                args: &json!({}),
+                scope,
+                permission_policy: None,
+                permission_role: None,
+            },
+        );
+        assert!(matches!(
+            admission,
+            crate::invocation_service::InvocationAdmission::Denied(
+                crate::invocation_service::InvocationDenial {
+                    code: crate::invocation_service::InvocationDenialCode::RbacDenied,
+                    ..
+                }
+            )
+        ));
     }
 
     #[tokio::test]

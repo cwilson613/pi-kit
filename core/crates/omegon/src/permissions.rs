@@ -351,6 +351,30 @@ pub fn styrene_role_allows_tool(role: styrene_rbac::Role, tool: &str) -> bool {
     omegon_rbac::role_allows_tool(role, tool)
 }
 
+pub fn styrene_role_allows_effects(
+    role: styrene_rbac::Role,
+    effects: &[omegon_traits::RuntimeEffect],
+) -> bool {
+    use omegon_rbac::OmegonCapability;
+    use omegon_traits::RuntimeEffect;
+
+    effects.iter().all(|effect| {
+        let capability = match effect {
+            RuntimeEffect::FilesystemRead
+            | RuntimeEffect::NetworkAccess
+            | RuntimeEffect::SecretDelivery => OmegonCapability::TOOL_READ,
+            RuntimeEffect::FilesystemWrite | RuntimeEffect::DurableStateWrite => {
+                OmegonCapability::TOOL_WRITE
+            }
+            RuntimeEffect::ProcessSpawn | RuntimeEffect::TerminalAccess => {
+                OmegonCapability::TOOL_EXECUTE
+            }
+            RuntimeEffect::RuntimeControl => OmegonCapability::SESSION_ACTION,
+        };
+        omegon_rbac::role_allows_omegon_capability(role, capability)
+    })
+}
+
 /// Build the runtime permission policy snapshot from settings.
 pub fn layered_policy_from_settings(
     settings: &crate::settings::Settings,

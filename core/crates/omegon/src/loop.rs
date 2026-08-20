@@ -3035,14 +3035,13 @@ async fn dispatch_tools(
     permission_role: Option<styrene_rbac::Role>,
     invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> DispatchResult {
-    let tool_catalog = ToolCapabilityCatalog::from_tool_defs(&bus.all_tool_definitions());
     let mut permission_decisions: Vec<PermissionRecord> = Vec::new();
     let mut results = Vec::with_capacity(tool_calls.len());
 
     // ── Auto-batch: snapshot files targeted by mutation tools ────────
     let mutation_count = tool_calls
         .iter()
-        .filter(|c| is_mutation_tool_name(&tool_catalog, &c.name))
+        .filter(|call| declaration_allows_rollback(bus, &call.name))
         .count();
     let batch_mode = mutation_count >= 2;
 
@@ -3052,7 +3051,7 @@ async fn dispatch_tools(
 
     if batch_mode {
         for call in tool_calls {
-            if is_mutation_tool_name(&tool_catalog, &call.name)
+            if declaration_allows_rollback(bus, &call.name)
                 && let Some(path_str) = extract_mutation_path(&call.arguments)
             {
                 let full = cwd.join(&path_str);
@@ -3082,9 +3081,9 @@ async fn dispatch_tools(
 
     let mut serial_calls: Vec<(usize, ToolCall)> = Vec::new();
     let mut parallel_calls: Vec<(usize, ToolCall)> = Vec::new();
-    let allow_parallel_read_only = !batch_mode && secrets.is_none();
+    let allow_parallel_read_only = !batch_mode && secrets.is_none() && permission_policy.is_none();
     for (idx, call) in tool_calls.iter().cloned().enumerate() {
-        if allow_parallel_read_only && is_parallel_safe_read_only_tool(&call.name) {
+        if allow_parallel_read_only && declaration_allows_parallel(bus, &call.name) {
             parallel_calls.push((idx, call));
         } else {
             serial_calls.push((idx, call));
@@ -3131,7 +3130,6 @@ async fn dispatch_tools(
                 bus,
                 &serial_calls,
                 serial_idx,
-                &tool_catalog,
                 events,
                 cancel.clone(),
                 cwd,
@@ -3153,7 +3151,7 @@ async fn dispatch_tools(
         }
 
         let (idx, call) = serial_calls[serial_idx].clone();
-        if batch_failed && is_mutation_tool_name(&tool_catalog, &call.name) {
+        if batch_failed && declaration_allows_rollback(bus, &call.name) {
             let skip_text = format!(
                 "Skipped {} — previous edit in this turn failed and triggered rollback.",
                 call.name
@@ -3199,7 +3197,7 @@ async fn dispatch_tools(
         .await;
 
         if !dispatched.is_error
-            && is_mutation_tool_name(&tool_catalog, &call.name)
+            && declaration_allows_rollback(bus, &call.name)
             && let Some(path_str) = extract_mutation_path(&call.arguments)
         {
             mutated_files.push(cwd_buf.join(&path_str));
@@ -3207,7 +3205,7 @@ async fn dispatch_tools(
 
         if dispatched.is_error
             && batch_mode
-            && is_mutation_tool_name(&tool_catalog, &call.name)
+            && declaration_allows_rollback(bus, &call.name)
             && !mutated_files.is_empty()
         {
             batch_failed = true;
@@ -3282,13 +3280,20 @@ async fn dispatch_tools(
     }
 }
 
-fn is_parallel_safe_read_only_tool(name: &str) -> bool {
-    // File reads can hit workspace-boundary permission prompts. Those prompts
-    // are interactive and single-pending in the TUI, so dispatching read/view
-    // in parallel can overwrite the visible responder and leave earlier reads
-    // blocked until timeout. Keep filesystem reads serial; only inherently
-    // permissionless read-only tools may run concurrently.
-    matches!(name, "web_search" | "whoami" | "chronos")
+fn declaration_allows_parallel(bus: &crate::bus::EventBus, name: &str) -> bool {
+    bus.resolve_invocation(omegon_traits::RuntimeInvocationKind::Tool, name)
+        .is_ok_and(|resolved| {
+            resolved.execution.parallelism == omegon_traits::RuntimeParallelism::ParallelSafe
+                && resolved.execution.transaction == omegon_traits::RuntimeTransactionBehavior::None
+        })
+}
+
+fn declaration_allows_rollback(bus: &crate::bus::EventBus, name: &str) -> bool {
+    bus.resolve_invocation(omegon_traits::RuntimeInvocationKind::Tool, name)
+        .is_ok_and(|resolved| {
+            resolved.execution.transaction
+                == omegon_traits::RuntimeTransactionBehavior::BestEffortRollback
+        })
 }
 
 fn enrich_plan_list_tool_results(
@@ -3585,12 +3590,26 @@ async fn execute_tool_invocation(
         });
     });
 
-    // Try host delegation before local execution.
-    if let Some(ctx) = host_context
-        && let Some(result) =
-            crate::host_context::try_delegate_to_host(ctx, execution_tool_name, &execution_args)
-                .await
-    {
+    // Host and local owners receive the same declaration-derived timeout ceiling.
+    let delegated = if let Some(ctx) = host_context {
+        let timeout = lease.execution_timeout(&execution_args);
+        match tokio::time::timeout(
+            timeout,
+            crate::host_context::try_delegate_to_host(ctx, execution_tool_name, &execution_args),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Some(Err(anyhow::anyhow!(
+                "Tool '{}' timed out after {} seconds. The operation was cancelled.",
+                execution_tool_name,
+                timeout.as_secs()
+            ))),
+        }
+    } else {
+        None
+    };
+    if let Some(result) = delegated {
         let (tool_result, is_error) = match result {
             Ok(r) => (r, false),
             Err(e) => (
@@ -4070,7 +4089,6 @@ async fn dispatch_edit_batch(
     bus: &crate::bus::EventBus,
     serial_calls: &[(usize, ToolCall)],
     start_idx: usize,
-    tool_catalog: &ToolCapabilityCatalog,
     events: &broadcast::Sender<AgentEvent>,
     cancel: CancellationToken,
     cwd: &std::path::Path,
@@ -4086,9 +4104,10 @@ async fn dispatch_edit_batch(
     bool,
 )> {
     if secrets.is_some()
-        || !is_mutation_tool_name(tool_catalog, &serial_calls.get(start_idx)?.1.name)
+        || !declaration_allows_rollback(bus, &serial_calls.get(start_idx)?.1.name)
         || serial_calls.get(start_idx)?.1.name != "edit"
         || !bus.has_registered_tool("change")
+        || !declaration_allows_rollback(bus, "change")
     {
         return None;
     }
@@ -6928,18 +6947,37 @@ mod tests {
 
         #[async_trait::async_trait]
         impl ToolProvider for SlowReadOnlyProvider {
+            fn runtime_tool_policy(
+                &self,
+                _tool_name: &str,
+            ) -> Option<omegon_traits::RuntimeToolPolicy> {
+                Some(omegon_traits::RuntimeToolPolicy {
+                    effects: vec![omegon_traits::RuntimeEffect::NetworkAccess],
+                    execution: omegon_traits::RuntimeExecutionPolicy {
+                        principals: vec![omegon_traits::RuntimePrincipalClass::Model],
+                        timeout_class: omegon_traits::RuntimeTimeoutClass::Immediate,
+                        retry_class: omegon_traits::RuntimeRetryClass::Never,
+                        idempotency: omegon_traits::RuntimeIdempotency::Idempotent,
+                        deduplication: omegon_traits::RuntimeDeduplication::Unsupported,
+                        parallelism: omegon_traits::RuntimeParallelism::ParallelSafe,
+                        transaction: omegon_traits::RuntimeTransactionBehavior::None,
+                        max_attempts: None,
+                    },
+                })
+            }
+
             fn tools(&self) -> Vec<omegon_traits::ToolDefinition> {
                 vec![
                     omegon_traits::ToolDefinition {
-                        name: "whoami".into(),
-                        label: "whoami".into(),
+                        name: "remote_alpha".into(),
+                        label: "remote_alpha".into(),
                         description: "identity".into(),
                         parameters: serde_json::json!({}),
                         capabilities: vec![],
                     },
                     omegon_traits::ToolDefinition {
-                        name: "chronos".into(),
-                        label: "chronos".into(),
+                        name: "remote_beta".into(),
+                        label: "remote_beta".into(),
                         description: "clock".into(),
                         parameters: serde_json::json!({}),
                         capabilities: vec![],
@@ -6975,12 +7013,12 @@ mod tests {
         let calls = vec![
             ToolCall {
                 id: "1".into(),
-                name: "whoami".into(),
+                name: "remote_alpha".into(),
                 arguments: serde_json::json!({}),
             },
             ToolCall {
                 id: "2".into(),
-                name: "chronos".into(),
+                name: "remote_beta".into(),
                 arguments: serde_json::json!({}),
             },
         ];
@@ -7006,14 +7044,48 @@ mod tests {
             elapsed < Duration::from_millis(260),
             "expected parallel dispatch, got {elapsed:?}"
         );
-        assert_eq!(dispatch.results[0].tool_name, "whoami");
-        assert_eq!(dispatch.results[1].tool_name, "chronos");
+        assert_eq!(dispatch.results[0].tool_name, "remote_alpha");
+        assert_eq!(dispatch.results[1].tool_name, "remote_beta");
     }
 
     #[tokio::test]
     async fn filesystem_read_tools_dispatch_serially_to_preserve_permission_prompts() {
-        assert!(!is_parallel_safe_read_only_tool("read"));
-        assert!(!is_parallel_safe_read_only_tool("view"));
+        struct FilesystemReadProvider;
+
+        #[async_trait::async_trait]
+        impl ToolProvider for FilesystemReadProvider {
+            fn tools(&self) -> Vec<omegon_traits::ToolDefinition> {
+                ["read", "view"]
+                    .into_iter()
+                    .map(|name| omegon_traits::ToolDefinition {
+                        name: name.into(),
+                        label: name.into(),
+                        description: "filesystem read".into(),
+                        parameters: serde_json::json!({}),
+                        capabilities: vec![omegon_traits::ToolCapability::RepoInspection],
+                    })
+                    .collect()
+            }
+
+            async fn execute(
+                &self,
+                _tool_name: &str,
+                _call_id: &str,
+                _args: Value,
+                _cancel: CancellationToken,
+            ) -> anyhow::Result<omegon_traits::ToolResult> {
+                unreachable!()
+            }
+        }
+
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(crate::features::adapter::ToolAdapter::new(
+            "filesystem-read",
+            Box::new(FilesystemReadProvider),
+        )));
+        bus.finalize();
+        assert!(!declaration_allows_parallel(&bus, "read"));
+        assert!(!declaration_allows_parallel(&bus, "view"));
     }
 
     // ── Turn limit + config tests ──────────────────────────────────────

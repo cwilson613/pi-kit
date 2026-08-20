@@ -742,6 +742,94 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 
 #[async_trait]
 impl ToolProvider for CoreTools {
+    fn runtime_tool_policy(&self, tool_name: &str) -> Option<omegon_traits::RuntimeToolPolicy> {
+        use omegon_traits::{
+            RuntimeDeduplication, RuntimeEffect, RuntimeExecutionPolicy, RuntimeIdempotency,
+            RuntimeParallelism, RuntimePrincipalClass, RuntimeRetryClass, RuntimeTimeoutClass,
+            RuntimeToolPolicy, RuntimeTransactionBehavior,
+        };
+
+        let policy =
+            |effects: Vec<RuntimeEffect>, timeout_class, parallelism, transaction, idempotent| {
+                RuntimeToolPolicy {
+                    effects,
+                    execution: RuntimeExecutionPolicy {
+                        principals: vec![RuntimePrincipalClass::Model],
+                        timeout_class,
+                        retry_class: if idempotent {
+                            RuntimeRetryClass::IdempotentFailure
+                        } else {
+                            RuntimeRetryClass::Never
+                        },
+                        idempotency: if idempotent {
+                            RuntimeIdempotency::Idempotent
+                        } else {
+                            RuntimeIdempotency::NonIdempotent
+                        },
+                        deduplication: RuntimeDeduplication::Unsupported,
+                        parallelism,
+                        transaction,
+                        max_attempts: idempotent.then_some(2),
+                    },
+                }
+            };
+        match tool_name {
+            reg::BASH => Some(policy(
+                vec![
+                    RuntimeEffect::FilesystemRead,
+                    RuntimeEffect::FilesystemWrite,
+                    RuntimeEffect::ProcessSpawn,
+                    RuntimeEffect::NetworkAccess,
+                    RuntimeEffect::SecretDelivery,
+                    RuntimeEffect::TerminalAccess,
+                    RuntimeEffect::DurableStateWrite,
+                    RuntimeEffect::RuntimeControl,
+                ],
+                RuntimeTimeoutClass::LongRunning,
+                RuntimeParallelism::Serial,
+                RuntimeTransactionBehavior::IndependentMutation,
+                false,
+            )),
+            reg::PLAN => Some(policy(
+                vec![
+                    RuntimeEffect::DurableStateWrite,
+                    RuntimeEffect::RuntimeControl,
+                ],
+                RuntimeTimeoutClass::Immediate,
+                RuntimeParallelism::Serial,
+                RuntimeTransactionBehavior::IndependentMutation,
+                false,
+            )),
+            reg::WAIT_FOR_OPERATOR => Some(policy(
+                vec![RuntimeEffect::RuntimeControl],
+                RuntimeTimeoutClass::LongRunning,
+                RuntimeParallelism::Serial,
+                RuntimeTransactionBehavior::IndependentMutation,
+                false,
+            )),
+            reg::WHOAMI => Some(policy(
+                vec![
+                    RuntimeEffect::FilesystemRead,
+                    RuntimeEffect::ProcessSpawn,
+                    RuntimeEffect::NetworkAccess,
+                    RuntimeEffect::SecretDelivery,
+                ],
+                RuntimeTimeoutClass::Interactive,
+                RuntimeParallelism::ParallelSafe,
+                RuntimeTransactionBehavior::None,
+                true,
+            )),
+            reg::CHRONOS => Some(policy(
+                vec![],
+                RuntimeTimeoutClass::Immediate,
+                RuntimeParallelism::ParallelSafe,
+                RuntimeTransactionBehavior::None,
+                true,
+            )),
+            _ => None,
+        }
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {

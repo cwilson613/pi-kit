@@ -880,7 +880,23 @@ async fn worker_loop(
                                 crate::runtime_supervisor::InteractiveRuntimeSupervisor::with_authority,
                             );
                             match restored {
-                                Ok(restored) => {
+                                Ok(mut restored) => {
+                                    let withdrawn = match restored.withdraw_recovered_prompts() {
+                                        Ok(count) => count,
+                                        Err(error) => {
+                                            let _ = ack.send(Err(format!(
+                                                "could not withdraw orphaned ACP prompts: {error}"
+                                            )));
+                                            continue;
+                                        }
+                                    };
+                                    if withdrawn > 0 {
+                                        tracing::warn!(
+                                            count = withdrawn,
+                                            session_id = %meta.session_id,
+                                            "withdrew recovered ACP prompts whose response channels were lost"
+                                        );
+                                    }
                                     let replay = project_replay_messages(&loaded);
                                     conversation = loaded;
                                     supervisor = restored;

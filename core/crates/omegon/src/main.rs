@@ -73,6 +73,7 @@ mod inference_discovery;
 mod inference_inventory;
 mod inference_manifest;
 mod inference_runtime;
+mod installed_release;
 mod ipc;
 #[cfg(feature = "local-embeddings")]
 mod local_embedding;

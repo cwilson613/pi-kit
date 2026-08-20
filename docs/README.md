@@ -19,8 +19,7 @@ For user-facing docs, edit `site/src/pages/docs/` and the command snippets in `s
 
 - `README.md` at the repository root: product overview, install, core concepts, and source build path.
 - `CONTRIBUTING.md`: branch policy, validation commands, release flow, and workspace layout.
-- `EXTENSIONS.md`: extension system overview.
-- `EXTENSION_SDK.md`: extension authoring quick start and protocol reference.
+- `docs/extensions.md`: canonical host-runtime guide for extension/plugin/MCP identity, trust, lifecycle, cleanup, and diagnostics. The standalone `omegon-extension-rs` repository owns SDK APIs.
 - `docs/omegon-install.md`: distribution notes, Linux glibc caveats, and update contract.
 - `docs/provider-credential-map.md`: provider auth and credential behavior.
 - `docs/omegon-session.md`: session persistence behavior.

@@ -199,6 +199,10 @@ resolve owner and generation
 
 Admission is monotonic. Policy sources can narrow authority, but no downstream adapter can widen a denial. Unknown owners, capabilities, effects, schemas, or provenance receive no privileged lease. Declarations request effects; they do not prove confinement.
 
+Slice 3.1 establishes the authoritative in-memory seam for model-tool calls: accepted-graph resolution, caller/surface scope, the current name-based RBAC ceiling, layered permission policy, operator approval, lease issuance, immediate generation/owner revalidation, owner handoff, and exactly-once in-memory closure. The lease captures composition and owner generations, capability, principal, call, scope, admitted declaration effects, and transition policy. Unknown or incompletely declared invocations receive no lease. A publication that changes the composition generation makes an undispatched lease stale; rejected candidates preserve the prior generation and do not revoke it.
+
+This first lane does not claim crash consistency. Slice 3.2 replaces compatibility name-derived RBAC, effects, timeout, parallelism, and retry metadata with declaration authority. Slice 3.3 adds durable `Prepared` and `Dispatched` facts before authority issuance and owner handoff. Existing direct EventBus/internal/operator paths remain named compatibility paths until Slice 3.7; they are not silently assigned fabricated principals or administrator leases. Reactive path grants and extension HostAction approvals remain narrower post-lease guards and cannot override an upstream denial.
+
 ## Process ownership
 
 Every process, task, socket, listener, subscription, temporary file, and durable writer has one host-recorded owner and generation. Complete tree settlement is required only inside a lifecycle boundary Omegon can own. Cross-boundary processes, including Windows-host executables launched from WSL, settle as degraded or unverified; profiles requiring strict cleanup reject those transports.

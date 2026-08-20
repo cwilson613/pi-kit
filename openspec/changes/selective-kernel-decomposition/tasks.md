@@ -47,6 +47,7 @@ Definition of done for every group: classify documentation impact before impleme
 ## 3. Crash-consistent privileged invocation
 <!-- specs: kernel-composition/documentation, runtime-invocation/leases -->
 
+- [x] 3.0 Refine Slice-3 ownership, caller/generation identity, red tests, compatibility dispatch, and durable-state boundaries. Documentation impact: updated the internal invocation architecture only; no public behavior, command syntax, retry promise, or recovery guidance changes in this refinement lane.
 - [ ] 3.1 Move policy/RBAC/approval combination and generation-bound lease issuance into one kernel invocation service.
 - [ ] 3.2 Replace tool-name authority with declared effects, principals, timeout, parallelism, retry, and transaction metadata.
 - [ ] 3.3 Persist `Prepared` before leasing and `Dispatched` before owner handoff; propagate stable call and deduplication IDs.

@@ -44,7 +44,11 @@ exactly-once settlement protections. Slice 1.4 connected interactive, ACP,
 daemon, Web/IPC, and bounded prompt, queue, interruption, and terminal ingress
 to that supervisor. Accepted transitions are now synced to the adjacent
 authority stream before the owning host mutates or projects runtime state;
-whole-file conversation snapshots remain compatibility projections.
+whole-file conversation snapshots remain compatibility projections. Transport
+acceptance is narrower: IPC and Web may acknowledge runtime ingress before the
+supervisor commits the corresponding fact, and daemon or ACP work may wait in
+host scheduling before durable prompt admission. Clients reconcile from later
+authority-backed queue and lifecycle projections.
 
 Slice 1.5 adds a release-coupled compatibility adapter for loop terminal
 intents. Authority-backed loop callers submit the captured runtime-turn

@@ -21,43 +21,38 @@ priority = "2"
 
 ## Overview
 
-The Rust binary currently runs one-shot (cleave children). For interactive sessions, it needs:
-- Save conversation state to disk on exit (JSON serialization of ConversationState + IntentDocument)
-- Load and resume a previous session on startup
-- Session listing and selection
-- Episode generation on session end (via LLM bridge call)
+This document records the original persistence plan. The Rust runtime now owns
+interactive session listing, orderly save, and `--resume`. Conversation JSON is
+a compatibility snapshot containing messages, operator observations, intent,
+decay window, and compaction summary. Resume restores recent canonical history
+and summarizes older messages; it is not exact model-context replay.
 
-Currently pi manages sessions in `~/.config/omegon/sessions/`. The Rust binary should read/write compatible formats or introduce its own session store.
+Slice 1 also adds an adjacent append-only authority stream for durable prompt,
+queue, turn, interruption, minimum invocation, recovery, and closure facts. See
+`docs/runtime-session-semantic-protocol.md` for the current contract.
 
 ## Research
 
-### What exists vs. what's needed
+### Implemented boundaries
 
-**Already implemented:**
 - `ConversationState::save_session(path)` — serialize to JSON (messages + intent + decay_window + compaction_summary)
 - `ConversationState::load_session(path)` — deserialize and reconstruct canonical history
-- Round-trip tested
-- Currently only saves for cleave children (`.cleave-session.json` in worktree)
+- session directory management, listing, prefix selection, and resume
+- orderly interactive auto-save, with `--no-session` disabling that snapshot and interactive authority sidecar
+- strict authority replay and conservative active-turn recovery
 
-**What's needed for full session persistence:**
-1. **Session directory management** — create `~/.config/omegon/sessions/<cwd-slug>/` directory structure
-2. **Auto-save on exit** — always save after agent loop completes (not just cleave children)
-3. **Session listing** — enumerate saved sessions for a given cwd, sorted by timestamp
-4. **Session resume via CLI** — `omegon-agent --resume [session-id]` loads a previous session
-5. **Session ID generation** — `<timestamp>_<short-id>.json` format
-
-**What's NOT needed for Phase 1:**
-- Episode generation (requires LLM call, can be added later)
-- Session selection UI (TUI bridge concern)
-- Session pruning/cleanup
-- Cross-session search
+Complete provider/model-context replay remains deferred to Slice 5. Project
+memory, logs, and audit records are separate persistence systems.
 
 ## Decisions
 
-### Decision: Session storage uses ~/.config/omegon/sessions/<cwd-slug>/<timestamp>_<short-id>.json — compatible with pi's directory structure
+### Decision: Conversation snapshots and semantic authority have separate roles
 
 **Status:** decided
-**Rationale:** Pi already uses this directory structure. Sharing it means the TS parent can see Rust session files and vice versa during the transition. The cwd slug replaces / with - and strips leading --. Session files use .json (our format) rather than .jsonl (pi's format) since the internal structure differs, but they coexist in the same directory.
+**Rationale:** Whole-file conversation snapshots support user-facing continuity and
+legacy resume. Adjacent authority JSONL records the minimum ordered facts needed
+for strict queue, interruption, recovery, and closure semantics. Neither record
+is presented as complete Slice-5 semantic replay.
 
 ## Open Questions
 
@@ -67,12 +62,14 @@ Currently pi manages sessions in `~/.config/omegon/sessions/`. The Rust binary s
 
 ### File Scope
 
-- `core/crates/omegon/src/session.rs` (new) — Session manager: directory layout, save-on-exit, list, resume, ID generation
-- `core/crates/omegon/src/main.rs` (modified) — Add --resume CLI arg, wire session save on all exits, load on resume
+- `core/crates/omegon/src/session.rs` — session directory layout, save, list, resume, and ID generation
+- `core/crates/omegon/src/conversation.rs` — conversation snapshot encoding and resume reconstruction
+- `core/crates/omegon/src/session_authority.rs` — adjacent semantic authority and recovery
+- `core/crates/omegon/src/main.rs` — CLI and runtime composition
 
 ### Constraints
 
-- Session save must happen on both normal exit and Ctrl+C interruption
-- --resume with no argument resumes the most recent session for the cwd
-- --resume <id> resumes a specific session by its short ID or full filename
-- Session files must include enough metadata to display in a list: cwd, timestamp, turn count, last user prompt snippet
+- `--resume` with no argument resumes the most recent eligible session for the workspace.
+- `--resume <id>` accepts the supported session identifier or prefix form.
+- Maintenance resume-deny authority is checked before conversation loading.
+- Corrupt or unsupported semantic authority fails recovery rather than being reconstructed from conversation JSON.

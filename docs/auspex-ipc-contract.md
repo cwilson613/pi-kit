@@ -135,7 +135,7 @@ Every frame encodes one `IpcEnvelope`:
 | `internal_error`              | Unexpected server-side failure                   |
 | `not_subscribed`              | Unsubscribe for an event the client didn't hold  |
 | `busy`                        | A second controller attempted to attach          |
-| `turn_in_progress`            | `submit_prompt` while a turn is already running  |
+| `turn_in_progress`            | Reserved legacy code; current `submit_prompt` queues through runtime ingress |
 | `shutdown_initiated`          | `shutdown` was accepted; process will exit       |
 
 Unknown error codes must be treated by the client as `internal_error`.
@@ -240,14 +240,20 @@ Subscribe to `state.changed` events to know when sections become stale.
 Request: `SubmitPromptRequest { prompt: string, source?: string }`
 Response: `AcceptedResponse { accepted: bool }`
 
-Rejected with `turn_in_progress` if a turn is already running.
+`accepted: true` means the runtime ingress channel accepted the command. It is
+not a durable prompt-admission receipt. A prompt submitted during an active
+turn proceeds to the supervisor queue; subscribe to `runtime.queue_updated` to
+observe authoritative queue and active-turn state.
 
 ### `cancel`
 
 Request: empty object
 Response: `AcceptedResponse { accepted: bool }`
 
-Cancels the current turn if one is running. No-op if idle.
+Requests cancellation of the current turn if one is running. The response
+reports ingress acceptance, not terminal closure. The supervisor may classify
+the request as idle, duplicate, stale, or failed during durable admission, and
+the turn remains busy while owned cleanup runs.
 
 ### `subscribe`
 
@@ -410,6 +416,7 @@ If the client cannot consume events fast enough:
 | `state.changed`                   | `sections: string[]`                        |
 | `system.notification`             | `message: string`                           |
 | `session.reset`                   | (none)                                      |
+| `runtime.queue_updated`           | queue snapshot with `depth`, `active`, `items`, and `previews` |
 
 ### Unknown event names
 
@@ -437,7 +444,7 @@ On reconnect, Auspex must:
 ### Disconnect semantics
 
 If Auspex disconnects (EOF on socket):
-- any active turn is **cancelled gracefully**
+- any active turn continues unless cancellation was requested separately
 - the server process continues running
 - the socket remains open for reconnect
 

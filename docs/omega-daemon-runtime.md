@@ -60,7 +60,7 @@ Define the persistent runtime mode that lets Omegon/Omega run as a long-lived lo
 
 **Status:** decided
 
-**Rationale:** The daemon session owns one command-driven supervisor with one active turn, a durable FIFO prompt queue, the exact active cancellation token, and explicit Running/Cancelling/Idle truth. IPC, WebSocket, HTTP event, Vox, trigger, and Auspex ingress are adapters over that state rather than owners of prompt lifecycle. Concurrent submissions queue instead of racing a busy sentinel, and cancellation is durably admitted before the active loop token is cancelled.
+**Rationale:** The daemon session owns one command-driven supervisor with one active turn, durable FIFO ordering after supervisor admission, the exact active cancellation token, and explicit Running/Cancelling/Idle truth. IPC, WebSocket, HTTP event, Vox, trigger, and Auspex ingress are adapters over that state rather than owners of prompt lifecycle. Daemon ingress is serialized before admission, so work waiting on host scheduling is not yet durable; once admitted, concurrent submissions queue instead of racing a busy sentinel. Cancellation is durably admitted before the active loop token is cancelled.
 
 ## Open Questions
 

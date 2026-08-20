@@ -393,6 +393,13 @@ async fn worker_loop(
 
     let session_id = agent_setup.session_id.clone();
     let instance_id = agent_setup.instance_id.clone();
+    let composition_generation_id = match agent_setup.bus.composition_generation_id() {
+        Some(generation_id) => generation_id.as_str().to_string(),
+        None => {
+            tracing::error!("ACP composition was not published");
+            return;
+        }
+    };
     let workspace_id = agent_setup.workspace_state.lease.workspace_id.clone();
     let session_snapshot = match crate::session::sessions_dir(&cwd) {
         Some(directory) => directory.join(format!("{session_id}.json")),
@@ -405,7 +412,7 @@ async fn worker_loop(
         &session_snapshot,
         &session_id,
         &workspace_id,
-        &instance_id,
+        &composition_generation_id,
         crate::session_authority::ActorIdentity {
             principal: "acp-client".into(),
             ingress: "acp".into(),
@@ -868,7 +875,7 @@ async fn worker_loop(
                                 &path,
                                 &meta.session_id,
                                 &workspace_id,
-                                &instance_id,
+                                &composition_generation_id,
                                 crate::session_authority::ActorIdentity {
                                     principal: "acp-client".into(),
                                     ingress: "acp".into(),

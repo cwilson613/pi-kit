@@ -861,6 +861,9 @@ impl SessionAuthority {
         let stream_id = state
             .stream_id
             .ok_or_else(|| AuthorityError::Invalid("authority stream has no identity".into()))?;
+        let runtime_generation_id = state.runtime_generation_id.clone().ok_or_else(|| {
+            AuthorityError::Invalid("authority stream has no runtime generation".into())
+        })?;
 
         Ok(Self {
             store,
@@ -1988,7 +1991,7 @@ mod tests {
         assert!(authority.state().active_turn.is_none());
         drop(authority);
 
-        let reopened = SessionAuthority::open(
+        let mut reopened = SessionAuthority::open(
             &session_path,
             "session-1",
             "workspace-1",
@@ -2004,6 +2007,39 @@ mod tests {
         assert_eq!(
             reopened.state().closed_turns[&turn_id].outcome,
             TurnOutcome::Revoked
+        );
+
+        let resumed_prompt_id = Uuid::new_v4();
+        reopened
+            .admit_prompt(
+                Uuid::new_v4(),
+                "2026-08-19T19:00:01Z",
+                PromptAdmitted {
+                    submission_id: Uuid::new_v4(),
+                    prompt_id: resumed_prompt_id,
+                    principal: "operator".into(),
+                    ingress: "tui".into(),
+                    queue_mode: QueueMode::UntilReady,
+                    content: PromptContent {
+                        text: "continue".into(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        let resumed_turn_id = Uuid::new_v4();
+        reopened
+            .start_turn(
+                Uuid::new_v4(),
+                "2026-08-19T19:00:02Z",
+                resumed_turn_id,
+                resumed_prompt_id,
+            )
+            .unwrap();
+        assert_eq!(
+            reopened.state().turn_starts[&resumed_turn_id].runtime_generation_id,
+            "generation-1"
         );
     }
 

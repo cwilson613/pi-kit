@@ -326,6 +326,8 @@ pub struct EventBus {
     internal_tool_owners: HashMap<String, usize>,
     /// Structurally validated composition from which legacy caches were built.
     accepted_graph: Option<std::sync::Arc<crate::contribution_graph::RuntimeCandidateGraph>>,
+    /// Identity of the atomically published composition represented by the graph and caches.
+    accepted_generation_id: Option<omegon_traits::RuntimeCompositionGenerationId>,
     /// Number of features in the active published composition.
     published_feature_count: usize,
     /// Candidate changes remain invisible until graph validation succeeds.
@@ -345,6 +347,7 @@ impl EventBus {
             disabled_tools: None,
             internal_tool_owners: HashMap::new(),
             accepted_graph: None,
+            accepted_generation_id: None,
             published_feature_count: 0,
             pending_features: Vec::new(),
             declared_internal_tools: Vec::new(),
@@ -516,6 +519,12 @@ impl EventBus {
     pub fn finalize(&mut self) {
         self.try_finalize()
             .expect("staged EventBus composition must validate before publication");
+    }
+
+    pub(crate) fn composition_generation_id(
+        &self,
+    ) -> Option<&omegon_traits::RuntimeCompositionGenerationId> {
+        self.accepted_generation_id.as_ref()
     }
 
     /// Fallible publication boundary used by production setup.
@@ -1098,6 +1107,13 @@ impl EventBus {
         self.command_defs = command_defs;
         self.internal_tool_owners = internal_tool_owners;
         self.accepted_graph = Some(std::sync::Arc::new(graph));
+        self.accepted_generation_id = Some(
+            omegon_traits::RuntimeCompositionGenerationId::new(format!(
+                "composition:{}",
+                uuid::Uuid::new_v4()
+            ))
+            .expect("UUID composition generation is valid"),
+        );
         self.published_feature_count = self.features.len();
         self.refresh_tool_inventory();
         tracing::info!(
@@ -1971,10 +1987,12 @@ mod tests {
         let mut bus = EventBus::new();
         bus.register(Box::new(CounterFeature { event_count: 7 }));
         bus.finalize();
+        let accepted_generation = bus.composition_generation_id().unwrap().clone();
         bus.register(Box::new(ExtensionCounterFeature));
 
         assert_eq!(bus.feature_names(), vec!["counter"]);
         assert!(bus.try_finalize().is_err());
+        assert_eq!(bus.composition_generation_id(), Some(&accepted_generation));
         assert_eq!(bus.feature_names(), vec!["counter"]);
         let result = bus
             .execute_tool(
@@ -1986,6 +2004,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.content[0].as_text(), Some("count: 7"));
+
+        bus.register(Box::new(DisplayNameFeature("additional")));
+        bus.try_finalize().unwrap();
+        assert_ne!(bus.composition_generation_id(), Some(&accepted_generation));
     }
 
     #[test]

@@ -2704,11 +2704,17 @@ async fn run_embedded_command(
     let daemon_session_snapshot = session::sessions_dir(&agent.cwd)
         .ok_or_else(|| anyhow::anyhow!("cannot determine daemon session directory"))?
         .join(format!("{}.json", agent.session_id));
+    let composition_generation_id = agent
+        .bus
+        .composition_generation_id()
+        .ok_or_else(|| anyhow::anyhow!("daemon composition was not published"))?
+        .as_str()
+        .to_string();
     let daemon_authority = session_authority::SessionAuthority::open(
         &daemon_session_snapshot,
         &agent.session_id,
         &agent.workspace_state.lease.workspace_id,
-        &agent.instance_id,
+        &composition_generation_id,
         session_authority::ActorIdentity {
             principal: "daemon-host".into(),
             ingress: "daemon".into(),
@@ -4827,11 +4833,17 @@ fn build_tui_secret_readiness_snapshot(
         let session_snapshot = session::sessions_dir(&agent.cwd)
             .ok_or_else(|| anyhow::anyhow!("cannot determine interactive session directory"))?
             .join(format!("{}.json", agent.session_id));
+        let composition_generation_id = agent
+            .bus
+            .composition_generation_id()
+            .ok_or_else(|| anyhow::anyhow!("interactive composition was not published"))?
+            .as_str()
+            .to_string();
         Some(session_authority::SessionAuthority::open(
             &session_snapshot,
             &agent.session_id,
             &agent.workspace_state.lease.workspace_id,
-            &agent.instance_id,
+            &composition_generation_id,
             session_authority::ActorIdentity {
                 principal: "local-operator".into(),
                 ingress: "interactive".into(),
@@ -9103,11 +9115,17 @@ async fn run_bounded_task(
     let session_snapshot = session::sessions_dir(&agent.cwd)
         .ok_or_else(|| anyhow::anyhow!("cannot determine bounded session directory"))?
         .join(format!("{}.json", agent.session_id));
+    let composition_generation_id = agent
+        .bus
+        .composition_generation_id()
+        .ok_or_else(|| anyhow::anyhow!("bounded composition was not published"))?
+        .as_str()
+        .to_string();
     let authority = session_authority::SessionAuthority::open(
         &session_snapshot,
         &agent.session_id,
         &agent.workspace_state.lease.workspace_id,
-        &agent.instance_id,
+        &composition_generation_id,
         session_authority::ActorIdentity {
             principal: "bounded-runner".into(),
             ingress: "bounded".into(),

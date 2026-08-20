@@ -48,7 +48,7 @@ Definition of done for every group: classify documentation impact before impleme
 <!-- specs: kernel-composition/documentation, runtime-invocation/leases -->
 
 - [x] 3.0 Refine Slice-3 ownership, caller/generation identity, red tests, compatibility dispatch, and durable-state boundaries. Documentation impact: updated the internal invocation architecture only; no public behavior, command syntax, retry promise, or recovery guidance changes in this refinement lane.
-- [ ] 3.1 Move policy/RBAC/approval combination and generation-bound lease issuance into one kernel invocation service.
+- [x] 3.1 Move policy/RBAC/approval combination and generation-bound lease issuance into one kernel invocation service. Documentation impact: updated the owning architecture and release notes; model-tool calls now use accepted-graph resolution and generation-bound, exactly-once in-memory leases, while durable invocation facts and other privileged compatibility paths remain assigned to later Slice-3 tasks with no public command or configuration syntax change.
 - [ ] 3.2 Replace tool-name authority with declared effects, principals, timeout, parallelism, retry, and transaction metadata.
 - [ ] 3.3 Persist `Prepared` before leasing and `Dispatched` before owner handoff; propagate stable call and deduplication IDs.
 - [ ] 3.4 Persist acknowledgement and terminal settlement; recover unsettled dispatched calls as unknown completion.

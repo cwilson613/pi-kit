@@ -238,11 +238,17 @@ async fn run_interactive_active_turn(
     active_identity: RuntimeTurnIdentity,
     lifecycle: RuntimeTurnLifecycle,
     cancel: CancellationToken,
+    invocation_session_id: Option<String>,
+    invocation_authority: Option<crate::session_authority::SessionAuthorityHandle>,
 ) -> LoopTerminalIntent {
     let mut runtime_state = runtime_state.lock().await;
     let cancel_keeps_prompt = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut loop_config =
         build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
+    loop_config.invocation_scope.principal = active.prompt.submitted_by.display_label().to_string();
+    loop_config.invocation_scope.session_id = invocation_session_id;
+    loop_config.invocation_scope.turn_id = active.authority_turn_id;
+    loop_config.invocation_scope.authority = invocation_authority;
     loop_config.cancel_keeps_prompt = Some(cancel_keeps_prompt.clone());
     loop_config.drain_post_loop_requests = false;
 

@@ -63,6 +63,20 @@ impl Feature for ToolAdapter {
             .execute_with_sink(tool_name, call_id, args, cancel, sink)
             .await
     }
+
+    async fn execute_with_context(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        context: omegon_traits::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        self.provider
+            .execute_with_context(tool_name, call_id, args, cancel, sink, context)
+            .await
+    }
 }
 
 /// Wraps a ContextProvider as a Feature.
@@ -148,6 +162,20 @@ impl Feature for ToolContextAdapter {
     ) -> anyhow::Result<ToolResult> {
         self.tool_provider
             .execute_with_sink(tool_name, call_id, args, cancel, sink)
+            .await
+    }
+
+    async fn execute_with_context(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        context: omegon_traits::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        self.tool_provider
+            .execute_with_context(tool_name, call_id, args, cancel, sink, context)
             .await
     }
 

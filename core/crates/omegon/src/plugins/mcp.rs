@@ -1125,12 +1125,24 @@ impl Feature for McpFeature {
     async fn execute_with_context(
         &self,
         tool_name: &str,
-        _call_id: &str,
+        call_id: &str,
         args: Value,
         _cancel: tokio_util::sync::CancellationToken,
         sink: ToolProgressSink,
         context: omegon_traits::ToolExecutionContext,
     ) -> anyhow::Result<ToolResult> {
+        tracing::debug!(
+            call_id,
+            invocation_id = context
+                .invocation
+                .as_ref()
+                .map(|value| value.invocation_id.as_str()),
+            deduplication_id = context
+                .invocation
+                .as_ref()
+                .and_then(|value| value.deduplication_id.as_deref()),
+            "dispatching MCP tool invocation"
+        );
         let (server_name, mcp_name) = Self::split_tool_name(tool_name);
 
         // Route to resource/prompt handlers

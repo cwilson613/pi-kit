@@ -3,6 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use chrono::DateTime;
@@ -928,6 +929,121 @@ pub(crate) struct SessionAuthority {
     runtime_generation_id: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct SessionAuthorityHandle(Arc<Mutex<SessionAuthority>>);
+
+impl std::fmt::Debug for SessionAuthorityHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionAuthorityHandle")
+            .field("session_id", &self.session_id())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for SessionAuthorityHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SessionAuthorityHandle {}
+
+impl SessionAuthorityHandle {
+    pub(crate) fn new(authority: SessionAuthority) -> Self {
+        Self(Arc::new(Mutex::new(authority)))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, SessionAuthority> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn state(&self) -> SessionAuthorityState {
+        self.lock().state().clone()
+    }
+
+    pub(crate) fn session_id(&self) -> String {
+        self.lock().session_id.clone()
+    }
+
+    pub(crate) fn stage_attachment(&self, source: &Path) -> Result<AttachmentRef> {
+        self.lock().stage_attachment(source)
+    }
+
+    pub(crate) fn validate_attachment(&self, attachment: &AttachmentRef) -> Result<PathBuf> {
+        self.lock().validate_attachment(attachment)
+    }
+
+    pub(crate) fn admit_prompt(
+        &self,
+        command_id: Uuid,
+        recorded_at: &str,
+        admission: PromptAdmitted,
+    ) -> Result<bool> {
+        self.lock().admit_prompt(command_id, recorded_at, admission)
+    }
+
+    pub(crate) fn remove_prompt(
+        &self,
+        command_id: Uuid,
+        recorded_at: &str,
+        prompt_id: Uuid,
+        reason: PromptRemovalReason,
+    ) -> Result<bool> {
+        self.lock()
+            .remove_prompt(command_id, recorded_at, prompt_id, reason)
+    }
+
+    pub(crate) fn start_turn(
+        &self,
+        command_id: Uuid,
+        recorded_at: &str,
+        turn_id: Uuid,
+        prompt_id: Uuid,
+    ) -> Result<bool> {
+        self.lock()
+            .start_turn(command_id, recorded_at, turn_id, prompt_id)
+    }
+
+    pub(crate) fn request_interruption(
+        &self,
+        command_id: Uuid,
+        recorded_at: &str,
+        request: TurnInterruptionRequested,
+    ) -> Result<bool> {
+        self.lock()
+            .request_interruption(command_id, recorded_at, request)
+    }
+
+    pub(crate) fn close_turn(
+        &self,
+        command_id: Uuid,
+        recorded_at: &str,
+        closure: TurnClosed,
+    ) -> Result<bool> {
+        self.lock().close_turn(command_id, recorded_at, closure)
+    }
+
+    pub(crate) fn prepare_invocation(
+        &self,
+        recorded_at: &str,
+        preparation: InvocationPrepared,
+    ) -> Result<bool> {
+        self.lock().prepare_invocation(recorded_at, preparation)
+    }
+
+    pub(crate) fn mark_invocation_dispatched(
+        &self,
+        recorded_at: &str,
+        dispatch: InvocationDispatched,
+    ) -> Result<bool> {
+        self.lock()
+            .mark_invocation_dispatched(recorded_at, dispatch)
+    }
+}
+
 impl SessionAuthority {
     pub(crate) fn open(
         session_snapshot: &Path,
@@ -1274,11 +1390,12 @@ impl SessionAuthorityStore {
         encoded.push(b'\n');
 
         self.append_record(&encoded)?;
-        write_snapshot(
-            &self.snapshot_path,
-            &SessionAuthoritySnapshot::from_state(&next)?,
-        )?;
         *state = next;
+        if let Err(error) = SessionAuthoritySnapshot::from_state(state)
+            .and_then(|snapshot| write_snapshot(&self.snapshot_path, &snapshot))
+        {
+            tracing::warn!(%error, "session authority snapshot cache update failed after durable append");
+        }
         Ok(true)
     }
 
@@ -1299,11 +1416,11 @@ impl SessionAuthorityStore {
             self.append_record(&encoded)?;
             state = next;
         }
-        if state.last_sequence > 0 {
-            write_snapshot(
-                &self.snapshot_path,
-                &SessionAuthoritySnapshot::from_state(&state)?,
-            )?;
+        if state.last_sequence > 0
+            && let Err(error) = SessionAuthoritySnapshot::from_state(&state)
+                .and_then(|snapshot| write_snapshot(&self.snapshot_path, &snapshot))
+        {
+            tracing::warn!(%error, "session authority recovery snapshot cache update failed");
         }
         Ok(state)
     }

@@ -2097,7 +2097,7 @@ async fn run_daemon_turn(
     shared_settings: &settings::SharedSettings,
     fallback_model: &str,
     events_tx: &tokio::sync::broadcast::Sender<omegon_traits::AgentEvent>,
-    config: r#loop::LoopConfig,
+    mut config: r#loop::LoopConfig,
     submission: operator_commands::PromptSubmission,
 ) -> anyhow::Result<()> {
     {
@@ -2120,15 +2120,15 @@ async fn run_daemon_turn(
     let mut first_error = None;
 
     loop {
-        let (active, active_identity) = {
+        let (active, active_identity, invocation_authority) = {
             let mut supervisor = runtime.supervisor.lock().await;
             match supervisor.start_next_turn()? {
-                Some(active) => (
-                    active,
-                    supervisor
+                Some(active) => {
+                    let identity = supervisor
                         .current_identity()
-                        .expect("promoted daemon turn has identity"),
-                ),
+                        .expect("promoted daemon turn has identity");
+                    (active, identity, supervisor.invocation_authority())
+                }
                 None => {
                     return match first_error {
                         Some(error) => Err(error),
@@ -2137,6 +2137,12 @@ async fn run_daemon_turn(
                 }
             }
         };
+        config.invocation_scope.principal = active.prompt.submitted_by.display_label().to_string();
+        config.invocation_scope.session_id = invocation_authority
+            .as_ref()
+            .map(|authority| authority.session_id());
+        config.invocation_scope.turn_id = active.authority_turn_id;
+        config.invocation_scope.authority = invocation_authority;
 
         // Read the current model from shared_settings so SIGHUP reloads and
         // /set_model changes are picked up. Falls back to the startup model if
@@ -6447,6 +6453,10 @@ fn build_tui_secret_readiness_snapshot(
                     if let Ok(mut guard) = shared_cancel.lock() {
                         *guard = Some(turn_cancel.clone());
                     }
+                    let invocation_authority = runtime.invocation_authority();
+                    let invocation_session_id = invocation_authority
+                        .as_ref()
+                        .map(|_| agent.session_id.clone());
                     let mut turn_task = tokio::task::spawn_local(run_interactive_active_turn(
                         state_for_turn.clone(),
                         runtime_resources.clone(),
@@ -6459,6 +6469,8 @@ fn build_tui_secret_readiness_snapshot(
                         active_identity,
                         lifecycle.clone(),
                         turn_cancel.clone(),
+                        invocation_session_id,
+                        invocation_authority,
                     ));
                     let active_wait_started_at = std::time::Instant::now();
                     let mut slow_turn_probe = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
@@ -9151,9 +9163,12 @@ async fn run_bounded_task(
     let active_identity = supervisor
         .current_identity()
         .expect("promoted bounded turn has identity");
+    let invocation_authority = supervisor.invocation_authority();
+    let invocation_principal = active.prompt.submitted_by.display_label().to_string();
+    let invocation_turn_id = active.authority_turn_id;
     agent.conversation.push_user(active.prompt.text);
 
-    let loop_config = bootstrap::build_loop_config(
+    let mut loop_config = bootstrap::build_loop_config(
         &shared_settings,
         &agent.cwd,
         model,
@@ -9164,6 +9179,10 @@ async fn run_bounded_task(
             ..Default::default()
         },
     );
+    loop_config.invocation_scope.principal = invocation_principal;
+    loop_config.invocation_scope.session_id = Some(agent.session_id.clone());
+    loop_config.invocation_scope.turn_id = invocation_turn_id;
+    loop_config.invocation_scope.authority = invocation_authority;
 
     let bridge =
         bootstrap::resolve_bridge_or_bail_with_secrets(model, Some(agent.secrets.as_ref())).await?;

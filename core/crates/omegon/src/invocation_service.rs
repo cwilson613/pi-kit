@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use omegon_traits::{
     RuntimeCapabilityId, RuntimeCapabilityTransitionPolicy, RuntimeCompositionGenerationId,
-    RuntimeContributionGenerationId, RuntimeContributionId, RuntimeEffect, RuntimeExecutionPolicy,
-    RuntimeInvocationKind, RuntimePrincipalClass, RuntimeSurface, RuntimeTimeoutClass,
+    RuntimeContributionGenerationId, RuntimeContributionId, RuntimeDeduplication, RuntimeEffect,
+    RuntimeExecutionPolicy, RuntimeInvocationKind, RuntimePrincipalClass, RuntimeSurface,
+    RuntimeTimeoutClass,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -26,6 +27,7 @@ pub(crate) struct InvocationScope {
     pub surface: RuntimeSurface,
     pub session_id: Option<String>,
     pub turn_id: Option<Uuid>,
+    pub authority: Option<crate::session_authority::SessionAuthorityHandle>,
 }
 
 impl Default for InvocationScope {
@@ -36,6 +38,7 @@ impl Default for InvocationScope {
             surface: RuntimeSurface::Model,
             session_id: None,
             turn_id: None,
+            authority: None,
         }
     }
 }
@@ -62,6 +65,7 @@ pub(crate) enum InvocationDenialCode {
     RbacDenied,
     PermissionPolicyDenied,
     ApprovalDenied,
+    AuthorityUnavailable,
     StaleGeneration,
     LeaseClosed,
     LeaseMismatch,
@@ -76,6 +80,7 @@ impl InvocationDenialCode {
             Self::RbacDenied => "invocation:rbac_denied",
             Self::PermissionPolicyDenied => "invocation:permission_policy_denied",
             Self::ApprovalDenied => "invocation:approval_denied",
+            Self::AuthorityUnavailable => "invocation:authority_unavailable",
             Self::StaleGeneration => "invocation:stale_generation",
             Self::LeaseClosed => "invocation:lease_closed",
             Self::LeaseMismatch => "invocation:lease_mismatch",
@@ -105,6 +110,7 @@ pub(crate) struct ExecutionLease {
     pub lease_id: Uuid,
     pub invocation_id: Uuid,
     pub call_id: String,
+    pub deduplication_id: Option<String>,
     pub principal: String,
     pub principal_class: RuntimePrincipalClass,
     pub surface: RuntimeSurface,
@@ -120,15 +126,35 @@ pub(crate) struct ExecutionLease {
     pub execution: RuntimeExecutionPolicy,
     pub transition: RuntimeCapabilityTransitionPolicy,
     pub surfaces: Vec<RuntimeSurface>,
+    authority: Option<crate::session_authority::SessionAuthorityHandle>,
     terminal: Arc<AtomicU8>,
 }
 
 impl ExecutionLease {
     fn issue(call_id: &str, scope: InvocationScope, resolved: ResolvedInvocation) -> Self {
+        Self::issue_with_identity(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            None,
+            call_id,
+            scope,
+            resolved,
+        )
+    }
+
+    fn issue_with_identity(
+        lease_id: Uuid,
+        invocation_id: Uuid,
+        deduplication_id: Option<String>,
+        call_id: &str,
+        scope: InvocationScope,
+        resolved: ResolvedInvocation,
+    ) -> Self {
         Self {
-            lease_id: Uuid::new_v4(),
-            invocation_id: Uuid::new_v4(),
+            lease_id,
+            invocation_id,
             call_id: call_id.to_string(),
+            deduplication_id,
             principal: scope.principal,
             principal_class: scope.principal_class,
             surface: scope.surface,
@@ -144,8 +170,87 @@ impl ExecutionLease {
             execution: resolved.execution,
             transition: resolved.transition,
             surfaces: resolved.surfaces,
+            authority: scope.authority,
             terminal: Arc::new(AtomicU8::new(LeaseTerminal::Open as u8)),
         }
+    }
+
+    fn prepare_and_issue(
+        call_id: &str,
+        scope: InvocationScope,
+        resolved: ResolvedInvocation,
+    ) -> Result<Self, InvocationDenial> {
+        let Some(authority) = scope.authority.clone() else {
+            if scope.session_id.is_some() || scope.turn_id.is_some() {
+                return Err(denial(
+                    InvocationDenialCode::AuthorityUnavailable,
+                    "durable invocation scope has no session authority writer",
+                ));
+            }
+            return Ok(Self::issue(call_id, scope, resolved));
+        };
+        let session_id = scope.session_id.as_deref().ok_or_else(|| {
+            denial(
+                InvocationDenialCode::AuthorityUnavailable,
+                "session authority writer requires a session identity",
+            )
+        })?;
+        let turn_id = scope.turn_id.ok_or_else(|| {
+            denial(
+                InvocationDenialCode::AuthorityUnavailable,
+                "session authority writer requires an active turn identity",
+            )
+        })?;
+        if authority.session_id() != session_id {
+            return Err(denial(
+                InvocationDenialCode::AuthorityUnavailable,
+                "invocation scope does not match the session authority writer",
+            ));
+        }
+
+        let lease_id = Uuid::new_v4();
+        let invocation_id = Uuid::new_v4();
+        let deduplication_id = (resolved.execution.deduplication
+            == RuntimeDeduplication::OwnerEnforcedStableCallId)
+            .then(|| call_id.to_string());
+        authority
+            .prepare_invocation(
+                &recorded_at_now(),
+                crate::session_authority::InvocationPrepared {
+                    invocation_id,
+                    lease_id,
+                    turn_id,
+                    call_id: call_id.to_string(),
+                    deduplication_id: deduplication_id.clone(),
+                    invocation_kind: resolved.kind,
+                    invocation_name: resolved.name.clone(),
+                    capability_id: resolved.capability_id.clone(),
+                    contribution_id: resolved.contribution_id.clone(),
+                    owner_generation_id: resolved.owner_generation_id.clone(),
+                    issue_generation_id: resolved.composition_generation_id.clone(),
+                    principal: scope.principal.clone(),
+                    principal_class: scope.principal_class,
+                    surface: scope.surface,
+                    admitted_effects: resolved.effects.clone(),
+                    execution: resolved.execution.clone(),
+                    transition: resolved.transition.clone(),
+                    surfaces: resolved.surfaces.clone(),
+                },
+            )
+            .map_err(|error| {
+                denial(
+                    InvocationDenialCode::AuthorityUnavailable,
+                    format!("failed to persist invocation preparation: {error}"),
+                )
+            })?;
+        Ok(Self::issue_with_identity(
+            lease_id,
+            invocation_id,
+            deduplication_id,
+            call_id,
+            scope,
+            resolved,
+        ))
     }
 
     pub fn terminal(&self) -> LeaseTerminal {
@@ -172,6 +277,38 @@ impl ExecutionLease {
         std::time::Duration::from_secs(requested_seconds.map_or(declared_seconds, |requested| {
             requested.min(declared_seconds)
         }))
+    }
+
+    pub fn dispatch_metadata(&self) -> omegon_traits::InvocationDispatchMetadata {
+        omegon_traits::InvocationDispatchMetadata {
+            invocation_id: self.invocation_id.to_string(),
+            visible_call_id: self.call_id.clone(),
+            deduplication_id: self.deduplication_id.clone(),
+            session_id: self.session_id.clone(),
+            turn_id: self.turn_id.map(|turn_id| turn_id.to_string()),
+        }
+    }
+
+    pub fn persist_dispatched(&self) -> Result<(), InvocationDenial> {
+        let Some(authority) = &self.authority else {
+            return Ok(());
+        };
+        authority
+            .mark_invocation_dispatched(
+                &recorded_at_now(),
+                crate::session_authority::InvocationDispatched {
+                    invocation_id: self.invocation_id,
+                    lease_id: self.lease_id,
+                },
+            )
+            .map(|_| ())
+            .map_err(|error| {
+                self.revoke();
+                denial(
+                    InvocationDenialCode::AuthorityUnavailable,
+                    format!("failed to persist invocation dispatch: {error}"),
+                )
+            })
     }
 
     pub fn claim_dispatch(&self, call_id: &str, name: &str) -> Result<(), InvocationDenial> {
@@ -263,11 +400,7 @@ impl PendingInvocationApproval {
                 policy_layer: self.policy_layer,
             });
         }
-        Ok(ExecutionLease::issue(
-            &self.call_id,
-            self.scope,
-            self.resolved,
-        ))
+        ExecutionLease::prepare_and_issue(&self.call_id, self.scope, self.resolved)
     }
 }
 
@@ -346,11 +479,10 @@ impl InvocationService {
             }
         }
 
-        InvocationAdmission::Lease(ExecutionLease::issue(
-            request.call_id,
-            request.scope,
-            resolved,
-        ))
+        match ExecutionLease::prepare_and_issue(request.call_id, request.scope, resolved) {
+            Ok(lease) => InvocationAdmission::Lease(lease),
+            Err(denial) => InvocationAdmission::Denied(denial),
+        }
     }
 }
 
@@ -365,6 +497,10 @@ fn permission_subject(
         Some(subject) => format!("policy:{}:{}", tool, subject.value),
         None => format!("policy:{tool}"),
     }
+}
+
+fn recorded_at_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 pub(crate) fn denial(code: InvocationDenialCode, message: impl Into<String>) -> InvocationDenial {
@@ -411,6 +547,86 @@ mod tests {
             lease.execution_timeout(&serde_json::json!({"timeout_secs": 5})),
             std::time::Duration::from_secs(5)
         );
+    }
+
+    #[test]
+    fn durable_scope_persists_prepared_before_lease_and_dispatched_before_handoff() {
+        let directory = tempfile::tempdir().unwrap();
+        let recorded_at = "2026-08-20T12:00:00Z";
+        let mut authority = crate::session_authority::SessionAuthority::open(
+            &directory.path().join("session.json"),
+            "session-1",
+            "workspace-1",
+            "composition:test",
+            crate::session_authority::ActorIdentity {
+                principal: "operator".into(),
+                ingress: "test".into(),
+            },
+            recorded_at,
+        )
+        .unwrap();
+        let prompt_id = Uuid::new_v4();
+        authority
+            .admit_prompt(
+                Uuid::new_v4(),
+                recorded_at,
+                crate::session_authority::PromptAdmitted {
+                    submission_id: Uuid::new_v4(),
+                    prompt_id,
+                    principal: "operator".into(),
+                    ingress: "test".into(),
+                    queue_mode: crate::session_authority::QueueMode::UntilReady,
+                    content: crate::session_authority::PromptContent {
+                        text: "run".into(),
+                        attachments: vec![],
+                    },
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        let turn_id = Uuid::new_v4();
+        authority
+            .start_turn(Uuid::new_v4(), recorded_at, turn_id, prompt_id)
+            .unwrap();
+        let authority = crate::session_authority::SessionAuthorityHandle::new(authority);
+        let mut resolved = fixture_resolution();
+        resolved.execution.deduplication = RuntimeDeduplication::OwnerEnforcedStableCallId;
+        let scope = InvocationScope {
+            session_id: Some("session-1".into()),
+            turn_id: Some(turn_id),
+            authority: Some(authority.clone()),
+            ..Default::default()
+        };
+
+        let lease = ExecutionLease::prepare_and_issue("call-1", scope, resolved).unwrap();
+        assert_eq!(lease.deduplication_id.as_deref(), Some("call-1"));
+        assert!(matches!(
+            authority.state().invocations.get(&lease.invocation_id),
+            Some(crate::session_authority::InvocationState::Prepared { preparation })
+                if preparation.lease_id == lease.lease_id
+                    && preparation.call_id == "call-1"
+                    && preparation.deduplication_id.as_deref() == Some("call-1")
+        ));
+
+        lease.claim_dispatch("call-1", "read").unwrap();
+        lease.persist_dispatched().unwrap();
+        assert!(matches!(
+            authority.state().invocations.get(&lease.invocation_id),
+            Some(crate::session_authority::InvocationState::Dispatched { dispatch, .. })
+                if dispatch.lease_id == lease.lease_id
+        ));
+    }
+
+    #[test]
+    fn scoped_invocation_without_authority_writer_receives_no_lease() {
+        let scope = InvocationScope {
+            session_id: Some("session-1".into()),
+            turn_id: Some(Uuid::new_v4()),
+            ..Default::default()
+        };
+        let error =
+            ExecutionLease::prepare_and_issue("call-1", scope, fixture_resolution()).unwrap_err();
+        assert_eq!(error.code, InvocationDenialCode::AuthorityUnavailable);
     }
 
     fn fixture_resolution() -> ResolvedInvocation {

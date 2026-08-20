@@ -565,7 +565,14 @@ pub async fn try_delegate_to_host(
     ctx: &HostContext,
     tool_name: &str,
     args: &Value,
+    invocation: &omegon_traits::InvocationDispatchMetadata,
 ) -> Option<anyhow::Result<ToolResult>> {
+    tracing::debug!(
+        invocation_id = invocation.invocation_id,
+        call_id = invocation.visible_call_id,
+        deduplication_id = invocation.deduplication_id,
+        "attempting host tool delegation"
+    );
     match tool_name {
         "read" if ctx.caps.fs_read => {
             let path_str = args.get("path").and_then(|v| v.as_str())?;

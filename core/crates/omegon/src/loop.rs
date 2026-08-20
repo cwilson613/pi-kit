@@ -3571,6 +3571,9 @@ async fn execute_tool_invocation(
     {
         return invocation_denial_result(visible_tool_name, denial);
     }
+    if let Err(denial) = lease.persist_dispatched() {
+        return invocation_denial_result(visible_tool_name, denial);
+    }
 
     if emit_agent_events {
         let _ = events.send(AgentEvent::ToolStart {
@@ -3595,7 +3598,12 @@ async fn execute_tool_invocation(
         let timeout = lease.execution_timeout(&execution_args);
         match tokio::time::timeout(
             timeout,
-            crate::host_context::try_delegate_to_host(ctx, execution_tool_name, &execution_args),
+            crate::host_context::try_delegate_to_host(
+                ctx,
+                execution_tool_name,
+                &execution_args,
+                &lease.dispatch_metadata(),
+            ),
         )
         .await
         {
@@ -3667,9 +3675,13 @@ async fn execute_tool_invocation(
         );
         omegon_traits::ToolExecutionContext {
             host_action_approval: Some(approval_sink),
+            invocation: Some(lease.dispatch_metadata()),
         }
     } else {
-        omegon_traits::ToolExecutionContext::default()
+        omegon_traits::ToolExecutionContext {
+            invocation: Some(lease.dispatch_metadata()),
+            ..Default::default()
+        }
     };
 
     let execute = |cancel: CancellationToken, sink: omegon_traits::ToolProgressSink| {
@@ -4104,6 +4116,7 @@ async fn dispatch_edit_batch(
     bool,
 )> {
     if secrets.is_some()
+        || invocation_scope.authority.is_some()
         || !declaration_allows_rollback(bus, &serial_calls.get(start_idx)?.1.name)
         || serial_calls.get(start_idx)?.1.name != "edit"
         || !bus.has_registered_tool("change")
@@ -6656,6 +6669,141 @@ mod tests {
         assert_eq!(dispatch.results.len(), 1);
         assert!(dispatch.results[0].is_error);
         assert!(!dir.path().join("should-not-exist").exists());
+    }
+
+    #[tokio::test]
+    async fn durable_dispatch_is_committed_before_tool_owner_entry() {
+        struct DurableObserver {
+            authority: crate::session_authority::SessionAuthorityHandle,
+        }
+
+        #[async_trait::async_trait]
+        impl ToolProvider for DurableObserver {
+            fn tools(&self) -> Vec<omegon_traits::ToolDefinition> {
+                vec![omegon_traits::ToolDefinition {
+                    name: "durable_observer".into(),
+                    label: "durable_observer".into(),
+                    description: "checks durable dispatch ordering".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                    capabilities: vec![omegon_traits::ToolCapability::RepoInspection],
+                }]
+            }
+
+            async fn execute(
+                &self,
+                _tool_name: &str,
+                _call_id: &str,
+                _args: Value,
+                _cancel: CancellationToken,
+            ) -> anyhow::Result<omegon_traits::ToolResult> {
+                panic!("durable observer requires invocation context")
+            }
+
+            async fn execute_with_context(
+                &self,
+                _tool_name: &str,
+                call_id: &str,
+                _args: Value,
+                _cancel: CancellationToken,
+                _sink: omegon_traits::ToolProgressSink,
+                context: omegon_traits::ToolExecutionContext,
+            ) -> anyhow::Result<omegon_traits::ToolResult> {
+                let invocation = context.invocation.expect("durable invocation metadata");
+                assert_eq!(invocation.visible_call_id, call_id);
+                assert_eq!(invocation.session_id.as_deref(), Some("session-loop"));
+                assert!(self.authority.state().invocations.values().any(|state| {
+                    matches!(
+                        state,
+                        crate::session_authority::InvocationState::Dispatched {
+                            preparation,
+                            ..
+                        } if preparation.call_id == call_id
+                            && preparation.invocation_id.to_string() == invocation.invocation_id
+                    )
+                }));
+                Ok(omegon_traits::ToolResult {
+                    content: vec![ContentBlock::Text { text: "ok".into() }],
+                    details: Value::Null,
+                })
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let recorded_at = "2026-08-20T12:00:00Z";
+        let mut authority = crate::session_authority::SessionAuthority::open(
+            &directory.path().join("session.json"),
+            "session-loop",
+            "workspace-loop",
+            "composition:test",
+            crate::session_authority::ActorIdentity {
+                principal: "operator".into(),
+                ingress: "test".into(),
+            },
+            recorded_at,
+        )
+        .unwrap();
+        let prompt_id = uuid::Uuid::new_v4();
+        authority
+            .admit_prompt(
+                uuid::Uuid::new_v4(),
+                recorded_at,
+                crate::session_authority::PromptAdmitted {
+                    submission_id: uuid::Uuid::new_v4(),
+                    prompt_id,
+                    principal: "operator".into(),
+                    ingress: "test".into(),
+                    queue_mode: crate::session_authority::QueueMode::UntilReady,
+                    content: crate::session_authority::PromptContent {
+                        text: "run".into(),
+                        attachments: vec![],
+                    },
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        let turn_id = uuid::Uuid::new_v4();
+        authority
+            .start_turn(uuid::Uuid::new_v4(), recorded_at, turn_id, prompt_id)
+            .unwrap();
+        let authority = crate::session_authority::SessionAuthorityHandle::new(authority);
+
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(crate::features::adapter::ToolAdapter::new(
+            "durable-observer",
+            Box::new(DurableObserver {
+                authority: authority.clone(),
+            }),
+        )));
+        bus.finalize();
+        let (events_tx, _) = broadcast::channel(16);
+        let scope = crate::invocation_service::InvocationScope {
+            session_id: Some("session-loop".into()),
+            turn_id: Some(turn_id),
+            authority: Some(authority.clone()),
+            ..Default::default()
+        };
+        let dispatch = dispatch_tools(
+            &bus,
+            &[ToolCall {
+                id: "durable-call".into(),
+                name: "durable_observer".into(),
+                arguments: serde_json::json!({}),
+            }],
+            &events_tx,
+            CancellationToken::new(),
+            directory.path(),
+            None,
+            None,
+            None,
+            None,
+            &scope,
+        )
+        .await;
+        assert_eq!(dispatch.results.len(), 1);
+        assert!(!dispatch.results[0].is_error);
+        assert!(authority.state().invocations.values().any(|state| {
+            matches!(state, crate::session_authority::InvocationState::Dispatched { preparation, .. } if preparation.call_id == "durable-call")
+        }));
     }
 
     #[tokio::test]

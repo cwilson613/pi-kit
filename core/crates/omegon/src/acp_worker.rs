@@ -751,6 +751,7 @@ async fn worker_loop(
                 });
 
                 let cancel = CancellationToken::new();
+                let invocation_authority = supervisor.invocation_authority();
 
                 let loop_config = crate::r#loop::LoopConfig {
                     max_turns: shared_settings
@@ -781,7 +782,8 @@ async fn worker_loop(
                         principal_class: omegon_traits::RuntimePrincipalClass::Model,
                         surface: omegon_traits::RuntimeSurface::Model,
                         session_id: Some(session_id.clone()),
-                        turn_id: None,
+                        turn_id: active.authority_turn_id,
+                        authority: invocation_authority,
                     },
                     cancel_keeps_prompt: None,
                     drain_post_loop_requests: false,

@@ -2393,9 +2393,19 @@ pub struct ContextInjection {
 /// Host-provided execution context for tools that need request/response
 /// interaction with the operator surface. Most tools ignore this and use the
 /// simpler `execute` / `execute_with_sink` paths.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InvocationDispatchMetadata {
+    pub invocation_id: String,
+    pub visible_call_id: String,
+    pub deduplication_id: Option<String>,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub struct ToolExecutionContext {
     pub host_action_approval: Option<HostActionApprovalSink>,
+    pub invocation: Option<InvocationDispatchMetadata>,
 }
 
 /// Callback used by host-action-aware tool providers to request an operator
@@ -3268,6 +3278,21 @@ pub trait ToolProvider: Send + Sync {
         _sink: ToolProgressSink,
     ) -> anyhow::Result<ToolResult> {
         self.execute(tool_name, call_id, args, cancel).await
+    }
+
+    /// Sink-aware execution with durable invocation identity. Providers that
+    /// advertise owner-enforced deduplication must consume this metadata.
+    async fn execute_with_context(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        _context: ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_with_sink(tool_name, call_id, args, cancel, sink)
+            .await
     }
 }
 

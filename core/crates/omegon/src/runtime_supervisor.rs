@@ -14,8 +14,8 @@ use crate::runtime_turn::{
     RuntimeTurnOutcome, TerminalSubmission,
 };
 use crate::session_authority::{
-    AuthorityError, InterruptionKind, PromptAdmitted, PromptContent, SessionAuthority, TurnClosed,
-    TurnInterruptionRequested, TurnOutcome,
+    AuthorityError, InterruptionKind, PromptAdmitted, PromptContent, SessionAuthority,
+    SessionAuthorityHandle, TurnClosed, TurnInterruptionRequested, TurnOutcome,
 };
 use crate::{AgentEvent, operator_commands};
 use tokio::sync::broadcast;
@@ -36,14 +36,14 @@ pub(crate) enum RuntimePromptSubmissionOutcome {
 pub(crate) struct InteractiveRuntimeSupervisor {
     queue: PromptQueue,
     turns: ActiveTurnState,
-    authority: Option<SessionAuthority>,
+    authority: Option<SessionAuthorityHandle>,
     last_settled_identity: Option<RuntimeTurnIdentity>,
 }
 
 impl InteractiveRuntimeSupervisor {
     pub(crate) fn with_authority(authority: SessionAuthority) -> Result<Self, AuthorityError> {
         let mut supervisor = Self {
-            authority: Some(authority),
+            authority: Some(SessionAuthorityHandle::new(authority)),
             ..Self::default()
         };
         let queued = supervisor
@@ -182,6 +182,10 @@ impl InteractiveRuntimeSupervisor {
 
     pub(crate) fn active_turn(&self) -> Option<&ActiveTurnMeta> {
         self.turns.current()
+    }
+
+    pub(crate) fn invocation_authority(&self) -> Option<SessionAuthorityHandle> {
+        self.authority.clone()
     }
 
     pub(crate) fn session_epoch(&self) -> u64 {

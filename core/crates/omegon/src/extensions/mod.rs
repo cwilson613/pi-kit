@@ -969,10 +969,16 @@ impl Feature for ExtensionFeature {
         _sink: omegon_traits::ToolProgressSink,
         context: omegon_traits::ToolExecutionContext,
     ) -> Result<ToolResult> {
+        let invocation = context.invocation.clone();
         match self
             .rpc_call_with_cancel(
                 "execute_tool",
-                json!({ "name": tool_name, "args": args.clone() }),
+                json!({
+                    "name": tool_name,
+                    "args": args.clone(),
+                    "call_id": call_id,
+                    "invocation": invocation,
+                }),
                 cancel.clone(),
                 Some(EXTENSION_TOOL_RPC_TIMEOUT),
             )
@@ -987,7 +993,12 @@ impl Feature for ExtensionFeature {
                 let output = self
                     .rpc_call_with_cancel(
                         "execute_tool",
-                        json!({ "name": tool_name, "args": args }),
+                        json!({
+                            "name": tool_name,
+                            "args": args,
+                            "call_id": call_id,
+                            "invocation": context.invocation,
+                        }),
                         cancel,
                         Some(EXTENSION_TOOL_RPC_TIMEOUT),
                     )

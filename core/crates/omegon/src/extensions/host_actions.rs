@@ -3126,6 +3126,7 @@ allowed_kinds = [{kinds}]
             });
         let context = omegon_traits::ToolExecutionContext {
             host_action_approval: Some(sink),
+            ..Default::default()
         };
 
         let outcomes = process_declarative_host_actions_with_context(

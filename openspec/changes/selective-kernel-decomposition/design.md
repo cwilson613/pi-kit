@@ -16,7 +16,7 @@ The constitutional kernel owns only identity, contribution lifecycle, durable se
 
 ## Lifecycle status
 
-This change remains `proposed` overall. Slice 1 is complete, and Slice 2's refinement gate is complete. Slice 0 retains two release-hardening exit gates: the Homebrew formula must reference an archive that actually contains both required binaries, and pairwise self-update must become crash-atomic and rollback-safe. Each later slice begins with an explicit refinement gate that names concrete ownership, compatibility boundaries, red tests, and documentation impact before production mutation.
+This change remains `proposed` overall. Slice 1 is complete, and Slice 2's refinement gate is complete. Slice 0 retains one release-hardening exit gate: the Homebrew formula must reference a published immutable archive that actually contains both required binaries. Pairwise install, self-update, and version switching now publish immutable complete generations and select the executable pair plus receipt through one atomic activation link. Each later slice begins with an explicit refinement gate that names concrete ownership, compatibility boundaries, red tests, and documentation impact before production mutation.
 
 ## Architectural layers
 

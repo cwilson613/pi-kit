@@ -137,6 +137,12 @@ import { snippet } from "../../lib/snippets";
     the pair together. See <a href="/docs/recovery">Maintenance &amp; Recovery</a> when normal
     startup is unavailable.
   </p>
+  <p>
+    Script-managed installs stage each matching executable pair and its receipt in an immutable
+    <code>~/.omegon/versions/&lt;version&gt;/</code> directory. One atomic
+    <code>~/.omegon/current</code> switch activates all three together, so an interrupted update
+    leaves the previous complete release active and available for rollback.
+  </p>
 
   <h2>Supported Platforms</h2>
   <table>

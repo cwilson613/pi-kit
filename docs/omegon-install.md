@@ -77,6 +77,8 @@ The authoritative update path therefore must:
 
 `/refresh` is intentionally narrower: it only clears transient caches and reloads extensions. It is not equivalent to `/update` after package/runtime mutation.
 
+Script-managed installs use the `versioned-current-v1` layout. Each immutable `~/.omegon/versions/<version>/` generation contains `omegon`, `omegon-maintain`, and that generation's `install-receipt.json`. The stable `omegon`, `om`, `omegon-maintain`, and `~/.config/omegon/install-receipt.json` paths resolve through the single `~/.omegon/current` symlink. Install, self-update, and version switching fully stage, flush, publish, and validate a generation before atomically replacing `current`; interruption before that rename leaves the previous pair and receipt active, while the previous immutable generation remains available for rollback.
+
 ## Decisions
 
 ### Decision: Rust executable pair is the product boundary
@@ -117,6 +119,7 @@ The authoritative update path therefore must:
 - Script-managed installs should update by rerunning the install script or using `/update`.
 - Source checkout development should use `just build` and `just link`.
 - Missing or mismatched companions fail package and update validation; never repair a pair by copying one executable from another release.
+- Script-managed release activation changes only `~/.omegon/current`; never repoint the public executable or receipt links independently to select a version.
 
 ## Migration note
 

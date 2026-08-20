@@ -65,10 +65,11 @@ impl InstalledReleaseLayout {
         fs::create_dir_all(&self.versions_root)?;
         sync_generation(staging_dir)?;
         match fs::symlink_metadata(&destination) {
-            Ok(_) => anyhow::bail!(
-                "release generation already exists: {}",
-                destination.display()
-            ),
+            Ok(_) => {
+                validate_generation(&destination)?;
+                fs::remove_dir_all(staging_dir)?;
+                return Ok(destination);
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }

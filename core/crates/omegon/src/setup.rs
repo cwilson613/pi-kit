@@ -1081,7 +1081,21 @@ impl AgentSetup {
             // admission locks remain held.
             publication_result = bus.try_finalize();
         });
-        publication_result?;
+        if let Err(error) = publication_result {
+            let cleanup_failures = crate::extensions::shutdown_supervisors(
+                &extension_supervisors,
+                std::time::Duration::from_millis(500),
+            )
+            .await;
+            drop(extension_admission);
+            if cleanup_failures.is_empty() {
+                return Err(error);
+            }
+            return Err(error.context(format!(
+                "candidate extension cleanup degraded: {}",
+                cleanup_failures.join("; ")
+            )));
+        }
         drop(extension_admission);
 
         // Wire ManageTools state so runtime filtering and list output reflect
@@ -1483,7 +1497,23 @@ impl AgentSetup {
             tracing::debug!(?pruned, "pruned stale instance directories");
         }
         let runtime_ownership =
-            crate::workspace::runtime::RuntimeOwnership::start(&cwd, runtime_mode)?;
+            match crate::workspace::runtime::RuntimeOwnership::start(&cwd, runtime_mode) {
+                Ok(ownership) => ownership,
+                Err(error) => {
+                    let cleanup_failures = crate::extensions::shutdown_supervisors(
+                        &extension_supervisors,
+                        std::time::Duration::from_millis(500),
+                    )
+                    .await;
+                    if cleanup_failures.is_empty() {
+                        return Err(error);
+                    }
+                    return Err(error.context(format!(
+                        "published startup candidate cleanup degraded: {}",
+                        cleanup_failures.join("; ")
+                    )));
+                }
+            };
         let instance_id = runtime_ownership.runtime_id().to_string();
         let _ =
             crate::workspace::runtime::write_workspace_lease(&cwd, &instance_id, &workspace_lease);

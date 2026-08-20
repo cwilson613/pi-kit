@@ -158,6 +158,8 @@ Slice 2.5 lifecycle records add owner and composition-generation identity, last 
 
 The transport-neutral lifecycle owner now models one quarantined candidate with one absolute readiness deadline, per-contribution lifecycle records, and generation-bound resource cleanup callbacks. Promotion requires every contribution to reach readiness and every strict-cleanup owner to have strict resource assurance; the non-awaiting publication callback must succeed before active-generation state changes. Rejection and publication failure run bounded cleanup in reverse activation order and preserve the prior active generation. Successful replacement promotes the new generation before retiring the old resource set, recording unverified cleanup rather than claiming settlement when a deadline expires. Concrete extension/MCP resource adapters and EventBus integration remain in progress.
 
+Extension negotiation now applies one absolute manifest readiness deadline across optional initialization, required tool discovery, configuration delivery, and secret delivery. Timeout and handshake failure retain the canonical child handle long enough to shut down, kill the dedicated process group, and reap it before reporting failure. Setup also explicitly shuts down every successfully started extension supervisor when graph publication or later runtime-ownership startup fails, preserving admission locks through extension cleanup and reporting degraded cleanup instead of relying solely on synchronous drop backstops.
+
 ### Design laws
 
 1. **Composition is not admission.** Compiled or installed capability means resident, not callable or visible.

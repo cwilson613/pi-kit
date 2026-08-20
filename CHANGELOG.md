@@ -34,6 +34,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 - Added a transport-neutral candidate lifecycle owner with one readiness deadline, strict-cleanup eligibility, reverse-order bounded rollback, prior-generation survival on failed publication, and explicit old-generation retirement after successful replacement.
 
+- Bounded extension initialization, tool discovery, configuration, and secret delivery by one manifest readiness deadline. Timed-out probes and setup failures now explicitly kill and reap extension process groups before reporting candidate failure.
+
 - Added the compiled Slice-1 durable session-authority substrate with strict versioned prompt, FIFO queue, turn, interruption, minimum invocation, and terminal facts; contiguous replay with duplicate identity rejection; content-addressed attachment staging and recovery validation; synced adjacent JSONL plus replaceable snapshot caches; lifetime writer exclusion; and deterministic idempotent runtime-loss closure. Interactive, ACP, daemon, Web/IPC, and bounded hosts now route overlapping prompt, queue, cancellation, timeout, and terminal semantics through one frontend-neutral supervisor per session, while an identity-fenced compatibility adapter commits explicit loop terminal intents without trusting advisory broadcasts and ACP withdraws orphaned recovered requests whose response channel was lost.
 - Clarified session, resume, cancellation, IPC, Web, and daemon documentation to distinguish transport acceptance from durable admission, cancellation request from terminal closure, and compatibility resume from complete semantic replay.
 

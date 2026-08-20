@@ -1371,11 +1371,13 @@ async fn handshake(
     notification_sink: Option<&ExtensionNotificationSink>,
 ) -> Result<ExtensionHandshake> {
     let name = &manifest.extension.name;
+    let readiness_deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(manifest.startup.timeout_ms.max(1));
 
     // 1. Optional initialize handshake metadata. Older extensions may not
     // implement this method; absence must not prevent startup.
-    let metadata = match tokio::time::timeout(
-        std::time::Duration::from_secs(2),
+    let metadata = match tokio::time::timeout_at(
+        readiness_deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(2)),
         handles.rpc_call_with_notifications("initialize", json!({}), notification_sink),
     )
     .await
@@ -1413,9 +1415,18 @@ async fn handshake(
     }
 
     // 2. Discover tools
-    let tools_response = handles
-        .rpc_call_with_notifications("get_tools", json!({}), notification_sink)
-        .await?;
+    let tools_response = tokio::time::timeout_at(
+        readiness_deadline,
+        handles.rpc_call_with_notifications("get_tools", json!({}), notification_sink),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "extension '{}' readiness timed out during get_tools after {}ms",
+            name,
+            manifest.startup.timeout_ms.max(1)
+        )
+    })??;
     let tools = normalize_extension_tool_definitions(&tools_response).map_err(|err| {
         anyhow!(
             "extension '{}' returned invalid get_tools response: {err}",
@@ -1428,13 +1439,22 @@ async fn handshake(
     // stays in the same channel as secrets and never depends on inherited env.
     let config = resolved_config(manifest, ext_dir)?;
     if !config.is_empty() {
-        handles
-            .rpc_call_with_notifications(
+        tokio::time::timeout_at(
+            readiness_deadline,
+            handles.rpc_call_with_notifications(
                 "bootstrap_config",
                 Value::Object(config),
                 notification_sink,
-            )
+            ),
+        )
             .await
+            .map_err(|_| {
+                anyhow!(
+                    "extension '{}' readiness timed out during bootstrap_config after {}ms",
+                    name,
+                    manifest.startup.timeout_ms.max(1)
+                )
+            })?
             .map_err(|error| {
                 anyhow!(
                     "extension '{}' failed to accept bootstrap_config: {error}. Configuration delivery is required when resolved values are present.",
@@ -1450,20 +1470,22 @@ async fn handshake(
             .iter()
             .map(|(k, v)| (k.clone(), Value::String(v.clone())))
             .collect();
-        match handles
-            .rpc_call_with_notifications(
+        match tokio::time::timeout_at(
+            readiness_deadline,
+            handles.rpc_call_with_notifications(
                 "bootstrap_secrets",
                 Value::Object(secrets_map),
                 notification_sink,
-            )
-            .await
+            ),
+        )
+        .await
         {
-            Ok(_) => tracing::debug!(
+            Ok(Ok(_)) => tracing::debug!(
                 extension = name,
                 secrets = resolved_secrets.len(),
                 "bootstrap_secrets delivered"
             ),
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::error!(
                     extension = name,
                     error = %e,
@@ -1473,6 +1495,13 @@ async fn handshake(
                     "extension '{}' failed to accept bootstrap_secrets: {e}. \
                      Secrets delivery is required for extensions that declare secrets.",
                     name,
+                ));
+            }
+            Err(_) => {
+                return Err(anyhow!(
+                    "extension '{}' readiness timed out during bootstrap_secrets after {}ms",
+                    name,
+                    manifest.startup.timeout_ms.max(1)
                 ));
             }
         }
@@ -2676,6 +2705,70 @@ done
             .trim()
             .parse()
             .unwrap();
+        assert_pid_reaped(pid).await;
+    }
+
+    #[tokio::test]
+    async fn readiness_timeout_kills_and_reaps_native_extension() {
+        let _env_guard = crate::test_support::env::lock_async().await;
+        let _guard = SDK_COMPAT_SPAWN_TEST_LOCK.lock().await;
+        unsafe {
+            std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
+            std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("hanging-extension.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+IFS= read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"sdk_contract_version":"0.25"}}'
+while IFS= read -r line; do :; done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        std::fs::write(
+            temp.path().join("manifest.toml"),
+            r#"
+[extension]
+name = "hanging"
+version = "0.1.0"
+
+[runtime]
+type = "native"
+binary = "hanging-extension.sh"
+
+[startup]
+timeout_ms = 50
+"#,
+        )
+        .unwrap();
+
+        let manifest = ExtensionManifest::from_extension_dir(temp.path()).unwrap();
+        let mut command = tokio::process::Command::new(&script);
+        configure_extension_process(&mut command);
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let mut child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut handles = ProcessHandles::new(child, stdin, stdout);
+        let error = match handshake(&mut handles, &manifest, temp.path(), &[], None).await {
+            Ok(_) => panic!("hanging extension must not become ready"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("readiness timed out during get_tools")
+        );
+        handles.shutdown(std::time::Duration::ZERO).await.unwrap();
         assert_pid_reaped(pid).await;
     }
 

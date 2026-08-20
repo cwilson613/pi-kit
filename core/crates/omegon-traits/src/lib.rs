@@ -24,6 +24,9 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub mod runtime_contributions;
+pub use runtime_contributions::*;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Runtime capability declaration contract
 //
@@ -32,8 +35,7 @@ use std::sync::Arc;
 // leases remain outside this first contract slice.
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RuntimeCapabilityId(String);
 
 impl RuntimeCapabilityId {
@@ -66,6 +68,25 @@ impl RuntimeCapabilityId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Serialize for RuntimeCapabilityId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeCapabilityId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -205,6 +226,7 @@ mod runtime_capability_contract_tests {
     fn capability_id_rejects_unscoped_or_unsafe_values() {
         assert!(RuntimeCapabilityId::new("read").is_err());
         assert!(RuntimeCapabilityId::new("tool:../../read").is_err());
+        assert!(serde_json::from_str::<RuntimeCapabilityId>(r#""tool:../../read""#).is_err());
         assert_eq!(RuntimeCapabilityId::tool("read").as_str(), "tool:read");
     }
 }

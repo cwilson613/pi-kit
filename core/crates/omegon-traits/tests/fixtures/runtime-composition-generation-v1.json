@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "composition:default-v1",
+  "state": "candidate",
+  "contributions": [
+    {
+      "contribution_id": "feature:core-tools",
+      "generation_id": "contribution:core-tools-v1",
+      "lifecycle_state": "ready"
+    }
+  ]
+}

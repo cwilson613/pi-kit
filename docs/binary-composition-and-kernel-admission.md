@@ -140,6 +140,10 @@ The first extraction slice proved that optional content can leave the binary wit
 
 **Decided.** This section is the target contract for subsequent implementation slices. It does not claim that the current runtime already conforms.
 
+The first Slice-2 contract foundation is implemented in `omegon_traits::runtime_contributions`. Its version-1 renderer-neutral vocabulary distinguishes composition generations, contribution generations, and process identity; keeps owner tier, requested trust, and requested confinement separate; binds canonical invocations and aliases to one capability; and declares dependencies, conflicts, replacements, groups, platform requirements, effects, lifecycle, execution, transition, cleanup, and surface support before activation. Requested trust or confinement is not an admission grant, and owner-enforced deduplication is distinct from idempotency and ordinary call-ID propagation.
+
+The contracts include validated scoped identities, fail-closed protocol/schema decoding, typed generation/lifecycle states, and diagnostics with explicit stable ordering. Representative declaration, generation, and diagnostic JSON fixtures freeze the v1 wire shape. This foundation does not yet make the graph authoritative: legacy capability inventory and dispatch remain unchanged until graph validation, activation, readiness, and compatibility-adapter gates land in later Slice-2 tasks. There is therefore no public command, configuration, or site behavior change in this contract-only lane.
+
 ### Design laws
 
 1. **Composition is not admission.** Compiled or installed capability means resident, not callable or visible.

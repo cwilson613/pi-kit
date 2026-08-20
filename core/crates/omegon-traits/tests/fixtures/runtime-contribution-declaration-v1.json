@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "id": "feature:core-tools",
+  "generation_id": "contribution:core-tools-v1",
+  "owner_tier": "system",
+  "requested_trust": "release_artifact",
+  "requested_confinement": "host_process",
+  "protocol": {
+    "minimum": 1,
+    "maximum": 1
+  },
+  "platform": {
+    "operating_systems": ["linux", "macos"],
+    "architectures": ["aarch64", "x86_64"],
+    "required_substrates": ["host"]
+  },
+  "dependencies": [
+    {
+      "target": {
+        "kind": "capability",
+        "id": "service:workspace"
+      },
+      "requirement": "required"
+    }
+  ],
+  "conflicts": ["feature:unsafe-shell"],
+  "replaces": ["feature:legacy-core-tools"],
+  "lifecycle": {
+    "requirement": "required",
+    "failure_disposition": "fail_composition",
+    "readiness_timeout_ms": 5000,
+    "heartbeat_timeout_ms": 15000,
+    "restart_limit": 0
+  },
+  "transition": {
+    "activation_boundary": "boot",
+    "cleanup": "strict",
+    "cleanup_timeout_ms": 30000
+  },
+  "capabilities": [
+    {
+      "id": "tool:read",
+      "kind": "tool",
+      "bindings": [
+        {
+          "kind": "tool",
+          "name": "read",
+          "role": "canonical"
+        },
+        {
+          "kind": "cli",
+          "name": "inspect",
+          "role": "alias"
+        }
+      ],
+      "effects": ["filesystem_read"],
+      "execution": {
+        "timeout_class": "interactive",
+        "retry_class": "idempotent_failure",
+        "idempotency": "idempotent",
+        "deduplication": "owner_enforced_stable_call_id",
+        "max_attempts": 2
+      },
+      "transition": {
+        "authority_narrowing": "complete_existing",
+        "active_call_timeout_ms": 30000
+      },
+      "surfaces": ["tui", "cli", "acp", "model"]
+    }
+  ],
+  "groups": [
+    {
+      "id": "group:core-tools",
+      "members": ["tool:read"]
+    }
+  ]
+}

@@ -1931,7 +1931,7 @@ pub async fn runtime_substrate_refresh_response(
 }
 
 pub async fn status_view_response(
-    _runtime_state: &InteractiveAgentState,
+    runtime_state: &InteractiveAgentState,
     agent: &InteractiveAgentHost,
     shared_settings: &settings::SharedSettings,
 ) -> SlashCommandResponse {
@@ -1982,7 +1982,10 @@ pub async fn status_view_response(
         settings.automation_level.as_str(),
         settings.automation_level.summary(),
     );
-    let panel = projection.render_markdown();
+    let mut panel = projection.render_markdown();
+    if let Some(composition) = runtime_state.bus.composition_diagnostic_projection() {
+        panel.push_str(&composition.render_markdown());
+    }
     SlashCommandResponse {
         accepted: true,
         output: Some(panel),

@@ -328,6 +328,8 @@ pub struct EventBus {
     accepted_graph: Option<std::sync::Arc<crate::contribution_graph::RuntimeCandidateGraph>>,
     /// Identity of the atomically published composition represented by the graph and caches.
     accepted_generation_id: Option<omegon_traits::RuntimeCompositionGenerationId>,
+    /// Coded diagnostics from the latest accepted or rejected candidate.
+    composition_diagnostics: Vec<omegon_traits::RuntimeContributionDiagnostic>,
     /// Number of features in the active published composition.
     published_feature_count: usize,
     /// Candidate changes remain invisible until graph validation succeeds.
@@ -348,6 +350,7 @@ impl EventBus {
             internal_tool_owners: HashMap::new(),
             accepted_graph: None,
             accepted_generation_id: None,
+            composition_diagnostics: Vec::new(),
             published_feature_count: 0,
             pending_features: Vec::new(),
             declared_internal_tools: Vec::new(),
@@ -525,6 +528,70 @@ impl EventBus {
         &self,
     ) -> Option<&omegon_traits::RuntimeCompositionGenerationId> {
         self.accepted_generation_id.as_ref()
+    }
+
+    pub(crate) fn composition_diagnostic_projection(
+        &self,
+    ) -> Option<crate::surfaces::diagnostics::CompositionDiagnosticProjection> {
+        use crate::surfaces::diagnostics::{
+            CompatibilityDispatchMode, CompatibilityDispatchProjection,
+            CompositionContributionProjection, CompositionDiagnosticProjection,
+            CompositionReplacementProjection,
+        };
+        use omegon_traits::{
+            RuntimeCleanupAssurance, RuntimeCleanupRequirement, RuntimeCleanupState,
+            RuntimeContributionLifecycleState,
+        };
+
+        let graph = self.accepted_graph.as_ref()?;
+        let generation_id = self.accepted_generation_id.clone()?;
+        let contributions = graph
+            .declarations
+            .values()
+            .cloned()
+            .map(|declaration| {
+                let negotiated_protocol = graph
+                    .negotiated_protocols
+                    .get(&declaration.id)
+                    .copied()
+                    .unwrap_or(declaration.protocol.minimum);
+                let cleanup_assurance = match declaration.transition.cleanup {
+                    RuntimeCleanupRequirement::Strict => RuntimeCleanupAssurance::Strict,
+                    RuntimeCleanupRequirement::BestEffort => RuntimeCleanupAssurance::BestEffort,
+                };
+                CompositionContributionProjection {
+                    declaration,
+                    negotiated_protocol,
+                    health: RuntimeContributionLifecycleState::Active,
+                    cleanup_assurance,
+                    cleanup_state: RuntimeCleanupState::NotRequired,
+                }
+            })
+            .collect();
+        let replacements = graph
+            .superseded
+            .iter()
+            .map(
+                |(superseded, replacement)| CompositionReplacementProjection {
+                    superseded: superseded.clone(),
+                    replacement: replacement.clone(),
+                },
+            )
+            .collect();
+
+        Some(CompositionDiagnosticProjection {
+            version: crate::surfaces::diagnostics::DIAGNOSTIC_PROJECTION_VERSION,
+            generation_id,
+            contributions,
+            replacements,
+            activation_waves: graph.activation_waves.clone(),
+            diagnostics: self.composition_diagnostics.clone(),
+            compatibility_dispatch: CompatibilityDispatchProjection {
+                mode: CompatibilityDispatchMode::GraphDerivedLegacy,
+                parity_verified: true,
+                published_bindings: graph.invocation_owners.len(),
+            },
+        })
     }
 
     /// Fallible publication boundary used by production setup.
@@ -973,6 +1040,7 @@ impl EventBus {
         let graph = match build.graph {
             Some(graph) => graph,
             None => {
+                self.composition_diagnostics = build.diagnostics.clone();
                 let error = anyhow::anyhow!(
                     "candidate contribution graph rejected:\n{}",
                     serde_json::to_string_pretty(&build.diagnostics)
@@ -1106,6 +1174,7 @@ impl EventBus {
         self.tool_defs = tool_defs;
         self.command_defs = command_defs;
         self.internal_tool_owners = internal_tool_owners;
+        self.composition_diagnostics = build.diagnostics;
         self.accepted_graph = Some(std::sync::Arc::new(graph));
         self.accepted_generation_id = Some(
             omegon_traits::RuntimeCompositionGenerationId::new(format!(
@@ -1577,8 +1646,9 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use omegon_traits::{
-        ContentBlock, Feature, RuntimeActivationBoundary, RuntimeCleanupRequirement,
-        RuntimeCompositionTransitionPolicy, RuntimeFailureDisposition, RuntimeLifecyclePolicy,
+        ContentBlock, Feature, RuntimeActivationBoundary, RuntimeCleanupAssurance,
+        RuntimeCleanupRequirement, RuntimeCleanupState, RuntimeCompositionTransitionPolicy,
+        RuntimeContributionLifecycleState, RuntimeFailureDisposition, RuntimeLifecyclePolicy,
         RuntimeLifecycleRequirement, ToolDefinition, ToolResult,
     };
     use serde_json::json;
@@ -1934,6 +2004,29 @@ mod tests {
             declaration.transition.cleanup,
             RuntimeCleanupRequirement::Strict
         );
+
+        let projection = bus.composition_diagnostic_projection().unwrap();
+        let contribution = projection
+            .contributions
+            .iter()
+            .find(|contribution| contribution.declaration.id.as_str() == "feature:recro-coe-agent")
+            .unwrap();
+        assert_eq!(
+            contribution.health,
+            RuntimeContributionLifecycleState::Active
+        );
+        assert_eq!(
+            contribution.cleanup_assurance,
+            RuntimeCleanupAssurance::Strict
+        );
+        assert_eq!(contribution.cleanup_state, RuntimeCleanupState::NotRequired);
+        assert!(projection.compatibility_dispatch.parity_verified);
+        assert_eq!(projection.compatibility_dispatch.published_bindings, 1);
+        assert!(
+            projection
+                .render_markdown()
+                .contains("graph-derived legacy")
+        );
     }
 
     #[test]
@@ -1993,6 +2086,13 @@ mod tests {
         assert_eq!(bus.feature_names(), vec!["counter"]);
         assert!(bus.try_finalize().is_err());
         assert_eq!(bus.composition_generation_id(), Some(&accepted_generation));
+        assert!(
+            bus.composition_diagnostic_projection()
+                .unwrap()
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_str() == "graph:duplicate_owner")
+        );
         assert_eq!(bus.feature_names(), vec!["counter"]);
         let result = bus
             .execute_tool(
@@ -2008,6 +2108,12 @@ mod tests {
         bus.register(Box::new(DisplayNameFeature("additional")));
         bus.try_finalize().unwrap();
         assert_ne!(bus.composition_generation_id(), Some(&accepted_generation));
+        assert!(
+            bus.composition_diagnostic_projection()
+                .unwrap()
+                .diagnostics
+                .is_empty()
+        );
     }
 
     #[test]

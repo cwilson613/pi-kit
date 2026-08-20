@@ -7,7 +7,97 @@ use serde::{Deserialize, Serialize};
 
 use crate::status::HarnessStatus;
 
+use omegon_traits::{
+    RuntimeCleanupAssurance, RuntimeCleanupState, RuntimeCompositionGenerationId,
+    RuntimeContributionDeclaration, RuntimeContributionDiagnostic, RuntimeContributionId,
+    RuntimeContributionLifecycleState,
+};
+
 pub const DIAGNOSTIC_PROJECTION_VERSION: u16 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityDispatchMode {
+    GraphDerivedLegacy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompatibilityDispatchProjection {
+    pub mode: CompatibilityDispatchMode,
+    pub parity_verified: bool,
+    pub published_bindings: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompositionContributionProjection {
+    pub declaration: RuntimeContributionDeclaration,
+    pub negotiated_protocol: u16,
+    pub health: RuntimeContributionLifecycleState,
+    pub cleanup_assurance: RuntimeCleanupAssurance,
+    pub cleanup_state: RuntimeCleanupState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompositionReplacementProjection {
+    pub superseded: RuntimeContributionId,
+    pub replacement: RuntimeContributionId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompositionDiagnosticProjection {
+    pub version: u16,
+    pub generation_id: RuntimeCompositionGenerationId,
+    pub contributions: Vec<CompositionContributionProjection>,
+    pub replacements: Vec<CompositionReplacementProjection>,
+    pub activation_waves: Vec<Vec<RuntimeContributionId>>,
+    pub diagnostics: Vec<RuntimeContributionDiagnostic>,
+    pub compatibility_dispatch: CompatibilityDispatchProjection,
+}
+
+impl CompositionDiagnosticProjection {
+    pub fn render_markdown(&self) -> String {
+        let mut output = format!(
+            "\n\nComposition\n  Generation:   {}\n  Contributions: {}\n  Dispatch:     graph-derived legacy ({} bindings, parity {})",
+            self.generation_id.as_str(),
+            self.contributions.len(),
+            self.compatibility_dispatch.published_bindings,
+            if self.compatibility_dispatch.parity_verified {
+                "verified"
+            } else {
+                "unverified"
+            }
+        );
+        for contribution in &self.contributions {
+            output.push_str(&format!(
+                "\n  - {} [{}] generation={} health={} cleanup={}/{}",
+                contribution.declaration.id.as_str(),
+                serialized_label(&contribution.declaration.owner_tier),
+                contribution.declaration.generation_id.as_str(),
+                serialized_label(&contribution.health),
+                serialized_label(&contribution.cleanup_assurance),
+                serialized_label(&contribution.cleanup_state),
+            ));
+        }
+        if !self.diagnostics.is_empty() {
+            output.push_str("\n  Diagnostics:");
+            for diagnostic in &self.diagnostics {
+                output.push_str(&format!(
+                    "\n  - {}: {}",
+                    diagnostic.code.as_str(),
+                    diagnostic.message
+                ));
+            }
+        }
+        output
+    }
+}
+
+fn serialized_label(value: &impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessStatusProjection {

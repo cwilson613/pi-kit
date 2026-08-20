@@ -1188,7 +1188,7 @@ async fn handle_control_request(
                     .unwrap_or("unknown"),
                 &operating_profile.authorization.summary(),
             );
-            crate::surfaces::diagnostics::HarnessStatusProjection::new(
+            let mut output = crate::surfaces::diagnostics::HarnessStatusProjection::new(
                 harness,
                 0,
                 workspace_ctx.session_id,
@@ -1196,7 +1196,11 @@ async fn handle_control_request(
                 settings.automation_level.as_str(),
                 settings.automation_level.summary(),
             )
-            .render_markdown()
+            .render_markdown();
+            if let Some(composition) = bus.composition_diagnostic_projection() {
+                output.push_str(&composition.render_markdown());
+            }
+            output
         }
         "stats" => {
             let settings = shared_settings

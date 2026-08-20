@@ -104,27 +104,21 @@ When its declared drain deadline expires
 Then host-owned calls and resources enter bounded revocation and cleanup
 And unowned cross-boundary resources are reported unverified rather than falsely retired
 
-### Requirement: Registrations and calls are generation-bound
+### Requirement: Registrations and candidate resources are generation-bound
 
-Every registration and invocation must identify one contribution generation. A session must retain its admitted composition and preset generation until a declared, durably recorded quiescent migration boundary. Promotion must be atomic; old generations drain or revoke under declared transition policy and cannot receive new calls after replacement. The selected loop may be replaced only at boot or a quiescent session boundary; the supervisor, admission combiner, and persistence protocol cannot be hot-replaced during an active turn.
+Every Slice-2 registration and candidate-owned resource must identify one contribution generation. A session retains its admitted composition and preset generation; Slice 2 does not silently migrate an active or existing session and does not introduce a live migration event. Promotion must be atomic, and a graph-derived compatibility adapter must prevent legacy dispatch from reaching registrations excluded from the promoted graph. Enforceable generation-bound invocation leases, stale-call denial, and active-call drain or revocation belong to Slice 3. The selected loop may be replaced only at boot or a separately specified quiescent session boundary; the supervisor, admission combiner, and persistence protocol cannot be hot-replaced during an active turn.
 
-#### Scenario: Replacement occurs during an active read-only call
-Given an old generation owns an active call whose transition policy permits drain
-When a validated replacement generation is promoted
-Then new calls resolve to the replacement
-And the old call completes against its captured generation before retirement
-
-#### Scenario: Authority narrows during an active destructive call
-Given an active call depends on authority that is revoked immediately by policy
-When the new generation is promoted
-Then the old call receives revocation and bounded terminalization
-And it cannot inherit the new generation's authority
+#### Scenario: Legacy adapter follows the promoted graph
+Given a validated candidate generation excludes a legacy registration
+When that generation is promoted
+Then the graph-derived EventBus adapter does not publish the excluded registration
+And registration order cannot restore it
 
 #### Scenario: Preset changes while a session is active
 Given a session is bound to an admitted composition generation
 When the underlying preset or profile is modified
 Then the session's visible capabilities, provider policy, sandbox policy, and service participation remain unchanged
-Until a quiescent migration is durably admitted and recorded
+Unless a later slice defines and durably records a quiescent migration
 
 ### Requirement: Resource ownership and cleanup claims are honest
 

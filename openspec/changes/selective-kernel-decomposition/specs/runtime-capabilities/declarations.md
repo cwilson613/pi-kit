@@ -28,19 +28,20 @@ When validation runs
 Then diagnostics report both defects in deterministic order
 And no subset of the candidate declarations is promoted or made callable
 
-### Requirement: The pre-migration declaration inventory remains authority-neutral
+### Requirement: Slice-2 composition authority retains a legacy dispatch adapter
 
-The read-only declaration inventory must remain authority-neutral through Slice 1 and until an approved Slice-2 authoritative graph generation passes graph validation, admission, generation-lease, and projection/dispatch parity gates. After those gates pass, construction, projection, and privileged dispatch may migrate to that graph and legacy EventBus authority may be removed. Authority-neutral compatibility mode must remain explicit rather than allowing both paths to execute independently.
+The read-only declaration inventory must remain authority-neutral through Slice 1 and until an approved Slice-2 graph generation passes graph validation, admission, activation, readiness, and projection parity gates. After those gates pass, the graph becomes authoritative for composition, activation, and projection. Slice 2 must derive a one-way legacy EventBus registration adapter from the promoted graph; the EventBus cannot independently select or reactivate an owner rejected by that graph. Generation-bound privileged invocation leases and dispatch migration remain Slice 3. Compatibility mode must remain explicit rather than allowing both paths to select owners independently.
 
 #### Scenario: Authoritative graph is not ready
 Given declarations have been collected
-And generation-bound dispatch parity has not passed
+And graph-derived legacy registration parity has not passed
 When the runtime starts under a compatibility profile
 Then legacy execution authority remains active
 And diagnostics distinguish legacy-owned execution from candidate graph state
 
-#### Scenario: Authority migration completes
-Given authoritative graph, admission, lease, and parity gates pass
+#### Scenario: Composition authority migration completes
+Given authoritative graph, admission, activation, readiness, and parity gates pass
 When the new generation is promoted
-Then schema projection and privileged dispatch consume the same graph generation
+Then schema projection and legacy compatibility registrations derive from the same graph generation
 And the legacy path cannot execute a capability denied by that graph
+And privileged invocation authority remains assigned to Slice 3

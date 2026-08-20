@@ -33,12 +33,13 @@ Definition of done for every group: classify documentation impact before impleme
 ## 2. Composition-authoritative contribution graph
 <!-- specs: kernel-composition/documentation, runtime-capabilities/declarations, runtime-contributions/lifecycle -->
 
-- [ ] 2.1 Extend declarations with dependencies, conflicts, owner tier, lifecycle, effects, protocol range, timeout, retry, idempotency, and transition metadata.
-- [ ] 2.2 Collect declarations before ordinary activation and reject duplicate IDs, ambiguous invocations, cycles, missing owners, and unsupported requirements.
-- [ ] 2.3 Add static dynamic-contribution preflight and separate trusted-code/confinement admission from capability admission.
-- [ ] 2.4 Add quarantined protocol negotiation, frozen declaration sets, readiness deadlines, and atomic generation promotion.
-- [ ] 2.5 Add typed heartbeat loss, dependency degradation, crash/backoff, drain, retirement, quarantine, and forced cleanup.
-- [ ] 2.6 Expose the effective graph, owner provenance, health, denial reasons, and generation through shared diagnostics.
+- [x] 2.0 Refine Slice-2 ownership, red tests, composition-generation semantics, and the graph-to-legacy dispatch boundary. Documentation impact: internal design/spec clarification only; no public behavior or commands changed.
+- [ ] 2.1 Add renderer-neutral declaration/generation/diagnostic contracts plus serialization fixtures for dependencies, conflicts, owner tier, trust/confinement, lifecycle, effects, protocol range, timeout, retry, idempotency, transition metadata, and surface support.
+- [ ] 2.2 Add a pure deterministic candidate-graph builder with all-error diagnostics for duplicate IDs/owners, ambiguous invocations, cycles, missing requirements, conflicts, protocol/platform incompatibility, dangling aliases/groups, and undeclared effects.
+- [ ] 2.3 Split static setup into discovery, declaration, validation, activation planning, readiness, and publication phases; adapt existing features before activation and derive legacy EventBus registrations only from the promoted graph.
+- [ ] 2.4 Add versioned non-executable dynamic-contribution preflight and separate trusted-code/confinement admission from capability admission before extension, plugin, script, or MCP code can run.
+- [ ] 2.5 Add quarantined negotiation, frozen declarations, readiness deadlines, rollback-covered candidate resources, typed health/crash/backoff/degradation/drain/retirement/quarantine/cleanup states, and atomic generation promotion; keep invocation leasing deferred to Slice 3.
+- [ ] 2.6 Bind new sessions to a composition generation distinct from process instance identity, retain existing generation values as opaque legacy IDs, and expose effective graph, owner provenance, health, denial reasons, cleanup assurance, and compatibility-dispatch status through one shared semantic diagnostic projection.
 - [ ] 2.7 Co-deliver contribution authoring, trust/confinement, lifecycle-state, diagnostics, and public extension/plugin documentation.
 
 ## 3. Crash-consistent privileged invocation

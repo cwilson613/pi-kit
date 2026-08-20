@@ -16,7 +16,7 @@ The constitutional kernel owns only identity, contribution lifecycle, durable se
 
 ## Lifecycle status
 
-This change remains `proposed` overall. The Slice-zero maintenance contract passed adversarial review and task 0.3 is complete; implementation tasks 0.4-0.10 may proceed. Implementation of Slice 1 or later additionally waits for approval of task 1.1 and refinement of each later group's concrete ownership and red tests.
+This change remains `proposed` overall. Slice 0 and Slice 1 are complete. Each later slice begins with an explicit refinement gate that names concrete ownership, compatibility boundaries, red tests, and documentation impact before production mutation.
 
 ## Architectural layers
 
@@ -144,7 +144,39 @@ Heartbeat loss, startup timeout, crash loops, dependency degradation, restart/ba
 
 ### Generations
 
-Registrations and calls bind to one generation. Candidate failure leaves the previous generation callable and removes all candidate resources. Active calls either drain under their captured lease or revoke according to declared transition policy. Model-visible schemas change only at turn-safe promotion boundaries.
+Slice 2 binds registrations and candidate resources to one immutable composition generation. Candidate failure leaves the previous generation callable and removes all candidate resources. A graph-derived compatibility adapter feeds the legacy EventBus path, so registration order cannot select an owner rejected by the graph. Generation-bound invocation leases, stale-call denial, and privileged dispatch migration remain Slice 3. Model-visible schemas change only at turn-safe promotion boundaries.
+
+The composition generation is distinct from a process or agent instance ID.
+New sessions capture the active composition generation. Existing Slice-1 values
+remain valid opaque legacy generation identifiers. Slice 2 does not add live
+session migration; that requires a separately specified durable quiescent
+migration event.
+
+### Slice 2 implementation boundary
+
+Slice 2 owns composition discovery, pure graph validation, activation
+eligibility, candidate generation construction, readiness, atomic publication,
+health, drain, retirement, and shared diagnostics. It does not own privileged
+invocation leases or replace the legacy dispatch engine.
+
+Concrete ownership for Slice 2 is:
+
+- renderer-neutral declaration and diagnostic contracts in `omegon-traits`;
+- the pure graph builder and generation/lifecycle owner in
+  `core/crates/omegon/src/contribution_graph.rs`;
+- phased discovery and activation orchestration in `setup.rs`;
+- a one-way graph-to-legacy compatibility adapter in `bus.rs`;
+- transport-specific static preflight and quarantine adapters in existing
+  extension and plugin/MCP owners;
+- one semantic diagnostic projection under `surfaces/` for supported clients.
+
+The first red-test matrix must prove deterministic all-error diagnostics for
+duplicates, ambiguous bindings, cycles, missing owners, conflicts, and protocol
+incompatibility; no dynamic spawn before trust/confinement admission; no
+candidate registration publication before readiness; previous-generation
+survival after candidate failure; no registration-order owner selection; no
+active-session generation drift; and honest cleanup state across unowned
+boundaries.
 
 ## Admission and invocation
 

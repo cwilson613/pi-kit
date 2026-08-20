@@ -898,7 +898,7 @@ impl Feature for ExtensionFeature {
     async fn execute(
         &self,
         tool_name: &str,
-        _call_id: &str,
+        call_id: &str,
         args: Value,
         cancel: CancellationToken,
     ) -> Result<ToolResult> {
@@ -911,7 +911,7 @@ impl Feature for ExtensionFeature {
             )
             .await
         {
-            Ok(output) => Ok(self.extension_tool_result(output, _call_id).await),
+            Ok(output) => Ok(self.extension_tool_result(output, call_id).await),
             Err(e) if is_extension_transport_error(&e) => {
                 self.record_error(format!("transport failure: {e}")).await;
                 self.respawn_after_transport_error(&e).await?;
@@ -930,7 +930,7 @@ impl Feature for ExtensionFeature {
                             tool_name
                         )
                     })?;
-                let mut result = self.extension_tool_result(output, _call_id).await;
+                let mut result = self.extension_tool_result(output, call_id).await;
                 result.details = match result.details {
                     Value::Object(mut details) => {
                         details.insert("extension_reconnected".to_string(), Value::Bool(true));
@@ -989,6 +989,14 @@ impl Feature for ExtensionFeature {
                 .await),
             Err(e) if is_extension_transport_error(&e) => {
                 self.record_error(format!("transport failure: {e}")).await;
+                if invocation.is_some() {
+                    return Err(crate::invocation_service::UnknownCompletionError {
+                        reason: format!(
+                            "extension transport failed after invocation acknowledgement: {e}"
+                        ),
+                    }
+                    .into());
+                }
                 self.respawn_after_transport_error(&e).await?;
                 let output = self
                     .rpc_call_with_cancel(
@@ -1040,6 +1048,21 @@ impl Feature for ExtensionFeature {
                 }
             }
         }
+    }
+
+    async fn execute_with_invocation_control(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: CancellationToken,
+        sink: omegon_traits::ToolProgressSink,
+        context: omegon_traits::ToolExecutionContext,
+        control: omegon_traits::InvocationControl,
+    ) -> Result<ToolResult> {
+        control.acknowledge().map_err(anyhow::Error::msg)?;
+        self.execute_with_context(tool_name, call_id, args, cancel, sink, context)
+            .await
     }
 }
 

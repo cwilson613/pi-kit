@@ -2402,6 +2402,23 @@ pub struct InvocationDispatchMetadata {
     pub turn_id: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct InvocationControl {
+    acknowledge: std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+}
+
+impl InvocationControl {
+    pub fn new(acknowledge: impl Fn() -> Result<(), String> + Send + Sync + 'static) -> Self {
+        Self {
+            acknowledge: std::sync::Arc::new(acknowledge),
+        }
+    }
+
+    pub fn acknowledge(&self) -> Result<(), String> {
+        (self.acknowledge)()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct ToolExecutionContext {
     pub host_action_approval: Option<HostActionApprovalSink>,
@@ -2452,6 +2469,7 @@ pub enum ToolProvenance {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait Feature: Send + Sync {
     /// Human-readable name for logging and debugging.
@@ -2529,6 +2547,23 @@ pub trait Feature: Send + Sync {
         _context: ToolExecutionContext,
     ) -> anyhow::Result<ToolResult> {
         self.execute_with_sink(tool_name, call_id, args, cancel, sink)
+            .await
+    }
+
+    /// Execute after durably acknowledging owner acceptance. External
+    /// adapters may override this to acknowledge at their transport boundary.
+    async fn execute_with_invocation_control(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        context: ToolExecutionContext,
+        control: InvocationControl,
+    ) -> anyhow::Result<ToolResult> {
+        control.acknowledge().map_err(anyhow::Error::msg)?;
+        self.execute_with_context(tool_name, call_id, args, cancel, sink, context)
             .await
     }
 

@@ -1131,6 +1131,7 @@ impl Feature for McpFeature {
         sink: ToolProgressSink,
         context: omegon_traits::ToolExecutionContext,
     ) -> anyhow::Result<ToolResult> {
+        self.admission.validate()?;
         tracing::debug!(
             call_id,
             invocation_id = context
@@ -1198,15 +1199,38 @@ impl Feature for McpFeature {
             None
         };
 
-        let result = tokio_timeout(Duration::from_secs(timeout_secs), client.call_tool(params))
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
+        let result = match tokio_timeout(
+            Duration::from_secs(timeout_secs),
+            client.call_tool(params),
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) if context.invocation.is_some() => {
+                return Err(crate::invocation_service::UnknownCompletionError {
+                    reason: format!(
+                        "MCP transport failed after invocation acknowledgement (server: '{server_name}'): {error}"
+                    ),
+                }
+                .into());
+            }
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) if context.invocation.is_some() => {
+                return Err(crate::invocation_service::UnknownCompletionError {
+                    reason: format!(
+                        "MCP tool call timed out after {timeout_secs}s (server: '{server_name}')"
+                    ),
+                }
+                .into());
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
                     "MCP tool call timed out after {}s (server: '{}')",
                     timeout_secs,
                     server_name
-                )
-            })??;
+                ));
+            }
+        };
 
         // Convert MCP content to Omegon content blocks
         let content: Vec<ContentBlock> = result
@@ -1235,6 +1259,22 @@ impl Feature for McpFeature {
         .await;
 
         Ok(ToolResult { content, details })
+    }
+
+    async fn execute_with_invocation_control(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        context: omegon_traits::ToolExecutionContext,
+        control: omegon_traits::InvocationControl,
+    ) -> anyhow::Result<ToolResult> {
+        self.admission.validate()?;
+        control.acknowledge().map_err(anyhow::Error::msg)?;
+        self.execute_with_context(tool_name, call_id, args, cancel, sink, context)
+            .await
     }
 }
 

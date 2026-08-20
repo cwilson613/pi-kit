@@ -3440,6 +3440,23 @@ fn invocation_denial_result(
     )
 }
 
+fn invocation_outcome(
+    result: &omegon_traits::ToolResult,
+    is_error: bool,
+    cancelled: bool,
+) -> crate::session_authority::InvocationOutcome {
+    if cancelled {
+        return crate::session_authority::InvocationOutcome::Cancelled;
+    }
+    match result.details.get("status").and_then(Value::as_str) {
+        Some("timed_out") => crate::session_authority::InvocationOutcome::TimedOut,
+        Some("cancelled") => crate::session_authority::InvocationOutcome::Cancelled,
+        Some("revoked") => crate::session_authority::InvocationOutcome::Revoked,
+        _ if is_error => crate::session_authority::InvocationOutcome::Failed,
+        _ => crate::session_authority::InvocationOutcome::Completed,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_tool_invocation(
     bus: &crate::bus::EventBus,
@@ -3603,23 +3620,62 @@ async fn execute_tool_invocation(
                 execution_tool_name,
                 &execution_args,
                 &lease.dispatch_metadata(),
+                &lease.invocation_control(),
             ),
         )
         .await
         {
             Ok(result) => result,
-            Err(_) => Some(Err(anyhow::anyhow!(
-                "Tool '{}' timed out after {} seconds. The operation was cancelled.",
-                execution_tool_name,
-                timeout.as_secs()
-            ))),
+            Err(_) => Some(Err(crate::invocation_service::UnknownCompletionError {
+                reason: format!(
+                    "host-delegated tool '{}' timed out after {} seconds",
+                    execution_tool_name,
+                    timeout.as_secs()
+                ),
+            }
+            .into())),
         }
     } else {
         None
     };
     if let Some(result) = delegated {
+        if let Err(error) = &result
+            && let Some(unknown) =
+                error.downcast_ref::<crate::invocation_service::UnknownCompletionError>()
+        {
+            if let Err(denial) = lease.persist_unknown("owner_completion_unknown") {
+                return invocation_denial_result(visible_tool_name, denial);
+            }
+            lease.revoke();
+            let tool_result = omegon_traits::ToolResult {
+                content: vec![ContentBlock::Text {
+                    text: unknown.to_string(),
+                }],
+                details: serde_json::json!({
+                    "is_error": true,
+                    "status": "unknown_completion",
+                }),
+            };
+            if emit_agent_events {
+                let _ = events.send(AgentEvent::ToolEnd {
+                    id: visible_call_id.to_string(),
+                    name: visible_tool_name.to_string(),
+                    result: tool_result.clone(),
+                    is_error: true,
+                    provenance: provenance.clone(),
+                });
+            }
+            return (tool_result, true);
+        }
         let (tool_result, is_error) = match result {
-            Ok(r) => (r, false),
+            Ok(r) => {
+                let is_error = r
+                    .details
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                (r, is_error)
+            }
             Err(e) => (
                 omegon_traits::ToolResult {
                     content: vec![ContentBlock::Text {
@@ -3630,6 +3686,13 @@ async fn execute_tool_invocation(
                 true,
             ),
         };
+        if let Err(denial) = lease.persist_settlement(invocation_outcome(
+            &tool_result,
+            is_error,
+            cancel.is_cancelled(),
+        )) {
+            return invocation_denial_result(visible_tool_name, denial);
+        }
         lease.close(if is_error {
             crate::invocation_service::LeaseTerminal::Failed
         } else {
@@ -3709,7 +3772,14 @@ async fn execute_tool_invocation(
     // Intercept PathPermissionError — route through ACP permission mediation
     // when a host context is present, or fall back to the TUI blocking prompt.
     let (result, is_error) = match first_result {
-        Ok(result) => (result, false),
+        Ok(result) => {
+            let is_error = result
+                .details
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            (result, is_error)
+        }
         Err(e)
             if e.downcast_ref::<crate::tools::OperatorWaitRequired>()
                 .is_some() =>
@@ -3848,6 +3918,41 @@ async fn execute_tool_invocation(
             }
         }
         Err(e)
+            if e.downcast_ref::<crate::invocation_service::UnknownCompletionError>()
+                .is_some() =>
+        {
+            let unknown = e
+                .downcast::<crate::invocation_service::UnknownCompletionError>()
+                .expect("downcast checked above");
+            if let Err(denial) = lease.persist_unknown("owner_completion_unknown") {
+                return invocation_denial_result(visible_tool_name, denial);
+            }
+            lease.revoke();
+            let mut content = vec![ContentBlock::Text {
+                text: unknown.to_string(),
+            }];
+            if let Some(sm) = secrets {
+                sm.redact_content(&mut content);
+            }
+            let result = omegon_traits::ToolResult {
+                content,
+                details: serde_json::json!({
+                    "is_error": true,
+                    "status": "unknown_completion",
+                }),
+            };
+            if emit_agent_events {
+                let _ = events.send(AgentEvent::ToolEnd {
+                    id: visible_call_id.to_string(),
+                    name: visible_tool_name.to_string(),
+                    result: result.clone(),
+                    is_error: true,
+                    provenance: provenance.clone(),
+                });
+            }
+            return (result, true);
+        }
+        Err(e)
             if e.downcast_ref::<crate::tools::PathPermissionError>()
                 .is_some() =>
         {
@@ -3927,7 +4032,7 @@ async fn execute_tool_invocation(
                     {
                         tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
                     }
-                    match execute(cancel, sink).await {
+                    match execute(cancel.clone(), sink).await {
                         Ok(result) => (result, false),
                         Err(e) => (
                             omegon_traits::ToolResult {
@@ -3965,7 +4070,7 @@ async fn execute_tool_invocation(
                     {
                         tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
                     }
-                    match execute(cancel, sink).await {
+                    match execute(cancel.clone(), sink).await {
                         Ok(result) => (result, false),
                         Err(e) => (
                             omegon_traits::ToolResult {
@@ -4003,7 +4108,7 @@ async fn execute_tool_invocation(
                     {
                         tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
                     }
-                    match execute(cancel, sink).await {
+                    match execute(cancel.clone(), sink).await {
                         Ok(result) => (result, false),
                         Err(e) => (
                             omegon_traits::ToolResult {
@@ -4060,6 +4165,7 @@ async fn execute_tool_invocation(
         ),
     };
 
+    let outcome = invocation_outcome(&result, is_error, cancel.is_cancelled());
     let mut final_content = result.content;
     if let Some(sm) = secrets {
         sm.redact_content(&mut final_content);
@@ -4068,6 +4174,9 @@ async fn execute_tool_invocation(
     const MAX_TOOL_OUTPUT_CHARS: usize = 16_000;
     crate::util::truncate_content_blocks(&mut final_content, MAX_TOOL_OUTPUT_CHARS);
 
+    if let Err(denial) = lease.persist_settlement(outcome) {
+        return invocation_denial_result(visible_tool_name, denial);
+    }
     lease.close(if is_error {
         crate::invocation_service::LeaseTerminal::Failed
     } else {
@@ -6672,7 +6781,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn durable_dispatch_is_committed_before_tool_owner_entry() {
+    async fn durable_acknowledgement_precedes_owner_entry_and_settlement_precedes_return() {
         struct DurableObserver {
             authority: crate::session_authority::SessionAuthorityHandle,
         }
@@ -6714,7 +6823,7 @@ mod tests {
                 assert!(self.authority.state().invocations.values().any(|state| {
                     matches!(
                         state,
-                        crate::session_authority::InvocationState::Dispatched {
+                        crate::session_authority::InvocationState::Acknowledged {
                             preparation,
                             ..
                         } if preparation.call_id == call_id
@@ -6802,7 +6911,9 @@ mod tests {
         assert_eq!(dispatch.results.len(), 1);
         assert!(!dispatch.results[0].is_error);
         assert!(authority.state().invocations.values().any(|state| {
-            matches!(state, crate::session_authority::InvocationState::Dispatched { preparation, .. } if preparation.call_id == "durable-call")
+            matches!(state, crate::session_authority::InvocationState::DurableSettled { preparation, settlement, .. }
+                if preparation.call_id == "durable-call"
+                    && settlement.outcome == crate::session_authority::InvocationOutcome::Completed)
         }));
     }
 

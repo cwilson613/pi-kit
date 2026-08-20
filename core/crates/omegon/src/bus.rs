@@ -1725,13 +1725,14 @@ impl EventBus {
         for (idx, def) in &self.tool_defs {
             if def.name == tool_name {
                 let execution_cancel = cancel.child_token();
-                let execution = self.features[*idx].execute_with_context(
+                let execution = self.features[*idx].execute_with_invocation_control(
                     tool_name,
                     call_id,
                     args,
                     execution_cancel.clone(),
                     sink,
                     context,
+                    lease.invocation_control(),
                 );
                 return match tokio::time::timeout(timeout, execution).await {
                     Ok(result) => result,

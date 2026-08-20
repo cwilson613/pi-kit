@@ -20,6 +20,12 @@ use crate::permissions::{
     LayeredPermissionPolicy, PermissionAction, PermissionLayer, subjects_from_tool_args,
 };
 
+#[derive(Debug, thiserror::Error)]
+#[error("unknown invocation completion: {reason}")]
+pub(crate) struct UnknownCompletionError {
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InvocationScope {
     pub principal: String,
@@ -127,6 +133,7 @@ pub(crate) struct ExecutionLease {
     pub transition: RuntimeCapabilityTransitionPolicy,
     pub surfaces: Vec<RuntimeSurface>,
     authority: Option<crate::session_authority::SessionAuthorityHandle>,
+    acknowledged: Arc<std::sync::Mutex<bool>>,
     terminal: Arc<AtomicU8>,
 }
 
@@ -171,6 +178,7 @@ impl ExecutionLease {
             transition: resolved.transition,
             surfaces: resolved.surfaces,
             authority: scope.authority,
+            acknowledged: Arc::new(std::sync::Mutex::new(false)),
             terminal: Arc::new(AtomicU8::new(LeaseTerminal::Open as u8)),
         }
     }
@@ -289,6 +297,36 @@ impl ExecutionLease {
         }
     }
 
+    pub fn invocation_control(&self) -> omegon_traits::InvocationControl {
+        let authority = self.authority.clone();
+        let acknowledged = self.acknowledged.clone();
+        let invocation_id = self.invocation_id;
+        let lease_id = self.lease_id;
+        omegon_traits::InvocationControl::new(move || {
+            let mut acknowledged = acknowledged
+                .lock()
+                .map_err(|_| "invocation acknowledgement state is unavailable".to_string())?;
+            if *acknowledged {
+                return Ok(());
+            }
+            if let Some(authority) = &authority {
+                authority
+                    .acknowledge_invocation(
+                        &recorded_at_now(),
+                        crate::session_authority::InvocationAcknowledged {
+                            invocation_id,
+                            lease_id,
+                        },
+                    )
+                    .map_err(|error| {
+                        format!("failed to persist invocation acknowledgement: {error}")
+                    })?;
+            }
+            *acknowledged = true;
+            Ok(())
+        })
+    }
+
     pub fn persist_dispatched(&self) -> Result<(), InvocationDenial> {
         let Some(authority) = &self.authority else {
             return Ok(());
@@ -307,6 +345,66 @@ impl ExecutionLease {
                 denial(
                     InvocationDenialCode::AuthorityUnavailable,
                     format!("failed to persist invocation dispatch: {error}"),
+                )
+            })
+    }
+
+    pub fn persist_settlement(
+        &self,
+        outcome: crate::session_authority::InvocationOutcome,
+    ) -> Result<(), InvocationDenial> {
+        let Some(authority) = &self.authority else {
+            return Ok(());
+        };
+        if !*self.acknowledged.lock().map_err(|_| {
+            denial(
+                InvocationDenialCode::AuthorityUnavailable,
+                "invocation acknowledgement state is unavailable",
+            )
+        })? {
+            return Err(denial(
+                InvocationDenialCode::AuthorityUnavailable,
+                "owner has not durably acknowledged the invocation",
+            ));
+        }
+        authority
+            .settle_invocation(
+                &recorded_at_now(),
+                crate::session_authority::InvocationSettled {
+                    invocation_id: self.invocation_id,
+                    outcome,
+                    terminal_evidence_reference: None,
+                },
+            )
+            .map(|_| ())
+            .map_err(|error| {
+                self.revoke();
+                denial(
+                    InvocationDenialCode::AuthorityUnavailable,
+                    format!("failed to persist invocation settlement: {error}"),
+                )
+            })
+    }
+
+    pub fn persist_unknown(&self, reason_code: &str) -> Result<(), InvocationDenial> {
+        let Some(authority) = &self.authority else {
+            return Ok(());
+        };
+        authority
+            .classify_invocation_unknown(
+                &recorded_at_now(),
+                crate::session_authority::InvocationClassifiedUnknown {
+                    invocation_id: self.invocation_id,
+                    reason_code: reason_code.into(),
+                    recovery_rule_version: 2,
+                },
+            )
+            .map(|_| ())
+            .map_err(|error| {
+                self.revoke();
+                denial(
+                    InvocationDenialCode::AuthorityUnavailable,
+                    format!("failed to persist unknown completion: {error}"),
                 )
             })
     }
@@ -550,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_scope_persists_prepared_before_lease_and_dispatched_before_handoff() {
+    fn durable_scope_persists_owner_acceptance_and_terminal_settlement() {
         let directory = tempfile::tempdir().unwrap();
         let recorded_at = "2026-08-20T12:00:00Z";
         let mut authority = crate::session_authority::SessionAuthority::open(
@@ -614,6 +712,26 @@ mod tests {
             authority.state().invocations.get(&lease.invocation_id),
             Some(crate::session_authority::InvocationState::Dispatched { dispatch, .. })
                 if dispatch.lease_id == lease.lease_id
+        ));
+
+        lease.invocation_control().acknowledge().unwrap();
+        assert!(matches!(
+            authority.state().invocations.get(&lease.invocation_id),
+            Some(crate::session_authority::InvocationState::Acknowledged {
+                acknowledgement,
+                ..
+            }) if acknowledgement.lease_id == lease.lease_id
+        ));
+
+        lease
+            .persist_settlement(crate::session_authority::InvocationOutcome::Completed)
+            .unwrap();
+        assert!(matches!(
+            authority.state().invocations.get(&lease.invocation_id),
+            Some(crate::session_authority::InvocationState::DurableSettled {
+                settlement,
+                ..
+            }) if settlement.outcome == crate::session_authority::InvocationOutcome::Completed
         ));
     }
 

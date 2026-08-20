@@ -566,6 +566,7 @@ pub async fn try_delegate_to_host(
     tool_name: &str,
     args: &Value,
     invocation: &omegon_traits::InvocationDispatchMetadata,
+    control: &omegon_traits::InvocationControl,
 ) -> Option<anyhow::Result<ToolResult>> {
     tracing::debug!(
         invocation_id = invocation.invocation_id,
@@ -582,6 +583,9 @@ pub async fn try_delegate_to_host(
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
+            if let Err(error) = control.acknowledge() {
+                return Some(Err(anyhow::anyhow!(error)));
+            }
             Some(delegate_read(ctx, path, path_str, offset, limit).await)
         }
         "write" if ctx.caps.fs_write => {
@@ -591,11 +595,17 @@ pub async fn try_delegate_to_host(
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
+            if let Err(error) = control.acknowledge() {
+                return Some(Err(anyhow::anyhow!(error)));
+            }
             Some(delegate_write(ctx, path, path_str, content).await)
         }
         "bash" if ctx.caps.terminal => {
             let command = args.get("command").and_then(|v| v.as_str())?;
             let timeout_ms = args.get("timeout").and_then(|v| v.as_u64());
+            if let Err(error) = control.acknowledge() {
+                return Some(Err(anyhow::anyhow!(error)));
+            }
             Some(delegate_bash(ctx, command, timeout_ms).await)
         }
         _ => None,

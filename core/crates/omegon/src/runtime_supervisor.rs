@@ -609,19 +609,34 @@ mod tests {
     }
 
     #[test]
-    fn loop_terminal_intents_are_identity_fenced_and_idempotent() {
-        let mut supervisor = InteractiveRuntimeSupervisor::default();
+    fn loop_terminal_intents_are_durably_identity_fenced_and_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let authority = SessionAuthority::open(
+            &temp.path().join("session-1.json"),
+            "session-1",
+            "workspace-1",
+            "generation-1",
+            ActorIdentity {
+                principal: "operator".into(),
+                ingress: "tui".into(),
+            },
+            "2026-08-19T18:00:00Z",
+        )
+        .unwrap();
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
         for text in ["first", "second"] {
-            supervisor.enqueue_prompt(
-                text.into(),
-                Vec::new(),
-                RuntimeActor::tui(),
-                ControlSurface::Tui,
-                operator_commands::PromptMetadata::default(),
-                None,
-            );
+            supervisor
+                .admit_prompt(
+                    text.into(),
+                    Vec::new(),
+                    RuntimeActor::tui(),
+                    ControlSurface::Tui,
+                    operator_commands::PromptMetadata::default(),
+                    None,
+                )
+                .unwrap();
         }
-        supervisor.maybe_start_next_turn().unwrap();
+        supervisor.start_next_turn().unwrap().unwrap();
         let first = supervisor.current_identity().unwrap();
         let failed = LoopTerminalIntent {
             identity: first,
@@ -636,12 +651,17 @@ mod tests {
                 outcome: RuntimeTurnOutcome::Failed
             }
         );
+        let first_close_sequence = supervisor.authority.as_ref().unwrap().state().last_sequence;
         assert_eq!(
             supervisor.submit_loop_terminal_intent(failed).unwrap(),
             TerminalSubmission::Duplicate
         );
+        assert_eq!(
+            supervisor.authority.as_ref().unwrap().state().last_sequence,
+            first_close_sequence
+        );
 
-        supervisor.maybe_start_next_turn().unwrap();
+        supervisor.start_next_turn().unwrap().unwrap();
         let second = supervisor.current_identity().unwrap();
         assert_eq!(
             supervisor
@@ -654,6 +674,10 @@ mod tests {
             TerminalSubmission::Stale
         );
         assert_eq!(supervisor.current_identity(), Some(second));
+        assert_eq!(
+            supervisor.authority.as_ref().unwrap().state().last_sequence,
+            first_close_sequence + 1
+        );
 
         supervisor
             .request_durable_interrupt(second, RuntimeActor::tui(), ControlSurface::Tui)
@@ -671,6 +695,105 @@ mod tests {
             }
         );
         assert!(!supervisor.is_busy());
+        let state = supervisor.authority.as_ref().unwrap().state();
+        assert_eq!(state.closed_turns.len(), 2);
+        assert_eq!(state.last_sequence, first_close_sequence + 3);
+    }
+
+    #[test]
+    fn restart_after_cancellation_recovers_once_and_starts_queued_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_path = temp.path().join("session-1.json");
+        let authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-1",
+            ActorIdentity {
+                principal: "operator".into(),
+                ingress: "tui".into(),
+            },
+            "2026-08-19T18:00:00Z",
+        )
+        .unwrap();
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
+        for text in ["first", "second"] {
+            supervisor
+                .admit_prompt(
+                    text.into(),
+                    Vec::new(),
+                    RuntimeActor::tui(),
+                    ControlSurface::Tui,
+                    operator_commands::PromptMetadata::default(),
+                    None,
+                )
+                .unwrap();
+        }
+        let first = supervisor.start_next_turn().unwrap().unwrap();
+        let first_identity = supervisor.current_identity().unwrap();
+        assert_eq!(
+            supervisor
+                .request_durable_interrupt(
+                    first_identity,
+                    RuntimeActor::tui(),
+                    ControlSurface::Tui,
+                )
+                .unwrap(),
+            InterruptAdmission::Admitted
+        );
+        assert_eq!(
+            supervisor
+                .request_durable_interrupt(
+                    first_identity,
+                    RuntimeActor::tui(),
+                    ControlSurface::Tui,
+                )
+                .unwrap(),
+            InterruptAdmission::Duplicate
+        );
+        drop(supervisor);
+
+        let recovered = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-2",
+            ActorIdentity {
+                principal: "system".into(),
+                ingress: "resume".into(),
+            },
+            "2026-08-19T18:01:00Z",
+        )
+        .unwrap();
+        let recovered_sequence = recovered.state().last_sequence;
+        let authority_turn_id = first.authority_turn_id.unwrap();
+        assert_eq!(
+            recovered.state().closed_turns[&authority_turn_id].outcome,
+            TurnOutcome::Interrupted
+        );
+        assert_eq!(recovered.state().interruption_requests.len(), 1);
+        assert_eq!(recovered.state().queued_prompts.len(), 1);
+        drop(recovered);
+
+        let recovered = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-3",
+            ActorIdentity {
+                principal: "system".into(),
+                ingress: "resume".into(),
+            },
+            "2026-08-19T18:02:00Z",
+        )
+        .unwrap();
+        assert_eq!(recovered.state().last_sequence, recovered_sequence);
+        assert_eq!(recovered.state().closed_turns.len(), 1);
+
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(recovered).unwrap();
+        let second = supervisor.start_next_turn().unwrap().unwrap();
+        assert_eq!(second.prompt.text, "second");
+        assert!(supervisor.is_busy());
     }
 
     #[test]

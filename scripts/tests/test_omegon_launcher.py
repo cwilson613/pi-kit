@@ -108,6 +108,20 @@ def test_fallback_used_without_checkout_or_channel():
         assert same_target(res.stdout, fallback)
 
 
+def test_activated_release_precedes_flat_fallback():
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td); home = base / "home"; cwd = base / "outside"; cwd.mkdir(); home.mkdir()
+        activated = home / ".omegon/versions/2.0.0/omegon"; make_bin(activated, "activated")
+        current = home / ".omegon/current"; current.parent.mkdir(parents=True, exist_ok=True)
+        current.symlink_to(activated.parent)
+        fallback = home / ".omegon/bin/omegon"; make_bin(fallback, "fallback")
+
+        res = run(["--which"], cwd, home)
+        assert res.returncode == 0, res.stderr
+        assert "reason: activated-release" in res.stdout
+        assert same_target(res.stdout, activated)
+
+
 def test_maintenance_launcher_uses_maintenance_override_and_fallback():
     with tempfile.TemporaryDirectory() as td:
         base = Path(td); home = base / "home"; cwd = base / "outside"; cwd.mkdir(); home.mkdir()

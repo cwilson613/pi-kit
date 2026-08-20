@@ -396,50 +396,55 @@ fi
 
 # ── Install ───────────────────────────────────────────────────
 
-VERSION_DIR="${HOME}/.omegon/versions/${VERSION}"
+VERSIONS_DIR="${HOME}/.omegon/versions"
+VERSION_DIR="${VERSIONS_DIR}/${VERSION}"
+CURRENT_LINK="${HOME}/.omegon/current"
 INSTALL_TARGET="${INSTALL_DIR}/${BINARY}"
 MAINTAIN_INSTALL_TARGET="${INSTALL_DIR}/${MAINTAIN_BINARY}"
+OM_TARGET="${INSTALL_DIR}/om"
+RECEIPT_PATH="${RECEIPT_DIR}/install-receipt.json"
 
 step "Installing ${VERSION}..."
 
-# Create versioned install directory
-mkdir -p "$VERSION_DIR" || die "could not create version directory ${VERSION_DIR}"
+mkdir -p "$VERSIONS_DIR" "$RECEIPT_DIR" || die "could not create release directories"
+STAGING_DIR="${VERSIONS_DIR}/.${VERSION}.staging.$$"
+rm -rf "$STAGING_DIR"
+mkdir "$STAGING_DIR" || die "could not create release staging directory"
+mv "${TMP}/${BINARY}" "${STAGING_DIR}/${BINARY}"
+mv "${TMP}/${MAINTAIN_BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}"
+chmod +x "${STAGING_DIR}/${BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}" || \
+  die "could not make release pair executable"
 
-# Handle backward compatibility: move existing flat binary to versioned directory
-if [ -f "$INSTALL_TARGET" ] && [ ! -L "$INSTALL_TARGET" ]; then
-  step "Migrating existing installation to versioned layout..."
-  
-  # Determine existing version if possible
-  EXISTING_VER=""
-  if [ -x "$INSTALL_TARGET" ]; then
-    EXISTING_VER=$("$INSTALL_TARGET" --version 2>/dev/null | head -1 | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown")
-  fi
-  
-  if [ "$EXISTING_VER" = "unknown" ]; then
-    EXISTING_VER="pre-versioned"
-  fi
-  
-  EXISTING_DIR="${HOME}/.omegon/versions/${EXISTING_VER}"
-  mkdir -p "$EXISTING_DIR"
-  
-  if [ "$NEEDS_SUDO" = true ]; then
-    sudo cp "$INSTALL_TARGET" "${EXISTING_DIR}/${BINARY}" || \
-      die "could not backup existing binary to ${EXISTING_DIR}"
-    sudo chmod +x "${EXISTING_DIR}/${BINARY}"
-  else
-    cp "$INSTALL_TARGET" "${EXISTING_DIR}/${BINARY}" || \
-      die "could not backup existing binary to ${EXISTING_DIR}"
-    chmod +x "${EXISTING_DIR}/${BINARY}"
-  fi
-  
-  ok "Backed up existing binary to ${EXISTING_DIR}/${BINARY}"
+cat > "${STAGING_DIR}/install-receipt.json" <<EOF
+{
+  "version": "${VERSION}",
+  "platform": "${PLATFORM}",
+  "install_dir": "${INSTALL_DIR}",
+  "binary": "${INSTALL_TARGET}",
+  "maintenance_binary": "${MAINTAIN_INSTALL_TARGET}",
+  "version_dir": "${VERSION_DIR}",
+  "versioned_binary": "${VERSION_DIR}/${BINARY}",
+  "versioned_maintenance_binary": "${VERSION_DIR}/${MAINTAIN_BINARY}",
+  "activation": "${CURRENT_LINK}",
+  "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "source": "https://github.com/${REPO}/releases/tag/${VERSION}",
+  "installer": "https://omegon.styrene.io/install.sh",
+  "layout": "versioned-current-v1"
+}
+EOF
+
+# Flush the complete candidate before publishing its immutable directory.
+sync
+if [ -e "$VERSION_DIR" ] || [ -L "$VERSION_DIR" ]; then
+  [ -x "${VERSION_DIR}/${BINARY}" ] && \
+    [ -x "${VERSION_DIR}/${MAINTAIN_BINARY}" ] && \
+    [ -f "${VERSION_DIR}/install-receipt.json" ] || \
+    die "existing release generation is incomplete: ${VERSION_DIR}"
+  rm -rf "$STAGING_DIR"
+else
+  mv "$STAGING_DIR" "$VERSION_DIR" || die "could not publish release generation"
+  sync
 fi
-
-# Install new version to versioned directory
-mv "${TMP}/${BINARY}" "${VERSION_DIR}/${BINARY}"
-chmod +x "${VERSION_DIR}/${BINARY}" || die "could not make binary executable"
-mv "${TMP}/${MAINTAIN_BINARY}" "${VERSION_DIR}/${MAINTAIN_BINARY}"
-chmod +x "${VERSION_DIR}/${MAINTAIN_BINARY}" || die "could not make companion executable"
 
 # Create install directory if needed
 if [ ! -d "$INSTALL_DIR" ]; then
@@ -450,71 +455,57 @@ if [ ! -d "$INSTALL_DIR" ]; then
   fi
 fi
 
-# Expose the release-coupled maintenance companion beside the main launcher.
-if [ "$NEEDS_SUDO" = true ]; then
-  sudo rm -f "$MAINTAIN_INSTALL_TARGET"
-  sudo ln -s "${VERSION_DIR}/${MAINTAIN_BINARY}" "$MAINTAIN_INSTALL_TARGET" || \
-    die "could not create companion symlink at ${MAINTAIN_INSTALL_TARGET}"
-else
-  rm -f "$MAINTAIN_INSTALL_TARGET"
-  ln -s "${VERSION_DIR}/${MAINTAIN_BINARY}" "$MAINTAIN_INSTALL_TARGET" || \
-    die "could not create companion symlink at ${MAINTAIN_INSTALL_TARGET}"
-fi
-
-# Create or update symlink at install location
-if [ "$NEEDS_SUDO" = true ]; then
-  # Remove existing binary/symlink
-  if [ -e "$INSTALL_TARGET" ] || [ -L "$INSTALL_TARGET" ]; then
-    sudo rm -f "$INSTALL_TARGET"
+atomic_link() {
+  link_target="$1"
+  link_path="$2"
+  temp_link="${link_path}.tmp.$$"
+  if [ -d "$link_path" ] && [ ! -L "$link_path" ]; then
+    die "refusing to replace directory at ${link_path}"
   fi
-  
-  # Create symlink
-  sudo ln -s "${VERSION_DIR}/${BINARY}" "$INSTALL_TARGET" || \
-    die "could not create symlink at ${INSTALL_TARGET}"
-else
-  # Remove existing binary/symlink
-  if [ -e "$INSTALL_TARGET" ] || [ -L "$INSTALL_TARGET" ]; then
-    rm -f "$INSTALL_TARGET"
+  if [ "$NEEDS_SUDO" = true ] && [ "${link_path#${INSTALL_DIR}/}" != "$link_path" ]; then
+    sudo rm -f "$temp_link"
+    sudo ln -s "$link_target" "$temp_link" || die "could not stage ${link_path}"
+    if ! sudo mv -f -T "$temp_link" "$link_path" 2>/dev/null && \
+       ! sudo mv -f -h "$temp_link" "$link_path" 2>/dev/null; then
+      die "could not atomically update ${link_path}"
+    fi
+  else
+    rm -f "$temp_link"
+    ln -s "$link_target" "$temp_link" || die "could not stage ${link_path}"
+    if ! mv -f -T "$temp_link" "$link_path" 2>/dev/null && \
+       ! mv -f -h "$temp_link" "$link_path" 2>/dev/null; then
+      die "could not atomically update ${link_path}"
+    fi
   fi
-  
-  # Create symlink
-  ln -s "${VERSION_DIR}/${BINARY}" "$INSTALL_TARGET" || \
-    die "could not create symlink at ${INSTALL_TARGET}"
-fi
-
-# ── Create `om` convenience symlink (slim mode entrypoint) ───
-OM_TARGET="${INSTALL_DIR}/om"
-if [ "$NEEDS_SUDO" = true ]; then
-  if [ -e "$OM_TARGET" ] || [ -L "$OM_TARGET" ]; then
-    sudo rm -f "$OM_TARGET"
-  fi
-  sudo ln -s "${VERSION_DIR}/${BINARY}" "$OM_TARGET" 2>/dev/null || true
-else
-  if [ -e "$OM_TARGET" ] || [ -L "$OM_TARGET" ]; then
-    rm -f "$OM_TARGET"
-  fi
-  ln -s "${VERSION_DIR}/${BINARY}" "$OM_TARGET" 2>/dev/null || true
-fi
-
-# ── Write install receipt ─────────────────────────────────────
-
-mkdir -p "$RECEIPT_DIR" 2>/dev/null || true
-cat > "${RECEIPT_DIR}/install-receipt.json" 2>/dev/null <<EOF || true
-{
-  "version": "${VERSION}",
-  "platform": "${PLATFORM}",
-  "install_dir": "${INSTALL_DIR}",
-  "binary": "${INSTALL_DIR}/${BINARY}",
-  "maintenance_binary": "${INSTALL_DIR}/${MAINTAIN_BINARY}",
-  "version_dir": "${VERSION_DIR}",
-  "versioned_binary": "${VERSION_DIR}/${BINARY}",
-  "versioned_maintenance_binary": "${VERSION_DIR}/${MAINTAIN_BINARY}",
-  "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "source": "https://github.com/${REPO}/releases/tag/${VERSION}",
-  "installer": "https://omegon.styrene.io/install.sh",
-  "layout": "versioned"
 }
-EOF
+
+# Migrate a complete old direct-link generation through `current` before the
+# version-changing activation. During migration every changed link still names
+# the old pair.
+if [ ! -L "$CURRENT_LINK" ] && [ -L "$INSTALL_TARGET" ]; then
+  OLD_BINARY=$(readlink "$INSTALL_TARGET")
+  OLD_DIR=$(dirname "$OLD_BINARY")
+  if [ -x "${OLD_DIR}/${BINARY}" ] && [ -x "${OLD_DIR}/${MAINTAIN_BINARY}" ]; then
+    if [ ! -f "${OLD_DIR}/install-receipt.json" ] && [ -f "$RECEIPT_PATH" ]; then
+      cp "$RECEIPT_PATH" "${OLD_DIR}/install-receipt.json" || \
+        die "could not migrate prior generation receipt"
+    fi
+    [ -f "${OLD_DIR}/install-receipt.json" ] || \
+      die "prior release generation has no receipt"
+    atomic_link "$OLD_DIR" "$CURRENT_LINK"
+    atomic_link "${CURRENT_LINK}/${BINARY}" "$INSTALL_TARGET"
+    atomic_link "${CURRENT_LINK}/${BINARY}" "$OM_TARGET"
+    atomic_link "${CURRENT_LINK}/${MAINTAIN_BINARY}" "$MAINTAIN_INSTALL_TARGET"
+    atomic_link "${CURRENT_LINK}/install-receipt.json" "$RECEIPT_PATH"
+  fi
+fi
+
+# One activation rename changes the selected pair and its receipt together.
+atomic_link "$VERSION_DIR" "$CURRENT_LINK"
+atomic_link "${CURRENT_LINK}/${BINARY}" "$INSTALL_TARGET"
+atomic_link "${CURRENT_LINK}/${BINARY}" "$OM_TARGET"
+atomic_link "${CURRENT_LINK}/${MAINTAIN_BINARY}" "$MAINTAIN_INSTALL_TARGET"
+atomic_link "${CURRENT_LINK}/install-receipt.json" "$RECEIPT_PATH"
 
 # ── Verify installation ──────────────────────────────────────
 

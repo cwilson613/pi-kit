@@ -97,6 +97,12 @@ resolve_target() {
         return 1
     fi
 
+    target="$HOME/.omegon/current/$binary_name"
+    if is_executable_target "$target"; then
+        printf 'activated-release\t%s\n' "$target"
+        return 0
+    fi
+
     target="$HOME/.omegon/bin/$binary_name"
     if is_executable_target "$target"; then
         printf 'fallback-installed\t%s\n' "$target"
@@ -104,7 +110,7 @@ resolve_target() {
     fi
 
     printf 'omegon launcher: no runnable binary found\n' >&2
-    printf 'checked: %s, OMEGON_DEV_ROOT, nearest checkout, ~/.omegon/channels/%s, ~/.omegon/bin/%s\n' "$override_label" "$channel" "$binary_name" >&2
+    printf 'checked: %s, OMEGON_DEV_ROOT, nearest checkout, ~/.omegon/channels/%s, ~/.omegon/current/%s, ~/.omegon/bin/%s\n' "$override_label" "$channel" "$binary_name" "$binary_name" >&2
     printf 'run: just build && just link from an Omegon checkout\n' >&2
     return 127
 }

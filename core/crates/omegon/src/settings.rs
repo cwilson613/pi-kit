@@ -1445,6 +1445,10 @@ pub fn persist_model_intent(
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfilePermissions {
+    /// Dynamic contribution identities whose current discovered source bytes
+    /// the operator explicitly permits to execute with host authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_contribution_code: Vec<String>,
     /// Directories outside the workspace that the agent can access without
     /// per-operation confirmation. Paths are expanded at runtime (~ → $HOME).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1484,7 +1488,8 @@ pub struct ProfileMountIdentity {
 
 impl ProfilePermissions {
     pub fn is_empty(&self) -> bool {
-        self.trusted_directories.is_empty()
+        self.trusted_contribution_code.is_empty()
+            && self.trusted_directories.is_empty()
             && self.trusted_directory_grants.is_empty()
             && self.tools.is_empty()
             && self.role.is_none()

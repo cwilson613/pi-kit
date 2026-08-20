@@ -299,6 +299,7 @@ struct ExtensionRuntimeContext {
     notification_sink: Option<ExtensionNotificationSink>,
     _snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
     state_binding: Option<ExtensionStateBinding>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
 }
 
 struct ExtensionSource {
@@ -306,6 +307,7 @@ struct ExtensionSource {
     state_dir: PathBuf,
     snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
     state_binding: Option<ExtensionStateBinding>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
 }
 
 #[derive(Clone)]
@@ -586,14 +588,18 @@ impl ExtensionFeature {
             let _ = stale.child.wait().await;
         }
 
-        let mut handles = spawn_process_handles(&self.runtime.manifest, &self.runtime.ext_dir)
-            .await
-            .map_err(|err| {
-                anyhow!(
-                    "extension '{}' transport failed ({cause}); respawn failed: {err}",
-                    self.runtime.name
-                )
-            })?;
+        let mut handles = spawn_process_handles(
+            &self.runtime.manifest,
+            &self.runtime.ext_dir,
+            &self.runtime.admission,
+        )
+        .await
+        .map_err(|err| {
+            anyhow!(
+                "extension '{}' transport failed ({cause}); respawn failed: {err}",
+                self.runtime.name
+            )
+        })?;
         let handshake = match handshake(
             &mut handles,
             &self.runtime.manifest,
@@ -1006,21 +1012,68 @@ pub struct SpawnedExtension {
     pub voice_notification_rx: Option<mpsc::UnboundedReceiver<ExtensionNotification>>,
 }
 
+pub(crate) fn dynamic_preflight(
+    manifest: &ExtensionManifest,
+    source: &Path,
+) -> Result<omegon_traits::RuntimeDynamicContributionPreflight> {
+    let id =
+        omegon_traits::RuntimeContributionId::new(format!("extension:{}", manifest.extension.name))
+            .map_err(|error| anyhow!(error))?;
+    let (source_kind, requested_confinement) = match manifest.runtime {
+        RuntimeConfig::Native { .. } => (
+            omegon_traits::RuntimeDynamicSourceKind::NativeExtension,
+            omegon_traits::RuntimeConfinementRequest::HostProcess,
+        ),
+        RuntimeConfig::Oci { .. } => (
+            omegon_traits::RuntimeDynamicSourceKind::OciExtension,
+            omegon_traits::RuntimeConfinementRequest::Oci,
+        ),
+    };
+    Ok(omegon_traits::RuntimeDynamicContributionPreflight {
+        schema_version: omegon_traits::RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+        id,
+        source_digest: crate::dynamic_admission::digest_path(source)?,
+        source_kind,
+        protocol: omegon_traits::RuntimeProtocolRange::new(1, 1).map_err(|error| anyhow!(error))?,
+        minimum_dependencies: Vec::new(),
+        requested_trust: omegon_traits::RuntimeTrustRequest::OperatorManaged,
+        requested_confinement,
+        probe: omegon_traits::RuntimeProbeRequirements {
+            operations: vec![
+                omegon_traits::RuntimeProbeOperation::Initialize,
+                omegon_traits::RuntimeProbeOperation::DiscoverCapabilities,
+            ],
+            timeout_ms: manifest.startup.timeout_ms.max(1),
+            requested_effects: vec![
+                omegon_traits::RuntimeEffect::FilesystemRead,
+                omegon_traits::RuntimeEffect::ProcessSpawn,
+                omegon_traits::RuntimeEffect::NetworkAccess,
+                omegon_traits::RuntimeEffect::SecretDelivery,
+            ],
+        },
+    })
+}
+
 /// Spawn an extension from its manifest directory.
 ///
 /// `resolved_secrets` contains pre-resolved (name, value) pairs for all secrets
 /// declared in `manifest.secrets`. These are delivered via `bootstrap_secrets`
 /// RPC — never via subprocess environment variables.
+#[cfg(test)]
 pub async fn spawn_from_manifest(
     ext_dir: &Path,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    spawn_from_manifest_source(ext_dir, ext_dir, None, None, resolved_secrets).await
+    let manifest = ExtensionManifest::from_extension_dir(ext_dir)?;
+    let preflight = dynamic_preflight(&manifest, ext_dir)?;
+    let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test(preflight);
+    spawn_from_manifest_source(ext_dir, ext_dir, None, None, admission, resolved_secrets).await
 }
 
 pub(crate) async fn spawn_from_admitted_snapshot(
     snapshot: Arc<crate::contribution_loading::ContributionSnapshot>,
     state_dir: &Path,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
     let ext_dir = snapshot.path().to_path_buf();
@@ -1030,6 +1083,7 @@ pub(crate) async fn spawn_from_admitted_snapshot(
         state_dir,
         Some(snapshot),
         Some(state_binding),
+        admission,
         resolved_secrets,
     )
     .await
@@ -1040,6 +1094,7 @@ async fn spawn_from_manifest_source(
     state_dir: &Path,
     snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
     state_binding: Option<ExtensionStateBinding>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
     let source = ExtensionSource {
@@ -1047,6 +1102,7 @@ async fn spawn_from_manifest_source(
         state_dir: state_dir.to_path_buf(),
         snapshot,
         state_binding,
+        admission,
     };
     let manifest = ExtensionManifest::from_extension_dir(&source.ext_dir)?;
     if source.snapshot.is_some() {
@@ -1224,7 +1280,9 @@ fn validate_runtime_env_name(name: &str) -> Result<()> {
 async fn spawn_process_handles(
     manifest: &ExtensionManifest,
     ext_dir: &Path,
+    admission: &crate::dynamic_admission::DynamicAdmissionPermit,
 ) -> Result<ProcessHandles> {
+    admission.validate_source_path(ext_dir)?;
     let extension_name = manifest.extension.name.clone();
     let mut child = match &manifest.runtime {
         RuntimeConfig::Native { .. } => {
@@ -1583,7 +1641,7 @@ async fn spawn_native(
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(manifest, &source.ext_dir).await?;
+    let mut handles = spawn_process_handles(manifest, &source.ext_dir, &source.admission).await?;
 
     let notification_pair = if manifest.capabilities.voice {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -1641,6 +1699,7 @@ async fn spawn_native(
         notification_sink: notification_pair.0,
         _snapshot: source.snapshot,
         state_binding: source.state_binding,
+        admission: source.admission,
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(
@@ -1709,7 +1768,7 @@ async fn spawn_container(
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(manifest, &source.ext_dir).await?;
+    let mut handles = spawn_process_handles(manifest, &source.ext_dir, &source.admission).await?;
 
     let notification_pair = if manifest.capabilities.voice {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -1767,6 +1826,7 @@ async fn spawn_container(
         notification_sink: notification_pair.0,
         _snapshot: source.snapshot,
         state_binding: source.state_binding,
+        admission: source.admission,
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(
@@ -2041,7 +2101,10 @@ binary = "flaky-extension.sh"
         let snapshot = Arc::new(
             crate::contribution_loading::snapshot_contribution_directory(&source).unwrap(),
         );
-        let spawned = spawn_from_admitted_snapshot(snapshot, &extension_dir, &[])
+        let manifest = ExtensionManifest::from_extension_dir(snapshot.path()).unwrap();
+        let preflight = dynamic_preflight(&manifest, snapshot.path()).unwrap();
+        let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test(preflight);
+        let spawned = spawn_from_admitted_snapshot(snapshot, &extension_dir, admission, &[])
             .await
             .unwrap();
         let first = spawned

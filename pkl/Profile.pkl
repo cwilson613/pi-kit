@@ -40,6 +40,9 @@ fallbackProviders: Listing<String>?
 defaultPosture: ("explorator"|"fabricator"|"architect"|"devastator")?
 
 class Permissions {
+  /// Dynamic contribution IDs explicitly trusted to execute with host authority.
+  trustedContributionCode: Listing<String>?
+
   /// Directories outside the workspace the agent can access without
   /// per-operation confirmation. Paths are expanded at runtime (~ → $HOME).
   trustedDirectories: Listing<String>?

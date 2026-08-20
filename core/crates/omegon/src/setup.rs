@@ -1678,6 +1678,8 @@ fn collect_extension_secret_requirements(cwd: &Path) -> Vec<String> {
         return vec![];
     };
     let profile = crate::settings::Profile::load(cwd);
+    let dynamic_admission =
+        crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile);
     let env_enabled = crate::parse_csv_env("OMEGON_CHILD_ENABLED_EXTENSIONS");
     let env_disabled = crate::parse_csv_env("OMEGON_CHILD_DISABLED_EXTENSIONS");
     for entry in entries.flatten() {
@@ -1707,6 +1709,12 @@ fn collect_extension_secret_requirements(cwd: &Path) -> Vec<String> {
             continue;
         }
         if let Ok(manifest) = crate::extensions::ExtensionManifest::from_extension_dir(&path) {
+            let admitted = crate::extensions::dynamic_preflight(&manifest, &path)
+                .and_then(|preflight| dynamic_admission.admit(preflight).map(|_| ()));
+            if let Err(error) = admitted {
+                tracing::debug!(extension = ext_name, %error, "untrusted extension skipped during secret preflight");
+                continue;
+            }
             for name in manifest.secrets.required {
                 tracing::debug!(
                     extension = %path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"),
@@ -1936,6 +1944,8 @@ async fn discover_and_register_extensions(
     };
 
     let profile = crate::settings::Profile::load(cwd);
+    let dynamic_admission =
+        crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile);
     let env_enabled = crate::parse_csv_env("OMEGON_CHILD_ENABLED_EXTENSIONS");
     let env_disabled = crate::parse_csv_env("OMEGON_CHILD_DISABLED_EXTENSIONS");
     let mut count = 0;
@@ -1990,15 +2000,30 @@ async fn discover_and_register_extensions(
                 continue;
             }
         };
+        let preflight = match crate::extensions::dynamic_preflight(&manifest, snapshot.path()) {
+            Ok(preflight) => preflight,
+            Err(error) => {
+                tracing::warn!(extension = ext_name, %error, "extension static preflight failed");
+                continue;
+            }
+        };
+        let trust_admission = match dynamic_admission.admit(preflight) {
+            Ok(admission) => admission,
+            Err(error) => {
+                tracing::warn!(extension = ext_name, %error, "extension trust admission denied before execution");
+                continue;
+            }
+        };
         candidates.push((
             ext_name.to_string(),
             ext_dir.join(ext_name),
             snapshot,
             manifest,
+            trust_admission,
         ));
     }
 
-    for (ext_name, state_dir, snapshot, manifest) in candidates {
+    for (ext_name, state_dir, snapshot, manifest, trust_admission) in candidates {
         // Spawning an enabled extension is its explicit operation boundary:
         // resolve declared credentials on demand here, then deliver them only
         // through bootstrap_secrets RPC. Discovery/status paths remain
@@ -2009,6 +2034,7 @@ async fn discover_and_register_extensions(
         match crate::extensions::spawn_from_admitted_snapshot(
             snapshot,
             &state_dir,
+            trust_admission,
             &resolved_secrets,
         )
         .await

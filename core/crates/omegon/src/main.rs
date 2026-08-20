@@ -63,6 +63,7 @@ mod control;
 mod control_actions;
 mod control_runtime;
 mod control_tls;
+mod dynamic_admission;
 mod embedding;
 mod execution_substrate;
 pub mod extensions;
@@ -7691,8 +7692,15 @@ async fn call_tdd_savepoint_extension(
     let snapshot = std::sync::Arc::new(
         crate::contribution_loading::snapshot_contribution_directory(&directory)?,
     );
+    let manifest = crate::extensions::ExtensionManifest::from_extension_dir(snapshot.path())?;
+    let preflight = crate::extensions::dynamic_preflight(&manifest, snapshot.path())?;
+    let profile = crate::settings::Profile::load(&std::env::current_dir()?);
+    let trust_admission = crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile)
+        .admit(preflight)?;
     let ext_dir = home.join("extensions/omegon-tdd-savepoint");
-    let spawned = crate::extensions::spawn_from_admitted_snapshot(snapshot, &ext_dir, &[]).await?;
+    let spawned =
+        crate::extensions::spawn_from_admitted_snapshot(snapshot, &ext_dir, trust_admission, &[])
+            .await?;
     drop(admission);
     let result = spawned
         .feature

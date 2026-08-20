@@ -6,9 +6,9 @@ import { snippet } from "../../lib/snippets";
   <h1>Extensions</h1>
   <p>
     Extensions add tools, widgets, and integrations to Omegon without modifying
-    the core binary. They run as isolated processes, communicate via JSON-RPC 2.0
-    over stdio, and are crash-safe by design &mdash; an extension failure never takes
-    down Omegon.
+    the core binary. They run as separate processes, communicate via JSON-RPC 2.0
+    over stdio, and are crash-isolated from Omegon. Process separation is not a
+    security sandbox: native and current OCI extensions execute trusted code.
   </p>
   <!-- DIAGRAM:extension-isolation | Block diagram: Omegon core ← stdio JSON-RPC 2.0 → [Extension process]. Show process boundary, crash isolation, secret delivery via RPC handshake (not env vars), and optional TCP widget channel -->
 
@@ -18,6 +18,24 @@ import { snippet } from "../../lib/snippets";
     Git URLs are cloned and built automatically when they contain a Rust project.
     Local paths are symlinked for development. Registry entries can be discovered with
     <code>omegon extension list --available</code> and <code>omegon extension search &lt;query&gt;</code>.
+  </p>
+
+  <h2>Trust extension code</h2>
+  <p>
+    Installation and enablement do not authorize code execution. Add the stable
+    contribution ID to the project or user profile only after reviewing the
+    extension. Omegon binds each runtime admission to the discovered source bytes
+    and denies spawn if those bytes change before execution.
+  </p>
+  <pre><code>{`{
+  "permissions": {
+    "trustedContributionCode": ["extension:my-extension"]
+  }
+}`}</code></pre>
+  <p>
+    <code>trustedDirectories</code> controls workspace file access and does not trust
+    extension code. Requesting OCI execution also does not prove confinement; the
+    current extension container path still requires explicit trusted-code admission.
   </p>
 
   <h2>Available Extensions</h2>

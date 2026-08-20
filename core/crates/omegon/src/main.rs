@@ -58,6 +58,7 @@ mod codex_events;
 mod command_registry;
 mod container_runtime;
 mod context;
+mod contribution_graph;
 mod control;
 mod control_actions;
 mod control_runtime;

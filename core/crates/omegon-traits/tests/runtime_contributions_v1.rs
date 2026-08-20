@@ -36,6 +36,13 @@ fn generation_v1_fixture_round_trips() {
 }
 
 #[test]
+fn effect_evidence_v1_fixture_round_trips() {
+    assert_fixture_round_trip::<Vec<omegon_traits::RuntimeEffectEvidence>>(include_str!(
+        "fixtures/runtime-effect-evidence-v1.json"
+    ));
+}
+
+#[test]
 fn diagnostics_v1_fixture_has_explicit_stable_order() {
     let raw = include_str!("fixtures/runtime-contribution-diagnostics-v1.json");
     assert_fixture_round_trip::<Vec<omegon_traits::RuntimeContributionDiagnostic>>(raw);

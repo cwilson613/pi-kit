@@ -1,7 +1,9 @@
 use omegon_traits::{
-    RUNTIME_CONTRIBUTION_SCHEMA_VERSION, RuntimeCompositionGeneration,
-    RuntimeContributionDeclaration, RuntimeContributionId, RuntimeDiagnosticCode,
-    RuntimeProtocolRange,
+    RUNTIME_CONTRIBUTION_SCHEMA_VERSION, RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+    RuntimeCompositionGeneration, RuntimeConfinementRequest, RuntimeContributionDeclaration,
+    RuntimeContributionId, RuntimeDiagnosticCode, RuntimeDynamicContributionPreflight,
+    RuntimeEffect, RuntimeProtocolRange, RuntimeTrustAdmission, RuntimeTrustAdmissionEvidence,
+    RuntimeTrustedCodeAuthority,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -99,4 +101,66 @@ fn trust_request_is_not_serialized_as_an_admission_grant() {
     assert!(value.get("requested_trust").is_some());
     assert!(value.get("trust_granted").is_none());
     assert!(value.get("admitted").is_none());
+}
+
+#[test]
+fn dynamic_preflight_v1_fixture_round_trips() {
+    let raw = include_str!("fixtures/runtime-dynamic-preflight-v1.json");
+    assert_fixture_round_trip::<RuntimeDynamicContributionPreflight>(raw);
+    let preflight: RuntimeDynamicContributionPreflight = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        preflight.schema_version,
+        RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION
+    );
+    preflight.validate().unwrap();
+}
+
+#[test]
+fn trust_admission_is_source_bound_and_manifest_requests_do_not_grant_it() {
+    let raw = include_str!("fixtures/runtime-dynamic-preflight-v1.json");
+    let preflight: RuntimeDynamicContributionPreflight = serde_json::from_str(raw).unwrap();
+    let admission = RuntimeTrustAdmission {
+        schema_version: RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+        contribution_id: preflight.id.clone(),
+        source_digest: preflight.source_digest.clone(),
+        evidence: RuntimeTrustAdmissionEvidence::TrustedCode {
+            authority: RuntimeTrustedCodeAuthority::OperatorPolicy,
+            policy_id: "operator:extensions-v1".into(),
+        },
+    };
+    admission.validate_for(&preflight).unwrap();
+
+    let mut wrong_source = admission;
+    wrong_source.source_digest = "sha256:different".into();
+    assert!(wrong_source.validate_for(&preflight).is_err());
+
+    let value: Value = serde_json::from_str(raw).unwrap();
+    assert!(value.get("evidence").is_none());
+    assert!(value.get("admission").is_none());
+}
+
+#[test]
+fn confinement_evidence_fails_closed_without_a_complete_brokered_boundary() {
+    let incomplete = RuntimeTrustAdmissionEvidence::VerifiedConfinement {
+        boundary: RuntimeConfinementRequest::Oci,
+        verifier: "host:oci-v1".into(),
+        profile: "isolated-probe-v1".into(),
+        prevented_effects: vec![RuntimeEffect::NetworkAccess],
+        brokered_effects_only: true,
+    };
+    assert!(incomplete.validate().is_err());
+
+    let complete = RuntimeTrustAdmissionEvidence::VerifiedConfinement {
+        boundary: RuntimeConfinementRequest::Oci,
+        verifier: "host:oci-v1".into(),
+        profile: "isolated-probe-v1".into(),
+        prevented_effects: vec![
+            RuntimeEffect::FilesystemRead,
+            RuntimeEffect::ProcessSpawn,
+            RuntimeEffect::NetworkAccess,
+            RuntimeEffect::SecretDelivery,
+        ],
+        brokered_effects_only: true,
+    };
+    complete.validate().unwrap();
 }

@@ -74,6 +74,14 @@ pub enum RuntimeContributionSchemaVersion {
 pub const RUNTIME_CONTRIBUTION_SCHEMA_VERSION: RuntimeContributionSchemaVersion =
     RuntimeContributionSchemaVersion::V1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RuntimeDynamicPreflightSchemaVersion {
+    V1,
+}
+
+pub const RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION: RuntimeDynamicPreflightSchemaVersion =
+    RuntimeDynamicPreflightSchemaVersion::V1;
+
 impl Serialize for RuntimeContributionSchemaVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -94,6 +102,31 @@ impl<'de> Deserialize<'de> for RuntimeContributionSchemaVersion {
             1 => Ok(Self::V1),
             version => Err(serde::de::Error::custom(format!(
                 "unsupported runtime contribution schema version: {version}"
+            ))),
+        }
+    }
+}
+
+impl Serialize for RuntimeDynamicPreflightSchemaVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u16(match self {
+            Self::V1 => 1,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeDynamicPreflightSchemaVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match u16::deserialize(deserializer)? {
+            1 => Ok(Self::V1),
+            version => Err(serde::de::Error::custom(format!(
+                "unsupported runtime dynamic preflight schema version: {version}"
             ))),
         }
     }
@@ -126,6 +159,161 @@ pub enum RuntimeConfinementRequest {
     HostProcess,
     OsSandbox,
     Oci,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeDynamicSourceKind {
+    NativeExtension,
+    OciExtension,
+    PluginManifestEvaluation,
+    PluginScript,
+    PluginHttp,
+    McpProcess,
+    McpHttp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProbeOperation {
+    EvaluateManifest,
+    Initialize,
+    DiscoverCapabilities,
+    GenerateContext,
+    Connect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeProbeRequirements {
+    pub operations: Vec<RuntimeProbeOperation>,
+    pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_effects: Vec<RuntimeEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeDynamicContributionPreflight {
+    pub schema_version: RuntimeDynamicPreflightSchemaVersion,
+    pub id: RuntimeContributionId,
+    /// Digest of the immutable bytes from which code or connection parameters
+    /// will be evaluated. This binds admission to a specific discovered source.
+    pub source_digest: String,
+    pub source_kind: RuntimeDynamicSourceKind,
+    pub protocol: RuntimeProtocolRange,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub minimum_dependencies: Vec<RuntimeContributionDependency>,
+    pub requested_trust: RuntimeTrustRequest,
+    pub requested_confinement: RuntimeConfinementRequest,
+    pub probe: RuntimeProbeRequirements,
+}
+
+impl RuntimeDynamicContributionPreflight {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        self.protocol.validate()?;
+        if self.source_digest.trim().is_empty() {
+            return Err("dynamic preflight source digest must not be empty");
+        }
+        if self.probe.operations.is_empty() {
+            return Err("dynamic preflight must declare at least one probe operation");
+        }
+        if self.probe.timeout_ms == 0 {
+            return Err("dynamic preflight probe timeout must be non-zero");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTrustedCodeAuthority {
+    KernelRelease,
+    OperatorPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeTrustAdmissionEvidence {
+    TrustedCode {
+        authority: RuntimeTrustedCodeAuthority,
+        policy_id: String,
+    },
+    VerifiedConfinement {
+        boundary: RuntimeConfinementRequest,
+        verifier: String,
+        profile: String,
+        prevented_effects: Vec<RuntimeEffect>,
+        brokered_effects_only: bool,
+    },
+}
+
+impl RuntimeTrustAdmissionEvidence {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::TrustedCode { policy_id, .. } if policy_id.trim().is_empty() => {
+                Err("trusted-code admission policy id must not be empty")
+            }
+            Self::VerifiedConfinement {
+                boundary,
+                verifier,
+                profile,
+                prevented_effects,
+                brokered_effects_only,
+            } => {
+                if !matches!(
+                    boundary,
+                    RuntimeConfinementRequest::OsSandbox | RuntimeConfinementRequest::Oci
+                ) {
+                    return Err("verified confinement requires an OS sandbox or OCI boundary");
+                }
+                if verifier.trim().is_empty() || profile.trim().is_empty() {
+                    return Err("verified confinement requires verifier and profile identity");
+                }
+                if !brokered_effects_only {
+                    return Err(
+                        "verified confinement must force privileged effects through brokers",
+                    );
+                }
+                const REQUIRED: [RuntimeEffect; 4] = [
+                    RuntimeEffect::FilesystemRead,
+                    RuntimeEffect::ProcessSpawn,
+                    RuntimeEffect::NetworkAccess,
+                    RuntimeEffect::SecretDelivery,
+                ];
+                if REQUIRED
+                    .iter()
+                    .any(|effect| !prevented_effects.contains(effect))
+                {
+                    return Err(
+                        "verified confinement must prevent direct filesystem, process, network, and secret access",
+                    );
+                }
+                Ok(())
+            }
+            Self::TrustedCode { .. } => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeTrustAdmission {
+    pub schema_version: RuntimeDynamicPreflightSchemaVersion,
+    pub contribution_id: RuntimeContributionId,
+    pub source_digest: String,
+    pub evidence: RuntimeTrustAdmissionEvidence,
+}
+
+impl RuntimeTrustAdmission {
+    pub fn validate_for(
+        &self,
+        preflight: &RuntimeDynamicContributionPreflight,
+    ) -> Result<(), &'static str> {
+        preflight.validate()?;
+        self.evidence.validate()?;
+        if self.contribution_id != preflight.id || self.source_digest != preflight.source_digest {
+            return Err("trust admission is not bound to this preflight source");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

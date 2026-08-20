@@ -262,6 +262,17 @@ Heartbeat loss, startup timeout, crash loops, dependency degradation, drain,
 shutdown deadlines, forced cleanup, and quarantine are host-owned lifecycle
 states.
 
+The versioned preflight binds that request to immutable source bytes by digest
+and identifies whether evaluation, initialization, capability discovery,
+context generation, or connection would execute. Admission evidence is a
+separate host-produced object bound to the same contribution and source digest.
+Trusted-code evidence names kernel-release or operator-policy authority.
+Confinement evidence is valid only for a host-verified OS or OCI boundary that
+blocks direct filesystem, process, network, and secret access and permits
+privileged effects only through brokers. Existing installation, enablement,
+maintenance allow, trusted-directory, and manifest-request state cannot produce
+this evidence.
+
 The graph must reject:
 
 - duplicate capability ownership without an explicit replacement declaration;

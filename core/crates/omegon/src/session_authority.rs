@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 const ENVELOPE_VERSION: u16 = 1;
 const EVENT_VERSION: u16 = 1;
-const SNAPSHOT_VERSION: u16 = 1;
-const REDUCER_VERSION: u16 = 1;
+const SNAPSHOT_VERSION: u16 = 2;
+const REDUCER_VERSION: u16 = 2;
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
 const RECOVERY_NAMESPACE: Uuid = Uuid::from_u128(0x5907_b852_acde_4b53_a6b1_2d1a_c964_868a);
@@ -204,6 +204,13 @@ pub(crate) struct InvocationDispatched {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct InvocationAcknowledged {
+    pub(crate) invocation_id: Uuid,
+    pub(crate) lease_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct InvocationClassifiedUnknown {
     pub(crate) invocation_id: Uuid,
     pub(crate) reason_code: String,
@@ -238,6 +245,7 @@ pub(crate) enum SessionFactPayload {
     InvocationRegistered(InvocationRegistered),
     InvocationPrepared(InvocationPrepared),
     InvocationDispatched(InvocationDispatched),
+    InvocationAcknowledged(InvocationAcknowledged),
     InvocationClassifiedUnknown(InvocationClassifiedUnknown),
     InvocationSettled(InvocationSettled),
     TurnClosed(TurnClosed),
@@ -255,6 +263,7 @@ impl SessionFactPayload {
             Self::InvocationRegistered(_) => "invocation.registered",
             Self::InvocationPrepared(_) => "invocation.prepared",
             Self::InvocationDispatched(_) => "invocation.dispatched",
+            Self::InvocationAcknowledged(_) => "invocation.acknowledged",
             Self::InvocationClassifiedUnknown(_) => "invocation.classified_unknown",
             Self::InvocationSettled(_) => "invocation.settled",
             Self::TurnClosed(_) => "turn.closed",
@@ -272,6 +281,7 @@ impl SessionFactPayload {
             Self::InvocationRegistered(value) => serde_json::to_value(value),
             Self::InvocationPrepared(value) => serde_json::to_value(value),
             Self::InvocationDispatched(value) => serde_json::to_value(value),
+            Self::InvocationAcknowledged(value) => serde_json::to_value(value),
             Self::InvocationClassifiedUnknown(value) => serde_json::to_value(value),
             Self::InvocationSettled(value) => serde_json::to_value(value),
             Self::TurnClosed(value) => serde_json::to_value(value),
@@ -389,6 +399,9 @@ impl SessionFact {
             "invocation.dispatched" => {
                 decode_payload(wire.payload).map(SessionFactPayload::InvocationDispatched)
             }
+            "invocation.acknowledged" => {
+                decode_payload(wire.payload).map(SessionFactPayload::InvocationAcknowledged)
+            }
             "invocation.classified_unknown" => {
                 decode_payload(wire.payload).map(SessionFactPayload::InvocationClassifiedUnknown)
             }
@@ -469,12 +482,29 @@ pub(crate) enum InvocationState {
         preparation: InvocationPrepared,
         dispatch: InvocationDispatched,
     },
+    Acknowledged {
+        preparation: InvocationPrepared,
+        dispatch: InvocationDispatched,
+        acknowledgement: InvocationAcknowledged,
+    },
     Unknown {
         registration: InvocationRegistered,
         classification: InvocationClassifiedUnknown,
     },
     Settled {
         registration: InvocationRegistered,
+        settlement: InvocationSettled,
+    },
+    DurableUnknown {
+        preparation: InvocationPrepared,
+        dispatch: InvocationDispatched,
+        acknowledgement: Option<InvocationAcknowledged>,
+        classification: InvocationClassifiedUnknown,
+    },
+    DurableSettled {
+        preparation: InvocationPrepared,
+        dispatch: InvocationDispatched,
+        acknowledgement: InvocationAcknowledged,
         settlement: InvocationSettled,
     },
 }
@@ -485,9 +515,11 @@ impl InvocationState {
             Self::Registered { registration }
             | Self::Unknown { registration, .. }
             | Self::Settled { registration, .. } => registration.turn_id,
-            Self::Prepared { preparation } | Self::Dispatched { preparation, .. } => {
-                preparation.turn_id
-            }
+            Self::Prepared { preparation }
+            | Self::Dispatched { preparation, .. }
+            | Self::Acknowledged { preparation, .. }
+            | Self::DurableUnknown { preparation, .. }
+            | Self::DurableSettled { preparation, .. } => preparation.turn_id,
         }
     }
 
@@ -496,9 +528,11 @@ impl InvocationState {
             Self::Registered { registration }
             | Self::Unknown { registration, .. }
             | Self::Settled { registration, .. } => &registration.call_id,
-            Self::Prepared { preparation } | Self::Dispatched { preparation, .. } => {
-                &preparation.call_id
-            }
+            Self::Prepared { preparation }
+            | Self::Dispatched { preparation, .. }
+            | Self::Acknowledged { preparation, .. }
+            | Self::DurableUnknown { preparation, .. }
+            | Self::DurableSettled { preparation, .. } => &preparation.call_id,
         }
     }
 }
@@ -786,47 +820,124 @@ impl SessionAuthorityState {
                 );
                 Ok(())
             }
+            SessionFactPayload::InvocationAcknowledged(acknowledgement) => {
+                let Some(current) = self
+                    .invocations
+                    .get(&acknowledgement.invocation_id)
+                    .cloned()
+                else {
+                    return self.transition_error(fact.sequence, "invocation was not dispatched");
+                };
+                let InvocationState::Dispatched {
+                    preparation,
+                    dispatch,
+                } = current
+                else {
+                    return self.transition_error(
+                        fact.sequence,
+                        "invocation is not awaiting acknowledgement",
+                    );
+                };
+                if preparation.lease_id != acknowledgement.lease_id {
+                    return self.transition_error(
+                        fact.sequence,
+                        "acknowledgement lease does not match prepared invocation",
+                    );
+                }
+                self.invocations.insert(
+                    acknowledgement.invocation_id,
+                    InvocationState::Acknowledged {
+                        preparation,
+                        dispatch,
+                        acknowledgement: acknowledgement.clone(),
+                    },
+                );
+                Ok(())
+            }
             SessionFactPayload::InvocationClassifiedUnknown(classification) => {
                 let Some(current) = self.invocations.get(&classification.invocation_id).cloned()
                 else {
                     return self.transition_error(fact.sequence, "invocation was not registered");
                 };
-                let InvocationState::Registered { registration } = current else {
-                    return self.transition_error(
-                        fact.sequence,
-                        "invocation is already classified or settled",
-                    );
-                };
-                self.invocations.insert(
-                    classification.invocation_id,
-                    InvocationState::Unknown {
+                let next = match current {
+                    InvocationState::Registered { registration } => InvocationState::Unknown {
                         registration,
                         classification: classification.clone(),
                     },
-                );
+                    InvocationState::Dispatched {
+                        preparation,
+                        dispatch,
+                    } => InvocationState::DurableUnknown {
+                        preparation,
+                        dispatch,
+                        acknowledgement: None,
+                        classification: classification.clone(),
+                    },
+                    InvocationState::Acknowledged {
+                        preparation,
+                        dispatch,
+                        acknowledgement,
+                    } => InvocationState::DurableUnknown {
+                        preparation,
+                        dispatch,
+                        acknowledgement: Some(acknowledgement),
+                        classification: classification.clone(),
+                    },
+                    _ => {
+                        return self.transition_error(
+                            fact.sequence,
+                            "invocation is already classified or settled",
+                        );
+                    }
+                };
+                self.invocations.insert(classification.invocation_id, next);
                 Ok(())
             }
             SessionFactPayload::InvocationSettled(settlement) => {
                 let Some(current) = self.invocations.get(&settlement.invocation_id).cloned() else {
                     return self.transition_error(fact.sequence, "invocation was not registered");
                 };
-                let registration = match current {
+                let next = match current {
                     InvocationState::Registered { registration }
-                    | InvocationState::Unknown { registration, .. } => registration,
-                    InvocationState::Prepared { .. }
-                    | InvocationState::Dispatched { .. }
-                    | InvocationState::Settled { .. } => {
-                        return self
-                            .transition_error(fact.sequence, "invocation is already settled");
-                    }
-                };
-                self.invocations.insert(
-                    settlement.invocation_id,
-                    InvocationState::Settled {
+                    | InvocationState::Unknown { registration, .. } => InvocationState::Settled {
                         registration,
                         settlement: settlement.clone(),
                     },
-                );
+                    InvocationState::Acknowledged {
+                        preparation,
+                        dispatch,
+                        acknowledgement,
+                    } => InvocationState::DurableSettled {
+                        preparation,
+                        dispatch,
+                        acknowledgement,
+                        settlement: settlement.clone(),
+                    },
+                    InvocationState::DurableUnknown {
+                        preparation,
+                        dispatch,
+                        acknowledgement: Some(acknowledgement),
+                        ..
+                    } if settlement.terminal_evidence_reference.is_some() => {
+                        InvocationState::DurableSettled {
+                            preparation,
+                            dispatch,
+                            acknowledgement,
+                            settlement: settlement.clone(),
+                        }
+                    }
+                    InvocationState::Prepared { .. }
+                    | InvocationState::Dispatched { .. }
+                    | InvocationState::DurableUnknown { .. }
+                    | InvocationState::Settled { .. }
+                    | InvocationState::DurableSettled { .. } => {
+                        return self.transition_error(
+                            fact.sequence,
+                            "invocation cannot settle from its current state",
+                        );
+                    }
+                };
+                self.invocations.insert(settlement.invocation_id, next);
                 Ok(())
             }
             SessionFactPayload::TurnClosed(closed) => {
@@ -1042,6 +1153,32 @@ impl SessionAuthorityHandle {
         self.lock()
             .mark_invocation_dispatched(recorded_at, dispatch)
     }
+
+    pub(crate) fn acknowledge_invocation(
+        &self,
+        recorded_at: &str,
+        acknowledgement: InvocationAcknowledged,
+    ) -> Result<bool> {
+        self.lock()
+            .acknowledge_invocation(recorded_at, acknowledgement)
+    }
+
+    pub(crate) fn settle_invocation(
+        &self,
+        recorded_at: &str,
+        settlement: InvocationSettled,
+    ) -> Result<bool> {
+        self.lock().settle_invocation(recorded_at, settlement)
+    }
+
+    pub(crate) fn classify_invocation_unknown(
+        &self,
+        recorded_at: &str,
+        classification: InvocationClassifiedUnknown,
+    ) -> Result<bool> {
+        self.lock()
+            .classify_invocation_unknown(recorded_at, classification)
+    }
 }
 
 impl SessionAuthority {
@@ -1201,6 +1338,17 @@ impl SessionAuthority {
         recorded_at: &str,
         closure: TurnClosed,
     ) -> Result<bool> {
+        if self.state.invocations.values().any(|invocation| {
+            invocation.turn_id() == closure.turn_id
+                && matches!(
+                    invocation,
+                    InvocationState::Dispatched { .. } | InvocationState::Acknowledged { .. }
+                )
+        }) {
+            return Err(AuthorityError::Invalid(
+                "turn cannot close with an unresolved dispatched invocation".into(),
+            ));
+        }
         self.append(
             command_id,
             recorded_at,
@@ -1229,6 +1377,42 @@ impl SessionAuthority {
             invocation_phase_command_id(dispatch.invocation_id, "dispatched"),
             recorded_at,
             SessionFactPayload::InvocationDispatched(dispatch),
+        )
+    }
+
+    pub(crate) fn acknowledge_invocation(
+        &mut self,
+        recorded_at: &str,
+        acknowledgement: InvocationAcknowledged,
+    ) -> Result<bool> {
+        self.append(
+            invocation_phase_command_id(acknowledgement.invocation_id, "acknowledged"),
+            recorded_at,
+            SessionFactPayload::InvocationAcknowledged(acknowledgement),
+        )
+    }
+
+    pub(crate) fn settle_invocation(
+        &mut self,
+        recorded_at: &str,
+        settlement: InvocationSettled,
+    ) -> Result<bool> {
+        self.append(
+            invocation_phase_command_id(settlement.invocation_id, "settled"),
+            recorded_at,
+            SessionFactPayload::InvocationSettled(settlement),
+        )
+    }
+
+    pub(crate) fn classify_invocation_unknown(
+        &mut self,
+        recorded_at: &str,
+        classification: InvocationClassifiedUnknown,
+    ) -> Result<bool> {
+        self.append(
+            invocation_phase_command_id(classification.invocation_id, "unknown"),
+            recorded_at,
+            SessionFactPayload::InvocationClassifiedUnknown(classification),
         )
     }
 
@@ -1612,27 +1796,43 @@ pub(crate) fn recovery_facts(
     state: &SessionAuthorityState,
     recorded_at: &str,
 ) -> Result<Vec<SessionFact>> {
-    let Some(active) = state.active_turn.as_ref() else {
+    let has_unsettled_durable = state.invocations.values().any(|invocation| {
+        matches!(
+            invocation,
+            InvocationState::Dispatched { .. } | InvocationState::Acknowledged { .. }
+        )
+    });
+    if state.active_turn.is_none() && !has_unsettled_durable {
         return Ok(Vec::new());
-    };
+    }
     let session_id = state
         .session_id
         .as_ref()
-        .ok_or_else(|| AuthorityError::Invalid("active turn has no session".into()))?;
+        .ok_or_else(|| AuthorityError::Invalid("recoverable invocation has no session".into()))?;
     let stream_id = state
         .stream_id
-        .ok_or_else(|| AuthorityError::Invalid("active turn has no stream".into()))?;
+        .ok_or_else(|| AuthorityError::Invalid("recoverable invocation has no stream".into()))?;
     let mut sequence = state.last_sequence;
     let mut facts = Vec::new();
+    let mut classified_durable = false;
     for invocation in state.invocations.values() {
-        let InvocationState::Registered { registration } = invocation else {
-            continue;
+        let (invocation_id, recovery_rule_version) = match invocation {
+            InvocationState::Dispatched { preparation, .. }
+            | InvocationState::Acknowledged { preparation, .. } => {
+                classified_durable = true;
+                (preparation.invocation_id, 2)
+            }
+            InvocationState::Registered { registration }
+                if state
+                    .active_turn
+                    .as_ref()
+                    .is_some_and(|active| active.turn_id == registration.turn_id) =>
+            {
+                (registration.invocation_id, 1)
+            }
+            _ => continue,
         };
-        if registration.turn_id != active.turn_id {
-            continue;
-        }
         sequence += 1;
-        let invocation_id = registration.invocation_id;
         facts.push(recovery_fact(
             session_id,
             stream_id,
@@ -1643,25 +1843,27 @@ pub(crate) fn recovery_facts(
             SessionFactPayload::InvocationClassifiedUnknown(InvocationClassifiedUnknown {
                 invocation_id,
                 reason_code: "runtime_lost".into(),
-                recovery_rule_version: 1,
+                recovery_rule_version,
             }),
         )?);
     }
-    sequence += 1;
-    facts.push(recovery_fact(
-        session_id,
-        stream_id,
-        sequence,
-        recorded_at,
-        "turn.closed",
-        active.turn_id,
-        SessionFactPayload::TurnClosed(TurnClosed {
-            turn_id: active.turn_id,
-            outcome: TurnOutcome::Interrupted,
-            reason_code: "runtime_lost".into(),
-            recovery_rule_version: Some(1),
-        }),
-    )?);
+    if let Some(active) = state.active_turn.as_ref() {
+        sequence += 1;
+        facts.push(recovery_fact(
+            session_id,
+            stream_id,
+            sequence,
+            recorded_at,
+            "turn.closed",
+            active.turn_id,
+            SessionFactPayload::TurnClosed(TurnClosed {
+                turn_id: active.turn_id,
+                outcome: TurnOutcome::Interrupted,
+                reason_code: "runtime_lost".into(),
+                recovery_rule_version: Some(if classified_durable { 2 } else { 1 }),
+            }),
+        )?);
+    }
     Ok(facts)
 }
 
@@ -1903,6 +2105,12 @@ mod tests {
             }) if stored == &preparation && stored_dispatch == &dispatch
         ));
         assert!(state.active_turn.is_none());
+        let recovery = recovery_facts(&state, NOW).unwrap();
+        assert_eq!(recovery.len(), 1);
+        assert!(matches!(
+            recovery[0].payload,
+            SessionFactPayload::InvocationClassifiedUnknown(_)
+        ));
     }
 
     #[test]
@@ -1937,7 +2145,78 @@ mod tests {
     }
 
     #[test]
-    fn slice_three_recovery_preserves_new_invocation_phases_without_classifying_them() {
+    fn acknowledged_invocation_settles_before_turn_closure() {
+        let session_id = "session-settlement";
+        let stream_id = Uuid::new_v4();
+        let prompt_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let preparation = prepared(turn_id, "call-1");
+        let acknowledgement = InvocationAcknowledged {
+            invocation_id: preparation.invocation_id,
+            lease_id: preparation.lease_id,
+        };
+        let settlement = InvocationSettled {
+            invocation_id: preparation.invocation_id,
+            outcome: InvocationOutcome::Completed,
+            terminal_evidence_reference: None,
+        };
+        let state = reconstruct(&[
+            created(session_id, stream_id),
+            admitted(session_id, stream_id, 2, prompt_id, "run"),
+            started(session_id, stream_id, 3, prompt_id, turn_id),
+            fact(
+                session_id,
+                stream_id,
+                4,
+                SessionFactPayload::InvocationPrepared(preparation.clone()),
+            ),
+            fact(
+                session_id,
+                stream_id,
+                5,
+                SessionFactPayload::InvocationDispatched(InvocationDispatched {
+                    invocation_id: preparation.invocation_id,
+                    lease_id: preparation.lease_id,
+                }),
+            ),
+            fact(
+                session_id,
+                stream_id,
+                6,
+                SessionFactPayload::InvocationAcknowledged(acknowledgement.clone()),
+            ),
+            fact(
+                session_id,
+                stream_id,
+                7,
+                SessionFactPayload::InvocationSettled(settlement.clone()),
+            ),
+            fact(
+                session_id,
+                stream_id,
+                8,
+                SessionFactPayload::TurnClosed(TurnClosed {
+                    turn_id,
+                    outcome: TurnOutcome::Completed,
+                    reason_code: "completed".into(),
+                    recovery_rule_version: None,
+                }),
+            ),
+        ])
+        .unwrap();
+        assert!(matches!(
+            state.invocations.get(&preparation.invocation_id),
+            Some(InvocationState::DurableSettled {
+                acknowledgement: stored_acknowledgement,
+                settlement: stored_settlement,
+                ..
+            }) if stored_acknowledgement == &acknowledgement && stored_settlement == &settlement
+        ));
+        assert!(state.active_turn.is_none());
+    }
+
+    #[test]
+    fn recovery_preserves_prepared_and_classifies_dispatched_unknown() {
         let session_id = "session-recovery-phases";
         let stream_id = Uuid::new_v4();
         let prompt_id = Uuid::new_v4();
@@ -1972,20 +2251,26 @@ mod tests {
         ])
         .unwrap();
         let recovery = recovery_facts(&state, NOW).unwrap();
-        assert_eq!(recovery.len(), 1);
+        assert_eq!(recovery.len(), 2);
         assert!(matches!(
             recovery[0].payload,
+            SessionFactPayload::InvocationClassifiedUnknown(_)
+        ));
+        assert!(matches!(
+            recovery[1].payload,
             SessionFactPayload::TurnClosed(_)
         ));
         let mut recovered = state;
-        recovered.apply(&recovery[0]).unwrap();
+        for fact in &recovery {
+            recovered.apply(fact).unwrap();
+        }
         assert!(matches!(
             recovered.invocations.get(&first.invocation_id),
             Some(InvocationState::Prepared { .. })
         ));
         assert!(matches!(
             recovered.invocations.get(&second.invocation_id),
-            Some(InvocationState::Dispatched { .. })
+            Some(InvocationState::DurableUnknown { .. })
         ));
     }
 
@@ -2050,6 +2335,10 @@ mod tests {
                 turn_id: turn,
                 call_id: "call-1".into(),
                 owner_generation_id: Some("tools-1".into()),
+            }),
+            SessionFactPayload::InvocationAcknowledged(InvocationAcknowledged {
+                invocation_id: invocation,
+                lease_id: Uuid::new_v4(),
             }),
             SessionFactPayload::InvocationClassifiedUnknown(InvocationClassifiedUnknown {
                 invocation_id: invocation,

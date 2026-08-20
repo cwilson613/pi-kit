@@ -543,6 +543,8 @@ impl EventBus {
             commands: Vec<CommandDefinition>,
             command_aliases: Vec<omegon_traits::CommandAlias>,
             internal_tools: Vec<String>,
+            lifecycle: Option<RuntimeLifecyclePolicy>,
+            composition_transition: Option<RuntimeCompositionTransitionPolicy>,
         }
 
         let replaced_names = self
@@ -609,6 +611,8 @@ impl EventBus {
                 commands: feature.commands(),
                 command_aliases: feature.command_aliases(),
                 internal_tools,
+                lifecycle: feature.runtime_lifecycle_policy(),
+                composition_transition: feature.runtime_transition_policy(),
             });
         }
         frozen.sort_by_key(|feature| feature.feature_index);
@@ -885,7 +889,7 @@ impl EventBus {
                     dependencies: vec![],
                     conflicts: vec![],
                     replaces: vec![],
-                    lifecycle: RuntimeLifecyclePolicy {
+                    lifecycle: feature.lifecycle.clone().unwrap_or(RuntimeLifecyclePolicy {
                         requirement: if external {
                             RuntimeLifecycleRequirement::Optional
                         } else {
@@ -899,12 +903,14 @@ impl EventBus {
                         readiness_timeout_ms: 0,
                         heartbeat_timeout_ms: None,
                         restart_limit: 0,
-                    },
-                    transition: RuntimeCompositionTransitionPolicy {
-                        activation_boundary: RuntimeActivationBoundary::Boot,
-                        cleanup: RuntimeCleanupRequirement::BestEffort,
-                        cleanup_timeout_ms: 0,
-                    },
+                    }),
+                    transition: feature.composition_transition.clone().unwrap_or(
+                        RuntimeCompositionTransitionPolicy {
+                            activation_boundary: RuntimeActivationBoundary::Boot,
+                            cleanup: RuntimeCleanupRequirement::BestEffort,
+                            cleanup_timeout_ms: 0,
+                        },
+                    ),
                     capabilities,
                     groups: vec![],
                 }
@@ -1554,7 +1560,11 @@ impl Default for EventBus {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
+    use omegon_traits::{
+        ContentBlock, Feature, RuntimeActivationBoundary, RuntimeCleanupRequirement,
+        RuntimeCompositionTransitionPolicy, RuntimeFailureDisposition, RuntimeLifecyclePolicy,
+        RuntimeLifecycleRequirement, ToolDefinition, ToolResult,
+    };
     use serde_json::json;
 
     /// Test feature that counts events and provides a tool.
@@ -1651,6 +1661,24 @@ mod tests {
             omegon_traits::ToolProvenance::Extension {
                 name: self.name().into(),
             }
+        }
+
+        fn runtime_lifecycle_policy(&self) -> Option<RuntimeLifecyclePolicy> {
+            Some(RuntimeLifecyclePolicy {
+                requirement: RuntimeLifecycleRequirement::Optional,
+                failure_disposition: RuntimeFailureDisposition::Quarantine,
+                readiness_timeout_ms: 2_500,
+                heartbeat_timeout_ms: Some(10_000),
+                restart_limit: 3,
+            })
+        }
+
+        fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
+            Some(RuntimeCompositionTransitionPolicy {
+                activation_boundary: RuntimeActivationBoundary::Boot,
+                cleanup: RuntimeCleanupRequirement::Strict,
+                cleanup_timeout_ms: 500,
+            })
         }
 
         fn tools(&self) -> Vec<ToolDefinition> {
@@ -1862,6 +1890,33 @@ mod tests {
                 .declarations
                 .iter()
                 .any(|declaration| declaration.id.as_str() == "tool:count")
+        );
+    }
+
+    #[test]
+    fn negotiated_lifecycle_policy_is_frozen_into_registry() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(ExtensionCounterFeature));
+        bus.finalize();
+
+        let graph = bus.accepted_graph.as_ref().expect("accepted graph");
+        let declaration = graph
+            .declarations
+            .values()
+            .find(|declaration| declaration.id.as_str() == "feature:recro-coe-agent")
+            .expect("extension contribution declaration");
+
+        assert_eq!(declaration.lifecycle.readiness_timeout_ms, 2_500);
+        assert_eq!(declaration.lifecycle.heartbeat_timeout_ms, Some(10_000));
+        assert_eq!(declaration.lifecycle.restart_limit, 3);
+        assert_eq!(
+            declaration.lifecycle.failure_disposition,
+            RuntimeFailureDisposition::Quarantine
+        );
+        assert_eq!(declaration.transition.cleanup_timeout_ms, 500);
+        assert_eq!(
+            declaration.transition.cleanup,
+            RuntimeCleanupRequirement::Strict
         );
     }
 

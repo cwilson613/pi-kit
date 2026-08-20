@@ -2452,6 +2452,17 @@ pub trait Feature: Send + Sync {
         ToolProvenance::BuiltIn
     }
 
+    /// Dynamic lifecycle policy frozen with this feature's declaration.
+    /// Static features may return `None` and use the composition defaults.
+    fn runtime_lifecycle_policy(&self) -> Option<RuntimeLifecyclePolicy> {
+        None
+    }
+
+    /// Dynamic activation and cleanup policy frozen with this feature's declaration.
+    fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
+        None
+    }
+
     /// Tool definitions this feature provides. Called once at startup.
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![]

@@ -97,6 +97,26 @@ impl Feature for HttpPluginFeature {
         }
     }
 
+    fn runtime_lifecycle_policy(&self) -> Option<omegon_traits::RuntimeLifecyclePolicy> {
+        Some(omegon_traits::RuntimeLifecyclePolicy {
+            requirement: omegon_traits::RuntimeLifecycleRequirement::Optional,
+            failure_disposition: omegon_traits::RuntimeFailureDisposition::DegradeLocally,
+            readiness_timeout_ms: 15_000,
+            heartbeat_timeout_ms: None,
+            restart_limit: 0,
+        })
+    }
+
+    fn runtime_transition_policy(
+        &self,
+    ) -> Option<omegon_traits::RuntimeCompositionTransitionPolicy> {
+        Some(omegon_traits::RuntimeCompositionTransitionPolicy {
+            activation_boundary: omegon_traits::RuntimeActivationBoundary::Boot,
+            cleanup: omegon_traits::RuntimeCleanupRequirement::BestEffort,
+            cleanup_timeout_ms: 500,
+        })
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         self.manifest
             .tools

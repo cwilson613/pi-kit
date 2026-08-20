@@ -290,6 +290,7 @@ pub struct McpFeature {
     /// Explicit MCP HostAction permissions by server name.
     host_action_policies: HashMap<String, McpHostActionPolicy>,
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    readiness_timeout_ms: u64,
 }
 
 #[derive(Clone)]
@@ -558,6 +559,12 @@ impl McpFeature {
             progress,
             host_action_policies,
             admission,
+            readiness_timeout_ms: servers
+                .values()
+                .map(|server| server.timeout_secs.saturating_mul(1000))
+                .max()
+                .unwrap_or(30_000)
+                .max(1),
         })
     }
 
@@ -910,6 +917,26 @@ impl Feature for McpFeature {
         omegon_traits::ToolProvenance::Extension {
             name: self.feature_name.clone(),
         }
+    }
+
+    fn runtime_lifecycle_policy(&self) -> Option<omegon_traits::RuntimeLifecyclePolicy> {
+        Some(omegon_traits::RuntimeLifecyclePolicy {
+            requirement: omegon_traits::RuntimeLifecycleRequirement::Optional,
+            failure_disposition: omegon_traits::RuntimeFailureDisposition::Quarantine,
+            readiness_timeout_ms: self.readiness_timeout_ms,
+            heartbeat_timeout_ms: None,
+            restart_limit: 0,
+        })
+    }
+
+    fn runtime_transition_policy(
+        &self,
+    ) -> Option<omegon_traits::RuntimeCompositionTransitionPolicy> {
+        Some(omegon_traits::RuntimeCompositionTransitionPolicy {
+            activation_boundary: omegon_traits::RuntimeActivationBoundary::Boot,
+            cleanup: omegon_traits::RuntimeCleanupRequirement::BestEffort,
+            cleanup_timeout_ms: 500,
+        })
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
@@ -2190,6 +2217,7 @@ manual = true
                 omegon_traits::RuntimeDynamicSourceKind::McpProcess,
             )
             .unwrap(),
+            readiness_timeout_ms: 30_000,
         }
     }
 

@@ -48,6 +48,7 @@ jobs:
 
       - name: Update stable formula
         run: |
+          cp omegon/homebrew/Formula/omegon.rb homebrew-tap/Formula/omegon.rb
           python3 omegon/scripts/release_manifest.py update-homebrew \
             --manifest release-manifest.json \
             --formula homebrew-tap/Formula/omegon.rb
@@ -56,6 +57,11 @@ jobs:
 
       - name: Validate formula syntax
         run: brew style homebrew-tap/Formula/omegon.rb 2>/dev/null || ruby -c homebrew-tap/Formula/omegon.rb
+
+      - name: Verify formula archives
+        run: |
+          python3 omegon/scripts/verify_homebrew_formula.py \
+            --formula homebrew-tap/Formula/omegon.rb
 
       - name: Commit and push to tap
         run: |

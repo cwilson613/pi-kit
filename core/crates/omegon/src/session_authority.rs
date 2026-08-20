@@ -6,6 +6,11 @@ use std::{
 };
 
 use chrono::DateTime;
+use omegon_traits::{
+    RuntimeCapabilityId, RuntimeCapabilityTransitionPolicy, RuntimeCompositionGenerationId,
+    RuntimeContributionGenerationId, RuntimeContributionId, RuntimeEffect, RuntimeExecutionPolicy,
+    RuntimeInvocationKind, RuntimePrincipalClass, RuntimeSurface,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -18,6 +23,8 @@ const REDUCER_VERSION: u16 = 1;
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
 const RECOVERY_NAMESPACE: Uuid = Uuid::from_u128(0x5907_b852_acde_4b53_a6b1_2d1a_c964_868a);
+const INVOCATION_COMMAND_NAMESPACE: Uuid =
+    Uuid::from_u128(0x39b4_58e2_e917_4210_9b34_d45d_c14d_48da);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AuthorityError {
@@ -166,6 +173,36 @@ pub(crate) struct InvocationRegistered {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct InvocationPrepared {
+    pub(crate) invocation_id: Uuid,
+    pub(crate) lease_id: Uuid,
+    pub(crate) turn_id: Uuid,
+    pub(crate) call_id: String,
+    pub(crate) deduplication_id: Option<String>,
+    pub(crate) invocation_kind: RuntimeInvocationKind,
+    pub(crate) invocation_name: String,
+    pub(crate) capability_id: RuntimeCapabilityId,
+    pub(crate) contribution_id: RuntimeContributionId,
+    pub(crate) owner_generation_id: RuntimeContributionGenerationId,
+    pub(crate) issue_generation_id: RuntimeCompositionGenerationId,
+    pub(crate) principal: String,
+    pub(crate) principal_class: RuntimePrincipalClass,
+    pub(crate) surface: RuntimeSurface,
+    pub(crate) admitted_effects: Vec<RuntimeEffect>,
+    pub(crate) execution: RuntimeExecutionPolicy,
+    pub(crate) transition: RuntimeCapabilityTransitionPolicy,
+    pub(crate) surfaces: Vec<RuntimeSurface>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InvocationDispatched {
+    pub(crate) invocation_id: Uuid,
+    pub(crate) lease_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct InvocationClassifiedUnknown {
     pub(crate) invocation_id: Uuid,
     pub(crate) reason_code: String,
@@ -198,6 +235,8 @@ pub(crate) enum SessionFactPayload {
     TurnStarted(TurnStarted),
     TurnInterruptionRequested(TurnInterruptionRequested),
     InvocationRegistered(InvocationRegistered),
+    InvocationPrepared(InvocationPrepared),
+    InvocationDispatched(InvocationDispatched),
     InvocationClassifiedUnknown(InvocationClassifiedUnknown),
     InvocationSettled(InvocationSettled),
     TurnClosed(TurnClosed),
@@ -213,6 +252,8 @@ impl SessionFactPayload {
             Self::TurnStarted(_) => "turn.started",
             Self::TurnInterruptionRequested(_) => "turn.interruption_requested",
             Self::InvocationRegistered(_) => "invocation.registered",
+            Self::InvocationPrepared(_) => "invocation.prepared",
+            Self::InvocationDispatched(_) => "invocation.dispatched",
             Self::InvocationClassifiedUnknown(_) => "invocation.classified_unknown",
             Self::InvocationSettled(_) => "invocation.settled",
             Self::TurnClosed(_) => "turn.closed",
@@ -228,6 +269,8 @@ impl SessionFactPayload {
             Self::TurnStarted(value) => serde_json::to_value(value),
             Self::TurnInterruptionRequested(value) => serde_json::to_value(value),
             Self::InvocationRegistered(value) => serde_json::to_value(value),
+            Self::InvocationPrepared(value) => serde_json::to_value(value),
+            Self::InvocationDispatched(value) => serde_json::to_value(value),
             Self::InvocationClassifiedUnknown(value) => serde_json::to_value(value),
             Self::InvocationSettled(value) => serde_json::to_value(value),
             Self::TurnClosed(value) => serde_json::to_value(value),
@@ -339,6 +382,12 @@ impl SessionFact {
             "invocation.registered" => {
                 decode_payload(wire.payload).map(SessionFactPayload::InvocationRegistered)
             }
+            "invocation.prepared" => {
+                decode_payload(wire.payload).map(SessionFactPayload::InvocationPrepared)
+            }
+            "invocation.dispatched" => {
+                decode_payload(wire.payload).map(SessionFactPayload::InvocationDispatched)
+            }
             "invocation.classified_unknown" => {
                 decode_payload(wire.payload).map(SessionFactPayload::InvocationClassifiedUnknown)
             }
@@ -412,6 +461,13 @@ pub(crate) enum InvocationState {
     Registered {
         registration: InvocationRegistered,
     },
+    Prepared {
+        preparation: InvocationPrepared,
+    },
+    Dispatched {
+        preparation: InvocationPrepared,
+        dispatch: InvocationDispatched,
+    },
     Unknown {
         registration: InvocationRegistered,
         classification: InvocationClassifiedUnknown,
@@ -423,11 +479,25 @@ pub(crate) enum InvocationState {
 }
 
 impl InvocationState {
-    fn registration(&self) -> &InvocationRegistered {
+    fn turn_id(&self) -> Uuid {
         match self {
             Self::Registered { registration }
             | Self::Unknown { registration, .. }
-            | Self::Settled { registration, .. } => registration,
+            | Self::Settled { registration, .. } => registration.turn_id,
+            Self::Prepared { preparation } | Self::Dispatched { preparation, .. } => {
+                preparation.turn_id
+            }
+        }
+    }
+
+    fn call_id(&self) -> &str {
+        match self {
+            Self::Registered { registration }
+            | Self::Unknown { registration, .. }
+            | Self::Settled { registration, .. } => &registration.call_id,
+            Self::Prepared { preparation } | Self::Dispatched { preparation, .. } => {
+                &preparation.call_id
+            }
         }
     }
 }
@@ -654,6 +724,67 @@ impl SessionAuthorityState {
                 );
                 Ok(())
             }
+            SessionFactPayload::InvocationPrepared(preparation) => {
+                let Some(active) = self.active_turn.as_ref() else {
+                    return self.transition_error(fact.sequence, "there is no active turn");
+                };
+                if active.turn_id != preparation.turn_id {
+                    return self.transition_error(fact.sequence, "invocation targets a stale turn");
+                }
+                if active
+                    .accepted_interruption
+                    .as_ref()
+                    .is_some_and(|request| request.kind == InterruptionKind::Revoke)
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "invocation cannot prepare after revocation",
+                    );
+                }
+                if self.invocations.contains_key(&preparation.invocation_id) {
+                    return self
+                        .transition_error(fact.sequence, "invocation identity is already present");
+                }
+                if self.invocations.values().any(|invocation| {
+                    invocation.turn_id() == preparation.turn_id
+                        && invocation.call_id() == preparation.call_id
+                }) {
+                    return self.transition_error(
+                        fact.sequence,
+                        "invocation call identity is already present in this turn",
+                    );
+                }
+                self.invocations.insert(
+                    preparation.invocation_id,
+                    InvocationState::Prepared {
+                        preparation: preparation.clone(),
+                    },
+                );
+                Ok(())
+            }
+            SessionFactPayload::InvocationDispatched(dispatch) => {
+                let Some(current) = self.invocations.get(&dispatch.invocation_id).cloned() else {
+                    return self.transition_error(fact.sequence, "invocation was not prepared");
+                };
+                let InvocationState::Prepared { preparation } = current else {
+                    return self
+                        .transition_error(fact.sequence, "invocation is not awaiting dispatch");
+                };
+                if preparation.lease_id != dispatch.lease_id {
+                    return self.transition_error(
+                        fact.sequence,
+                        "dispatch lease does not match prepared invocation",
+                    );
+                }
+                self.invocations.insert(
+                    dispatch.invocation_id,
+                    InvocationState::Dispatched {
+                        preparation,
+                        dispatch: dispatch.clone(),
+                    },
+                );
+                Ok(())
+            }
             SessionFactPayload::InvocationClassifiedUnknown(classification) => {
                 let Some(current) = self.invocations.get(&classification.invocation_id).cloned()
                 else {
@@ -681,7 +812,9 @@ impl SessionAuthorityState {
                 let registration = match current {
                     InvocationState::Registered { registration }
                     | InvocationState::Unknown { registration, .. } => registration,
-                    InvocationState::Settled { .. } => {
+                    InvocationState::Prepared { .. }
+                    | InvocationState::Dispatched { .. }
+                    | InvocationState::Settled { .. } => {
                         return self
                             .transition_error(fact.sequence, "invocation is already settled");
                     }
@@ -703,7 +836,7 @@ impl SessionAuthorityState {
                     return self.transition_error(fact.sequence, "closure targets a stale turn");
                 }
                 if self.invocations.values().any(|invocation| {
-                    invocation.registration().turn_id == closed.turn_id
+                    invocation.turn_id() == closed.turn_id
                         && matches!(invocation, InvocationState::Registered { .. })
                 }) {
                     return self.transition_error(
@@ -959,6 +1092,30 @@ impl SessionAuthority {
         )
     }
 
+    pub(crate) fn prepare_invocation(
+        &mut self,
+        recorded_at: &str,
+        preparation: InvocationPrepared,
+    ) -> Result<bool> {
+        self.append(
+            invocation_phase_command_id(preparation.invocation_id, "prepared"),
+            recorded_at,
+            SessionFactPayload::InvocationPrepared(preparation),
+        )
+    }
+
+    pub(crate) fn mark_invocation_dispatched(
+        &mut self,
+        recorded_at: &str,
+        dispatch: InvocationDispatched,
+    ) -> Result<bool> {
+        self.append(
+            invocation_phase_command_id(dispatch.invocation_id, "dispatched"),
+            recorded_at,
+            SessionFactPayload::InvocationDispatched(dispatch),
+        )
+    }
+
     fn append(
         &mut self,
         command_id: Uuid,
@@ -975,6 +1132,13 @@ impl SessionAuthority {
             payload,
         )
     }
+}
+
+pub(crate) fn invocation_phase_command_id(invocation_id: Uuid, phase: &str) -> Uuid {
+    Uuid::new_v5(
+        &INVOCATION_COMMAND_NAMESPACE,
+        format!("{invocation_id}:{phase}:1").as_bytes(),
+    )
 }
 
 fn append_payload(
@@ -1344,13 +1508,14 @@ pub(crate) fn recovery_facts(
     let mut sequence = state.last_sequence;
     let mut facts = Vec::new();
     for invocation in state.invocations.values() {
-        if invocation.registration().turn_id != active.turn_id
-            || !matches!(invocation, InvocationState::Registered { .. })
-        {
+        let InvocationState::Registered { registration } = invocation else {
+            continue;
+        };
+        if registration.turn_id != active.turn_id {
             continue;
         }
         sequence += 1;
-        let invocation_id = invocation.registration().invocation_id;
+        let invocation_id = registration.invocation_id;
         facts.push(recovery_fact(
             session_id,
             stream_id,
@@ -1504,6 +1669,43 @@ mod tests {
         )
     }
 
+    fn prepared(turn_id: Uuid, call_id: &str) -> InvocationPrepared {
+        let effects = vec![RuntimeEffect::FilesystemRead];
+        InvocationPrepared {
+            invocation_id: Uuid::new_v4(),
+            lease_id: Uuid::new_v4(),
+            turn_id,
+            call_id: call_id.into(),
+            deduplication_id: Some(call_id.into()),
+            invocation_kind: RuntimeInvocationKind::Tool,
+            invocation_name: "read".into(),
+            capability_id: RuntimeCapabilityId::new("tool:read").unwrap(),
+            contribution_id: RuntimeContributionId::new("feature:reader").unwrap(),
+            owner_generation_id: RuntimeContributionGenerationId::new("contribution:reader-v1")
+                .unwrap(),
+            issue_generation_id: RuntimeCompositionGenerationId::new("composition:test").unwrap(),
+            principal: "model".into(),
+            principal_class: RuntimePrincipalClass::Model,
+            surface: RuntimeSurface::Model,
+            admitted_effects: effects,
+            execution: RuntimeExecutionPolicy {
+                principals: vec![RuntimePrincipalClass::Model],
+                timeout_class: omegon_traits::RuntimeTimeoutClass::Interactive,
+                retry_class: omegon_traits::RuntimeRetryClass::IdempotentFailure,
+                idempotency: omegon_traits::RuntimeIdempotency::Idempotent,
+                deduplication: omegon_traits::RuntimeDeduplication::OwnerEnforcedStableCallId,
+                parallelism: omegon_traits::RuntimeParallelism::Serial,
+                transaction: omegon_traits::RuntimeTransactionBehavior::None,
+                max_attempts: Some(2),
+            },
+            transition: RuntimeCapabilityTransitionPolicy {
+                authority_narrowing: omegon_traits::RuntimeAuthorityNarrowing::CompleteExisting,
+                active_call_timeout_ms: 30_000,
+            },
+            surfaces: vec![RuntimeSurface::Model],
+        }
+    }
+
     #[test]
     fn fact_round_trip_is_strict_and_stable() {
         let fact = created("session-1", Uuid::new_v4());
@@ -1523,6 +1725,151 @@ mod tests {
                 .to_string()
                 .contains("unsupported session.created event version")
         );
+    }
+
+    #[test]
+    fn prepared_and_dispatched_facts_round_trip_and_reduce_in_order() {
+        let session_id = "session-invocation";
+        let stream_id = Uuid::new_v4();
+        let prompt_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let preparation = prepared(turn_id, "call-1");
+        let dispatch = InvocationDispatched {
+            invocation_id: preparation.invocation_id,
+            lease_id: preparation.lease_id,
+        };
+        let prepared_fact = fact(
+            session_id,
+            stream_id,
+            4,
+            SessionFactPayload::InvocationPrepared(preparation.clone()),
+        );
+        let dispatched_fact = fact(
+            session_id,
+            stream_id,
+            5,
+            SessionFactPayload::InvocationDispatched(dispatch.clone()),
+        );
+        assert_eq!(
+            SessionFact::decode(&prepared_fact.encode().unwrap()).unwrap(),
+            prepared_fact
+        );
+        assert_eq!(
+            SessionFact::decode(&dispatched_fact.encode().unwrap()).unwrap(),
+            dispatched_fact
+        );
+
+        let state = reconstruct(&[
+            created(session_id, stream_id),
+            admitted(session_id, stream_id, 2, prompt_id, "run"),
+            started(session_id, stream_id, 3, prompt_id, turn_id),
+            prepared_fact,
+            dispatched_fact,
+            fact(
+                session_id,
+                stream_id,
+                6,
+                SessionFactPayload::TurnClosed(TurnClosed {
+                    turn_id,
+                    outcome: TurnOutcome::Completed,
+                    reason_code: "worker_completed".into(),
+                    recovery_rule_version: None,
+                }),
+            ),
+        ])
+        .unwrap();
+        assert!(matches!(
+            state.invocations.get(&preparation.invocation_id),
+            Some(InvocationState::Dispatched {
+                preparation: stored,
+                dispatch: stored_dispatch,
+            }) if stored == &preparation && stored_dispatch == &dispatch
+        ));
+        assert!(state.active_turn.is_none());
+    }
+
+    #[test]
+    fn dispatch_requires_matching_prepared_lease() {
+        let session_id = "session-mismatch";
+        let stream_id = Uuid::new_v4();
+        let prompt_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let preparation = prepared(turn_id, "call-1");
+        let error = reconstruct(&[
+            created(session_id, stream_id),
+            admitted(session_id, stream_id, 2, prompt_id, "run"),
+            started(session_id, stream_id, 3, prompt_id, turn_id),
+            fact(
+                session_id,
+                stream_id,
+                4,
+                SessionFactPayload::InvocationPrepared(preparation.clone()),
+            ),
+            fact(
+                session_id,
+                stream_id,
+                5,
+                SessionFactPayload::InvocationDispatched(InvocationDispatched {
+                    invocation_id: preparation.invocation_id,
+                    lease_id: Uuid::new_v4(),
+                }),
+            ),
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("dispatch lease does not match"));
+    }
+
+    #[test]
+    fn slice_three_recovery_preserves_new_invocation_phases_without_classifying_them() {
+        let session_id = "session-recovery-phases";
+        let stream_id = Uuid::new_v4();
+        let prompt_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let first = prepared(turn_id, "prepared-call");
+        let second = prepared(turn_id, "dispatched-call");
+        let state = reconstruct(&[
+            created(session_id, stream_id),
+            admitted(session_id, stream_id, 2, prompt_id, "run"),
+            started(session_id, stream_id, 3, prompt_id, turn_id),
+            fact(
+                session_id,
+                stream_id,
+                4,
+                SessionFactPayload::InvocationPrepared(first.clone()),
+            ),
+            fact(
+                session_id,
+                stream_id,
+                5,
+                SessionFactPayload::InvocationPrepared(second.clone()),
+            ),
+            fact(
+                session_id,
+                stream_id,
+                6,
+                SessionFactPayload::InvocationDispatched(InvocationDispatched {
+                    invocation_id: second.invocation_id,
+                    lease_id: second.lease_id,
+                }),
+            ),
+        ])
+        .unwrap();
+        let recovery = recovery_facts(&state, NOW).unwrap();
+        assert_eq!(recovery.len(), 1);
+        assert!(matches!(
+            recovery[0].payload,
+            SessionFactPayload::TurnClosed(_)
+        ));
+        let mut recovered = state;
+        recovered.apply(&recovery[0]).unwrap();
+        assert!(matches!(
+            recovered.invocations.get(&first.invocation_id),
+            Some(InvocationState::Prepared { .. })
+        ));
+        assert!(matches!(
+            recovered.invocations.get(&second.invocation_id),
+            Some(InvocationState::Dispatched { .. })
+        ));
     }
 
     #[test]

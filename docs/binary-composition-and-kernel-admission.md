@@ -156,6 +156,8 @@ Executable plugin paths now use the same policy and permit. A guarded plugin dir
 
 Slice 2.5 lifecycle records add owner and composition-generation identity, last completed lifecycle boundary, bounded coded reasons, restart/backoff and heartbeat evidence, cleanup assurance, and cleanup outcome. Separate resource records cover process trees, tasks, sockets, subscriptions, temporary directories, durable writers, and remote services. Validation rejects unbounded reasons, strict cleanup paired with unverified outcomes, and false host-ownership claims for remote services. These renderer-neutral records describe evidence; the runtime lifecycle owner that produces them is the next implementation lane.
 
+The transport-neutral lifecycle owner now models one quarantined candidate with one absolute readiness deadline, per-contribution lifecycle records, and generation-bound resource cleanup callbacks. Promotion requires every contribution to reach readiness and every strict-cleanup owner to have strict resource assurance; the non-awaiting publication callback must succeed before active-generation state changes. Rejection and publication failure run bounded cleanup in reverse activation order and preserve the prior active generation. Successful replacement promotes the new generation before retiring the old resource set, recording unverified cleanup rather than claiming settlement when a deadline expires. Concrete extension/MCP resource adapters and EventBus integration remain in progress.
+
 ### Design laws
 
 1. **Composition is not admission.** Compiled or installed capability means resident, not callable or visible.

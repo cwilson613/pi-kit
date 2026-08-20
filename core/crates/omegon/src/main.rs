@@ -59,6 +59,7 @@ mod command_registry;
 mod container_runtime;
 mod context;
 mod contribution_graph;
+mod contribution_lifecycle;
 mod control;
 mod control_actions;
 mod control_runtime;

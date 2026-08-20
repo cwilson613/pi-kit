@@ -19,6 +19,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 ### Added
 
 - Added the compiled Slice-1 durable session-authority substrate with strict versioned prompt, FIFO queue, turn, interruption, minimum invocation, and terminal facts; contiguous replay with duplicate identity rejection; content-addressed attachment staging; synced adjacent JSONL plus replaceable snapshot caches; and deterministic idempotent runtime-loss closure. Interactive, ACP, daemon, Web/IPC, and bounded hosts now route overlapping prompt, queue, cancellation, timeout, and terminal semantics through one frontend-neutral supervisor per session, while an identity-fenced compatibility adapter commits explicit loop terminal intents without trusting advisory broadcasts.
+- Clarified session, resume, cancellation, IPC, Web, and daemon documentation to distinguish transport acceptance from durable admission, cancellation request from terminal closure, and compatibility resume from complete semantic replay.
 
 - Added the independently runnable `omegon-maintain` workspace executable with compiled maintenance identity/composition reporting; bounded, descriptor-confined diagnostics; crash-safe contribution disable/quarantine, session quarantine, and stale ownership-record pruning; stable list pagination; and bounded hash-chained audit inspection/verification. Dependency-boundary and poisoned-startup gates prove the TUI, default loop, provider/project/extension/MCP inputs, mutable packs, memory, lifecycle, and orchestration remain absent.
 

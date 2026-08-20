@@ -28,7 +28,7 @@ Definition of done for every group: classify documentation impact before impleme
 - [x] 1.4 Route interactive, ACP, daemon, Web/IPC, and bounded ingress through the owning session supervisor where semantics overlap. Documentation impact: updated private protocol/supervisor/daemon architecture and the public sessions page; no command syntax or canonical snippets changed.
 - [x] 1.5 Add a compatibility adapter that submits loop terminal/session intents to the kernel state machine; complete loop reduction in Slice 4. Documentation impact: internal protocol/supervisor ownership only; no public commands, site behavior, or snippets changed.
 - [x] 1.6 Add lost/coalesced event, restart, cursor, second-turn, cancellation, and exactly-once terminal regressions. Documentation impact: regression coverage and strict duplicate-event rejection reinforce the existing protocol; no public commands, site behavior, or snippets changed.
-- [ ] 1.7 Co-deliver session protocol/recovery docs and applicable operator-facing state, resume, cancellation, and client behavior documentation.
+- [x] 1.7 Co-deliver session protocol/recovery docs and applicable operator-facing state, resume, cancellation, and client behavior documentation. Documentation impact: corrected private protocol/supervisor/daemon/IPC/Web contracts and public session, migration, and cancellation guidance; no command syntax or canonical snippets changed.
 
 ## 2. Composition-authoritative contribution graph
 <!-- specs: kernel-composition/documentation, runtime-capabilities/declarations, runtime-contributions/lifecycle -->

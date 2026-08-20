@@ -261,11 +261,24 @@ lease_id
 
 Dispatch is durable after exactly-once lease claim and current-generation
 revalidation but before host transport or local owner entry. It must reference
-the matching prepared lease and can occur only once. Through Slice 3.3,
-recovery retains new `Prepared` and `Dispatched` states without classifying
-them as acknowledged, settled, or unknown; Slice 3.4 owns those transitions.
-The authoritative JSONL append remains committed even if replacement of the
-derived snapshot cache fails.
+the matching prepared lease and can occur only once. The authoritative JSONL
+append remains committed even if replacement of the derived snapshot cache
+fails.
+
+### `invocation.acknowledged` v1
+
+Payload:
+
+```text
+invocation_id
+lease_id
+```
+
+Acknowledgement is durable when the selected owner accepts the dispatched
+call. Local owners acknowledge on owner entry; host, extension, and MCP
+adapters acknowledge at their transport handoff boundary. The invocation and
+lease must match the preceding dispatch. Repeated acknowledgement through a
+cloned execution control is idempotent and does not append a second fact.
 
 ### `invocation.classified_unknown` v1
 
@@ -277,8 +290,12 @@ reason_code
 recovery_rule_version
 ```
 
-Recovery appends this for a registered unsettled invocation. It does not claim
-success, failure, or absence of side effects.
+Recovery appends this for a legacy registered invocation or a new dispatched
+or acknowledged invocation that lacks terminal settlement. A prepared call is
+retained as prepared because no owner handoff occurred. Live external-owner
+transport loss after acknowledgement uses the same durable unknown state and
+is not automatically replayed. Unknown classification does not claim success,
+failure, or absence of side effects.
 
 ### `invocation.settled` v1
 
@@ -290,9 +307,13 @@ outcome: completed | failed | cancelled | timed_out | revoked
 terminal_evidence_reference | null
 ```
 
-Settlement is exactly once. A prior unknown classification may be reconciled
-only from authoritative owner evidence under the Slice 3 policy; reconciliation
-cannot change an already closed turn outcome.
+Settlement is persisted before ordinary completion publication and before the
+execution lease closes. Outcomes distinguish completed, failed, cancelled,
+timed-out, and revoked execution. Settlement is exactly once. A prior unknown
+classification may be reconciled only from authoritative owner evidence under
+the Slice 3 policy; reconciliation cannot change an already closed turn
+outcome. Settlement durability failure withholds ordinary completion; mutation
+fencing and emergency recovery evidence are Slice 3.5 responsibilities.
 
 ### `turn.closed` v1
 
@@ -351,11 +372,11 @@ or repair the authority stream. Existing `<session-id>.json` conversation and
 `.meta.json` files remain compatibility projections and are not rewritten into
 fictional historical facts.
 
-## Snapshot v1
+## Snapshot v2
 
 ```text
-snapshot_version: 1
-reducer_version: 1
+snapshot_version: 2
+reducer_version: 2
 session_id
 stream_id
 last_sequence

@@ -152,6 +152,8 @@ Dynamic preflight now has a separate version-1 renderer-neutral contract. It bin
 
 Native and OCI extension startup now enforces that contract. `permissions.trustedContributionCode` is a distinct operator-policy list of stable IDs such as `extension:example`; selected or installed extensions absent from it are denied before secret preflight, secret resolution, spawn, or protocol probing. A permit binds the accepted ID and complete snapshotted source-tree digest and is revalidated at the low-level process boundary on initial launch and transport-error respawn. The current OCI launcher is not treated as verified confinement, so it also requires explicit trusted-code admission. Test-only unsnapshotted launch helpers are not compiled into production. Plugin, script, HTTP, Pkl, and MCP boundaries still require equivalent enforcement before task 2.4 is complete.
 
+Executable plugin paths now use the same policy and permit. A guarded plugin directory is identified as `plugin:<directory-name>` and denied before Pkl evaluation, dynamic context generation, script/OCI execution, HTTP registration, or plugin-declared MCP connection. Production Armory, HTTP, and MCP constructors require a permit and revalidate it at deferred execution/send boundaries. Project MCP uses the separately frozen `mcp:project` identity, while ACP-submitted server configuration uses `mcp:acp-client` and is admitted authoritatively in the worker before secret-template resolution, process spawn, or network connection. Red tests use marker processes to prove untrusted plugin context and project MCP configuration cannot execute during discovery.
+
 ### Design laws
 
 1. **Composition is not admission.** Compiled or installed capability means resident, not callable or visible.

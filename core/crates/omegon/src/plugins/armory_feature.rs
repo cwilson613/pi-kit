@@ -73,6 +73,7 @@ pub struct ArmoryFeature {
     cached_context: Option<CachedContext>,
     /// Keeps a guarded startup snapshot alive for deferred script execution.
     _plugin_snapshot: Option<std::sync::Arc<crate::contribution_loading::ContributionSnapshot>>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
 }
 
 /// Pre-generated context from a plugin's `[context]` section.
@@ -90,23 +91,35 @@ impl ArmoryFeature {
     ///
     /// If the manifest has a `[context]` section, the context script is
     /// executed at load time and the output is cached.
+    #[cfg(test)]
     pub async fn from_manifest(manifest: &ArmoryManifest, plugin_root: &Path) -> Option<Self> {
-        Self::from_manifest_inner(manifest, plugin_root, None).await
+        let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test_id(
+            &format!("plugin:{}", manifest.plugin.id),
+            omegon_traits::RuntimeDynamicSourceKind::PluginScript,
+        )
+        .ok()?;
+        Self::from_manifest_inner(manifest, plugin_root, None, admission).await
     }
 
     pub(crate) async fn from_manifest_snapshot(
         manifest: &ArmoryManifest,
         snapshot: std::sync::Arc<crate::contribution_loading::ContributionSnapshot>,
+        admission: crate::dynamic_admission::DynamicAdmissionPermit,
     ) -> Option<Self> {
         let plugin_root = snapshot.path().to_path_buf();
-        Self::from_manifest_inner(manifest, &plugin_root, Some(snapshot)).await
+        Self::from_manifest_inner(manifest, &plugin_root, Some(snapshot), admission).await
     }
 
     async fn from_manifest_inner(
         manifest: &ArmoryManifest,
         plugin_root: &Path,
         plugin_snapshot: Option<std::sync::Arc<crate::contribution_loading::ContributionSnapshot>>,
+        admission: crate::dynamic_admission::DynamicAdmissionPermit,
     ) -> Option<Self> {
+        if let Err(error) = admission.validate() {
+            tracing::warn!(plugin = manifest.plugin.name, %error, "plugin trust admission invalid");
+            return None;
+        }
         let executable_tools: Vec<ToolEntry> = manifest
             .tools
             .iter()
@@ -160,6 +173,7 @@ impl ArmoryFeature {
             container_runtime: std::sync::OnceLock::new(),
             cached_context,
             _plugin_snapshot: plugin_snapshot,
+            admission,
         })
     }
 
@@ -400,6 +414,7 @@ impl Feature for ArmoryFeature {
         args: Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.admission.validate()?;
         let tool = self
             .tools
             .iter()

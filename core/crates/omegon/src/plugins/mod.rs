@@ -31,6 +31,106 @@ use crate::contribution_loading::GuardedContributionDirectory;
 const MAX_PLUGIN_ENTRIES: usize = 10_000;
 const MAX_PLUGIN_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
+fn dynamic_preflight(
+    plugin_name: &str,
+    manifest_name: &[u8],
+    content: &str,
+    snapshot: Option<&crate::contribution_loading::ContributionSnapshot>,
+) -> anyhow::Result<omegon_traits::RuntimeDynamicContributionPreflight> {
+    let id = omegon_traits::RuntimeContributionId::new(format!("plugin:{plugin_name}"))
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let (source_kind, operations, effects) = if manifest_name == b"plugin.pkl" {
+        (
+            omegon_traits::RuntimeDynamicSourceKind::PluginManifestEvaluation,
+            vec![omegon_traits::RuntimeProbeOperation::EvaluateManifest],
+            vec![
+                omegon_traits::RuntimeEffect::FilesystemRead,
+                omegon_traits::RuntimeEffect::ProcessSpawn,
+                omegon_traits::RuntimeEffect::NetworkAccess,
+                omegon_traits::RuntimeEffect::SecretDelivery,
+            ],
+        )
+    } else if let Ok(manifest) = armory::ArmoryManifest::parse(content) {
+        if manifest
+            .context
+            .as_ref()
+            .is_some_and(|context| context.script.is_some())
+            || manifest
+                .tools
+                .iter()
+                .any(|tool| tool.is_script() || tool.is_oci())
+        {
+            (
+                omegon_traits::RuntimeDynamicSourceKind::PluginScript,
+                vec![
+                    omegon_traits::RuntimeProbeOperation::GenerateContext,
+                    omegon_traits::RuntimeProbeOperation::DiscoverCapabilities,
+                ],
+                vec![
+                    omegon_traits::RuntimeEffect::FilesystemRead,
+                    omegon_traits::RuntimeEffect::ProcessSpawn,
+                    omegon_traits::RuntimeEffect::NetworkAccess,
+                    omegon_traits::RuntimeEffect::SecretDelivery,
+                ],
+            )
+        } else if !manifest.mcp_servers.is_empty() {
+            let http = manifest
+                .mcp_servers
+                .values()
+                .any(|server| server.url.is_some());
+            (
+                if http {
+                    omegon_traits::RuntimeDynamicSourceKind::McpHttp
+                } else {
+                    omegon_traits::RuntimeDynamicSourceKind::McpProcess
+                },
+                vec![
+                    omegon_traits::RuntimeProbeOperation::Connect,
+                    omegon_traits::RuntimeProbeOperation::DiscoverCapabilities,
+                ],
+                vec![
+                    omegon_traits::RuntimeEffect::ProcessSpawn,
+                    omegon_traits::RuntimeEffect::NetworkAccess,
+                    omegon_traits::RuntimeEffect::SecretDelivery,
+                ],
+            )
+        } else {
+            (
+                omegon_traits::RuntimeDynamicSourceKind::PluginHttp,
+                vec![omegon_traits::RuntimeProbeOperation::GenerateContext],
+                vec![omegon_traits::RuntimeEffect::NetworkAccess],
+            )
+        }
+    } else {
+        (
+            omegon_traits::RuntimeDynamicSourceKind::PluginHttp,
+            vec![omegon_traits::RuntimeProbeOperation::DiscoverCapabilities],
+            vec![omegon_traits::RuntimeEffect::NetworkAccess],
+        )
+    };
+    let source_digest = if let Some(snapshot) = snapshot {
+        crate::dynamic_admission::digest_path(snapshot.path())?
+    } else {
+        crate::dynamic_admission::digest_bytes(content.as_bytes())
+    };
+    Ok(omegon_traits::RuntimeDynamicContributionPreflight {
+        schema_version: omegon_traits::RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+        id,
+        source_digest,
+        source_kind,
+        protocol: omegon_traits::RuntimeProtocolRange::new(1, 1)
+            .map_err(|error| anyhow::anyhow!(error))?,
+        minimum_dependencies: Vec::new(),
+        requested_trust: omegon_traits::RuntimeTrustRequest::OperatorManaged,
+        requested_confinement: omegon_traits::RuntimeConfinementRequest::HostProcess,
+        probe: omegon_traits::RuntimeProbeRequirements {
+            operations,
+            timeout_ms: 30_000,
+            requested_effects: effects,
+        },
+    })
+}
+
 pub struct AdmittedPlugins {
     features: Vec<Box<dyn omegon_traits::Feature>>,
     admissions: Vec<GuardedContributionDirectory>,
@@ -144,12 +244,17 @@ pub async fn discover_plugins_filtered(
 ) -> AdmittedPlugins {
     let mut features: Vec<Box<dyn omegon_traits::Feature>> = Vec::new();
     let mut admissions = Vec::new();
+    let profile = crate::settings::Profile::load(cwd);
+    let dynamic_admission =
+        crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile);
 
     match crate::paths::omegon_home() {
         Ok(home) => {
             for scope in open_guarded_plugin_scopes(cwd, &home) {
                 let scope_name = scope.scope;
-                match discover_guarded_plugins(scope, cwd, secrets, filter).await {
+                match discover_guarded_plugins(scope, cwd, secrets, filter, &dynamic_admission)
+                    .await
+                {
                     Ok(Some((mut loaded, admission))) => {
                         features.append(&mut loaded);
                         admissions.push(admission);
@@ -167,7 +272,7 @@ pub async fn discover_plugins_filtered(
     }
 
     // Also discover MCP servers from project-level config
-    let project_mcp = discover_project_mcp_servers(cwd, secrets).await;
+    let project_mcp = discover_project_mcp_servers(cwd, secrets, &dynamic_admission).await;
     features.extend(project_mcp);
 
     AdmittedPlugins {
@@ -182,6 +287,7 @@ async fn discover_guarded_plugins(
     cwd: &Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
     filter: &PluginSelectionFilter,
+    dynamic_admission: &crate::dynamic_admission::DynamicAdmissionPolicy,
 ) -> anyhow::Result<
     Option<(
         Vec<Box<dyn omegon_traits::Feature>>,
@@ -272,7 +378,31 @@ async fn discover_guarded_plugins(
         } else {
             None
         };
-        match load_plugin_manifest(&manifest_path, &content, cwd, secrets, snapshot).await {
+        let preflight =
+            match dynamic_preflight(plugin_name, manifest_name, &content, snapshot.as_ref()) {
+                Ok(preflight) => preflight,
+                Err(error) => {
+                    tracing::warn!(plugin = plugin_name, %error, "plugin static preflight failed");
+                    continue;
+                }
+            };
+        let trust_admission = match dynamic_admission.admit(preflight) {
+            Ok(admission) => admission,
+            Err(error) => {
+                tracing::warn!(plugin = plugin_name, %error, "plugin trust admission denied before execution");
+                continue;
+            }
+        };
+        match load_plugin_manifest(
+            &manifest_path,
+            &content,
+            cwd,
+            secrets,
+            snapshot,
+            trust_admission,
+        )
+        .await
+        {
             Ok(mut loaded) => features.append(&mut loaded),
             Err(error) => {
                 tracing::warn!(path = %manifest_path.display(), error = %error, "failed to load plugin");
@@ -289,6 +419,7 @@ async fn discover_guarded_plugins(
     _cwd: &Path,
     _secrets: Option<&omegon_secrets::SecretsManager>,
     _filter: &PluginSelectionFilter,
+    _dynamic_admission: &crate::dynamic_admission::DynamicAdmissionPolicy,
 ) -> anyhow::Result<
     Option<(
         Vec<Box<dyn omegon_traits::Feature>>,
@@ -304,10 +435,17 @@ async fn load_plugin_manifest(
     cwd: &Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
     snapshot: Option<crate::contribution_loading::ContributionSnapshot>,
+    trust_admission: crate::dynamic_admission::DynamicAdmissionPermit,
 ) -> anyhow::Result<Vec<Box<dyn omegon_traits::Feature>>> {
     let snapshot = snapshot.map(std::sync::Arc::new);
-    if let Some(loaded) =
-        load_armory_plugin(display_path, content, secrets, snapshot.as_ref()).await?
+    if let Some(loaded) = load_armory_plugin(
+        display_path,
+        content,
+        secrets,
+        snapshot.as_ref(),
+        &trust_admission,
+    )
+    .await?
     {
         for feature in &loaded {
             tracing::info!(plugin = feature.name(), path = %display_path.display(), "loaded armory plugin");
@@ -325,7 +463,7 @@ async fn load_plugin_manifest(
     } else {
         display_path
     };
-    let legacy = load_legacy_plugin_with_content(manifest_path, content, cwd)?;
+    let legacy = load_legacy_plugin_with_content(manifest_path, content, cwd, trust_admission)?;
     if let Some(feature) = legacy {
         tracing::info!(plugin = feature.name(), path = %display_path.display(), "loaded legacy plugin");
         Ok(vec![feature])
@@ -342,6 +480,7 @@ async fn load_armory_plugin(
     content: &str,
     secrets: Option<&omegon_secrets::SecretsManager>,
     snapshot: Option<&std::sync::Arc<crate::contribution_loading::ContributionSnapshot>>,
+    trust_admission: &crate::dynamic_admission::DynamicAdmissionPermit,
 ) -> anyhow::Result<Option<Vec<Box<dyn omegon_traits::Feature>>>> {
     // Check if this looks like an armory manifest (has [plugin] with type field).
     // If the content contains `type =` under `[plugin]`, it's armory-style.
@@ -363,8 +502,13 @@ async fn load_armory_plugin(
 
     // Connect MCP servers if declared
     if !manifest.mcp_servers.is_empty() {
-        let mcp_feature =
-            mcp::McpFeature::connect(&manifest.plugin.name, &manifest.mcp_servers, secrets).await?;
+        let mcp_feature = mcp::McpFeature::connect(
+            &manifest.plugin.name,
+            &manifest.mcp_servers,
+            secrets,
+            trust_admission.clone(),
+        )
+        .await?;
 
         if !mcp_feature.tools().is_empty() {
             features.push(Box::new(mcp_feature));
@@ -382,6 +526,7 @@ async fn load_armory_plugin(
         armory_feature::ArmoryFeature::from_manifest_snapshot(
             &manifest,
             std::sync::Arc::clone(snapshot),
+            trust_admission.clone(),
         )
         .await
     } else {
@@ -405,19 +550,37 @@ async fn load_armory_plugin(
 }
 
 /// Load a legacy HTTP-only plugin manifest.
+#[cfg(test)]
 fn load_legacy_plugin(
     manifest_path: &Path,
     cwd: &Path,
 ) -> anyhow::Result<Option<Box<dyn omegon_traits::Feature>>> {
     let content = std::fs::read_to_string(manifest_path)?;
-    load_legacy_plugin_with_content(manifest_path, &content, cwd)
+    let preflight = dynamic_preflight(
+        manifest_path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("legacy"),
+        manifest_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .as_bytes(),
+        &content,
+        None,
+    )?;
+    let permit = crate::dynamic_admission::DynamicAdmissionPermit::for_test(preflight);
+    load_legacy_plugin_with_content(manifest_path, &content, cwd, permit)
 }
 
 fn load_legacy_plugin_with_content(
     manifest_path: &Path,
     content: &str,
     cwd: &Path,
+    trust_admission: crate::dynamic_admission::DynamicAdmissionPermit,
 ) -> anyhow::Result<Option<Box<dyn omegon_traits::Feature>>> {
+    trust_admission.validate()?;
     let manifest: PluginManifest = if manifest_path.extension().is_some_and(|e| e == "pkl") {
         rpkl::from_config_with_options(manifest_path, crate::pkl_modules::omegon_eval_options())
             .map_err(|e| {
@@ -433,7 +596,10 @@ fn load_legacy_plugin_with_content(
         return Ok(None);
     }
 
-    Ok(Some(Box::new(HttpPluginFeature::new(manifest))))
+    Ok(Some(Box::new(HttpPluginFeature::new_admitted(
+        manifest,
+        trust_admission,
+    ))))
 }
 
 /// Discover MCP servers declared in project-level config files.
@@ -441,6 +607,7 @@ fn load_legacy_plugin_with_content(
 async fn discover_project_mcp_servers(
     cwd: &Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
+    dynamic_admission: &crate::dynamic_admission::DynamicAdmissionPolicy,
 ) -> Vec<Box<dyn omegon_traits::Feature>> {
     let mut features: Vec<Box<dyn omegon_traits::Feature>> = Vec::new();
 
@@ -451,7 +618,13 @@ async fn discover_project_mcp_servers(
         && let Ok(servers) =
             toml::from_str::<std::collections::HashMap<String, mcp::McpServerConfig>>(&content)
     {
-        match mcp::McpFeature::connect("project-mcp", &servers, secrets).await {
+        let preflight = mcp::dynamic_preflight("mcp:project", &content, &servers);
+        let trust_admission = preflight.and_then(|preflight| dynamic_admission.admit(preflight));
+        let Ok(trust_admission) = trust_admission else {
+            tracing::warn!("project MCP trust admission denied before connection");
+            return features;
+        };
+        match mcp::McpFeature::connect("project-mcp", &servers, secrets, trust_admission).await {
             Ok(feature) if !feature.tools().is_empty() => {
                 tracing::info!(
                     servers = servers.len(),
@@ -519,6 +692,63 @@ mod tests {
         plugins.publish(|features| assert!(features.is_empty()));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn untrusted_plugin_and_project_mcp_do_not_execute_during_discovery() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::isolate(home.path());
+        let marker = project.path().join("executed");
+        let plugin = project.path().join(".omegon/plugins/untrusted");
+        std::fs::create_dir_all(plugin.join("tools")).unwrap();
+        std::fs::write(
+            plugin.join("plugin.toml"),
+            r#"
+[plugin]
+type = "extension"
+id = "dev.test.untrusted"
+name = "Untrusted"
+version = "1.0.0"
+description = "must not execute"
+
+[context]
+runner = "bash"
+script = "tools/run.sh"
+
+[[tools]]
+name = "untrusted_tool"
+description = "must not execute"
+runner = "bash"
+script = "tools/run.sh"
+"#,
+        )
+        .unwrap();
+        let script = plugin.join("tools/run.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+
+        std::fs::create_dir_all(project.path().join(".omegon")).unwrap();
+        std::fs::write(
+            project.path().join(".omegon/mcp.toml"),
+            format!("[untrusted]\ncommand = \"{}\"\n", script.display()),
+        )
+        .unwrap();
+
+        discover_plugins(project.path(), None)
+            .await
+            .publish(|features| assert!(features.is_empty()));
+        assert!(!marker.exists(), "denied dynamic code must not run");
+    }
+
     #[tokio::test]
     async fn discover_plugins_filtered_honors_enabled_extensions() {
         let _lock = crate::test_support::env::lock_async().await;
@@ -565,6 +795,7 @@ mod tests {
         "#,
         )
         .unwrap();
+        trust_plugin_code(dir.path(), &["alpha"]);
 
         let filter = PluginSelectionFilter {
             enabled_extensions: vec!["alpha".into()],
@@ -621,6 +852,7 @@ mod tests {
         "#,
         )
         .unwrap();
+        trust_plugin_code(project.path(), &["snapshot"]);
         let script = plugin.join("tools/run.sh");
         std::fs::write(
             &script,
@@ -666,6 +898,7 @@ mod tests {
         let _env = EnvGuard::isolate(home.path());
         write_plugin(&project.path().join(".omegon/plugins"), "denied");
         write_plugin(&project.path().join(".omegon/plugins"), "allowed");
+        trust_plugin_code(project.path(), &["denied", "allowed"]);
         deny_plugin(
             project.path(),
             &[b".omegon", b"plugins"],
@@ -693,6 +926,7 @@ mod tests {
         let _env = EnvGuard::isolate(home.path());
         write_plugin(&home.path().join("plugins"), "user-plugin");
         write_plugin(&project.path().join(".omegon/plugins"), "project-plugin");
+        trust_plugin_code(project.path(), &["user-plugin", "project-plugin"]);
         let authority = initialize_plugin_scope(
             project.path(),
             &[b".omegon", b"plugins"],
@@ -1112,6 +1346,21 @@ mod tests {
             format!(
                 "[plugin]\nname = \"{name}\"\n\n[activation]\nalways = true\n\n[[tools]]\nname = \"{name}_tool\"\ndescription = \"test\"\nendpoint = \"http://localhost:9999/test\"\n"
             ),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn trust_plugin_code(project: &Path, names: &[&str]) {
+        let omegon = project.join(".omegon");
+        std::fs::create_dir_all(&omegon).unwrap();
+        let trusted: Vec<String> = names.iter().map(|name| format!("plugin:{name}")).collect();
+        std::fs::write(
+            omegon.join("profile.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "permissions": {"trustedContributionCode": trusted}
+            }))
+            .unwrap(),
         )
         .unwrap();
     }

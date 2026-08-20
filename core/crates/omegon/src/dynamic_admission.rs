@@ -75,10 +75,14 @@ pub(crate) struct DynamicAdmissionPermit {
 }
 
 impl DynamicAdmissionPermit {
-    pub(crate) fn validate_source_path(&self, source: &Path) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         self.admission
             .validate_for(&self.preflight)
-            .map_err(|error| anyhow!(error))?;
+            .map_err(|error| anyhow!(error))
+    }
+
+    pub(crate) fn validate_source_path(&self, source: &Path) -> Result<()> {
+        self.validate()?;
         let observed = digest_path(source)?;
         if observed != self.preflight.source_digest {
             return Err(anyhow!(
@@ -105,12 +109,41 @@ impl DynamicAdmissionPermit {
             admission,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_id(
+        id: &str,
+        source_kind: omegon_traits::RuntimeDynamicSourceKind,
+    ) -> Result<Self> {
+        let preflight = RuntimeDynamicContributionPreflight {
+            schema_version: RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+            id: omegon_traits::RuntimeContributionId::new(id.to_string())
+                .map_err(|error| anyhow!(error))?,
+            source_digest: digest_bytes(id.as_bytes()),
+            source_kind,
+            protocol: omegon_traits::RuntimeProtocolRange::new(1, 1)
+                .map_err(|error| anyhow!(error))?,
+            minimum_dependencies: Vec::new(),
+            requested_trust: omegon_traits::RuntimeTrustRequest::OperatorManaged,
+            requested_confinement: omegon_traits::RuntimeConfinementRequest::HostProcess,
+            probe: omegon_traits::RuntimeProbeRequirements {
+                operations: vec![omegon_traits::RuntimeProbeOperation::DiscoverCapabilities],
+                timeout_ms: 1,
+                requested_effects: Vec::new(),
+            },
+        };
+        Ok(Self::for_test(preflight))
+    }
 }
 
 pub(crate) fn digest_path(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     hash_path(&mut hasher, path, Path::new(""))?;
     Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+pub(crate) fn digest_bytes(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
 fn hash_path(hasher: &mut Sha256, root: &Path, relative: &Path) -> Result<()> {

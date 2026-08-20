@@ -55,6 +55,30 @@ import Docs from "../../layouts/Docs.astro";
     <li>Showing persona/tone state changes as toast notifications</li>
   </ul>
 
+  <h2>Trust dynamic plugin code</h2>
+  <p>
+    Persona and tone data remain non-executable. Plugins that evaluate Pkl, run
+    scripts or OCI tools, call HTTP endpoints, or connect MCP servers require a
+    separate trusted-code entry before evaluation or connection. Installation,
+    activation markers, extension selection, and trusted directories do not grant
+    this authority.
+  </p>
+  <pre><code>{`{
+  "permissions": {
+    "trustedContributionCode": [
+      "plugin:my-plugin",
+      "mcp:project",
+      "mcp:acp-client"
+    ]
+  }
+}`}</code></pre>
+  <p>
+    Plugin IDs use the plugin directory name. <code>mcp:project</code> admits the
+    frozen server set from <code>.omegon/mcp.toml</code>;
+    <code>mcp:acp-client</code> separately admits MCP servers supplied by an ACP client.
+    Current native and OCI plugin paths are trusted execution, not verified confinement.
+  </p>
+
   <h2>Dynamic tool inventory</h2>
   <p>
     Tool visibility is assembled at runtime from core tools, enabled capability groups,

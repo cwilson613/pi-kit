@@ -21,7 +21,7 @@ use rmcp::{
     service::{self, NotificationContext, RoleClient, RunningService},
     transport::{StreamableHttpClientTransport, TokioChildProcess},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -64,7 +64,7 @@ use super::tool_capabilities::{
 /// [mcp_servers.github]
 /// docker_mcp = "github"
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
     /// HTTP URL for remote MCP server (enables HTTP transport mode).
     /// Must use HTTPS scheme, except http://localhost is allowed for development.
@@ -115,7 +115,7 @@ fn default_true() -> bool {
 }
 
 /// HostAction permission policy for a single MCP server.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct McpHostActionPolicy {
     /// Explicitly permitted HostAction type strings, e.g. `terminal.create@1`.
     #[serde(default)]
@@ -289,6 +289,48 @@ pub struct McpFeature {
     progress: Arc<ProgressRegistry>,
     /// Explicit MCP HostAction permissions by server name.
     host_action_policies: HashMap<String, McpHostActionPolicy>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
+}
+
+pub(crate) fn dynamic_preflight(
+    id: &str,
+    content: &str,
+    servers: &HashMap<String, McpServerConfig>,
+) -> anyhow::Result<omegon_traits::RuntimeDynamicContributionPreflight> {
+    let http_only = !servers.is_empty() && servers.values().all(|server| server.url.is_some());
+    Ok(omegon_traits::RuntimeDynamicContributionPreflight {
+        schema_version: omegon_traits::RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+        id: omegon_traits::RuntimeContributionId::new(id.to_string())
+            .map_err(|error| anyhow::anyhow!(error))?,
+        source_digest: crate::dynamic_admission::digest_bytes(content.as_bytes()),
+        source_kind: if http_only {
+            omegon_traits::RuntimeDynamicSourceKind::McpHttp
+        } else {
+            omegon_traits::RuntimeDynamicSourceKind::McpProcess
+        },
+        protocol: omegon_traits::RuntimeProtocolRange::new(1, 1)
+            .map_err(|error| anyhow::anyhow!(error))?,
+        minimum_dependencies: Vec::new(),
+        requested_trust: omegon_traits::RuntimeTrustRequest::OperatorManaged,
+        requested_confinement: omegon_traits::RuntimeConfinementRequest::HostProcess,
+        probe: omegon_traits::RuntimeProbeRequirements {
+            operations: vec![
+                omegon_traits::RuntimeProbeOperation::Connect,
+                omegon_traits::RuntimeProbeOperation::DiscoverCapabilities,
+            ],
+            timeout_ms: servers
+                .values()
+                .map(|server| server.timeout_secs.saturating_mul(1000))
+                .max()
+                .unwrap_or(30_000)
+                .max(1),
+            requested_effects: vec![
+                omegon_traits::RuntimeEffect::ProcessSpawn,
+                omegon_traits::RuntimeEffect::NetworkAccess,
+                omegon_traits::RuntimeEffect::SecretDelivery,
+            ],
+        },
+    })
 }
 
 impl McpFeature {
@@ -297,7 +339,9 @@ impl McpFeature {
         plugin_name: &str,
         servers: &HashMap<String, McpServerConfig>,
         secrets: Option<&omegon_secrets::SecretsManager>,
+        admission: crate::dynamic_admission::DynamicAdmissionPermit,
     ) -> anyhow::Result<Self> {
+        admission.validate()?;
         let mut all_tools = Vec::new();
         let mut all_resources = Vec::new();
         let mut all_resource_templates = Vec::new();
@@ -308,6 +352,7 @@ impl McpFeature {
         let mut timeouts = HashMap::new();
         let mut host_action_policies = HashMap::new();
         for (server_name, config) in servers {
+            admission.validate()?;
             match Self::connect_one(server_name, config, secrets, Arc::clone(&progress)).await {
                 Ok((server_tools, client)) => {
                     tracing::info!(
@@ -442,6 +487,7 @@ impl McpFeature {
             timeouts,
             progress,
             host_action_policies,
+            admission,
         })
     }
 
@@ -927,6 +973,7 @@ impl Feature for McpFeature {
         args: Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.admission.validate()?;
         self.execute_with_sink(tool_name, call_id, args, cancel, ToolProgressSink::noop())
             .await
     }
@@ -2040,6 +2087,11 @@ manual = true
             timeouts: HashMap::new(),
             progress: Arc::new(ProgressRegistry::default()),
             host_action_policies: HashMap::new(),
+            admission: crate::dynamic_admission::DynamicAdmissionPermit::for_test_id(
+                "mcp:test",
+                omegon_traits::RuntimeDynamicSourceKind::McpProcess,
+            )
+            .unwrap(),
         }
     }
 

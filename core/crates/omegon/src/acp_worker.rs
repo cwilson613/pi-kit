@@ -1043,10 +1043,31 @@ async fn worker_loop(
                     crate::plugins::mcp::McpServerConfig,
                 > = servers.into_iter().collect();
                 if !server_map.is_empty() {
+                    let canonical: std::collections::BTreeMap<_, _> = server_map.iter().collect();
+                    let static_config = serde_json::to_string(&canonical)
+                        .unwrap_or_else(|_| "acp-mcp-invalid-config".into());
+                    let preflight = crate::plugins::mcp::dynamic_preflight(
+                        "mcp:acp-client",
+                        &static_config,
+                        &server_map,
+                    );
+                    let profile = crate::settings::Profile::load(&cwd);
+                    let trust_admission = preflight.and_then(|preflight| {
+                        crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile)
+                            .admit(preflight)
+                    });
+                    let Ok(trust_admission) = trust_admission else {
+                        let _ = event_tx.send(WorkerEvent::StatusUpdate(
+                            "ACP client MCP servers denied: add mcp:acp-client to permissions.trustedContributionCode"
+                                .into(),
+                        ));
+                        continue;
+                    };
                     match crate::plugins::mcp::McpFeature::connect(
                         "acp-client",
                         &server_map,
                         Some(secrets.as_ref()),
+                        trust_admission,
                     )
                     .await
                     {

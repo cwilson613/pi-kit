@@ -2660,8 +2660,8 @@ fn turn_terminal_reasons_release_active_gate_and_remain_visible() {
     }
 }
 
-#[test]
-fn supervisor_completion_terminalizes_tui_when_agent_end_is_missing() {
+#[tokio::test]
+async fn supervisor_completion_without_agent_end_allows_second_submission() {
     let mut app = active_test_app();
     app.handle_agent_event(AgentEvent::RuntimePromptStarted {
         runtime_turn_id: 41,
@@ -2697,6 +2697,26 @@ fn supervisor_completion_terminalizes_tui_when_agent_end_is_missing() {
     app.handle_agent_event(AgentEvent::AgentEnd);
     assert!(!app.agent_active);
     assert!(!app.conversation.is_streaming());
+
+    let (tx, mut rx) = test_tx_with_rx();
+    assert_eq!(
+        app.handle_ui_action(
+            UiAction::SubmitPrompt(SubmitPromptAction {
+                text: "next turn".into(),
+                attachments: Vec::new(),
+                source: PromptSource::LocalTui,
+                queue_mode: app.queue_mode,
+                metadata: PromptMetadata::default(),
+            }),
+            &tx,
+        )
+        .await,
+        UiActionOutcome::accepted()
+    );
+    assert!(matches!(
+        rx.recv().await,
+        Some(TuiCommand::SubmitPrompt(PromptSubmission { text, .. })) if text == "next turn"
+    ));
 }
 
 #[test]

@@ -215,8 +215,57 @@ owner_generation_id | null
 
 This establishes stable invocation identity before execution can become
 externally observable. Slice 1 conservatively treats every registered but
-unsettled invocation as potentially dispatched after runtime loss. Slice 3
-adds authoritative `Prepared`, `Dispatched`, and `Acknowledged` lease states.
+unsettled invocation as potentially dispatched after runtime loss. It remains
+the compatibility shape for older streams and is not reinterpreted as one of
+the newer dispatch phases.
+
+### `invocation.prepared` v1
+
+Payload:
+
+```text
+invocation_id
+lease_id
+turn_id
+call_id
+deduplication_id | null
+invocation_kind
+invocation_name
+capability_id
+contribution_id
+owner_generation_id
+issue_generation_id
+principal
+principal_class
+surface
+admitted_effects
+execution
+transition
+surfaces
+```
+
+Preparation is durable after admission and operator approval but before an
+execution lease is returned. The optional deduplication identity is present
+only when the captured declaration promises owner enforcement for the stable
+call ID. Duplicate invocation or same-turn call identities, stale turns, and
+post-revocation preparation fail closed.
+
+### `invocation.dispatched` v1
+
+Payload:
+
+```text
+invocation_id
+lease_id
+```
+
+Dispatch is durable after exactly-once lease claim and current-generation
+revalidation but before host transport or local owner entry. It must reference
+the matching prepared lease and can occur only once. Through Slice 3.3,
+recovery retains new `Prepared` and `Dispatched` states without classifying
+them as acknowledged, settled, or unknown; Slice 3.4 owns those transitions.
+The authoritative JSONL append remains committed even if replacement of the
+derived snapshot cache fails.
 
 ### `invocation.classified_unknown` v1
 

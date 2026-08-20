@@ -256,6 +256,51 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_launcher_migration_keeps_every_surface_on_old_generation() {
+        for completed_boundaries in 0..=4 {
+            let temp = tempfile::tempdir().unwrap();
+            let layout = layout(temp.path());
+            let old = layout.generation_dir("1.0.0").unwrap();
+            write_generation(&old, "1.0.0");
+            layout.activate(&old).unwrap();
+            fs::create_dir_all(layout.binary_link.parent().unwrap()).unwrap();
+            fs::create_dir_all(layout.receipt_link.parent().unwrap()).unwrap();
+            fs::copy(old.join("omegon"), &layout.binary_link).unwrap();
+            fs::copy(old.join("omegon"), &layout.om_link).unwrap();
+            fs::copy(old.join("omegon-maintain"), &layout.maintenance_link).unwrap();
+            fs::copy(old.join("install-receipt.json"), &layout.receipt_link).unwrap();
+
+            let boundaries = [
+                (&layout.binary_link, layout.current_link.join("omegon")),
+                (&layout.om_link, layout.current_link.join("omegon")),
+                (
+                    &layout.maintenance_link,
+                    layout.current_link.join("omegon-maintain"),
+                ),
+                (
+                    &layout.receipt_link,
+                    layout.current_link.join("install-receipt.json"),
+                ),
+            ];
+            for (link, target) in boundaries.iter().take(completed_boundaries) {
+                atomic_replace_symlink(link, target).unwrap();
+            }
+
+            assert_eq!(fs::read_to_string(&layout.binary_link).unwrap(), "1.0.0");
+            assert_eq!(fs::read_to_string(&layout.om_link).unwrap(), "1.0.0");
+            assert_eq!(
+                fs::read_to_string(&layout.maintenance_link).unwrap(),
+                "1.0.0"
+            );
+            assert!(
+                fs::read_to_string(&layout.receipt_link)
+                    .unwrap()
+                    .contains("1.0.0")
+            );
+        }
+    }
+
+    #[test]
     fn version_and_generation_validation_fail_closed() {
         for invalid in ["", ".", "..", "../escape", "a/b", "a\\b"] {
             assert!(validate_version_component(invalid).is_err(), "{invalid}");

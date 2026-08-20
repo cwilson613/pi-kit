@@ -18,6 +18,8 @@ Definition of done for every group: classify documentation impact before impleme
 - [x] 0.8 Package and launch-test source, linked-development, direct-install, platform archive, Homebrew, Nix, and OCI paths supported by the repository.
 - [x] 0.9 Prove startup with TUI, default loop, project config/plugins, extension runtime, MCP, mutable packs, memory, lifecycle, and orchestration absent.
 - [x] 0.10 Co-deliver maintenance architecture/operator docs, public install/recovery pages, canonical command snippets, and site validation with the artifact.
+- [ ] 0.11 On an allowed release-hardening branch, point the Homebrew formula at a verified immutable archive that actually contains both required binaries and test extraction from the formula's exact URLs/checksums.
+- [ ] 0.12 Make pairwise self-update crash-atomic and rollback-safe through immutable version-directory publication plus one atomic activation switch, with failure injection across activation, launcher, and receipt boundaries.
 
 ## 1. Minimum durable session authority
 <!-- specs: kernel-composition/documentation, runtime-session/authority -->

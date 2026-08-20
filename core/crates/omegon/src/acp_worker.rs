@@ -776,6 +776,12 @@ async fn worker_loop(
                     host_context: host_ctx_arc.clone(),
                     permission_policy: None,
                     permission_role: None,
+                    invocation_scope: crate::invocation_service::InvocationScope {
+                        principal: "acp-model".into(),
+                        surface: omegon_traits::RuntimeSurface::Model,
+                        session_id: Some(session_id.clone()),
+                        turn_id: None,
+                    },
                     cancel_keeps_prompt: None,
                     drain_post_loop_requests: false,
                 };

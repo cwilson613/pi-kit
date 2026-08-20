@@ -1314,6 +1314,124 @@ impl EventBus {
             || self.internal_tool_owners.contains_key(tool_name)
     }
 
+    pub(crate) fn resolve_invocation(
+        &self,
+        kind: omegon_traits::RuntimeInvocationKind,
+        name: &str,
+    ) -> Result<
+        crate::invocation_service::ResolvedInvocation,
+        crate::invocation_service::InvocationDenial,
+    > {
+        use crate::invocation_service::{InvocationDenialCode, ResolvedInvocation, denial};
+
+        let graph = self.accepted_graph.as_ref().ok_or_else(|| {
+            denial(
+                InvocationDenialCode::IncompleteDeclaration,
+                "no accepted contribution graph is published",
+            )
+        })?;
+        let composition_generation_id = self.accepted_generation_id.clone().ok_or_else(|| {
+            denial(
+                InvocationDenialCode::IncompleteDeclaration,
+                "accepted graph has no composition generation",
+            )
+        })?;
+        let (contribution_id, capability_id) = graph
+            .invocation_owners
+            .get(&(kind, name.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                denial(
+                    InvocationDenialCode::UnknownInvocation,
+                    format!("no accepted capability owns {kind:?} invocation {name:?}"),
+                )
+            })?;
+        let declaration = graph.declarations.get(&contribution_id).ok_or_else(|| {
+            denial(
+                InvocationDenialCode::IncompleteDeclaration,
+                "accepted invocation owner has no contribution declaration",
+            )
+        })?;
+        let capability = declaration
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == capability_id)
+            .ok_or_else(|| {
+                denial(
+                    InvocationDenialCode::IncompleteDeclaration,
+                    "accepted invocation owner has no capability declaration",
+                )
+            })?;
+        if !capability
+            .bindings
+            .iter()
+            .any(|binding| binding.kind == kind && binding.name == name)
+        {
+            return Err(denial(
+                InvocationDenialCode::IncompleteDeclaration,
+                "capability declaration does not contain the accepted invocation binding",
+            ));
+        }
+
+        Ok(ResolvedInvocation {
+            kind,
+            name: name.to_string(),
+            capability_id,
+            contribution_id,
+            owner_generation_id: declaration.generation_id.clone(),
+            composition_generation_id,
+            effects: capability.effects.clone(),
+            transition: capability.transition.clone(),
+            surfaces: capability.surfaces.clone(),
+        })
+    }
+
+    pub(crate) fn validate_execution_lease(
+        &self,
+        lease: &crate::invocation_service::ExecutionLease,
+        call_id: &str,
+        tool_name: &str,
+    ) -> Result<(), crate::invocation_service::InvocationDenial> {
+        use crate::invocation_service::{InvocationDenialCode, LeaseTerminal, denial};
+
+        if lease.terminal() != LeaseTerminal::Dispatching {
+            return Err(denial(
+                InvocationDenialCode::LeaseClosed,
+                "execution lease has not been claimed or is already terminal",
+            ));
+        }
+        if lease.call_id != call_id
+            || lease.invocation_name != tool_name
+            || lease.kind != omegon_traits::RuntimeInvocationKind::Tool
+        {
+            lease.revoke();
+            return Err(denial(
+                InvocationDenialCode::LeaseMismatch,
+                "execution lease does not match the dispatch request",
+            ));
+        }
+        if self.accepted_generation_id.as_ref() != Some(&lease.issue_generation_id) {
+            lease.revoke();
+            return Err(denial(
+                InvocationDenialCode::StaleGeneration,
+                "execution lease was issued for a stale composition generation",
+            ));
+        }
+        let current = self.resolve_invocation(lease.kind, tool_name)?;
+        if current.capability_id != lease.capability_id
+            || current.contribution_id != lease.contribution_id
+            || current.owner_generation_id != lease.owner_generation_id
+            || current.effects != lease.admitted_effects
+        {
+            lease.revoke();
+            return Err(denial(
+                InvocationDenialCode::StaleGeneration,
+                "accepted invocation owner no longer matches the execution lease",
+            ));
+        }
+        Ok(())
+    }
+
     /// Authoritative producer for the feature that won tool-name arbitration.
     pub fn tool_provenance(&self, tool_name: &str) -> omegon_traits::ToolProvenance {
         let owner = self
@@ -1539,6 +1657,23 @@ impl EventBus {
             }
         }
         anyhow::bail!("no feature provides tool '{tool_name}'")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_tool_with_lease(
+        &self,
+        lease: &crate::invocation_service::ExecutionLease,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: omegon_traits::ToolProgressSink,
+        context: omegon_traits::ToolExecutionContext,
+    ) -> anyhow::Result<omegon_traits::ToolResult> {
+        self.validate_execution_lease(lease, call_id, tool_name)
+            .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
+        self.execute_tool_with_context(tool_name, call_id, args, cancel, sink, context)
+            .await
     }
 
     /// Execute an internal tool that may not be in the LLM-visible tool_defs.
@@ -1802,6 +1937,35 @@ mod tests {
         }
     }
 
+    struct PanicToolFeature(&'static str);
+
+    #[async_trait]
+    impl Feature for PanicToolFeature {
+        fn name(&self) -> &str {
+            "panic-owner"
+        }
+
+        fn tools(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: self.0.into(),
+                label: self.0.into(),
+                description: "must not execute in stale lease tests".into(),
+                parameters: json!({"type": "object", "properties": {}}),
+                capabilities: vec![],
+            }]
+        }
+
+        async fn execute(
+            &self,
+            _tool_name: &str,
+            _call_id: &str,
+            _args: serde_json::Value,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<ToolResult> {
+            panic!("stale lease reached its owner")
+        }
+    }
+
     struct AlternateNotifierFeature;
 
     #[async_trait]
@@ -2051,6 +2215,149 @@ mod tests {
                 !is_core_tool(name),
                 "situational tool '{name}' should not bypass lazy injection"
             );
+        }
+    }
+
+    #[test]
+    fn unknown_invocation_receives_no_execution_lease() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(CounterFeature { event_count: 0 }));
+        bus.finalize();
+
+        let admission = crate::invocation_service::InvocationService::admit_tool(
+            &bus,
+            "missing",
+            crate::invocation_service::InvocationAdmissionRequest {
+                call_id: "unknown-call",
+                visible_tool_name: "missing",
+                args: &json!({}),
+                scope: crate::invocation_service::InvocationScope::default(),
+                permission_policy: None,
+                permission_role: None,
+            },
+        );
+        let crate::invocation_service::InvocationAdmission::Denied(denial) = admission else {
+            panic!("unknown invocation must not receive a lease")
+        };
+        assert_eq!(
+            denial.code,
+            crate::invocation_service::InvocationDenialCode::UnknownInvocation
+        );
+    }
+
+    #[test]
+    fn rbac_denial_cannot_be_widened_by_policy_allow() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(PanicToolFeature("write")));
+        bus.finalize();
+        let mut policy = crate::permissions::LayeredPermissionPolicy::default();
+        policy.project.tools.insert(
+            "write".into(),
+            crate::permissions::ToolPermissionRule::Action(
+                crate::permissions::PermissionAction::Allow,
+            ),
+        );
+
+        let admission = crate::invocation_service::InvocationService::admit_tool(
+            &bus,
+            "write",
+            crate::invocation_service::InvocationAdmissionRequest {
+                call_id: "write-call",
+                visible_tool_name: "write",
+                args: &json!({}),
+                scope: crate::invocation_service::InvocationScope::default(),
+                permission_policy: Some(&policy),
+                permission_role: styrene_rbac::Role::from_name("monitor"),
+            },
+        );
+        let crate::invocation_service::InvocationAdmission::Denied(denial) = admission else {
+            panic!("RBAC denial must not receive a lease")
+        };
+        assert_eq!(
+            denial.code,
+            crate::invocation_service::InvocationDenialCode::RbacDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_generation_lease_is_rejected_before_owner_execution() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(PanicToolFeature("stale_test")));
+        bus.finalize();
+        let lease = admitted_test_lease(&bus, "stale-call", "stale_test");
+        lease.claim_dispatch("stale-call", "stale_test").unwrap();
+
+        bus.register(Box::new(DisplayNameFeature("additional")));
+        bus.try_finalize().unwrap();
+        let error = bus
+            .execute_tool_with_lease(
+                &lease,
+                "stale_test",
+                "stale-call",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+                omegon_traits::ToolProgressSink::noop(),
+                omegon_traits::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("invocation:stale_generation"));
+        assert_eq!(
+            lease.terminal(),
+            crate::invocation_service::LeaseTerminal::Revoked
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_candidate_preserves_existing_execution_lease() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(CounterFeature { event_count: 7 }));
+        bus.finalize();
+        let lease = admitted_test_lease(&bus, "count-call", "count");
+        bus.register(Box::new(ExtensionCounterFeature));
+        assert!(bus.try_finalize().is_err());
+
+        lease.claim_dispatch("count-call", "count").unwrap();
+        let result = bus
+            .execute_tool_with_lease(
+                &lease,
+                "count",
+                "count-call",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+                omegon_traits::ToolProgressSink::noop(),
+                omegon_traits::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content[0].as_text(), Some("count: 7"));
+        assert!(lease.close(crate::invocation_service::LeaseTerminal::Completed));
+    }
+
+    fn admitted_test_lease(
+        bus: &EventBus,
+        call_id: &str,
+        tool_name: &str,
+    ) -> crate::invocation_service::ExecutionLease {
+        match crate::invocation_service::InvocationService::admit_tool(
+            bus,
+            tool_name,
+            crate::invocation_service::InvocationAdmissionRequest {
+                call_id,
+                visible_tool_name: tool_name,
+                args: &json!({}),
+                scope: crate::invocation_service::InvocationScope::default(),
+                permission_policy: None,
+                permission_role: None,
+            },
+        ) {
+            crate::invocation_service::InvocationAdmission::Lease(lease) => lease,
+            crate::invocation_service::InvocationAdmission::ApprovalRequired(_) => {
+                panic!("test invocation unexpectedly requires approval")
+            }
+            crate::invocation_service::InvocationAdmission::Denied(denial) => {
+                panic!("test invocation denied: {}", denial.message)
+            }
         }
     }
 

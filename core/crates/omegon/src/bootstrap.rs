@@ -264,6 +264,7 @@ pub fn build_loop_config(
         host_context: None,
         permission_policy: None,
         permission_role: None,
+        invocation_scope: crate::invocation_service::InvocationScope::default(),
         cancel_keeps_prompt: None,
         drain_post_loop_requests: false,
     }

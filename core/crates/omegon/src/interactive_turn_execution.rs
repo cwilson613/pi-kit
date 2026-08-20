@@ -31,13 +31,16 @@ pub(crate) struct InteractiveTurnExecution {
 
 impl InteractiveTurnExecution {
     pub(crate) fn spawn(
-        self,
+        mut self,
         state: InteractiveAgentState,
         bridge: Arc<RwLock<Box<dyn LlmBridge>>>,
         events_tx: broadcast::Sender<AgentEvent>,
         active: ActiveTurnMeta,
         lifecycle: RuntimeTurnLifecycle,
     ) -> tokio::task::JoinHandle<InteractiveAgentState> {
+        self.loop_config.invocation_scope.principal =
+            active.prompt.submitted_by.display_label().to_string();
+        self.loop_config.invocation_scope.turn_id = active.authority_turn_id;
         tokio::task::spawn_local(crate::runtime_turn_execution::execute(
             state, self, bridge, events_tx, active, lifecycle,
         ))

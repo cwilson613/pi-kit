@@ -82,6 +82,8 @@ pub struct LoopConfig {
     pub permission_policy: Option<crate::permissions::LayeredPermissionPolicy>,
     /// Optional Styrene RBAC role gate for this runtime.
     pub permission_role: Option<styrene_rbac::Role>,
+    /// Principal and session/turn scope captured in privileged invocation leases.
+    pub invocation_scope: crate::invocation_service::InvocationScope,
     /// Set once the turn has produced assistant/tool-visible effects that should
     /// keep the submitted prompt in replay even if the operator interrupts.
     pub cancel_keeps_prompt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -113,6 +115,7 @@ impl Default for LoopConfig {
             host_context: None,
             permission_policy: None,
             permission_role: None,
+            invocation_scope: crate::invocation_service::InvocationScope::default(),
             cancel_keeps_prompt: None,
             drain_post_loop_requests: true,
         }
@@ -1420,6 +1423,7 @@ pub async fn run(
             config.host_context.as_ref().map(|c| c.as_ref()),
             permission_policy,
             permission_role,
+            &config.invocation_scope,
         )
         .await;
         let results = dispatch.results;
@@ -3029,6 +3033,7 @@ async fn dispatch_tools(
     host_context: Option<&crate::host_context::HostContext>,
     permission_policy: Option<&crate::permissions::LayeredPermissionPolicy>,
     permission_role: Option<styrene_rbac::Role>,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> DispatchResult {
     let tool_catalog = ToolCapabilityCatalog::from_tool_defs(&bus.all_tool_definitions());
     let mut permission_decisions: Vec<PermissionRecord> = Vec::new();
@@ -3105,6 +3110,7 @@ async fn dispatch_tools(
                     &mut perm_log,
                     permission_policy,
                     permission_role,
+                    invocation_scope,
                 )
                 .await;
                 (idx, result)
@@ -3131,6 +3137,9 @@ async fn dispatch_tools(
                 cwd,
                 secrets,
                 &mut permission_decisions,
+                permission_policy,
+                permission_role,
+                invocation_scope,
             )
             .await
         {
@@ -3185,6 +3194,7 @@ async fn dispatch_tools(
             &mut permission_decisions,
             permission_policy,
             permission_role,
+            invocation_scope,
         )
         .await;
 
@@ -3351,6 +3361,7 @@ async fn dispatch_single_tool(
     permission_log: &mut Vec<PermissionRecord>,
     permission_policy: Option<&crate::permissions::LayeredPermissionPolicy>,
     permission_role: Option<styrene_rbac::Role>,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> ToolResultEntry {
     let (mut result, is_error) = execute_tool_invocation(
         bus,
@@ -3367,6 +3378,7 @@ async fn dispatch_single_tool(
         host_context,
         permission_policy,
         permission_role,
+        invocation_scope,
     )
     .await;
 
@@ -3404,17 +3416,23 @@ async fn wait_for_permission_response(
     }
 }
 
-fn format_policy_permission_subject(
-    tool: &str,
-    subject: Option<&crate::permissions::PermissionSubject>,
-) -> String {
-    match subject {
-        Some(subject) if subject.kind == crate::permissions::PermissionSubjectKind::Path => {
-            subject.value.clone()
-        }
-        Some(subject) => format!("policy:{}:{}", tool, subject.value),
-        None => format!("policy:{tool}"),
-    }
+fn invocation_denial_result(
+    tool_name: &str,
+    denial: crate::invocation_service::InvocationDenial,
+) -> (omegon_traits::ToolResult, bool) {
+    let text = format!("BLOCKED: `{tool_name}`: {}", denial.message);
+    (
+        omegon_traits::ToolResult {
+            content: vec![ContentBlock::Text { text }],
+            details: serde_json::json!({
+                "is_error": true,
+                "blocked": true,
+                "reason": denial.code.as_str(),
+                "layer": denial.policy_layer.map(|layer| layer.as_str()).unwrap_or("none"),
+            }),
+        },
+        true,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3433,6 +3451,7 @@ async fn execute_tool_invocation(
     host_context: Option<&crate::host_context::HostContext>,
     permission_policy: Option<&crate::permissions::LayeredPermissionPolicy>,
     permission_role: Option<styrene_rbac::Role>,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> (omegon_traits::ToolResult, bool) {
     let provenance = bus.tool_provenance(execution_tool_name);
     if let Some(sm) = secrets
@@ -3467,6 +3486,87 @@ async fn execute_tool_invocation(
         );
     }
 
+    let admission = crate::invocation_service::InvocationService::admit_tool(
+        bus,
+        execution_tool_name,
+        crate::invocation_service::InvocationAdmissionRequest {
+            call_id: visible_call_id,
+            visible_tool_name,
+            args: visible_args,
+            scope: invocation_scope.clone(),
+            permission_policy,
+            permission_role,
+        },
+    );
+    let lease = match admission {
+        crate::invocation_service::InvocationAdmission::Lease(lease) => lease,
+        crate::invocation_service::InvocationAdmission::Denied(denial) => {
+            return invocation_denial_result(visible_tool_name, denial);
+        }
+        crate::invocation_service::InvocationAdmission::ApprovalRequired(pending) => {
+            let requested = pending.requested.clone();
+            let response = if let Some(ctx) = host_context {
+                match ctx
+                    .proxy
+                    .request_permission(
+                        visible_call_id.to_string(),
+                        visible_tool_name.to_string(),
+                        requested.clone(),
+                    )
+                    .await
+                {
+                    Ok(agent_client_protocol::schema::RequestPermissionOutcome::Selected(sel)) => {
+                        match sel.option_id.0.as_ref() {
+                            // Policy prompts have no durable/session grant target yet.
+                            "allow_always" | "allow_once" => {
+                                omegon_traits::PermissionResponse::Allow
+                            }
+                            _ => omegon_traits::PermissionResponse::Deny,
+                        }
+                    }
+                    _ => omegon_traits::PermissionResponse::Deny,
+                }
+            } else {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let respond = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+                let _ = events.send(AgentEvent::PermissionRequest {
+                    tool_name: visible_tool_name.to_string(),
+                    path: requested.clone(),
+                    kind: omegon_traits::PermissionRequestKind::Policy,
+                    persistence: omegon_traits::PermissionPersistence::None,
+                    grant_path: None,
+                    respond,
+                });
+                wait_for_permission_response(rx, cancel.clone()).await
+            };
+            let approved = matches!(
+                response,
+                omegon_traits::PermissionResponse::Allow
+                    | omegon_traits::PermissionResponse::AllowSession
+                    | omegon_traits::PermissionResponse::AlwaysAllow
+            );
+            permission_log.push(PermissionRecord {
+                tool_name: visible_tool_name.to_string(),
+                path: requested,
+                decision: if approved { "allow" } else { "deny" }.into(),
+                kind: omegon_traits::PermissionRequestKind::Policy,
+                persistence: omegon_traits::PermissionPersistence::None,
+                grant_path: None,
+            });
+            match pending.decide(approved) {
+                Ok(lease) => lease,
+                Err(denial) => return invocation_denial_result(visible_tool_name, denial),
+            }
+        }
+    };
+    if let Err(denial) = lease.claim_dispatch(visible_call_id, execution_tool_name) {
+        return invocation_denial_result(visible_tool_name, denial);
+    }
+    if let Err(denial) = bus.validate_execution_lease(&lease, visible_call_id, execution_tool_name)
+    {
+        return invocation_denial_result(visible_tool_name, denial);
+    }
+
     if emit_agent_events {
         let _ = events.send(AgentEvent::ToolStart {
             id: visible_call_id.to_string(),
@@ -3474,142 +3574,6 @@ async fn execute_tool_invocation(
             args: visible_args.clone(),
             provenance: provenance.clone(),
         });
-    }
-
-    if let Some(role) = permission_role
-        && !crate::permissions::styrene_role_allows_tool(role, visible_tool_name)
-    {
-        let text = format!(
-            "BLOCKED: `{}` requires Styrene capability `{}` not held by role `{}`.",
-            visible_tool_name,
-            crate::permissions::styrene_capability_for_tool(visible_tool_name)
-                .unwrap_or("<unknown>"),
-            role.as_str()
-        );
-        return (
-            omegon_traits::ToolResult {
-                content: vec![ContentBlock::Text { text }],
-                details: serde_json::json!({
-                    "is_error": true,
-                    "blocked": true,
-                    "reason": "styrene_rbac_denied",
-                    "role": role.as_str(),
-                    "capability": crate::permissions::styrene_capability_for_tool(visible_tool_name),
-                }),
-            },
-            true,
-        );
-    }
-
-    if let Some(policy) = permission_policy {
-        let subjects = crate::permissions::subjects_from_tool_args(visible_tool_name, visible_args);
-        let decision = policy.evaluate_subjects(visible_tool_name, &subjects);
-        match decision.action {
-            crate::permissions::PermissionAction::Deny => {
-                let text = format!(
-                    "BLOCKED: `{}` denied by permission policy layer {:?}.",
-                    visible_tool_name, decision.layer
-                );
-                return (
-                    omegon_traits::ToolResult {
-                        content: vec![ContentBlock::Text { text }],
-                        details: serde_json::json!({
-                            "is_error": true,
-                            "blocked": true,
-                            "reason": "permission_policy_denied",
-                            "layer": decision.layer.map(|layer| layer.as_str()).unwrap_or("none").to_string(),
-                            "action": decision.action.as_str(),
-                        }),
-                    },
-                    true,
-                );
-            }
-            crate::permissions::PermissionAction::Prompt => {
-                let requested =
-                    format_policy_permission_subject(visible_tool_name, subjects.first());
-                let response = if let Some(ctx) = host_context {
-                    match ctx
-                        .proxy
-                        .request_permission(
-                            visible_call_id.to_string(),
-                            visible_tool_name.to_string(),
-                            requested.clone(),
-                        )
-                        .await
-                    {
-                        Ok(agent_client_protocol::schema::RequestPermissionOutcome::Selected(
-                            sel,
-                        )) => {
-                            match sel.option_id.0.as_ref() {
-                                // Policy prompts do not yet have a durable/session grant target.
-                                // Treat host "allow always" selections as allow-once so the
-                                // permission surface does not imply persistence we cannot honor.
-                                "allow_always" | "allow_once" => {
-                                    omegon_traits::PermissionResponse::Allow
-                                }
-                                _ => omegon_traits::PermissionResponse::Deny,
-                            }
-                        }
-                        _ => omegon_traits::PermissionResponse::Deny,
-                    }
-                } else {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let respond = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
-                    let _ = events.send(AgentEvent::PermissionRequest {
-                        tool_name: visible_tool_name.to_string(),
-                        path: requested.clone(),
-                        kind: omegon_traits::PermissionRequestKind::Policy,
-                        persistence: omegon_traits::PermissionPersistence::None,
-                        grant_path: None,
-                        respond,
-                    });
-                    wait_for_permission_response(rx, cancel.clone()).await
-                };
-
-                match response {
-                    omegon_traits::PermissionResponse::Allow
-                    | omegon_traits::PermissionResponse::AllowSession
-                    | omegon_traits::PermissionResponse::AlwaysAllow => {
-                        permission_log.push(PermissionRecord {
-                            tool_name: visible_tool_name.to_string(),
-                            path: requested.clone(),
-                            decision: "allow".into(),
-                            kind: omegon_traits::PermissionRequestKind::Policy,
-                            persistence: omegon_traits::PermissionPersistence::None,
-                            grant_path: None,
-                        });
-                    }
-                    omegon_traits::PermissionResponse::Deny => {
-                        permission_log.push(PermissionRecord {
-                            tool_name: visible_tool_name.to_string(),
-                            path: requested.clone(),
-                            decision: "deny".into(),
-                            kind: omegon_traits::PermissionRequestKind::Policy,
-                            persistence: omegon_traits::PermissionPersistence::None,
-                            grant_path: None,
-                        });
-                        let text = format!(
-                            "BLOCKED: `{}` denied by operator after permission-policy prompt.",
-                            visible_tool_name
-                        );
-                        return (
-                            omegon_traits::ToolResult {
-                                content: vec![ContentBlock::Text { text }],
-                                details: serde_json::json!({
-                                    "is_error": true,
-                                    "blocked": true,
-                                    "reason": "permission_policy_prompt_denied",
-                                    "layer": decision.layer.map(|layer| layer.as_str()).unwrap_or("none").to_string(),
-                                    "action": decision.action.as_str(),
-                                }),
-                            },
-                            true,
-                        );
-                    }
-                }
-            }
-            crate::permissions::PermissionAction::Allow => {}
-        }
     }
 
     let sink_events = events.clone();
@@ -3639,6 +3603,11 @@ async fn execute_tool_invocation(
                 true,
             ),
         };
+        lease.close(if is_error {
+            crate::invocation_service::LeaseTerminal::Failed
+        } else {
+            crate::invocation_service::LeaseTerminal::Completed
+        });
         if emit_agent_events {
             let _ = events.send(AgentEvent::ToolEnd {
                 id: visible_call_id.to_string(),
@@ -3685,7 +3654,8 @@ async fn execute_tool_invocation(
     };
 
     let execute = |cancel: CancellationToken, sink: omegon_traits::ToolProgressSink| {
-        bus.execute_tool_with_context(
+        bus.execute_tool_with_lease(
+            &lease,
             execution_tool_name,
             visible_call_id,
             execution_args.clone(),
@@ -4067,6 +4037,12 @@ async fn execute_tool_invocation(
     const MAX_TOOL_OUTPUT_CHARS: usize = 16_000;
     crate::util::truncate_content_blocks(&mut final_content, MAX_TOOL_OUTPUT_CHARS);
 
+    lease.close(if is_error {
+        crate::invocation_service::LeaseTerminal::Failed
+    } else {
+        crate::invocation_service::LeaseTerminal::Completed
+    });
+
     if emit_agent_events {
         let _ = events.send(AgentEvent::ToolEnd {
             id: visible_call_id.to_string(),
@@ -4100,6 +4076,9 @@ async fn dispatch_edit_batch(
     cwd: &std::path::Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
     permission_log: &mut Vec<PermissionRecord>,
+    permission_policy: Option<&crate::permissions::LayeredPermissionPolicy>,
+    permission_role: Option<styrene_rbac::Role>,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> Option<(
     usize,
     Vec<(usize, ToolResultEntry)>,
@@ -4164,8 +4143,9 @@ async fn dispatch_edit_batch(
         permission_log,
         false,
         None, // batch changes always run locally
-        None,
-        None,
+        permission_policy,
+        permission_role,
+        invocation_scope,
     )
     .await;
 
@@ -6523,6 +6503,7 @@ mod tests {
             None,
             None,
             None,
+            &crate::invocation_service::InvocationScope::default(),
         )
         .await;
         let results = dispatch.results;
@@ -6606,6 +6587,7 @@ mod tests {
             None,
             None,
             None,
+            &crate::invocation_service::InvocationScope::default(),
         )
         .await;
         assert!(!dispatch.results[0].is_error);
@@ -6649,6 +6631,7 @@ mod tests {
             None,
             Some(&policy),
             None,
+            &crate::invocation_service::InvocationScope::default(),
         )
         .await;
         assert_eq!(dispatch.results.len(), 1);
@@ -6691,6 +6674,7 @@ mod tests {
             arguments: serde_json::json!({"path": path}),
         }];
 
+        let invocation_scope = crate::invocation_service::InvocationScope::default();
         let dispatch_fut = dispatch_tools(
             &bus,
             &calls,
@@ -6701,6 +6685,7 @@ mod tests {
             None,
             None,
             None,
+            &invocation_scope,
         );
         tokio::pin!(dispatch_fut);
 
@@ -6775,6 +6760,7 @@ mod tests {
             None,
             None,
             None,
+            &crate::invocation_service::InvocationScope::default(),
         )
         .await;
         assert_eq!(second_dispatch.results.len(), 1);
@@ -6818,6 +6804,7 @@ mod tests {
             arguments: serde_json::json!({"command":"printf prompt-created > prompt-created.txt"}),
         }];
 
+        let invocation_scope = crate::invocation_service::InvocationScope::default();
         let dispatch_fut = dispatch_tools(
             &bus,
             &calls,
@@ -6828,6 +6815,7 @@ mod tests {
             None,
             Some(&policy),
             None,
+            &invocation_scope,
         );
         tokio::pin!(dispatch_fut);
 
@@ -6890,6 +6878,7 @@ mod tests {
             arguments: serde_json::json!({"command":"touch prompt-denied"}),
         }];
 
+        let invocation_scope = crate::invocation_service::InvocationScope::default();
         let dispatch_fut = dispatch_tools(
             &bus,
             &calls,
@@ -6900,6 +6889,7 @@ mod tests {
             None,
             Some(&policy),
             None,
+            &invocation_scope,
         );
         tokio::pin!(dispatch_fut);
 
@@ -7006,6 +6996,7 @@ mod tests {
             None,
             None,
             None,
+            &crate::invocation_service::InvocationScope::default(),
         )
         .await;
         let elapsed = start.elapsed();
@@ -7049,6 +7040,7 @@ mod tests {
             host_context: None,
             permission_policy: None,
             permission_role: None,
+            invocation_scope: crate::invocation_service::InvocationScope::default(),
             cancel_keeps_prompt: None,
             drain_post_loop_requests: true,
         };

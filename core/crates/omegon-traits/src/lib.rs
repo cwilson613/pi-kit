@@ -134,6 +134,7 @@ impl RuntimeCapabilityOwner {
 pub enum RuntimeInvocationKind {
     Tool,
     Command,
+    Internal,
     Cli,
     Acp,
     Ipc,
@@ -2333,6 +2334,12 @@ pub struct CommandDefinition {
     pub surface: CommandSurface,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandAlias {
+    pub alias: String,
+    pub canonical: String,
+}
+
 /// Presentation contract for a command's output.
 ///
 /// This is a property of the command, not of the text it happens to emit.
@@ -2500,6 +2507,12 @@ pub trait Feature: Send + Sync {
 
     /// Slash commands this feature registers. Called once at startup.
     fn commands(&self) -> Vec<CommandDefinition> {
+        vec![]
+    }
+
+    /// Explicit aliases owned by this feature. Aliases bind to the canonical
+    /// action identity and never create independent execution authority.
+    fn command_aliases(&self) -> Vec<CommandAlias> {
         vec![]
     }
 

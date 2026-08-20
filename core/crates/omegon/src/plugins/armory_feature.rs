@@ -332,6 +332,12 @@ impl Feature for ArmoryFeature {
         &self.name
     }
 
+    fn tool_provenance(&self) -> omegon_traits::ToolProvenance {
+        omegon_traits::ToolProvenance::Extension {
+            name: self.name.clone(),
+        }
+    }
+
     fn provide_context(
         &self,
         _signals: &omegon_traits::ContextSignals<'_>,

@@ -43,6 +43,22 @@ fn effect_evidence_v1_fixture_round_trips() {
 }
 
 #[test]
+fn internal_bindings_and_command_aliases_have_stable_wire_shapes() {
+    assert_eq!(
+        serde_json::to_string(&omegon_traits::RuntimeInvocationKind::Internal).unwrap(),
+        "\"internal\""
+    );
+    let alias = omegon_traits::CommandAlias {
+        alias: "subagent".into(),
+        canonical: "delegate".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(alias).unwrap(),
+        serde_json::json!({"alias": "subagent", "canonical": "delegate"})
+    );
+}
+
+#[test]
 fn diagnostics_v1_fixture_has_explicit_stable_order() {
     let raw = include_str!("fixtures/runtime-contribution-diagnostics-v1.json");
     assert_fixture_round_trip::<Vec<omegon_traits::RuntimeContributionDiagnostic>>(raw);

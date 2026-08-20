@@ -21,7 +21,7 @@
 //! events synchronously. Features get `&mut self` — no interior mutability
 //! needed. The TUI receives events via a separate `tokio::broadcast` channel.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
 use omegon_traits::{
@@ -122,6 +122,171 @@ fn compact_tool_schema(def: &ToolDefinition) -> ToolDefinition {
 const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 const BASH_TOOL_NAME: &str = "bash";
 
+enum PendingFeatureMutation {
+    Register(Box<dyn Feature>),
+    Replace(Box<dyn Feature>),
+}
+
+impl PendingFeatureMutation {
+    fn feature(&self) -> &dyn Feature {
+        match self {
+            Self::Register(feature) | Self::Replace(feature) => feature.as_ref(),
+        }
+    }
+}
+
+fn stable_feature_component(name: &str) -> String {
+    let mut encoded = String::new();
+    for byte in name.as_bytes() {
+        let ch = char::from(*byte);
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.') {
+            encoded.push(ch);
+        } else {
+            use std::fmt::Write as _;
+            write!(&mut encoded, "_{byte:02x}").expect("writing to String cannot fail");
+        }
+    }
+    if encoded.is_empty() {
+        "empty".into()
+    } else {
+        encoded
+    }
+}
+
+fn adapted_tool_effects(definition: &ToolDefinition) -> Vec<omegon_traits::RuntimeEffect> {
+    use omegon_traits::{RuntimeEffect, ToolCapability};
+
+    if definition.name == crate::tool_registry::core::BASH {
+        return vec![
+            RuntimeEffect::FilesystemRead,
+            RuntimeEffect::FilesystemWrite,
+            RuntimeEffect::ProcessSpawn,
+            RuntimeEffect::NetworkAccess,
+            RuntimeEffect::SecretDelivery,
+            RuntimeEffect::TerminalAccess,
+            RuntimeEffect::DurableStateWrite,
+            RuntimeEffect::RuntimeControl,
+        ];
+    }
+    if definition.name == crate::tool_registry::core::PLAN {
+        return vec![
+            RuntimeEffect::DurableStateWrite,
+            RuntimeEffect::RuntimeControl,
+        ];
+    }
+    if definition.name == crate::tool_registry::core::WAIT_FOR_OPERATOR {
+        return vec![RuntimeEffect::RuntimeControl];
+    }
+    if definition.name == crate::tool_registry::core::WHOAMI {
+        return vec![
+            RuntimeEffect::FilesystemRead,
+            RuntimeEffect::ProcessSpawn,
+            RuntimeEffect::NetworkAccess,
+            RuntimeEffect::SecretDelivery,
+        ];
+    }
+    if definition.capabilities.is_empty() {
+        return vec![
+            RuntimeEffect::FilesystemRead,
+            RuntimeEffect::FilesystemWrite,
+            RuntimeEffect::ProcessSpawn,
+            RuntimeEffect::NetworkAccess,
+            RuntimeEffect::SecretDelivery,
+            RuntimeEffect::TerminalAccess,
+            RuntimeEffect::DurableStateWrite,
+            RuntimeEffect::RuntimeControl,
+        ];
+    }
+    let mut effects = BTreeSet::new();
+    for capability in &definition.capabilities {
+        match capability {
+            ToolCapability::Orientation
+            | ToolCapability::BroadOrientation
+            | ToolCapability::RepoInspection
+            | ToolCapability::BroadRepoInspection
+            | ToolCapability::TargetedRepoInspection => {
+                effects.insert(RuntimeEffect::FilesystemRead);
+                // Existing inspection/orientation adapters may shell out to
+                // VCS/provider CLIs or probe local HTTP services. Until each
+                // feature supplies narrower native declarations, retain the
+                // conservative host-effect envelope.
+                effects.insert(RuntimeEffect::ProcessSpawn);
+                effects.insert(RuntimeEffect::NetworkAccess);
+                effects.insert(RuntimeEffect::SecretDelivery);
+            }
+            ToolCapability::Mutation | ToolCapability::StateChanging => effects.extend([
+                RuntimeEffect::FilesystemRead,
+                RuntimeEffect::FilesystemWrite,
+                RuntimeEffect::ProcessSpawn,
+                RuntimeEffect::NetworkAccess,
+                RuntimeEffect::SecretDelivery,
+                RuntimeEffect::TerminalAccess,
+                RuntimeEffect::DurableStateWrite,
+                RuntimeEffect::RuntimeControl,
+            ]),
+            ToolCapability::Validation => {
+                effects.insert(RuntimeEffect::FilesystemRead);
+                effects.insert(RuntimeEffect::ProcessSpawn);
+            }
+            ToolCapability::ProgressBoundary => {
+                effects.insert(RuntimeEffect::RuntimeControl);
+            }
+        }
+    }
+    effects.into_iter().collect()
+}
+
+fn adapted_command_effects(definition: &CommandDefinition) -> Vec<omegon_traits::RuntimeEffect> {
+    use omegon_traits::{CommandSafetyClass, RuntimeEffect};
+
+    match definition.safety.class {
+        CommandSafetyClass::LocalOnly | CommandSafetyClass::ReadOnly => vec![],
+        CommandSafetyClass::QueueMutation => vec![RuntimeEffect::RuntimeControl],
+        CommandSafetyClass::StateChanging => vec![
+            RuntimeEffect::DurableStateWrite,
+            RuntimeEffect::RuntimeControl,
+        ],
+        CommandSafetyClass::ExternalSideEffect => vec![
+            RuntimeEffect::NetworkAccess,
+            RuntimeEffect::ProcessSpawn,
+            RuntimeEffect::RuntimeControl,
+        ],
+        CommandSafetyClass::Destructive => vec![
+            RuntimeEffect::FilesystemWrite,
+            RuntimeEffect::DurableStateWrite,
+            RuntimeEffect::RuntimeControl,
+        ],
+    }
+}
+
+fn adapted_command_surfaces(definition: &CommandDefinition) -> Vec<omegon_traits::RuntimeSurface> {
+    let mut surfaces = Vec::new();
+    if definition.availability.tui {
+        surfaces.push(omegon_traits::RuntimeSurface::Tui);
+    }
+    if definition.availability.cli {
+        surfaces.push(omegon_traits::RuntimeSurface::Cli);
+    }
+    if definition.availability.acp {
+        surfaces.push(omegon_traits::RuntimeSurface::Acp);
+    }
+    surfaces
+}
+
+fn conservative_external_effects() -> Vec<omegon_traits::RuntimeEffect> {
+    use omegon_traits::RuntimeEffect;
+    vec![
+        RuntimeEffect::FilesystemRead,
+        RuntimeEffect::FilesystemWrite,
+        RuntimeEffect::ProcessSpawn,
+        RuntimeEffect::NetworkAccess,
+        RuntimeEffect::SecretDelivery,
+        RuntimeEffect::TerminalAccess,
+        RuntimeEffect::DurableStateWrite,
+        RuntimeEffect::RuntimeControl,
+    ]
+}
+
 fn requested_tool_timeout(args: &Value) -> Option<u64> {
     args.get("timeout_secs")
         .and_then(Value::as_u64)
@@ -159,6 +324,15 @@ pub struct EventBus {
     /// (because they're not LLM-visible) to the feature index that handles them.
     /// Populated explicitly via `register_internal_tool`.
     internal_tool_owners: HashMap<String, usize>,
+    /// Structurally validated composition from which legacy caches were built.
+    accepted_graph: Option<std::sync::Arc<crate::contribution_graph::RuntimeCandidateGraph>>,
+    /// Number of features in the active published composition.
+    published_feature_count: usize,
+    /// Candidate changes remain invisible until graph validation succeeds.
+    pending_features: Vec<PendingFeatureMutation>,
+    /// Internal binding declarations retained without last-writer arbitration.
+    declared_internal_tools: Vec<(String, String)>,
+    pending_internal_tools: Vec<(String, String)>,
 }
 
 impl EventBus {
@@ -170,6 +344,11 @@ impl EventBus {
             command_defs: Vec::new(),
             disabled_tools: None,
             internal_tool_owners: HashMap::new(),
+            accepted_graph: None,
+            published_feature_count: 0,
+            pending_features: Vec::new(),
+            declared_internal_tools: Vec::new(),
+            pending_internal_tools: Vec::new(),
             tool_inventory: None,
             tool_timeouts: HashMap::from([
                 ("bash".into(), Duration::from_secs(600)),
@@ -272,13 +451,24 @@ impl EventBus {
     /// Register a feature. Call during setup before the agent loop starts.
     pub fn register(&mut self, feature: Box<dyn Feature>) {
         tracing::info!(feature = feature.name(), "registered feature");
-        self.features.push(feature);
+        if self.accepted_graph.is_some() {
+            self.pending_features
+                .push(PendingFeatureMutation::Register(feature));
+        } else {
+            self.features.push(feature);
+        }
     }
 
     /// Replace an existing feature by name, or register it if absent.
     /// Call `finalize()` afterwards to rebuild cached command/tool definitions.
     pub fn replace_feature(&mut self, feature: Box<dyn Feature>) {
         let name = feature.name().to_string();
+        if self.accepted_graph.is_some() {
+            tracing::info!(feature = %name, "staged replacement feature");
+            self.pending_features
+                .push(PendingFeatureMutation::Replace(feature));
+            return;
+        }
         if let Some(idx) = self.features.iter().position(|f| f.name() == name) {
             tracing::info!(feature = %name, "replaced feature");
             self.features[idx] = feature;
@@ -293,13 +483,26 @@ impl EventBus {
     /// `execute_internal`. The feature_name must match a previously
     /// registered feature.
     pub fn register_internal_tool(&mut self, tool_name: &str, feature_name: &str) {
-        if let Some(idx) = self.features.iter().position(|f| f.name() == feature_name) {
+        let feature_exists = self
+            .features
+            .iter()
+            .any(|feature| feature.name() == feature_name)
+            || self
+                .pending_features
+                .iter()
+                .any(|pending| pending.feature().name() == feature_name);
+        if feature_exists {
             tracing::debug!(
                 tool = tool_name,
                 feature = feature_name,
-                "registered internal tool"
+                "staged internal tool"
             );
-            self.internal_tool_owners.insert(tool_name.to_string(), idx);
+            let binding = (tool_name.to_string(), feature_name.to_string());
+            if self.accepted_graph.is_some() {
+                self.pending_internal_tools.push(binding);
+            } else {
+                self.declared_internal_tools.push(binding);
+            }
         } else {
             tracing::warn!(
                 tool = tool_name,
@@ -309,49 +512,595 @@ impl EventBus {
         }
     }
 
-    /// Finalize registration — cache tool and command definitions.
-    /// Call after all features are registered, before the agent loop starts.
-    /// Deduplicates tools by name (first registration wins) to prevent
-    /// Anthropic API 400 "Tool names must be unique" errors.
+    /// Validate the staged feature set and publish graph-derived legacy caches.
     pub fn finalize(&mut self) {
-        self.tool_defs.clear();
-        self.command_defs.clear();
+        self.try_finalize()
+            .expect("staged EventBus composition must validate before publication");
+    }
 
-        let mut seen_tools = std::collections::HashSet::new();
-        for (idx, feature) in self.features.iter().enumerate() {
-            for def in feature.tools() {
-                if seen_tools.contains(def.name.as_str()) {
-                    tracing::warn!(
-                        feature = feature.name(),
-                        tool = %def.name,
-                        "duplicate tool definition — skipping (first registration wins)"
-                    );
-                    continue;
-                }
-                tracing::debug!(feature = feature.name(), tool = %def.name, "registered tool");
-                seen_tools.insert(def.name.clone());
-                self.tool_defs.push((idx, def));
-            }
-            for cmd in feature.commands() {
-                tracing::debug!(feature = feature.name(), command = %cmd.name, "registered command");
-                self.command_defs.push((idx, cmd));
-            }
+    /// Fallible publication boundary used by production setup.
+    pub(crate) fn try_finalize(&mut self) -> anyhow::Result<()> {
+        use omegon_traits::{
+            RuntimeActivationBoundary, RuntimeAuthorityNarrowing, RuntimeCapabilityGroupId,
+            RuntimeCapabilityId, RuntimeCapabilityKind, RuntimeCapabilityTransitionPolicy,
+            RuntimeCleanupRequirement, RuntimeCompositionTransitionPolicy,
+            RuntimeConfinementRequest, RuntimeContributionCapabilityDeclaration,
+            RuntimeContributionCapabilityGroup, RuntimeContributionDeclaration,
+            RuntimeContributionGenerationId, RuntimeContributionSchemaVersion,
+            RuntimeDeduplication, RuntimeExecutionPolicy, RuntimeFailureDisposition,
+            RuntimeIdempotency, RuntimeInvocationBinding, RuntimeInvocationBindingRole,
+            RuntimeLifecyclePolicy, RuntimeLifecycleRequirement, RuntimeOwnerTier,
+            RuntimePlatformRequirements, RuntimeProtocolRange, RuntimeRetryClass, RuntimeSurface,
+            RuntimeTimeoutClass, RuntimeTrustRequest,
+        };
+
+        struct FrozenFeature {
+            contribution_id: omegon_traits::RuntimeContributionId,
+            feature_index: usize,
+            name: String,
+            provenance: omegon_traits::ToolProvenance,
+            tools: Vec<ToolDefinition>,
+            commands: Vec<CommandDefinition>,
+            command_aliases: Vec<omegon_traits::CommandAlias>,
+            internal_tools: Vec<String>,
         }
 
-        self.refresh_tool_inventory();
-
-        let tool_names: Vec<&str> = self
-            .tool_defs
+        let replaced_names = self
+            .pending_features
             .iter()
-            .map(|(_, d)| d.name.as_str())
-            .collect();
+            .filter_map(|pending| match pending {
+                PendingFeatureMutation::Replace(feature) => Some(feature.name().to_string()),
+                PendingFeatureMutation::Register(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let mut planned_indices = self
+            .features
+            .iter()
+            .enumerate()
+            .map(|(index, feature)| (feature.name().to_string(), index))
+            .collect::<BTreeMap<_, _>>();
+        let mut next_index = self.features.len();
+        let mut candidate_features = self
+            .features
+            .iter()
+            .enumerate()
+            .filter(|(_, feature)| !replaced_names.contains(feature.name()))
+            .map(|(index, feature)| (index, feature.as_ref()))
+            .collect::<Vec<_>>();
+        for pending in &self.pending_features {
+            let feature = pending.feature();
+            let index = match pending {
+                PendingFeatureMutation::Replace(_) => *planned_indices
+                    .entry(feature.name().to_string())
+                    .or_insert_with(|| {
+                        let index = next_index;
+                        next_index += 1;
+                        index
+                    }),
+                PendingFeatureMutation::Register(_) => {
+                    let index = next_index;
+                    next_index += 1;
+                    index
+                }
+            };
+            candidate_features.push((index, feature));
+        }
+
+        let mut candidate_internal_tools = self.declared_internal_tools.clone();
+        candidate_internal_tools.extend(self.pending_internal_tools.iter().cloned());
+        let mut frozen = Vec::with_capacity(candidate_features.len());
+        for (feature_index, feature) in candidate_features {
+            let component = stable_feature_component(feature.name());
+            let contribution_id =
+                omegon_traits::RuntimeContributionId::new(format!("feature:{component}"))
+                    .expect("encoded feature identity is a valid scoped id");
+            let mut internal_tools = candidate_internal_tools
+                .iter()
+                .filter(|(_, owner)| owner == feature.name())
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>();
+            internal_tools.sort();
+            frozen.push(FrozenFeature {
+                contribution_id,
+                feature_index,
+                name: feature.name().to_string(),
+                provenance: feature.tool_provenance(),
+                tools: feature.tools(),
+                commands: feature.commands(),
+                command_aliases: feature.command_aliases(),
+                internal_tools,
+            });
+        }
+        frozen.sort_by_key(|feature| feature.feature_index);
+
+        let identity_check = frozen.iter().try_for_each(|feature| {
+            for tool in &feature.tools {
+                RuntimeCapabilityId::new(format!("tool:{}", tool.name)).map_err(|error| {
+                    anyhow::anyhow!(
+                        "feature {} declares invalid tool name {:?}: {error}",
+                        feature.name,
+                        tool.name
+                    )
+                })?;
+            }
+            for command in &feature.commands {
+                RuntimeCapabilityId::new(format!("action:{}", command.name)).map_err(|error| {
+                    anyhow::anyhow!(
+                        "feature {} declares invalid command name {:?}: {error}",
+                        feature.name,
+                        command.name
+                    )
+                })?;
+            }
+            for alias in &feature.command_aliases {
+                for (kind, name) in [
+                    ("alias", alias.alias.as_str()),
+                    ("canonical alias target", alias.canonical.as_str()),
+                ] {
+                    RuntimeCapabilityId::new(format!("action:{name}")).map_err(|error| {
+                        anyhow::anyhow!(
+                            "feature {} declares invalid {kind} {:?}: {error}",
+                            feature.name,
+                            name
+                        )
+                    })?;
+                }
+            }
+            for internal in &feature.internal_tools {
+                RuntimeCapabilityId::new(format!("internal:{internal}")).map_err(|error| {
+                    anyhow::anyhow!(
+                        "feature {} declares invalid internal binding {:?}: {error}",
+                        feature.name,
+                        internal
+                    )
+                })?;
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+        if let Err(error) = identity_check {
+            self.pending_features.clear();
+            self.pending_internal_tools.clear();
+            return Err(error);
+        }
+
+        let known_tools = frozen
+            .iter()
+            .flat_map(|feature| feature.tools.iter())
+            .map(|tool| RuntimeCapabilityId::tool(&tool.name))
+            .collect::<BTreeSet<_>>();
+        let groups = crate::features::manage_tools::TOOL_GROUPS
+            .iter()
+            .filter_map(|(name, members)| {
+                let members = members
+                    .iter()
+                    .map(|member| RuntimeCapabilityId::tool(member))
+                    .filter(|member| known_tools.contains(member))
+                    .collect::<Vec<_>>();
+                (!members.is_empty()).then(|| RuntimeContributionCapabilityGroup {
+                    id: RuntimeCapabilityGroupId::new(format!("group:{name}"))
+                        .expect("built-in tool group names are stable identifiers"),
+                    members,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let policy = |effects: &[omegon_traits::RuntimeEffect]| {
+            let idempotent = effects
+                .iter()
+                .all(|effect| matches!(effect, omegon_traits::RuntimeEffect::FilesystemRead));
+            RuntimeExecutionPolicy {
+                timeout_class: RuntimeTimeoutClass::Interactive,
+                retry_class: if idempotent {
+                    RuntimeRetryClass::IdempotentFailure
+                } else {
+                    RuntimeRetryClass::Never
+                },
+                idempotency: if idempotent {
+                    RuntimeIdempotency::Idempotent
+                } else {
+                    RuntimeIdempotency::NonIdempotent
+                },
+                deduplication: RuntimeDeduplication::Unsupported,
+                max_attempts: None,
+            }
+        };
+        let transition = || RuntimeCapabilityTransitionPolicy {
+            authority_narrowing: RuntimeAuthorityNarrowing::CompleteExisting,
+            active_call_timeout_ms: DEFAULT_TOOL_TIMEOUT.as_millis() as u64,
+        };
+        let mut declarations = frozen
+            .iter()
+            .map(|feature| {
+                let external = matches!(
+                    &feature.provenance,
+                    omegon_traits::ToolProvenance::Extension { .. }
+                );
+                let alias_names = feature
+                    .command_aliases
+                    .iter()
+                    .map(|alias| alias.alias.as_str())
+                    .collect::<BTreeSet<_>>();
+                let commands_by_name = feature.commands.iter().fold(
+                    BTreeMap::<&str, Vec<&CommandDefinition>>::new(),
+                    |mut commands, command| {
+                        commands
+                            .entry(command.name.as_str())
+                            .or_default()
+                            .push(command);
+                        commands
+                    },
+                );
+                let mut command_groups: BTreeMap<
+                    String,
+                    (Vec<&CommandDefinition>, Vec<RuntimeInvocationBinding>),
+                > = BTreeMap::new();
+                for command in &feature.commands {
+                    if !alias_names.contains(command.name.as_str()) {
+                        let group = command_groups.entry(command.name.clone()).or_default();
+                        group.0.push(command);
+                        group.1.push(RuntimeInvocationBinding {
+                            kind: omegon_traits::RuntimeInvocationKind::Command,
+                            name: command.name.clone(),
+                            role: RuntimeInvocationBindingRole::Canonical,
+                        });
+                    }
+                }
+                for alias in &feature.command_aliases {
+                    let group = command_groups.entry(alias.canonical.clone()).or_default();
+                    if !group
+                        .1
+                        .iter()
+                        .any(|binding| binding.role == RuntimeInvocationBindingRole::Canonical)
+                        && let Some(canonical) = commands_by_name.get(alias.canonical.as_str())
+                    {
+                        for command in canonical {
+                            group.0.push(command);
+                            group.1.push(RuntimeInvocationBinding {
+                                kind: omegon_traits::RuntimeInvocationKind::Command,
+                                name: command.name.clone(),
+                                role: RuntimeInvocationBindingRole::Canonical,
+                            });
+                        }
+                    }
+                    match commands_by_name.get(alias.alias.as_str()) {
+                        Some(commands) => {
+                            for command in commands {
+                                group.0.push(command);
+                                group.1.push(RuntimeInvocationBinding {
+                                    kind: omegon_traits::RuntimeInvocationKind::Command,
+                                    name: command.name.clone(),
+                                    role: RuntimeInvocationBindingRole::Alias,
+                                });
+                            }
+                        }
+                        None => group.1.push(RuntimeInvocationBinding {
+                            kind: omegon_traits::RuntimeInvocationKind::Command,
+                            name: alias.alias.clone(),
+                            role: RuntimeInvocationBindingRole::Alias,
+                        }),
+                    }
+                }
+                let mut capabilities =
+                    feature
+                        .tools
+                        .iter()
+                        .map(|tool| {
+                            let effects = if external {
+                                conservative_external_effects()
+                            } else {
+                                adapted_tool_effects(tool)
+                            };
+                            RuntimeContributionCapabilityDeclaration {
+                                id: RuntimeCapabilityId::tool(&tool.name),
+                                kind: RuntimeCapabilityKind::Tool,
+                                bindings: vec![RuntimeInvocationBinding {
+                                    kind: omegon_traits::RuntimeInvocationKind::Tool,
+                                    name: tool.name.clone(),
+                                    role: RuntimeInvocationBindingRole::Canonical,
+                                }],
+                                execution: policy(&effects),
+                                effects,
+                                transition: transition(),
+                                surfaces: vec![RuntimeSurface::Model],
+                            }
+                        })
+                        .chain(command_groups.into_iter().map(
+                            |(canonical, (commands, bindings))| {
+                                let effects = if external {
+                                    conservative_external_effects()
+                                } else {
+                                    commands
+                                        .iter()
+                                        .flat_map(|command| adapted_command_effects(command))
+                                        .collect::<BTreeSet<_>>()
+                                        .into_iter()
+                                        .collect::<Vec<_>>()
+                                };
+                                let surfaces = commands
+                                    .iter()
+                                    .flat_map(|command| adapted_command_surfaces(command))
+                                    .collect::<BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect::<Vec<_>>();
+                                RuntimeContributionCapabilityDeclaration {
+                                    id: RuntimeCapabilityId::action(&canonical),
+                                    kind: RuntimeCapabilityKind::OperatorAction,
+                                    bindings,
+                                    execution: policy(&effects),
+                                    effects,
+                                    transition: transition(),
+                                    surfaces,
+                                }
+                            },
+                        ))
+                        .collect::<Vec<_>>();
+                capabilities.extend(feature.internal_tools.iter().map(|name| {
+                    let effects = vec![
+                        omegon_traits::RuntimeEffect::FilesystemRead,
+                        omegon_traits::RuntimeEffect::FilesystemWrite,
+                        omegon_traits::RuntimeEffect::ProcessSpawn,
+                        omegon_traits::RuntimeEffect::NetworkAccess,
+                        omegon_traits::RuntimeEffect::SecretDelivery,
+                        omegon_traits::RuntimeEffect::TerminalAccess,
+                        omegon_traits::RuntimeEffect::DurableStateWrite,
+                        omegon_traits::RuntimeEffect::RuntimeControl,
+                    ];
+                    RuntimeContributionCapabilityDeclaration {
+                        id: RuntimeCapabilityId::new(format!("internal:{name}"))
+                            .expect("internal tool names form stable capability identifiers"),
+                        kind: RuntimeCapabilityKind::KernelService,
+                        bindings: vec![RuntimeInvocationBinding {
+                            kind: omegon_traits::RuntimeInvocationKind::Internal,
+                            name: name.clone(),
+                            role: RuntimeInvocationBindingRole::Canonical,
+                        }],
+                        execution: policy(&effects),
+                        effects,
+                        transition: transition(),
+                        surfaces: vec![RuntimeSurface::Internal],
+                    }
+                }));
+                RuntimeContributionDeclaration {
+                    schema_version: RuntimeContributionSchemaVersion::V1,
+                    id: feature.contribution_id.clone(),
+                    generation_id: RuntimeContributionGenerationId::new(format!(
+                        "contribution:{}-static-v1",
+                        stable_feature_component(&feature.name)
+                    ))
+                    .expect("feature names form stable generation identifiers"),
+                    owner_tier: if external {
+                        RuntimeOwnerTier::External
+                    } else {
+                        RuntimeOwnerTier::System
+                    },
+                    requested_trust: if external {
+                        RuntimeTrustRequest::UntrustedDynamic
+                    } else {
+                        RuntimeTrustRequest::ReleaseArtifact
+                    },
+                    requested_confinement: RuntimeConfinementRequest::HostProcess,
+                    protocol: RuntimeProtocolRange::new(1, 1)
+                        .expect("static protocol range is valid"),
+                    platform: RuntimePlatformRequirements::default(),
+                    dependencies: vec![],
+                    conflicts: vec![],
+                    replaces: vec![],
+                    lifecycle: RuntimeLifecyclePolicy {
+                        requirement: if external {
+                            RuntimeLifecycleRequirement::Optional
+                        } else {
+                            RuntimeLifecycleRequirement::Required
+                        },
+                        failure_disposition: if external {
+                            RuntimeFailureDisposition::DegradeLocally
+                        } else {
+                            RuntimeFailureDisposition::FailComposition
+                        },
+                        readiness_timeout_ms: 0,
+                        heartbeat_timeout_ms: None,
+                        restart_limit: 0,
+                    },
+                    transition: RuntimeCompositionTransitionPolicy {
+                        activation_boundary: RuntimeActivationBoundary::Boot,
+                        cleanup: RuntimeCleanupRequirement::BestEffort,
+                        cleanup_timeout_ms: 0,
+                    },
+                    capabilities,
+                    groups: vec![],
+                }
+            })
+            .collect::<Vec<_>>();
+        declarations.push(RuntimeContributionDeclaration {
+            schema_version: RuntimeContributionSchemaVersion::V1,
+            id: omegon_traits::RuntimeContributionId::new("system:tool-groups")
+                .expect("static group owner id is valid"),
+            generation_id: RuntimeContributionGenerationId::new(
+                "contribution:tool-groups-static-v1",
+            )
+            .expect("static group generation id is valid"),
+            owner_tier: RuntimeOwnerTier::System,
+            requested_trust: RuntimeTrustRequest::ReleaseArtifact,
+            requested_confinement: RuntimeConfinementRequest::None,
+            protocol: RuntimeProtocolRange::new(1, 1).expect("static protocol range is valid"),
+            platform: RuntimePlatformRequirements::default(),
+            dependencies: vec![],
+            conflicts: vec![],
+            replaces: vec![],
+            lifecycle: RuntimeLifecyclePolicy {
+                requirement: RuntimeLifecycleRequirement::Required,
+                failure_disposition: RuntimeFailureDisposition::FailComposition,
+                readiness_timeout_ms: 0,
+                heartbeat_timeout_ms: None,
+                restart_limit: 0,
+            },
+            transition: RuntimeCompositionTransitionPolicy {
+                activation_boundary: RuntimeActivationBoundary::Boot,
+                cleanup: RuntimeCleanupRequirement::Strict,
+                cleanup_timeout_ms: 0,
+            },
+            capabilities: vec![],
+            groups,
+        });
+
+        let build = crate::contribution_graph::build_candidate_graph(
+            crate::contribution_graph::CandidateGraphRequest {
+                declarations,
+                environment: crate::contribution_graph::CandidateGraphEnvironment {
+                    supported_protocol: RuntimeProtocolRange::new(1, 1)
+                        .expect("host protocol range is valid"),
+                    operating_system: std::env::consts::OS.into(),
+                    architecture: std::env::consts::ARCH.into(),
+                    available_substrates: BTreeSet::from(["host".into()]),
+                },
+                effect_evidence: vec![],
+            },
+        );
+        let graph = match build.graph {
+            Some(graph) => graph,
+            None => {
+                let error = anyhow::anyhow!(
+                    "candidate contribution graph rejected:\n{}",
+                    serde_json::to_string_pretty(&build.diagnostics)
+                        .unwrap_or_else(|_| format!("{:?}", build.diagnostics))
+                );
+                self.pending_features.clear();
+                self.pending_internal_tools.clear();
+                return Err(error);
+            }
+        };
+
+        let frozen_by_id = frozen
+            .iter()
+            .map(|feature| (feature.contribution_id.clone(), feature))
+            .collect::<BTreeMap<_, _>>();
+        let mut tool_defs = Vec::new();
+        let mut command_defs = Vec::new();
+        let mut internal_tool_owners = HashMap::new();
+        for wave in &graph.activation_waves {
+            for contribution_id in wave {
+                if contribution_id.as_str() != "system:tool-groups"
+                    && !frozen_by_id.contains_key(contribution_id)
+                {
+                    self.pending_features.clear();
+                    self.pending_internal_tools.clear();
+                    anyhow::bail!(
+                        "activation plan references an unstaged contribution: {}",
+                        contribution_id.as_str()
+                    );
+                }
+            }
+        }
+        for feature in &frozen {
+            for definition in &feature.tools {
+                let key = (
+                    omegon_traits::RuntimeInvocationKind::Tool,
+                    definition.name.clone(),
+                );
+                if graph
+                    .invocation_owners
+                    .get(&key)
+                    .is_some_and(|(owner, _)| owner == &feature.contribution_id)
+                {
+                    tool_defs.push((feature.feature_index, definition.clone()));
+                } else {
+                    self.pending_features.clear();
+                    self.pending_internal_tools.clear();
+                    anyhow::bail!(
+                        "staged tool is absent from the accepted graph: {}",
+                        definition.name
+                    );
+                }
+            }
+            for definition in &feature.commands {
+                let key = (
+                    omegon_traits::RuntimeInvocationKind::Command,
+                    definition.name.clone(),
+                );
+                if graph
+                    .invocation_owners
+                    .get(&key)
+                    .is_some_and(|(owner, _)| owner == &feature.contribution_id)
+                {
+                    command_defs.push((feature.feature_index, definition.clone()));
+                } else {
+                    self.pending_features.clear();
+                    self.pending_internal_tools.clear();
+                    anyhow::bail!(
+                        "staged command is absent from the accepted graph: {}",
+                        definition.name
+                    );
+                }
+            }
+            for name in &feature.internal_tools {
+                let key = (omegon_traits::RuntimeInvocationKind::Internal, name.clone());
+                if graph
+                    .invocation_owners
+                    .get(&key)
+                    .is_some_and(|(owner, _)| owner == &feature.contribution_id)
+                {
+                    internal_tool_owners.insert(name.clone(), feature.feature_index);
+                } else {
+                    self.pending_features.clear();
+                    self.pending_internal_tools.clear();
+                    anyhow::bail!(
+                        "staged internal binding is absent from the accepted graph: {name}"
+                    );
+                }
+            }
+        }
+        let accepted_bindings = graph
+            .invocation_owners
+            .keys()
+            .filter(|(kind, _)| {
+                matches!(
+                    kind,
+                    omegon_traits::RuntimeInvocationKind::Tool
+                        | omegon_traits::RuntimeInvocationKind::Command
+                        | omegon_traits::RuntimeInvocationKind::Internal
+                )
+            })
+            .count();
+        let implemented_bindings =
+            tool_defs.len() + command_defs.len() + internal_tool_owners.len();
+        if implemented_bindings != accepted_bindings {
+            self.pending_features.clear();
+            self.pending_internal_tools.clear();
+            anyhow::bail!(
+                "accepted graph/implementation parity mismatch: {accepted_bindings} bindings, {implemented_bindings} implementations"
+            );
+        }
+
+        for mutation in self.pending_features.drain(..) {
+            match mutation {
+                PendingFeatureMutation::Register(feature) => self.features.push(feature),
+                PendingFeatureMutation::Replace(feature) => {
+                    if let Some(index) = self
+                        .features
+                        .iter()
+                        .position(|current| current.name() == feature.name())
+                    {
+                        self.features[index] = feature;
+                    } else {
+                        self.features.push(feature);
+                    }
+                }
+            }
+        }
+        self.declared_internal_tools
+            .append(&mut self.pending_internal_tools);
+        self.tool_defs = tool_defs;
+        self.command_defs = command_defs;
+        self.internal_tool_owners = internal_tool_owners;
+        self.accepted_graph = Some(std::sync::Arc::new(graph));
+        self.published_feature_count = self.features.len();
+        self.refresh_tool_inventory();
         tracing::info!(
             features = self.features.len(),
             tools = self.tool_defs.len(),
             commands = self.command_defs.len(),
-            tool_names = ?tool_names,
-            "event bus finalized"
+            "event bus published from accepted contribution graph"
         );
+        Ok(())
     }
 
     /// Build the authority-neutral runtime capability inventory for the
@@ -439,7 +1188,7 @@ impl EventBus {
     /// Deliver an event to all features. Requests are accumulated
     /// and can be drained with `drain_requests()`.
     pub fn emit(&mut self, event: &BusEvent) {
-        for feature in &mut self.features {
+        for feature in &mut self.features[..self.published_feature_count] {
             let requests = feature.on_event(event);
             self.pending_requests.extend(requests);
         }
@@ -746,6 +1495,7 @@ impl EventBus {
     pub fn collect_context(&self, signals: &ContextSignals<'_>) -> Vec<ContextInjection> {
         self.features
             .iter()
+            .take(self.published_feature_count)
             .filter_map(|f| f.provide_context(signals))
             .collect()
     }
@@ -781,12 +1531,16 @@ impl EventBus {
 
     /// Number of registered features.
     pub fn feature_count(&self) -> usize {
-        self.features.len()
+        self.published_feature_count
     }
 
     /// Feature names for logging/debugging.
     pub fn feature_names(&self) -> Vec<&str> {
-        self.features.iter().map(|f| f.name()).collect()
+        self.features
+            .iter()
+            .take(self.published_feature_count)
+            .map(|f| f.name())
+            .collect()
     }
 }
 
@@ -925,6 +1679,120 @@ mod tests {
         }
     }
 
+    struct DisplayNameFeature(&'static str);
+
+    #[async_trait]
+    impl Feature for DisplayNameFeature {
+        fn name(&self) -> &str {
+            self.0
+        }
+    }
+
+    struct AlternateNotifierFeature;
+
+    #[async_trait]
+    impl Feature for AlternateNotifierFeature {
+        fn name(&self) -> &str {
+            "alternate-notifier"
+        }
+
+        fn commands(&self) -> Vec<CommandDefinition> {
+            NotifierFeature.commands()
+        }
+    }
+
+    struct AliasCommandFeature;
+
+    #[async_trait]
+    impl Feature for AliasCommandFeature {
+        fn name(&self) -> &str {
+            "alias-commands"
+        }
+
+        fn commands(&self) -> Vec<CommandDefinition> {
+            ["delegate", "subagent"]
+                .into_iter()
+                .map(|name| CommandDefinition {
+                    name: name.into(),
+                    description: name.into(),
+                    subcommands: vec![],
+                    availability: omegon_traits::CommandAvailability::ALL,
+                    safety: omegon_traits::CommandSafety::READ_ONLY,
+                    surface: Default::default(),
+                })
+                .collect()
+        }
+
+        fn command_aliases(&self) -> Vec<omegon_traits::CommandAlias> {
+            vec![omegon_traits::CommandAlias {
+                alias: "subagent".into(),
+                canonical: "delegate".into(),
+            }]
+        }
+    }
+
+    struct MalformedToolFeature;
+
+    #[async_trait]
+    impl Feature for MalformedToolFeature {
+        fn name(&self) -> &str {
+            "malformed-tool"
+        }
+
+        fn tools(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: "bad tool".into(),
+                label: "bad".into(),
+                description: "bad".into(),
+                parameters: json!({"type": "object"}),
+                capabilities: vec![],
+            }]
+        }
+    }
+
+    struct MissingAliasImplementationFeature;
+
+    #[async_trait]
+    impl Feature for MissingAliasImplementationFeature {
+        fn name(&self) -> &str {
+            "missing-alias"
+        }
+
+        fn commands(&self) -> Vec<CommandDefinition> {
+            vec![CommandDefinition {
+                name: "delegate".into(),
+                description: "delegate".into(),
+                subcommands: vec![],
+                availability: omegon_traits::CommandAvailability::ALL,
+                safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: Default::default(),
+            }]
+        }
+
+        fn command_aliases(&self) -> Vec<omegon_traits::CommandAlias> {
+            vec![omegon_traits::CommandAlias {
+                alias: "missing".into(),
+                canonical: "delegate".into(),
+            }]
+        }
+    }
+
+    struct MalformedAliasFeature;
+
+    #[async_trait]
+    impl Feature for MalformedAliasFeature {
+        fn name(&self) -> &str {
+            "malformed-alias"
+        }
+
+        fn command_aliases(&self) -> Vec<omegon_traits::CommandAlias> {
+            vec![omegon_traits::CommandAlias {
+                alias: "alias".into(),
+                canonical: "bad canonical".into(),
+            }]
+        }
+    }
+
     #[test]
     fn finalized_bus_projects_read_only_capability_inventory_without_changing_tools() {
         let mut bus = EventBus::new();
@@ -1023,21 +1891,191 @@ mod tests {
     }
 
     #[test]
-    fn resolved_tool_provenance_tracks_the_collision_winner() {
+    fn duplicate_tool_owner_is_rejected_independent_of_registration_order() {
+        let build = |extension_first| {
+            let mut bus = EventBus::new();
+            if extension_first {
+                bus.register(Box::new(ExtensionCounterFeature));
+                bus.register(Box::new(CounterFeature { event_count: 0 }));
+            } else {
+                bus.register(Box::new(CounterFeature { event_count: 0 }));
+                bus.register(Box::new(ExtensionCounterFeature));
+            }
+            bus.try_finalize().unwrap_err().to_string()
+        };
+
+        let first = build(true);
+        let second = build(false);
+        assert_eq!(first, second);
+        assert!(first.contains("graph:duplicate_owner"));
+        assert!(first.contains("graph:ambiguous_binding"));
+    }
+
+    #[tokio::test]
+    async fn failed_candidate_keeps_previous_graph_features_and_dispatch() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(CounterFeature { event_count: 7 }));
+        bus.finalize();
+        bus.register(Box::new(ExtensionCounterFeature));
+
+        assert_eq!(bus.feature_names(), vec!["counter"]);
+        assert!(bus.try_finalize().is_err());
+        assert_eq!(bus.feature_names(), vec!["counter"]);
+        let result = bus
+            .execute_tool(
+                "count",
+                "after-rejection",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content[0].as_text(), Some("count: 7"));
+    }
+
+    #[test]
+    fn duplicate_internal_binding_is_rejected_without_last_writer_selection() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(CounterFeature { event_count: 0 }));
+        bus.register(Box::new(NotifierFeature));
+        bus.register_internal_tool("hidden", "counter");
+        bus.register_internal_tool("hidden", "notifier");
+
+        let error = bus.try_finalize().unwrap_err().to_string();
+        assert!(error.contains("graph:duplicate_owner"));
+        assert!(error.contains("graph:ambiguous_binding"));
+        assert!(!bus.has_registered_tool("hidden"));
+    }
+
+    #[test]
+    fn duplicate_command_binding_is_rejected_before_publication() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(NotifierFeature));
+        bus.register(Box::new(AlternateNotifierFeature));
+
+        let error = bus.try_finalize().unwrap_err().to_string();
+        assert!(error.contains("graph:duplicate_owner"));
+        assert!(error.contains("graph:ambiguous_binding"));
+        assert!(bus.command_definitions().is_empty());
+    }
+
+    #[test]
+    fn human_display_names_are_encoded_as_stable_feature_ids() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(DisplayNameFeature("Alpha Plugin / Local")));
+        bus.register(Box::new(DisplayNameFeature("Alpha_20Plugin / Local")));
+        bus.try_finalize().unwrap();
+
+        let graph = bus.accepted_graph.as_ref().unwrap();
+        assert!(
+            graph
+                .declarations
+                .keys()
+                .any(|id| id.as_str() == "feature:Alpha_20Plugin_20_2f_20Local")
+        );
+        assert!(
+            graph
+                .declarations
+                .keys()
+                .any(|id| id.as_str() == "feature:Alpha_5f20Plugin_20_2f_20Local")
+        );
+    }
+
+    #[test]
+    fn command_aliases_share_one_canonical_capability_identity() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(AliasCommandFeature));
+        bus.try_finalize().unwrap();
+
+        let graph = bus.accepted_graph.as_ref().unwrap();
+        let canonical = graph
+            .invocation_owners
+            .get(&(
+                omegon_traits::RuntimeInvocationKind::Command,
+                "delegate".into(),
+            ))
+            .unwrap();
+        let alias = graph
+            .invocation_owners
+            .get(&(
+                omegon_traits::RuntimeInvocationKind::Command,
+                "subagent".into(),
+            ))
+            .unwrap();
+        assert_eq!(canonical, alias);
+        assert_eq!(canonical.1.as_str(), "action:delegate");
+    }
+
+    #[test]
+    fn malformed_external_vocabulary_and_missing_alias_implementations_fail_fallibly() {
+        let mut malformed = EventBus::new();
+        malformed.register(Box::new(MalformedToolFeature));
+        let error = malformed.try_finalize().unwrap_err().to_string();
+        assert!(error.contains("invalid tool name"), "{error}");
+
+        let mut missing_alias = EventBus::new();
+        missing_alias.register(Box::new(MissingAliasImplementationFeature));
+        let error = missing_alias.try_finalize().unwrap_err().to_string();
+        assert!(error.contains("parity mismatch"), "{error}");
+
+        let mut malformed_alias = EventBus::new();
+        malformed_alias.register(Box::new(MalformedAliasFeature));
+        let error = malformed_alias.try_finalize().unwrap_err().to_string();
+        assert!(error.contains("invalid canonical alias target"), "{error}");
+    }
+
+    #[test]
+    fn host_capable_core_tools_are_never_adapted_as_pure() {
+        for (name, capability) in [
+            (
+                crate::tool_registry::core::BASH,
+                omegon_traits::ToolCapability::StateChanging,
+            ),
+            (
+                crate::tool_registry::core::PLAN,
+                omegon_traits::ToolCapability::Orientation,
+            ),
+            (
+                crate::tool_registry::core::WAIT_FOR_OPERATOR,
+                omegon_traits::ToolCapability::ProgressBoundary,
+            ),
+            (
+                crate::tool_registry::core::WHOAMI,
+                omegon_traits::ToolCapability::Orientation,
+            ),
+        ] {
+            let definition = ToolDefinition {
+                name: name.into(),
+                label: name.into(),
+                description: name.into(),
+                parameters: json!({"type": "object"}),
+                capabilities: vec![capability],
+            };
+            let effects = adapted_tool_effects(&definition);
+            assert!(!effects.is_empty(), "{name}");
+            assert!(
+                effects
+                    .iter()
+                    .any(|effect| !matches!(effect, omegon_traits::RuntimeEffect::FilesystemRead))
+            );
+        }
+    }
+
+    #[test]
+    fn external_tool_declarations_conservatively_include_network_effects() {
         let mut bus = EventBus::new();
         bus.register(Box::new(ExtensionCounterFeature));
-        bus.register(Box::new(CounterFeature { event_count: 0 }));
-        bus.finalize();
+        bus.try_finalize().unwrap();
 
-        assert_eq!(
-            bus.tool_provenance("count"),
-            omegon_traits::ToolProvenance::Extension {
-                name: "recro-coe-agent".into(),
-            }
-        );
-        assert_eq!(
-            bus.tool_provenance("unknown"),
-            omegon_traits::ToolProvenance::BuiltIn
+        let graph = bus.accepted_graph.as_ref().unwrap();
+        let declaration = graph
+            .declarations
+            .get(&omegon_traits::RuntimeContributionId::new("feature:recro-coe-agent").unwrap())
+            .unwrap();
+        assert!(
+            declaration.capabilities[0]
+                .effects
+                .contains(&omegon_traits::RuntimeEffect::NetworkAccess)
         );
     }
 
@@ -1057,7 +2095,7 @@ mod tests {
     fn event_delivery_is_sequential() {
         let mut bus = EventBus::new();
         bus.register(Box::new(CounterFeature { event_count: 0 }));
-        bus.register(Box::new(CounterFeature { event_count: 0 }));
+        bus.register(Box::new(NotifierFeature));
         bus.finalize();
 
         bus.emit(&BusEvent::TurnStart { turn: 1 });
@@ -1176,21 +2214,22 @@ mod tests {
         let mut bus = EventBus::new();
         bus.register(Box::new(CounterFeature { event_count: 0 }));
         bus.register(Box::new(NotifierFeature));
+        bus.finalize();
 
         let names = bus.feature_names();
         assert_eq!(names, vec!["counter", "notifier"]);
     }
 
     #[test]
-    fn finalize_deduplicates_tools() {
+    fn publication_rejects_duplicate_tools_without_first_owner_fallback() {
         let mut bus = EventBus::new();
-        // Register two features that both provide "count"
         bus.register(Box::new(CounterFeature { event_count: 0 }));
         bus.register(Box::new(CounterFeature { event_count: 0 }));
-        bus.finalize();
 
-        // Should have only 1 tool (deduped), not 2
-        assert_eq!(bus.tool_definitions().len(), 1);
+        let error = bus.try_finalize().unwrap_err().to_string();
+        assert!(error.contains("graph:duplicate_contribution_id"));
+        assert!(error.contains("graph:duplicate_owner"));
+        assert!(bus.tool_definitions().is_empty());
     }
 
     #[test]

@@ -2280,6 +2280,13 @@ No delegate tasks found.
         ]
     }
 
+    fn command_aliases(&self) -> Vec<omegon_traits::CommandAlias> {
+        vec![omegon_traits::CommandAlias {
+            alias: "subagent".into(),
+            canonical: "delegate".into(),
+        }]
+    }
+
     fn handle_command(&mut self, name: &str, args: &str) -> CommandResult {
         if name == "delegate" || name == "subagent" {
             match args.trim() {

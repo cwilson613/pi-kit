@@ -1070,14 +1070,18 @@ impl AgentSetup {
         let plugins =
             crate::plugins::discover_plugins_filtered(&cwd, Some(secrets.as_ref()), &plugin_filter)
                 .await;
+        let mut publication_result = Ok(());
         plugins.publish(|plugins| {
             for plugin in plugins {
                 bus.register(plugin);
             }
 
-            // ─── Finalize bus (caches tool/command definitions) ─────────────
-            bus.finalize();
+            // Freeze declarations, validate and plan the candidate graph, then
+            // publish legacy caches only from the accepted graph while plugin
+            // admission locks remain held.
+            publication_result = bus.try_finalize();
         });
+        publication_result?;
         drop(extension_admission);
 
         // Wire ManageTools state so runtime filtering and list output reflect

@@ -69,6 +69,12 @@ impl Feature for HttpPluginFeature {
         &self.manifest.plugin.name
     }
 
+    fn tool_provenance(&self) -> omegon_traits::ToolProvenance {
+        omegon_traits::ToolProvenance::Extension {
+            name: self.manifest.plugin.name.clone(),
+        }
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         self.manifest
             .tools

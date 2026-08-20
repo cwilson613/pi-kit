@@ -1054,14 +1054,23 @@ async fn worker_loop(
                             let tool_count = mcp_feature.tools().len();
                             if tool_count > 0 {
                                 bus.register(Box::new(mcp_feature));
-                                bus.finalize();
-                                tracing::info!(
-                                    tools = tool_count,
-                                    "ACP client MCP servers connected"
-                                );
-                                let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
-                                    "Connected {tool_count} tools from client MCP servers"
-                                )));
+                                match bus.try_finalize() {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            tools = tool_count,
+                                            "ACP client MCP servers connected"
+                                        );
+                                        let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
+                                            "Connected {tool_count} tools from client MCP servers"
+                                        )));
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(%error, "ACP client MCP candidate rejected");
+                                        let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
+                                            "Client MCP candidate rejected: {error}"
+                                        )));
+                                    }
+                                }
                             }
                         }
                         Err(e) => {

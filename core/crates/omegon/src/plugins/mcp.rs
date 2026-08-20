@@ -762,6 +762,12 @@ impl Feature for McpFeature {
         &self.feature_name
     }
 
+    fn tool_provenance(&self) -> omegon_traits::ToolProvenance {
+        omegon_traits::ToolProvenance::Extension {
+            name: self.feature_name.clone(),
+        }
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         let mut defs: Vec<ToolDefinition> = self
             .tools

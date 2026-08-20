@@ -4511,7 +4511,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 route_controller.clone(),
             ),
         ));
-        agent.bus.finalize();
+        agent.bus.try_finalize()?;
     }
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(16);
 

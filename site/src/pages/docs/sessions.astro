@@ -7,8 +7,10 @@ import { snippet } from "../../lib/snippets";
 
   <h2>Auto-Save</h2>
   <p>
-    Sessions auto-save on exit. The full conversation history, memory state, and context are
-    preserved. Resume exactly where you left off.
+    Interactive sessions save a conversation snapshot on orderly exit. Resume restores recent
+    canonical history and summarizes older messages for continuity; project memory remains a
+    separate durable subsystem. A crash may leave durable turn-authority facts newer than the
+    conversation snapshot.
   </p>
 
   <h2>Resume</h2>
@@ -24,31 +26,37 @@ import { snippet } from "../../lib/snippets";
   <h2>Session Contents</h2>
   <p>A saved session includes:</p>
   <ul>
-    <li>Full conversation history (all segments with metadata)</li>
-    <li>Model and provider state at time of save</li>
-    <li>Working memory pins</li>
-    <li>Active persona and tone</li>
-    <li>Turn count, tool call count, session duration</li>
+    <li>Conversation messages and operator observations</li>
+    <li>Intent and turn statistics</li>
+    <li>Context decay window and compaction summary</li>
   </ul>
+  <p>
+    The snapshot does not promise an exact replay of prior model-visible context, provider state,
+    project memory, persona, or tone.
+  </p>
   <h2>Durable Turn Authority</h2>
   <p>
-    Interactive, ACP, daemon, Web/IPC, and <code>omegon run</code> sessions record
-    prompt admission, FIFO queue order, active-turn identity, cancellation, and terminal
-    outcomes in an adjacent authority stream. IPC and Web submissions received while a
-    turn is active join the same session queue instead of creating a second active turn.
+    Authority-backed interactive, ACP, daemon, Web/IPC, and <code>omegon run</code> paths record
+    admitted prompts, FIFO queue order, active-turn identity, cancellation or revocation requests,
+    and terminal outcomes in an adjacent authority stream. IPC and Web acceptance first means the
+    runtime ingress received the command; clients observe durable queue state through subsequent
+    runtime queue updates. A cancellation request leaves the turn busy while owned cleanup runs.
   </p>
   <p>
     Conversation JSON remains a compatibility snapshot. On restart, Omegon validates the
-    authority stream, closes an interrupted active turn conservatively, and restores queued
-    prompts before accepting new work.
+    authority stream, closes an interrupted active turn conservatively, and restores prompts that
+    reached durable admission. Corrupt or unsupported authority data fails recovery instead of
+    being repaired from conversation JSON. A maintenance resume deny fails before conversation
+    loading; follow the <a href="/docs/recovery">recovery guide</a> to inspect it.
   </p>
-  <!-- DIAGRAM:session-lifecycle | Timeline: session start → turns accumulate → auto-save on exit → [time passes] → omegon --resume → full context restored (history, model state, working memory, persona). Show what persists vs what resets -->
+  <!-- DIAGRAM:session-lifecycle | Timeline: session start -> durable turn facts plus conversation snapshot on orderly exit -> resume validates authority -> interrupted work closes conservatively -> recent history and summarized older context load. Show project memory as separate persistence. -->
 
   <h2>Disable Auto-Save</h2>
   <pre><code>{snippet("cli.no_session")}</code></pre>
   <p>
-    Disables session auto-save for this run. Useful for one-off queries or sensitive work
-    you don't want persisted to disk.
+    Disables the conversation session snapshot and interactive authority sidecar for this run.
+    Other configured subsystems, including project memory, logs, and audit records, may still
+    persist data.
   </p>
 
   <h2>Headless Mode</h2>

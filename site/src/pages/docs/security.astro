@@ -124,7 +124,7 @@ import { snippet } from "../../lib/snippets";
     <li>Bash mediation is static and advisory for common shell forms. Hard filesystem containment belongs to the sandbox layer.</li>
     <li>Outside-workspace file prompts wait for an explicit operator decision instead of timing out as denial; run cancellation still unblocks the wait.</li>
     <li>All tool calls are logged in the conversation with full arguments and results.</li>
-    <li><code>Esc</code> or <code>Ctrl+C</code> cancels the active turn immediately.</li>
+    <li><code>Esc</code> or <code>Ctrl+C</code> requests cancellation immediately. The turn remains busy while owned cleanup runs, and effects outside Omegon's ownership boundary may remain unknown or best-effort.</li>
     <li>Session auto-save means you can always audit what happened.</li>
     <li>The <code>--max-turns</code> flag limits how many turns the agent can take before stopping.</li>
   </ul>

@@ -64,9 +64,11 @@ test('recovery docs consume canonical maintenance snippets', () => {
 test('sessions docs distinguish durable authority from conversation snapshots', () => {
   const content = readDoc('sessions.astro');
   assert.match(content, /Durable Turn Authority/);
-  assert.match(content, /prompt admission, FIFO queue order/);
+  assert.match(content, /admitted prompts, FIFO queue order/);
   assert.match(content, /Conversation JSON remains a compatibility snapshot/);
-  assert.match(content, /IPC and Web submissions received while a/);
+  assert.match(content, /cancellation request leaves the turn busy/);
+  assert.match(content, /Disables the conversation session snapshot and interactive authority sidecar/);
+  assert.doesNotMatch(content, /Resume exactly where you left off|full context restored|full replay/i);
 });
 
 test('release verification snippets do not trust arbitrary certificate identities', () => {

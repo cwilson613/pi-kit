@@ -22,7 +22,7 @@ import stats from "../../data/stats.json";
       <tr><td>Model picker</td><td><code>/model</code> — {stats.providerCount} providers with tier-based routing and automatic failover</td></tr>
       <tr><td>Extended thinking toggle</td><td><code>/think off|minimal|low|medium|high</code> — five explicit levels</td></tr>
       <tr><td>Custom slash commands (.md)</td><td>{stats.skillCount} skills — specialized instruction sets loaded on demand (git, rust, python, security, OCI, etc.)</td></tr>
-      <tr><td>Conversation history</td><td>Sessions — auto-save, <code>--resume</code>, full replay with segment metadata</td></tr>
+      <tr><td>Conversation history</td><td>Sessions — auto-save and <code>--resume</code> with recent history plus a summary of older context</td></tr>
       <tr><td>Anthropic only</td><td>{stats.providerCount} inference providers — {stats.providerNames.join(", ")}</td></tr>
       <tr><td>—</td><td>Design tree — a structured knowledge graph of architecture decisions, open questions, dependencies, and implementation status. Nodes follow the lifecycle <code>seed → exploring → resolved → decided → implementing → implemented</code> and bridge into specification and implementation work.</td></tr>
       <tr><td>Subagents (shared working directory)</td><td>Cleave — each child runs in its own git worktree on its own branch. File scope enforcement, dependency-ordered dispatch waves, per-file conflict detection (never bulk-resolved), and adversarial review. See <a href="/docs/cleave">Cleave vs Subagents</a>.</td></tr>
@@ -120,7 +120,7 @@ import stats from "../../data/stats.json";
     <li><strong>OCI skill</strong> — first-class support for building and running containers. Containerfile authoring, multi-arch builds, registry authentication, image tagging, and security scanning are built into the agent's skill set. You can run the agent's work inside containers as a matter of course, not as an afterthought.</li>
     <li><strong>Secrets management</strong> — credentials configured through <code>/secrets</code> can be stored in supported secure backends such as the system keychain or HashiCorp Vault. Environment-variable credentials remain supported for provider and automation workflows; avoid plaintext project files.</li>
     <li><strong>Signed releases</strong> — every binary is signed with Sigstore cosign (keyless OIDC), includes a CycloneDX SBOM, and carries GitHub Attestations for build provenance. You can verify the supply chain from source to binary.</li>
-    <li><strong>Process control</strong> — <code>Esc</code> or <code>Ctrl+C</code> cancels any operation immediately. <code>--max-turns</code> limits agent autonomy. Session logs provide full audit trail.</li>
+    <li><strong>Process control</strong> — <code>Esc</code> or <code>Ctrl+C</code> requests cancellation immediately; terminal closure follows owned cleanup. <code>--max-turns</code> limits agent autonomy. Session records support later inspection.</li>
   </ul>
 
   <h2>From Cursor / Aider / Continue / Windsurf</h2>

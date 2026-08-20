@@ -9,6 +9,8 @@ use tokio::sync::broadcast;
 use crate::AgentEvent;
 use crate::runtime_prompt::{ControlSurface, PromptEnvelope, RuntimeActor};
 
+static NEXT_SESSION_EPOCH: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ActiveTurnPhase {
     Running,
@@ -158,11 +160,21 @@ impl RuntimeTurnLifecycle {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ActiveTurnState {
     active: Option<ActiveTurnMeta>,
     session_epoch: u64,
     next_runtime_turn_id: u64,
+}
+
+impl Default for ActiveTurnState {
+    fn default() -> Self {
+        Self {
+            active: None,
+            session_epoch: NEXT_SESSION_EPOCH.fetch_add(1, Ordering::Relaxed),
+            next_runtime_turn_id: 0,
+        }
+    }
 }
 
 impl ActiveTurnState {

@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// GitHub repository info for releases
 const REPO_OWNER: &str = "styrene-lab";
@@ -183,7 +182,8 @@ impl VersionSwitcher {
 
                 if let Ok(version) = Version::parse(&version_str) {
                     let binary_path = entry.path().join("omegon");
-                    let is_installed = binary_path.exists();
+                    let is_installed =
+                        crate::installed_release::validate_generation(&entry.path()).is_ok();
                     let is_active = active_version
                         .as_ref()
                         .map(|v| v.raw == version.raw)
@@ -206,16 +206,19 @@ impl VersionSwitcher {
 
     /// Get the currently active version by resolving symlink
     pub fn get_active_version(&self) -> Result<Option<Version>> {
-        let target = if self.current_exe.is_symlink() {
-            fs::read_link(&self.current_exe)?
-        } else {
-            return Ok(None);
+        let current = self
+            .versions_dir
+            .parent()
+            .ok_or_else(|| anyhow!("versions directory has no parent"))?
+            .join("current");
+        let target = match fs::read_link(current) {
+            Ok(target) => target,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
         };
 
-        // Extract version from path like ~/.omegon/versions/1.2.3/omegon
-        if let Some(parent) = target.parent()
-            && let Some(version_name) = parent.file_name()
-        {
+        // Extract version from path like ~/.omegon/versions/1.2.3.
+        if let Some(version_name) = target.file_name() {
             let version_str = version_name.to_string_lossy();
             return Ok(Some(Version::parse(&version_str)?));
         }
@@ -282,15 +285,27 @@ impl VersionSwitcher {
 
         verify_checksum(&tarball_data, &checksums_data, &artifact_name)?;
 
-        // Extract to version directory
-        let version_dir = self.versions_dir.join(version);
-        fs::create_dir_all(&version_dir)?;
+        let release_root = self
+            .versions_dir
+            .parent()
+            .ok_or_else(|| anyhow!("versions directory has no parent"))?;
+        let current = release_root.join("current");
+        let active = fs::read_link(&current).map_err(|_| {
+            anyhow!("version switching requires an installer-managed active release")
+        })?;
+        let active_receipt = fs::read_to_string(active.join("install-receipt.json"))?;
+        let staging = self
+            .versions_dir
+            .join(format!(".{version}.staging-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&staging)?;
+        extract_tarball(&tarball_data, &staging)?;
 
-        extract_tarball(&tarball_data, &version_dir)?;
-
-        let binary_path = version_dir.join("omegon");
-        if !binary_path.exists() {
-            return Err(anyhow!("Binary not found after extraction"));
+        let binary_path = staging.join("omegon");
+        let maintenance_path = staging.join("omegon-maintain");
+        if !binary_path.is_file() || !maintenance_path.is_file() {
+            return Err(anyhow!(
+                "Release archive did not contain the companion pair"
+            ));
         }
 
         // Make executable
@@ -300,78 +315,46 @@ impl VersionSwitcher {
             let mut perms = fs::metadata(&binary_path)?.permissions();
             perms.set_mode(0o755);
             fs::set_permissions(&binary_path, perms)?;
+            let mut perms = fs::metadata(&maintenance_path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&maintenance_path, perms)?;
         }
-
-        Ok(binary_path)
+        let version_dir = self.versions_dir.join(version);
+        let mut receipt: serde_json::Value = serde_json::from_str(&active_receipt)?;
+        receipt["version"] = serde_json::Value::String(version.to_string());
+        receipt["version_dir"] = serde_json::Value::String(version_dir.display().to_string());
+        receipt["versioned_binary"] =
+            serde_json::Value::String(version_dir.join("omegon").display().to_string());
+        receipt["versioned_maintenance_binary"] =
+            serde_json::Value::String(version_dir.join("omegon-maintain").display().to_string());
+        receipt["activation"] = serde_json::Value::String(current.display().to_string());
+        receipt["layout"] = serde_json::Value::String("versioned-current-v1".into());
+        fs::write(
+            staging.join("install-receipt.json"),
+            serde_json::to_string_pretty(&receipt)? + "\n",
+        )?;
+        let layout = crate::installed_release::InstalledReleaseLayout::new(
+            self.versions_dir.clone(),
+            self.current_exe.clone(),
+            self.current_exe.with_file_name("omegon-maintain"),
+            active.join("install-receipt.json"),
+        )?;
+        let published = layout.publish_generation(&staging, version)?;
+        Ok(published.join("omegon"))
     }
 
     /// Switch to a specific version
     pub fn activate_version(&self, version: &str) -> Result<()> {
-        let version_binary = self.versions_dir.join(version).join("omegon");
-
-        if !version_binary.exists() {
+        let version_dir = self.versions_dir.join(version);
+        if crate::installed_release::validate_generation(&version_dir).is_err() {
             return Err(anyhow!("Version {} is not installed", version));
         }
-
-        // Handle first-time setup (move current binary to versions)
-        if !self.current_exe.is_symlink() && self.current_exe.exists() {
-            // Detect current version
-            let output = Command::new(&self.current_exe).arg("--version").output();
-
-            if let Ok(output) = output {
-                let version_str = String::from_utf8_lossy(&output.stdout);
-                if let Some(version) = extract_version_from_output(&version_str) {
-                    let current_version_dir = self.versions_dir.join(&version);
-                    fs::create_dir_all(&current_version_dir)?;
-
-                    let backup_path = current_version_dir.join("omegon");
-                    fs::copy(&self.current_exe, &backup_path)?;
-
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let mut perms = fs::metadata(&backup_path)?.permissions();
-                        perms.set_mode(0o755);
-                        fs::set_permissions(&backup_path, perms)?;
-                    }
-                }
-            }
-        }
-
-        // Atomic symlink swap: create temp symlink then rename over target.
-        // This avoids a window where the binary doesn't exist if something
-        // fails between remove and create.
-        if let Some(parent) = self.current_exe.parent() {
-            fs::create_dir_all(parent)?;
-
-            let temp_link = parent.join(format!(".omegon-switch-{}", std::process::id()));
-
-            // Create temp symlink
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&version_binary, &temp_link)?;
-            #[cfg(windows)]
-            std::os::windows::fs::symlink_file(&version_binary, &temp_link)?;
-
-            // Atomic rename over the target
-            if let Err(e) = fs::rename(&temp_link, &self.current_exe) {
-                // rename failed (cross-device?) — fall back to remove+symlink
-                let _ = fs::remove_file(&temp_link);
-                if self.current_exe.exists() || self.current_exe.is_symlink() {
-                    fs::remove_file(&self.current_exe)?;
-                }
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(&version_binary, &self.current_exe)?;
-                #[cfg(windows)]
-                std::os::windows::fs::symlink_file(&version_binary, &self.current_exe)?;
-                tracing::debug!(error = %e, "atomic rename failed, used fallback symlink");
-            }
-        } else {
-            return Err(anyhow!(
-                "cannot determine parent directory of current executable"
-            ));
-        }
-
-        Ok(())
+        let current = self
+            .versions_dir
+            .parent()
+            .ok_or_else(|| anyhow!("versions directory has no parent"))?
+            .join("current");
+        crate::installed_release::atomic_replace_symlink(&current, &version_dir)
     }
 
     /// Interactive version picker.
@@ -1016,5 +999,25 @@ mod tests {
         assert_eq!(versions[1].raw, "0.14.1-rc.3");
         assert_eq!(versions[2].raw, "0.14.0"); // highest stable
         assert_eq!(versions[3].raw, "0.13.0");
+    }
+
+    #[test]
+    fn activation_switches_shared_current_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions_dir = temp.path().join(".omegon/versions");
+        let generation = versions_dir.join("2.0.0");
+        fs::create_dir_all(&generation).unwrap();
+        for name in ["omegon", "omegon-maintain", "install-receipt.json"] {
+            fs::write(generation.join(name), b"2.0.0").unwrap();
+        }
+        let switcher = VersionSwitcher {
+            versions_dir,
+            current_exe: temp.path().join("bin/omegon"),
+            client: reqwest::Client::new(),
+            cache: None,
+        };
+
+        switcher.activate_version("2.0.0").unwrap();
+        assert_eq!(switcher.get_active_version().unwrap().unwrap().raw, "2.0.0");
     }
 }

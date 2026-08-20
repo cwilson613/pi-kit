@@ -16,7 +16,7 @@ The constitutional kernel owns only identity, contribution lifecycle, durable se
 
 ## Lifecycle status
 
-This change remains `proposed` overall. Slices 0 and 1 and Slice 2.1 through 2.6 are complete; Slice 2.7 reconciles contribution authoring and public lifecycle documentation before the group closes. Homebrew publication is not a Slice-zero exit gate; existing formula verification remains a best-effort packaging safeguard. Pairwise install, self-update, and version switching publish immutable complete generations and select the executable pair plus receipt through one atomic activation link. Each later slice begins with an explicit refinement gate that names concrete ownership, compatibility boundaries, red tests, and documentation impact before production mutation.
+This change remains `proposed` overall. Slices 0, 1, and 2 are complete. Homebrew publication is not a Slice-zero exit gate; existing formula verification remains a best-effort packaging safeguard. Pairwise install, self-update, and version switching publish immutable complete generations and select the executable pair plus receipt through one atomic activation link. Each later slice begins with an explicit refinement gate that names concrete ownership, compatibility boundaries, red tests, and documentation impact before production mutation.
 
 ## Architectural layers
 

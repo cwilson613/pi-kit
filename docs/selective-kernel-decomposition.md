@@ -48,8 +48,8 @@ release-coupled system modules.
 
 ## Why now
 
-Omegon already has several contribution and modularity mechanisms, but no single
-composition authority:
+The following observations record the pre-Slice-2 baseline: Omegon had several
+contribution and modularity mechanisms, but no single composition authority:
 
 - statically linked `Feature` implementations behind `EventBus`;
 - extracted domain crates behind main-crate adapters;
@@ -62,7 +62,7 @@ composition authority:
   diagnostic inventory, currently exercised only by tests and not used for
   construction, admission, or dispatch.
 
-The result is extensible but not yet selectively decomposable. `setup.rs`
+At the baseline, the result was extensible but not yet selectively decomposable. `setup.rs`
 constructs concrete product features procedurally. `EventBus` owns features but
 also hard-codes tool classes, profile filtering, timeout exceptions, and
 first-registration-wins collision behavior. `loop.rs` combines turn sequencing,
@@ -189,15 +189,20 @@ exceptions. Evidence:
 
 ### Runtime capability declarations
 
-`RuntimeCapabilityId`, capability kinds, owner vocabulary, invocation bindings,
-groups, and diagnostics provide the seed of a future composition graph. At
-HEAD, `EventBus::runtime_capability_registry()` is an unused post-finalization
-projection of tool and command caches, not a production registry. Tool
-duplicates have already been resolved by first-registration-wins before the
-projection is built, and every projected owner is classified as a generic
-feature. The declarations therefore do not represent complete discovered
-composition and do not control construction, admission, dispatch, replacement,
-leases, or shutdown.
+At the pre-Slice-2 baseline, `RuntimeCapabilityId`, capability kinds, owner
+vocabulary, invocation bindings, groups, and diagnostics were only the seed of
+a future composition graph. The read-only capability inventory did not control
+construction or dispatch, and duplicate owners were resolved before projection.
+
+Slices 2.1 through 2.7 now freeze full contribution declarations, validate one
+deterministic candidate graph, and atomically derive EventBus feature publication
+and legacy compatibility caches from the accepted graph. Dynamic code requires
+source-bound trust or verified-confinement evidence before probe execution;
+readiness, rollback, restart quarantine, composition generations, and cleanup
+assurance are typed. Native and ACP `/status` consume one semantic composition
+projection. Privileged invocation leases and dispatch authority remain Slice 3,
+so the authority-neutral capability inventory is still not itself an execution
+grant.
 
 ### Extracted domains
 
@@ -213,13 +218,13 @@ the owning crate.
 ### Out-of-process contributions
 
 Native/OCI extensions and MCP demonstrate that contributions can live outside
-the process and be adapted into `Feature` implementations. Their process
-boundaries provide better isolation opportunities than same-process third-party
-code, but current guarantees are uneven: native extensions have dedicated
-supervisors and reconnect behavior, while MCP cancellation and ownership remain
-transport-specific. The protocols are also parallel, and none negotiates
-ownership, lifecycle, retry semantics, or all non-tool capabilities through one
-authoritative graph.
+the process and be adapted into `Feature` implementations. Their transport
+adapters remain distinct, but now publish lifecycle and transition policy into
+one authoritative composition graph. Extension and MCP readiness and cleanup
+are bounded; extensions use generation-local restart quarantine, while MCP,
+Armory, and HTTP retain transport-specific best-effort cleanup. Process and
+container boundaries remain crash-isolation opportunities, not proof of
+confinement.
 
 ### Semantic surfaces
 

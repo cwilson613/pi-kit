@@ -18,6 +18,54 @@ pub(crate) trait CandidateResource: Send {
     async fn settle(&mut self) -> RuntimeCleanupState;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestartDecision {
+    RetryAfter(Duration),
+    Quarantined,
+}
+
+pub(crate) struct RestartController {
+    restart_limit: u16,
+    attempts: u16,
+    base_backoff: Duration,
+    max_backoff: Duration,
+    quarantined: bool,
+}
+
+impl RestartController {
+    pub(crate) fn new(restart_limit: u16, base_backoff: Duration, max_backoff: Duration) -> Self {
+        Self {
+            restart_limit,
+            attempts: 0,
+            base_backoff,
+            max_backoff,
+            quarantined: false,
+        }
+    }
+
+    pub(crate) fn record_failure(&mut self) -> RestartDecision {
+        if self.quarantined || self.attempts >= self.restart_limit {
+            self.quarantined = true;
+            return RestartDecision::Quarantined;
+        }
+        let exponent = u32::from(self.attempts.min(31));
+        self.attempts += 1;
+        let delay = self
+            .base_backoff
+            .saturating_mul(2_u32.saturating_pow(exponent))
+            .min(self.max_backoff);
+        RestartDecision::RetryAfter(delay)
+    }
+
+    pub(crate) fn attempts(&self) -> u16 {
+        self.attempts
+    }
+
+    pub(crate) fn is_quarantined(&self) -> bool {
+        self.quarantined
+    }
+}
+
 struct OwnedCandidateResource {
     record: RuntimeOwnedResourceRecord,
     cleanup_timeout: Duration,
@@ -684,5 +732,32 @@ mod tests {
             retired.lifecycle[0].state,
             RuntimeContributionLifecycleState::Retired
         );
+    }
+
+    #[test]
+    fn restart_budget_backs_off_and_quarantines_until_new_generation() {
+        let mut controller =
+            RestartController::new(3, Duration::from_millis(10), Duration::from_millis(25));
+        assert_eq!(
+            controller.record_failure(),
+            RestartDecision::RetryAfter(Duration::from_millis(10))
+        );
+        assert_eq!(
+            controller.record_failure(),
+            RestartDecision::RetryAfter(Duration::from_millis(20))
+        );
+        assert_eq!(
+            controller.record_failure(),
+            RestartDecision::RetryAfter(Duration::from_millis(25))
+        );
+        assert_eq!(controller.record_failure(), RestartDecision::Quarantined);
+        assert_eq!(controller.record_failure(), RestartDecision::Quarantined);
+        assert_eq!(controller.attempts(), 3);
+        assert!(controller.is_quarantined());
+
+        let replacement =
+            RestartController::new(3, Duration::from_millis(10), Duration::from_millis(25));
+        assert_eq!(replacement.attempts(), 0);
+        assert!(!replacement.is_quarantined());
     }
 }

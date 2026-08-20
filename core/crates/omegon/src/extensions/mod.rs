@@ -300,6 +300,7 @@ struct ExtensionRuntimeContext {
     _snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
     state_binding: Option<ExtensionStateBinding>,
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    restart: Arc<Mutex<crate::contribution_lifecycle::RestartController>>,
 }
 
 struct ExtensionSource {
@@ -581,6 +582,20 @@ impl ExtensionFeature {
     }
 
     async fn respawn_after_transport_error(&self, cause: &anyhow::Error) -> Result<()> {
+        let decision = self.runtime.restart.lock().await.record_failure();
+        let delay = match decision {
+            crate::contribution_lifecycle::RestartDecision::RetryAfter(delay) => delay,
+            crate::contribution_lifecycle::RestartDecision::Quarantined => {
+                self.supervisor
+                    .accepting_calls
+                    .store(false, Ordering::Release);
+                return Err(anyhow!(
+                    "extension '{}' entered quarantine after exhausting its restart budget: {cause}",
+                    self.runtime.name
+                ));
+            }
+        };
+        tokio::time::sleep(delay).await;
         self.supervisor.ensure_accepting()?;
         let mut guard = self.supervisor.handles.lock().await;
         if let Some(mut stale) = guard.take() {
@@ -1729,6 +1744,13 @@ async fn spawn_native(
         _snapshot: source.snapshot,
         state_binding: source.state_binding,
         admission: source.admission,
+        restart: Arc::new(Mutex::new(
+            crate::contribution_lifecycle::RestartController::new(
+                3,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(2),
+            ),
+        )),
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(
@@ -1856,6 +1878,13 @@ async fn spawn_container(
         _snapshot: source.snapshot,
         state_binding: source.state_binding,
         admission: source.admission,
+        restart: Arc::new(Mutex::new(
+            crate::contribution_lifecycle::RestartController::new(
+                3,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(2),
+            ),
+        )),
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(

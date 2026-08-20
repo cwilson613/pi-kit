@@ -162,6 +162,8 @@ Extension negotiation now applies one absolute manifest readiness deadline acros
 
 MCP connection and discovery now use one absolute per-server readiness deadline across transport startup, required tool discovery, and optional resource, template, and prompt discovery. A shared MCP supervisor owns every accepted `RunningService`, performs bounded explicit close, remains held through graph publication, and is retained through daemon or interactive runtime shutdown. Startup and ACP graph rejection close candidate services before reporting failure; timeout or join failure is surfaced as degraded cleanup rather than hidden behind rmcp's asynchronous drop guard.
 
+Extension transport recovery now uses a generation-local restart controller. Failures consume a fixed restart budget, apply deterministic capped exponential backoff, and transition to terminal quarantine when the budget is exhausted; later invocations cannot silently start another process. Constructing a changed extension generation creates a fresh controller, while ordinary successful respawn does not erase prior crash evidence.
+
 ### Design laws
 
 1. **Composition is not admission.** Compiled or installed capability means resident, not callable or visible.

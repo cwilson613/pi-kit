@@ -112,6 +112,28 @@ test('extensions page uses extension init, not extension new', () => {
   assert.doesNotMatch(content, /extension new/);
 });
 
+test('dynamic contribution docs preserve trust and lifecycle boundaries', () => {
+  const extensions = readDoc('extensions.astro');
+  const plugins = readDoc('plugins.astro');
+  const security = readDoc('security.astro');
+  const combined = `${extensions}\n${plugins}\n${security}`;
+
+  for (const identity of [
+    'extension:my-extension',
+    'plugin:my-plugin',
+    'mcp:project',
+    'mcp:acp-client',
+  ]) {
+    assert.match(combined, new RegExp(identity));
+  }
+  assert.match(combined, /trustedContributionCode/);
+  assert.match(extensions, /terminal quarantine/);
+  assert.match(extensions, /best-effort cleanup/);
+  assert.match(extensions, /omegon-extension-rs/);
+  assert.match(security, /not\s+verified confinement or a security sandbox/);
+  assert.doesNotMatch(extensions, /Local paths are symlinked/);
+});
+
 test('no page imports siteVariant', () => {
   const pages = readdirSync(docsDir).filter(f => f.endsWith('.astro'));
   for (const page of pages) {

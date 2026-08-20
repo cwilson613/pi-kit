@@ -76,7 +76,21 @@ import Docs from "../../layouts/Docs.astro";
     Plugin IDs use the plugin directory name. <code>mcp:project</code> admits the
     frozen server set from <code>.omegon/mcp.toml</code>;
     <code>mcp:acp-client</code> separately admits MCP servers supplied by an ACP client.
-    Current native and OCI plugin paths are trusted execution, not verified confinement.
+    The host binds each admission to the current plugin snapshot or MCP configuration digest.
+    The stable profile grant survives updates, so changed bytes still require operator review.
+    No currently supported dynamic plugin or MCP path supplies verified confinement.
+  </p>
+
+  <h2>Plugin and MCP lifecycle</h2>
+  <ul>
+    <li>MCP uses one per-server deadline for connection, required tool discovery, and optional resource, template, and prompt discovery.</li>
+    <li>Slice 2 does not automatically restart MCP services; MCP and remote-service cleanup is reported as best effort.</li>
+    <li>Armory context, script, and OCI processes are bounded, and owned process groups are killed and reaped on timeout or cancellation.</li>
+    <li>HTTP plugin failures degrade locally rather than claiming strict cleanup.</li>
+    <li>A failed candidate cannot replace the prior accepted graph. <code>/status</code> reports the active composition, contribution health, cleanup assurance, coded diagnostics, and compatibility parity.</li>
+  </ul>
+  <p>
+    Quarantine prevents ordinary activation or silent respawn; it does not mean the code ran in a sandbox.
   </p>
 
   <h2>Dynamic tool inventory</h2>

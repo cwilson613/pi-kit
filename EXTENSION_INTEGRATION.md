@@ -11,6 +11,8 @@ visibility = "private"
 
 # Omegon Extension Integration Guide
 
+> **Compatibility archive:** Examples below may target older RPC and installation contracts. Use the standalone [`omegon-extension-rs`](https://github.com/styrene-lab/omegon-extension-rs) repository for SDK APIs and [`docs/extensions.md`](docs/extensions.md) for current host trust, readiness, quarantine, and cleanup behavior.
+
 This guide covers advanced patterns for extensions built with the Omegon Extension SDK.
 
 ## Table of Contents

@@ -68,8 +68,14 @@ impl InteractiveRuntimeSupervisor {
                         .content
                         .attachments
                         .into_iter()
-                        .map(|attachment| PathBuf::from(attachment.storage_ref))
-                        .collect(),
+                        .map(|attachment| {
+                            supervisor
+                                .authority
+                                .as_ref()
+                                .expect("authority was assigned")
+                                .validate_attachment(&attachment)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
                     actor: RuntimeActor::from_submission(prompt.principal, &prompt.ingress),
                     via: ControlSurface::from_via(&prompt.ingress),
                     metadata: serde_json::from_value(prompt.metadata)?,
@@ -188,6 +194,32 @@ impl InteractiveRuntimeSupervisor {
 
     pub(crate) fn queue_depth(&self) -> usize {
         self.queue.depth()
+    }
+
+    pub(crate) fn withdraw_recovered_prompts(&mut self) -> Result<usize, AuthorityError> {
+        if self.is_busy() {
+            return Err(AuthorityError::Invalid(
+                "cannot withdraw recovered prompts while a turn is active".into(),
+            ));
+        }
+        let prompt_ids = self
+            .queue
+            .iter()
+            .filter_map(|prompt| prompt.authority_prompt_id)
+            .collect::<Vec<_>>();
+        let Some(authority) = self.authority.as_mut() else {
+            return Ok(0);
+        };
+        for prompt_id in &prompt_ids {
+            authority.remove_prompt(
+                uuid::Uuid::new_v4(),
+                &authority_timestamp(),
+                *prompt_id,
+                crate::session_authority::PromptRemovalReason::Withdrawn,
+            )?;
+        }
+        self.queue.clear();
+        Ok(prompt_ids.len())
     }
 
     fn queue_preview(&self) -> Vec<String> {
@@ -794,6 +826,116 @@ mod tests {
         let second = supervisor.start_next_turn().unwrap().unwrap();
         assert_eq!(second.prompt.text, "second");
         assert!(supervisor.is_busy());
+    }
+
+    #[test]
+    fn recovered_prompts_can_be_durably_withdrawn_before_acp_accepts_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_path = temp.path().join("session-1.json");
+        let authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-1",
+            ActorIdentity {
+                principal: "acp-client".into(),
+                ingress: "acp".into(),
+            },
+            "2026-08-19T18:00:00Z",
+        )
+        .unwrap();
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
+        supervisor
+            .admit_prompt(
+                "orphaned request".into(),
+                Vec::new(),
+                RuntimeActor::from_submission("acp-client".into(), "acp"),
+                ControlSurface::Acp,
+                operator_commands::PromptMetadata::default(),
+                None,
+            )
+            .unwrap();
+        drop(supervisor);
+
+        let authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-2",
+            ActorIdentity {
+                principal: "acp-client".into(),
+                ingress: "acp".into(),
+            },
+            "2026-08-19T18:01:00Z",
+        )
+        .unwrap();
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
+        assert_eq!(supervisor.withdraw_recovered_prompts().unwrap(), 1);
+        assert_eq!(supervisor.queue_depth(), 0);
+        let state = supervisor.authority.as_ref().unwrap().state();
+        assert!(state.queued_prompts.is_empty());
+        assert!(matches!(
+            state.submissions.values().next(),
+            Some(crate::session_authority::SubmissionDisposition::Admitted { .. })
+        ));
+    }
+
+    #[test]
+    fn recovered_prompt_rejects_tampered_attachment() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_path = temp.path().join("session-1.json");
+        let source = temp.path().join("capture.png");
+        std::fs::write(&source, b"trusted-image").unwrap();
+        let authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-1",
+            ActorIdentity {
+                principal: "operator".into(),
+                ingress: "tui".into(),
+            },
+            "2026-08-19T18:00:00Z",
+        )
+        .unwrap();
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
+        supervisor
+            .admit_prompt(
+                "inspect image".into(),
+                vec![source],
+                RuntimeActor::tui(),
+                ControlSurface::Tui,
+                operator_commands::PromptMetadata::default(),
+                None,
+            )
+            .unwrap();
+        let stored = supervisor
+            .authority
+            .as_ref()
+            .unwrap()
+            .state()
+            .queued_prompts[0]
+            .content
+            .attachments[0]
+            .storage_ref
+            .clone();
+        std::fs::write(stored, b"forged-image!").unwrap();
+        drop(supervisor);
+
+        let authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-2",
+            ActorIdentity {
+                principal: "system".into(),
+                ingress: "resume".into(),
+            },
+            "2026-08-19T18:01:00Z",
+        )
+        .unwrap();
+        let error = InteractiveRuntimeSupervisor::with_authority(authority).unwrap_err();
+        assert!(error.to_string().contains("digest changed"));
     }
 
     #[test]

@@ -426,6 +426,17 @@ async fn worker_loop(
                 return;
             }
         };
+    match supervisor.withdraw_recovered_prompts() {
+        Ok(0) => {}
+        Ok(count) => tracing::warn!(
+            count,
+            "withdrew recovered ACP prompts whose response channels were lost"
+        ),
+        Err(error) => {
+            tracing::error!(%error, "failed to withdraw orphaned recovered ACP prompts");
+            return;
+        }
+    }
     let mut bus = agent_setup.bus;
     let mut context_manager = agent_setup.context_manager;
     let mut conversation = agent_setup.conversation;
@@ -539,13 +550,22 @@ async fn worker_loop(
                 let bridge = match crate::providers::auto_detect_bridge(&current_model).await {
                     Some(b) => b,
                     None => {
-                        let _ = supervisor.submit_loop_terminal_intent(
+                        if let Err(authority_error) = supervisor.submit_loop_terminal_intent(
                             crate::runtime_turn::LoopTerminalIntent {
                                 identity: active_identity,
                                 outcome: crate::runtime_turn::RuntimeTurnOutcome::Failed,
                                 reason_code: "provider_unavailable".into(),
                             },
-                        );
+                        ) {
+                            let _ = response_tx.send(WorkerResponse {
+                                text: String::new(),
+                                error: Some(format!(
+                                    "Provider is unavailable and session authority could not record closure: {authority_error}"
+                                )),
+                                cancelled: false,
+                            });
+                            break;
+                        }
                         let _ = response_tx.send(WorkerResponse {
                             text: String::new(),
                             error: Some(format!(
@@ -816,7 +836,7 @@ async fn worker_loop(
                         )),
                         cancelled,
                     });
-                    continue;
+                    break;
                 }
 
                 drop(loop_events_tx);

@@ -134,6 +134,12 @@ fn dynamic_preflight(
 pub struct AdmittedPlugins {
     features: Vec<Box<dyn omegon_traits::Feature>>,
     admissions: Vec<GuardedContributionDirectory>,
+    mcp_supervisors: Vec<mcp::McpSupervisor>,
+}
+
+struct LoadedPlugin {
+    features: Vec<Box<dyn omegon_traits::Feature>>,
+    mcp_supervisors: Vec<mcp::McpSupervisor>,
 }
 
 pub(crate) struct GuardedPluginScope {
@@ -194,10 +200,23 @@ impl AdmittedPlugins {
         let Self {
             features,
             admissions,
+            mcp_supervisors: _,
         } = self;
         let result = publish(features);
         drop(admissions);
         result
+    }
+
+    pub(crate) fn publish_candidate<R>(
+        self,
+        publish: impl FnOnce(Vec<Box<dyn omegon_traits::Feature>>) -> R,
+    ) -> (
+        R,
+        Vec<mcp::McpSupervisor>,
+        Vec<GuardedContributionDirectory>,
+    ) {
+        let result = publish(self.features);
+        (result, self.mcp_supervisors, self.admissions)
     }
 }
 
@@ -244,6 +263,7 @@ pub async fn discover_plugins_filtered(
 ) -> AdmittedPlugins {
     let mut features: Vec<Box<dyn omegon_traits::Feature>> = Vec::new();
     let mut admissions = Vec::new();
+    let mut mcp_supervisors = Vec::new();
     let profile = crate::settings::Profile::load(cwd);
     let dynamic_admission =
         crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile);
@@ -256,7 +276,8 @@ pub async fn discover_plugins_filtered(
                     .await
                 {
                     Ok(Some((mut loaded, admission))) => {
-                        features.append(&mut loaded);
+                        features.append(&mut loaded.features);
+                        mcp_supervisors.append(&mut loaded.mcp_supervisors);
                         admissions.push(admission);
                     }
                     Ok(None) => {}
@@ -272,12 +293,15 @@ pub async fn discover_plugins_filtered(
     }
 
     // Also discover MCP servers from project-level config
-    let project_mcp = discover_project_mcp_servers(cwd, secrets, &dynamic_admission).await;
+    let (project_mcp, mut project_mcp_supervisors) =
+        discover_project_mcp_servers(cwd, secrets, &dynamic_admission).await;
     features.extend(project_mcp);
+    mcp_supervisors.append(&mut project_mcp_supervisors);
 
     AdmittedPlugins {
         features,
         admissions,
+        mcp_supervisors,
     }
 }
 
@@ -288,12 +312,7 @@ async fn discover_guarded_plugins(
     secrets: Option<&omegon_secrets::SecretsManager>,
     filter: &PluginSelectionFilter,
     dynamic_admission: &crate::dynamic_admission::DynamicAdmissionPolicy,
-) -> anyhow::Result<
-    Option<(
-        Vec<Box<dyn omegon_traits::Feature>>,
-        GuardedContributionDirectory,
-    )>,
-> {
+) -> anyhow::Result<Option<(LoadedPlugin, GuardedContributionDirectory)>> {
     use std::os::unix::ffi::OsStrExt;
 
     let GuardedPluginScope {
@@ -304,6 +323,7 @@ async fn discover_guarded_plugins(
     let mut entries = admission.entry_names(MAX_PLUGIN_ENTRIES)?;
     entries.sort();
     let mut features = Vec::new();
+    let mut mcp_supervisors = Vec::new();
 
     for raw_name in entries {
         if crate::contribution_loading::is_internal_contribution_entry(&raw_name) {
@@ -403,14 +423,23 @@ async fn discover_guarded_plugins(
         )
         .await
         {
-            Ok(mut loaded) => features.append(&mut loaded),
+            Ok(mut loaded) => {
+                features.append(&mut loaded.features);
+                mcp_supervisors.append(&mut loaded.mcp_supervisors);
+            }
             Err(error) => {
                 tracing::warn!(path = %manifest_path.display(), error = %error, "failed to load plugin");
             }
         }
     }
 
-    Ok(Some((features, admission)))
+    Ok(Some((
+        LoadedPlugin {
+            features,
+            mcp_supervisors,
+        },
+        admission,
+    )))
 }
 
 #[cfg(not(unix))]
@@ -420,12 +449,7 @@ async fn discover_guarded_plugins(
     _secrets: Option<&omegon_secrets::SecretsManager>,
     _filter: &PluginSelectionFilter,
     _dynamic_admission: &crate::dynamic_admission::DynamicAdmissionPolicy,
-) -> anyhow::Result<
-    Option<(
-        Vec<Box<dyn omegon_traits::Feature>>,
-        GuardedContributionDirectory,
-    )>,
-> {
+) -> anyhow::Result<Option<(LoadedPlugin, GuardedContributionDirectory)>> {
     anyhow::bail!("guarded plugin discovery requires Unix")
 }
 
@@ -436,7 +460,7 @@ async fn load_plugin_manifest(
     secrets: Option<&omegon_secrets::SecretsManager>,
     snapshot: Option<crate::contribution_loading::ContributionSnapshot>,
     trust_admission: crate::dynamic_admission::DynamicAdmissionPermit,
-) -> anyhow::Result<Vec<Box<dyn omegon_traits::Feature>>> {
+) -> anyhow::Result<LoadedPlugin> {
     let snapshot = snapshot.map(std::sync::Arc::new);
     if let Some(loaded) = load_armory_plugin(
         display_path,
@@ -447,7 +471,7 @@ async fn load_plugin_manifest(
     )
     .await?
     {
-        for feature in &loaded {
+        for feature in &loaded.features {
             tracing::info!(plugin = feature.name(), path = %display_path.display(), "loaded armory plugin");
         }
         return Ok(loaded);
@@ -466,10 +490,16 @@ async fn load_plugin_manifest(
     let legacy = load_legacy_plugin_with_content(manifest_path, content, cwd, trust_admission)?;
     if let Some(feature) = legacy {
         tracing::info!(plugin = feature.name(), path = %display_path.display(), "loaded legacy plugin");
-        Ok(vec![feature])
+        Ok(LoadedPlugin {
+            features: vec![feature],
+            mcp_supervisors: Vec::new(),
+        })
     } else {
         tracing::debug!(path = %display_path.display(), "plugin not active for current project");
-        Ok(Vec::new())
+        Ok(LoadedPlugin {
+            features: Vec::new(),
+            mcp_supervisors: Vec::new(),
+        })
     }
 }
 
@@ -481,7 +511,7 @@ async fn load_armory_plugin(
     secrets: Option<&omegon_secrets::SecretsManager>,
     snapshot: Option<&std::sync::Arc<crate::contribution_loading::ContributionSnapshot>>,
     trust_admission: &crate::dynamic_admission::DynamicAdmissionPermit,
-) -> anyhow::Result<Option<Vec<Box<dyn omegon_traits::Feature>>>> {
+) -> anyhow::Result<Option<LoadedPlugin>> {
     // Check if this looks like an armory manifest (has [plugin] with type field).
     // If the content contains `type =` under `[plugin]`, it's armory-style.
     // If it doesn't, fall through to legacy gracefully.
@@ -499,6 +529,7 @@ async fn load_armory_plugin(
     };
 
     let mut features: Vec<Box<dyn omegon_traits::Feature>> = Vec::new();
+    let mut mcp_supervisors = Vec::new();
 
     // Connect MCP servers if declared
     if !manifest.mcp_servers.is_empty() {
@@ -509,6 +540,7 @@ async fn load_armory_plugin(
             trust_admission.clone(),
         )
         .await?;
+        mcp_supervisors.push(mcp_feature.supervisor());
 
         if !mcp_feature.tools().is_empty() {
             features.push(Box::new(mcp_feature));
@@ -546,7 +578,10 @@ async fn load_armory_plugin(
         return Ok(None);
     }
 
-    Ok(Some(features))
+    Ok(Some(LoadedPlugin {
+        features,
+        mcp_supervisors,
+    }))
 }
 
 /// Load a legacy HTTP-only plugin manifest.
@@ -608,8 +643,12 @@ async fn discover_project_mcp_servers(
     cwd: &Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
     dynamic_admission: &crate::dynamic_admission::DynamicAdmissionPolicy,
-) -> Vec<Box<dyn omegon_traits::Feature>> {
+) -> (
+    Vec<Box<dyn omegon_traits::Feature>>,
+    Vec<mcp::McpSupervisor>,
+) {
     let mut features: Vec<Box<dyn omegon_traits::Feature>> = Vec::new();
+    let mut mcp_supervisors = Vec::new();
 
     // Check .omegon/mcp.toml (native Omegon MCP config)
     let mcp_config_path = cwd.join(".omegon").join("mcp.toml");
@@ -622,10 +661,11 @@ async fn discover_project_mcp_servers(
         let trust_admission = preflight.and_then(|preflight| dynamic_admission.admit(preflight));
         let Ok(trust_admission) = trust_admission else {
             tracing::warn!("project MCP trust admission denied before connection");
-            return features;
+            return (features, mcp_supervisors);
         };
         match mcp::McpFeature::connect("project-mcp", &servers, secrets, trust_admission).await {
             Ok(feature) if !feature.tools().is_empty() => {
+                mcp_supervisors.push(feature.supervisor());
                 tracing::info!(
                     servers = servers.len(),
                     tools = feature.tools().len(),
@@ -640,7 +680,7 @@ async fn discover_project_mcp_servers(
         }
     }
 
-    features
+    (features, mcp_supervisors)
 }
 
 #[cfg(test)]

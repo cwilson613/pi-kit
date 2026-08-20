@@ -1073,6 +1073,7 @@ async fn worker_loop(
                     {
                         Ok(mcp_feature) => {
                             let tool_count = mcp_feature.tools().len();
+                            let mcp_supervisor = mcp_feature.supervisor();
                             if tool_count > 0 {
                                 bus.register(Box::new(mcp_feature));
                                 match bus.try_finalize() {
@@ -1086,11 +1087,24 @@ async fn worker_loop(
                                         )));
                                     }
                                     Err(error) => {
+                                        let cleanup_failures = mcp_supervisor
+                                            .shutdown(std::time::Duration::from_millis(500))
+                                            .await;
                                         tracing::warn!(%error, "ACP client MCP candidate rejected");
+                                        if !cleanup_failures.is_empty() {
+                                            tracing::warn!(failures = ?cleanup_failures, "ACP client MCP candidate cleanup degraded");
+                                        }
                                         let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
                                             "Client MCP candidate rejected: {error}"
                                         )));
                                     }
+                                }
+                            } else {
+                                let cleanup_failures = mcp_supervisor
+                                    .shutdown(std::time::Duration::from_millis(500))
+                                    .await;
+                                if !cleanup_failures.is_empty() {
+                                    tracing::warn!(failures = ?cleanup_failures, "empty ACP MCP candidate cleanup degraded");
                                 }
                             }
                         }

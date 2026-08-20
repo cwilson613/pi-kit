@@ -2691,6 +2691,8 @@ async fn run_embedded_command(
     let router = Arc::new(session_router::SessionRouter::new());
     let mut extension_supervisors =
         extensions::ExtensionSupervisorSet::new(std::mem::take(&mut agent.extension_supervisors));
+    let mut mcp_supervisors =
+        plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors));
     let agent_cwd = agent.cwd.clone();
     let agent_session_id = agent.session_id.clone();
     let agent_secrets = agent.secrets.clone();
@@ -3383,6 +3385,7 @@ async fn run_embedded_command(
             );
         }
     }
+    mcp_supervisors.shutdown().await;
     extension_supervisors.shutdown().await;
     Ok(())
 }
@@ -4495,6 +4498,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let mut extension_supervisors = extensions::ExtensionSupervisorSet::new(
         std::mem::take(&mut agent.extension_supervisors),
     );
+    let mut mcp_supervisors = plugins::mcp::McpSupervisorSet::new(std::mem::take(
+        &mut agent.mcp_supervisors,
+    ));
     let startup_model_intent = settings::Profile::load(&agent.cwd)
         .model_intent
         .and_then(|intent| intent.to_route_intent())
@@ -6484,6 +6490,7 @@ fn build_tui_secret_readiness_snapshot(
                                                 ),
                                             }
                                         }
+                                        mcp_supervisors.shutdown().await;
                                         extension_supervisors.shutdown().await;
                                         bridge.read().await.shutdown().await;
                                         return Ok(());
@@ -6855,6 +6862,7 @@ fn build_tui_secret_readiness_snapshot(
     }
 
     bridge.read().await.shutdown().await;
+    mcp_supervisors.shutdown().await;
     extension_supervisors.shutdown().await;
 
     if let Some((binary, args)) = restart_request {
@@ -9659,6 +9667,7 @@ mod tests {
                 admission: crate::workspace::types::AdmissionOutcome::GrantedMutable,
             },
             extension_supervisors: vec![],
+            mcp_supervisors: vec![],
             extension_widgets: vec![],
             extension_metadata: Default::default(),
             extension_rpc_handles: Default::default(),

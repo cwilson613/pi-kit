@@ -292,6 +292,45 @@ pub struct McpFeature {
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
 }
 
+#[derive(Clone)]
+pub(crate) struct McpSupervisor {
+    clients: Arc<Mutex<HashMap<String, McpConnection>>>,
+}
+
+impl McpSupervisor {
+    pub(crate) async fn shutdown(&self, timeout: Duration) -> Vec<String> {
+        let mut clients = self.clients.lock().await;
+        let mut failures = Vec::new();
+        for (name, client) in clients.iter_mut() {
+            match client.close_with_timeout(timeout).await {
+                Ok(Some(_)) => {}
+                Ok(None) => failures.push(format!("{name}: cleanup timeout")),
+                Err(error) => failures.push(format!("{name}: {error}")),
+            }
+        }
+        clients.clear();
+        failures
+    }
+}
+
+pub(crate) struct McpSupervisorSet {
+    supervisors: Vec<McpSupervisor>,
+}
+
+impl McpSupervisorSet {
+    pub(crate) fn new(supervisors: Vec<McpSupervisor>) -> Self {
+        Self { supervisors }
+    }
+
+    pub(crate) async fn shutdown(&mut self) {
+        for supervisor in self.supervisors.drain(..) {
+            for failure in supervisor.shutdown(Duration::from_millis(500)).await {
+                tracing::warn!(%failure, "MCP cleanup degraded");
+            }
+        }
+    }
+}
+
 pub(crate) fn dynamic_preflight(
     id: &str,
     content: &str,
@@ -353,7 +392,17 @@ impl McpFeature {
         let mut host_action_policies = HashMap::new();
         for (server_name, config) in servers {
             admission.validate()?;
-            match Self::connect_one(server_name, config, secrets, Arc::clone(&progress)).await {
+            let readiness_deadline =
+                tokio::time::Instant::now() + Duration::from_secs(config.timeout_secs.max(1));
+            match Self::connect_one(
+                server_name,
+                config,
+                secrets,
+                Arc::clone(&progress),
+                readiness_deadline,
+            )
+            .await
+            {
                 Ok((server_tools, client)) => {
                     tracing::info!(
                         plugin = plugin_name,
@@ -369,8 +418,10 @@ impl McpFeature {
                     }
 
                     // Discover resources (non-fatal — many servers don't expose any)
-                    match client.list_all_resources().await {
-                        Ok(resources) => {
+                    match tokio::time::timeout_at(readiness_deadline, client.list_all_resources())
+                        .await
+                    {
+                        Ok(Ok(resources)) => {
                             if !resources.is_empty() {
                                 tracing::info!(
                                     plugin = plugin_name,
@@ -387,18 +438,27 @@ impl McpFeature {
                                 server_name: server_name.clone(),
                             }));
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             tracing::debug!(
                                 server = server_name,
                                 error = %e,
                                 "MCP server does not support resources"
                             );
                         }
+                        Err(_) => tracing::debug!(
+                            server = server_name,
+                            "MCP resource discovery exceeded readiness deadline"
+                        ),
                     }
 
                     // Discover resource templates (non-fatal)
-                    match client.list_all_resource_templates().await {
-                        Ok(templates) => {
+                    match tokio::time::timeout_at(
+                        readiness_deadline,
+                        client.list_all_resource_templates(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(templates)) => {
                             if !templates.is_empty() {
                                 tracing::info!(
                                     plugin = plugin_name,
@@ -417,18 +477,24 @@ impl McpFeature {
                                 }
                             }));
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             tracing::debug!(
                                 server = server_name,
                                 error = %e,
                                 "MCP server does not support resource templates"
                             );
                         }
+                        Err(_) => tracing::debug!(
+                            server = server_name,
+                            "MCP resource-template discovery exceeded readiness deadline"
+                        ),
                     }
 
                     // Discover prompts (non-fatal)
-                    match client.list_all_prompts().await {
-                        Ok(prompts) => {
+                    match tokio::time::timeout_at(readiness_deadline, client.list_all_prompts())
+                        .await
+                    {
+                        Ok(Ok(prompts)) => {
                             if !prompts.is_empty() {
                                 tracing::info!(
                                     plugin = plugin_name,
@@ -455,13 +521,17 @@ impl McpFeature {
                                 }
                             }));
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             tracing::debug!(
                                 server = server_name,
                                 error = %e,
                                 "MCP server does not support prompts"
                             );
                         }
+                        Err(_) => tracing::debug!(
+                            server = server_name,
+                            "MCP prompt discovery exceeded readiness deadline"
+                        ),
                     }
 
                     clients.insert(server_name.clone(), client);
@@ -496,22 +566,44 @@ impl McpFeature {
         config: &McpServerConfig,
         secrets: Option<&omegon_secrets::SecretsManager>,
         progress: Arc<ProgressRegistry>,
+        readiness_deadline: tokio::time::Instant,
     ) -> anyhow::Result<(Vec<McpTool>, McpConnection)> {
         let handler = OmegonMcpClient { progress };
-        let client = if let Some(ref url) = config.url {
-            // HTTP transport mode
-            Self::validate_url(url)?;
-            let transport = StreamableHttpClientTransport::from_uri(url.clone());
-            service::serve_client(handler, transport).await?
-        } else {
-            // Local process transport mode
-            let cmd = Self::build_command(server_name, config, secrets)?;
-            let transport = TokioChildProcess::new(cmd)?;
-            service::serve_client(handler, transport).await?
+        let connect = async {
+            let client = if let Some(ref url) = config.url {
+                // HTTP transport mode
+                Self::validate_url(url)?;
+                let transport = StreamableHttpClientTransport::from_uri(url.clone());
+                service::serve_client(handler, transport).await?
+            } else {
+                // Local process transport mode
+                let cmd = Self::build_command(server_name, config, secrets)?;
+                let transport = TokioChildProcess::new(cmd)?;
+                service::serve_client(handler, transport).await?
+            };
+            Ok::<_, anyhow::Error>(client)
         };
+        let mut client = tokio::time::timeout_at(readiness_deadline, connect)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("MCP server '{server_name}' connection readiness timed out")
+            })??;
 
         // Discover tools via MCP tools/list
-        let tools_result = client.list_tools(None).await?;
+        let tools_result =
+            match tokio::time::timeout_at(readiness_deadline, client.list_tools(None)).await {
+                Ok(Ok(tools)) => tools,
+                Ok(Err(error)) => {
+                    let _ = client.close_with_timeout(Duration::from_secs(1)).await;
+                    return Err(error.into());
+                }
+                Err(_) => {
+                    let _ = client.close_with_timeout(Duration::from_secs(1)).await;
+                    return Err(anyhow::anyhow!(
+                        "MCP server '{server_name}' tool discovery readiness timed out"
+                    ));
+                }
+            };
         let tools: Vec<McpTool> = tools_result
             .tools
             .into_iter()
@@ -529,6 +621,12 @@ impl McpFeature {
             .collect();
 
         Ok((tools, client))
+    }
+
+    pub(crate) fn supervisor(&self) -> McpSupervisor {
+        McpSupervisor {
+            clients: Arc::clone(&self.clients),
+        }
     }
 
     /// Validate URL for HTTP transport.

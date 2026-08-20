@@ -160,6 +160,8 @@ The transport-neutral lifecycle owner now models one quarantined candidate with 
 
 Extension negotiation now applies one absolute manifest readiness deadline across optional initialization, required tool discovery, configuration delivery, and secret delivery. Timeout and handshake failure retain the canonical child handle long enough to shut down, kill the dedicated process group, and reap it before reporting failure. Setup also explicitly shuts down every successfully started extension supervisor when graph publication or later runtime-ownership startup fails, preserving admission locks through extension cleanup and reporting degraded cleanup instead of relying solely on synchronous drop backstops.
 
+MCP connection and discovery now use one absolute per-server readiness deadline across transport startup, required tool discovery, and optional resource, template, and prompt discovery. A shared MCP supervisor owns every accepted `RunningService`, performs bounded explicit close, remains held through graph publication, and is retained through daemon or interactive runtime shutdown. Startup and ACP graph rejection close candidate services before reporting failure; timeout or join failure is surfaced as degraded cleanup rather than hidden behind rmcp's asynchronous drop guard.
+
 ### Design laws
 
 1. **Composition is not admission.** Compiled or installed capability means resident, not callable or visible.

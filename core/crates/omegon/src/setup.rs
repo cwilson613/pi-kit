@@ -91,6 +91,8 @@ pub struct AgentSetup {
     pub workspace_state: WorkspaceStartupState,
     /// Canonical owners for deterministic extension process shutdown.
     pub extension_supervisors: Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
+    /// Canonical owners for deterministic MCP service shutdown.
+    pub mcp_supervisors: Vec<crate::plugins::mcp::McpSupervisor>,
     /// Extension widgets discovered during setup — passed to TUI for rendering.
     pub extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
     /// Extension deployment metadata discovered during startup.
@@ -1070,32 +1072,46 @@ impl AgentSetup {
         let plugins =
             crate::plugins::discover_plugins_filtered(&cwd, Some(secrets.as_ref()), &plugin_filter)
                 .await;
-        let mut publication_result = Ok(());
-        plugins.publish(|plugins| {
-            for plugin in plugins {
-                bus.register(plugin);
-            }
+        let (publication_result, mcp_supervisors, plugin_admissions) =
+            plugins.publish_candidate(|plugins| {
+                for plugin in plugins {
+                    bus.register(plugin);
+                }
 
-            // Freeze declarations, validate and plan the candidate graph, then
-            // publish legacy caches only from the accepted graph while plugin
-            // admission locks remain held.
-            publication_result = bus.try_finalize();
-        });
+                // Freeze declarations, validate and plan the candidate graph, then
+                // publish legacy caches only from the accepted graph while plugin
+                // admission locks remain held.
+                bus.try_finalize()
+            });
         if let Err(error) = publication_result {
             let cleanup_failures = crate::extensions::shutdown_supervisors(
                 &extension_supervisors,
                 std::time::Duration::from_millis(500),
             )
             .await;
+            let mut mcp_cleanup_failures = Vec::new();
+            for supervisor in &mcp_supervisors {
+                mcp_cleanup_failures.extend(
+                    supervisor
+                        .shutdown(std::time::Duration::from_millis(500))
+                        .await,
+                );
+            }
+            drop(plugin_admissions);
             drop(extension_admission);
-            if cleanup_failures.is_empty() {
+            if cleanup_failures.is_empty() && mcp_cleanup_failures.is_empty() {
                 return Err(error);
             }
             return Err(error.context(format!(
-                "candidate extension cleanup degraded: {}",
-                cleanup_failures.join("; ")
+                "candidate cleanup degraded: {}",
+                cleanup_failures
+                    .into_iter()
+                    .chain(mcp_cleanup_failures)
+                    .collect::<Vec<_>>()
+                    .join("; ")
             )));
         }
+        drop(plugin_admissions);
         drop(extension_admission);
 
         // Wire ManageTools state so runtime filtering and list output reflect
@@ -1505,12 +1521,24 @@ impl AgentSetup {
                         std::time::Duration::from_millis(500),
                     )
                     .await;
-                    if cleanup_failures.is_empty() {
+                    let mut mcp_cleanup_failures = Vec::new();
+                    for supervisor in &mcp_supervisors {
+                        mcp_cleanup_failures.extend(
+                            supervisor
+                                .shutdown(std::time::Duration::from_millis(500))
+                                .await,
+                        );
+                    }
+                    if cleanup_failures.is_empty() && mcp_cleanup_failures.is_empty() {
                         return Err(error);
                     }
                     return Err(error.context(format!(
                         "published startup candidate cleanup degraded: {}",
-                        cleanup_failures.join("; ")
+                        cleanup_failures
+                            .into_iter()
+                            .chain(mcp_cleanup_failures)
+                            .collect::<Vec<_>>()
+                            .join("; ")
                     )));
                 }
             };
@@ -1555,6 +1583,7 @@ impl AgentSetup {
             startup_snapshot,
             initial_harness_status: initial_harness_status.clone(),
             extension_supervisors,
+            mcp_supervisors,
             extension_widgets,
             extension_metadata,
             extension_rpc_handles,

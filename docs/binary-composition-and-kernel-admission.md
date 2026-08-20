@@ -154,6 +154,8 @@ Native and OCI extension startup now enforces that contract. `permissions.truste
 
 Executable plugin paths now use the same policy and permit. A guarded plugin directory is identified as `plugin:<directory-name>` and denied before Pkl evaluation, dynamic context generation, script/OCI execution, HTTP registration, or plugin-declared MCP connection. Production Armory, HTTP, and MCP constructors require a permit and revalidate it at deferred execution/send boundaries. Project MCP uses the separately frozen `mcp:project` identity, while ACP-submitted server configuration uses `mcp:acp-client` and is admitted authoritatively in the worker before secret-template resolution, process spawn, or network connection. Red tests use marker processes to prove untrusted plugin context and project MCP configuration cannot execute during discovery.
 
+Slice 2.5 lifecycle records add owner and composition-generation identity, last completed lifecycle boundary, bounded coded reasons, restart/backoff and heartbeat evidence, cleanup assurance, and cleanup outcome. Separate resource records cover process trees, tasks, sockets, subscriptions, temporary directories, durable writers, and remote services. Validation rejects unbounded reasons, strict cleanup paired with unverified outcomes, and false host-ownership claims for remote services. These renderer-neutral records describe evidence; the runtime lifecycle owner that produces them is the next implementation lane.
+
 ### Design laws
 
 1. **Composition is not admission.** Compiled or installed capability means resident, not callable or visible.

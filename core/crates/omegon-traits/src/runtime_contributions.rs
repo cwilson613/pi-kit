@@ -65,6 +65,7 @@ scoped_id!(
 );
 scoped_id!(RuntimeDiagnosticCode, "diagnostic code");
 scoped_id!(RuntimeCapabilityGroupId, "capability group id");
+scoped_id!(RuntimeContributionResourceId, "contribution resource id");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeContributionSchemaVersion {
@@ -603,6 +604,123 @@ pub enum RuntimeContributionLifecycleState {
     Draining,
     Failed,
     Retired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeLifecycleBoundary {
+    Discovered,
+    TrustAdmitted,
+    ProbeStarted,
+    DeclarationsFrozen,
+    GraphValidated,
+    ReadinessSatisfied,
+    PublicationPrepared,
+    Promoted,
+    DrainStarted,
+    CleanupStarted,
+    CleanupSettled,
+    Retired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCleanupAssurance {
+    Strict,
+    BestEffort,
+    Unverified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCleanupState {
+    NotRequired,
+    Pending,
+    Settled,
+    Degraded,
+    Unverified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeOwnedResourceKind {
+    ProcessTree,
+    Task,
+    Socket,
+    Subscription,
+    TemporaryDirectory,
+    DurableWriter,
+    RemoteService,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeContributionLifecycleRecord {
+    pub schema_version: RuntimeContributionSchemaVersion,
+    pub composition_generation_id: RuntimeCompositionGenerationId,
+    pub contribution_id: RuntimeContributionId,
+    pub generation_id: RuntimeContributionGenerationId,
+    pub state: RuntimeContributionLifecycleState,
+    pub last_completed_boundary: RuntimeLifecycleBoundary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<RuntimeDiagnosticCode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub restart_attempts: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_restart_not_before_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_ms: Option<u64>,
+    pub cleanup_assurance: RuntimeCleanupAssurance,
+    pub cleanup_state: RuntimeCleanupState,
+}
+
+impl RuntimeContributionLifecycleRecord {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .reason
+            .as_ref()
+            .is_some_and(|reason| reason.len() > 512)
+        {
+            return Err("lifecycle reason exceeds 512 bytes");
+        }
+        if self.reason.is_some() != self.reason_code.is_some() {
+            return Err("lifecycle reason and reason code must be present together");
+        }
+        if self.cleanup_assurance == RuntimeCleanupAssurance::Strict
+            && self.cleanup_state == RuntimeCleanupState::Unverified
+        {
+            return Err("strict cleanup assurance cannot report unverified cleanup");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeOwnedResourceRecord {
+    pub schema_version: RuntimeContributionSchemaVersion,
+    pub id: RuntimeContributionResourceId,
+    pub composition_generation_id: RuntimeCompositionGenerationId,
+    pub contribution_id: RuntimeContributionId,
+    pub generation_id: RuntimeContributionGenerationId,
+    pub kind: RuntimeOwnedResourceKind,
+    pub cleanup_assurance: RuntimeCleanupAssurance,
+    pub cleanup_state: RuntimeCleanupState,
+}
+
+impl RuntimeOwnedResourceRecord {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.cleanup_assurance == RuntimeCleanupAssurance::Strict
+            && self.cleanup_state == RuntimeCleanupState::Unverified
+        {
+            return Err("strict resource cleanup cannot be unverified");
+        }
+        if self.kind == RuntimeOwnedResourceKind::RemoteService
+            && self.cleanup_assurance == RuntimeCleanupAssurance::Strict
+        {
+            return Err("a remote service cannot claim strict host cleanup assurance");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

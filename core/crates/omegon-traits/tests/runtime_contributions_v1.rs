@@ -1,8 +1,9 @@
 use omegon_traits::{
     RUNTIME_CONTRIBUTION_SCHEMA_VERSION, RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
     RuntimeCompositionGeneration, RuntimeConfinementRequest, RuntimeContributionDeclaration,
-    RuntimeContributionId, RuntimeDiagnosticCode, RuntimeDynamicContributionPreflight,
-    RuntimeEffect, RuntimeProtocolRange, RuntimeTrustAdmission, RuntimeTrustAdmissionEvidence,
+    RuntimeContributionId, RuntimeContributionLifecycleRecord, RuntimeDiagnosticCode,
+    RuntimeDynamicContributionPreflight, RuntimeEffect, RuntimeOwnedResourceRecord,
+    RuntimeProtocolRange, RuntimeTrustAdmission, RuntimeTrustAdmissionEvidence,
     RuntimeTrustedCodeAuthority,
 };
 use serde::de::DeserializeOwned;
@@ -163,4 +164,38 @@ fn confinement_evidence_fails_closed_without_a_complete_brokered_boundary() {
         brokered_effects_only: true,
     };
     complete.validate().unwrap();
+}
+
+#[test]
+fn lifecycle_and_owned_resource_v1_fixture_round_trips() {
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct Fixture {
+        lifecycle: RuntimeContributionLifecycleRecord,
+        resource: RuntimeOwnedResourceRecord,
+    }
+
+    let raw = include_str!("fixtures/runtime-lifecycle-records-v1.json");
+    assert_fixture_round_trip::<Fixture>(raw);
+    let fixture: Fixture = serde_json::from_str(raw).unwrap();
+    fixture.lifecycle.validate().unwrap();
+    fixture.resource.validate().unwrap();
+}
+
+#[test]
+fn lifecycle_records_reject_unbounded_reasons_and_false_cleanup_claims() {
+    let raw = include_str!("fixtures/runtime-lifecycle-records-v1.json");
+    let value: Value = serde_json::from_str(raw).unwrap();
+    let mut lifecycle: RuntimeContributionLifecycleRecord =
+        serde_json::from_value(value["lifecycle"].clone()).unwrap();
+    lifecycle.reason = Some("x".repeat(513));
+    assert!(lifecycle.validate().is_err());
+
+    lifecycle.reason = Some("cleanup could not be verified".into());
+    lifecycle.cleanup_state = omegon_traits::RuntimeCleanupState::Unverified;
+    assert!(lifecycle.validate().is_err());
+
+    let mut resource: RuntimeOwnedResourceRecord =
+        serde_json::from_value(value["resource"].clone()).unwrap();
+    resource.kind = omegon_traits::RuntimeOwnedResourceKind::RemoteService;
+    assert!(resource.validate().is_err());
 }

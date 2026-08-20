@@ -785,9 +785,10 @@ pub(crate) fn reconstruct(facts: &[SessionFact]) -> Result<SessionAuthorityState
     Ok(state)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct SessionAuthority {
     store: SessionAuthorityStore,
+    _writer_lease: crate::filelock::FileLockGuard,
     state: SessionAuthorityState,
     session_id: String,
     stream_id: Uuid,
@@ -807,6 +808,26 @@ impl SessionAuthority {
         let workspace_identity = workspace_identity.into();
         let runtime_generation_id = runtime_generation_id.into();
         let store = SessionAuthorityStore::adjacent_to(session_snapshot)?;
+        let writer_lease = crate::filelock::try_acquire_lock(&store.writer_lease_path())
+            .map_err(|error| AuthorityError::Invalid(error.to_string()))?
+            .ok_or_else(|| {
+                AuthorityError::Invalid("session authority already has an active writer".into())
+            })?;
+        let initial = store.load()?;
+
+        if initial.last_sequence > 0 && initial.session_id.as_deref() != Some(session_id.as_str()) {
+            return Err(AuthorityError::Invalid(
+                "authority stream belongs to a different session".into(),
+            ));
+        }
+        if initial.last_sequence > 0
+            && initial.workspace_identity.as_deref() != Some(workspace_identity.as_str())
+        {
+            return Err(AuthorityError::Invalid(
+                "authority stream belongs to a different workspace".into(),
+            ));
+        }
+
         let mut state = store.recover(recorded_at)?;
 
         if state.last_sequence == 0 {
@@ -843,6 +864,7 @@ impl SessionAuthority {
 
         Ok(Self {
             store,
+            _writer_lease: writer_lease,
             state,
             session_id,
             stream_id,
@@ -858,6 +880,10 @@ impl SessionAuthority {
         self.store.stage_attachment(source)
     }
 
+    pub(crate) fn validate_attachment(&self, attachment: &AttachmentRef) -> Result<PathBuf> {
+        self.store.validate_attachment(attachment)
+    }
+
     pub(crate) fn admit_prompt(
         &mut self,
         command_id: Uuid,
@@ -868,6 +894,20 @@ impl SessionAuthority {
             command_id,
             recorded_at,
             SessionFactPayload::PromptAdmitted(admission),
+        )
+    }
+
+    pub(crate) fn remove_prompt(
+        &mut self,
+        command_id: Uuid,
+        recorded_at: &str,
+        prompt_id: Uuid,
+        reason: PromptRemovalReason,
+    ) -> Result<bool> {
+        self.append(
+            command_id,
+            recorded_at,
+            SessionFactPayload::PromptRemoved(PromptRemoved { prompt_id, reason }),
         )
     }
 
@@ -991,6 +1031,12 @@ impl SessionAuthorityStore {
             snapshot_path: parent.join(format!("{stem}.authority.snapshot.json")),
             attachment_dir: parent.join(format!("{stem}.authority.attachments")),
         })
+    }
+
+    fn writer_lease_path(&self) -> PathBuf {
+        let mut path = self.log_path.as_os_str().to_os_string();
+        path.push(".writer");
+        PathBuf::from(path)
     }
 
     #[cfg(test)]
@@ -1142,6 +1188,31 @@ impl SessionAuthorityStore {
             byte_length: metadata.len(),
             storage_ref: stored.to_string_lossy().into_owned(),
         })
+    }
+
+    fn validate_attachment(&self, attachment: &AttachmentRef) -> Result<PathBuf> {
+        let path = PathBuf::from(&attachment.storage_ref);
+        if path.parent() != Some(self.attachment_dir.as_path())
+            || path.file_name().and_then(|name| name.to_str()) != Some(attachment.digest.as_str())
+        {
+            return Err(AuthorityError::Invalid(
+                "authority attachment is outside content-addressed storage".into(),
+            ));
+        }
+        let metadata = fs::metadata(&path)?;
+        if !metadata.is_file() || metadata.len() != attachment.byte_length {
+            return Err(AuthorityError::Invalid(
+                "authority attachment size or type changed".into(),
+            ));
+        }
+        let bytes = fs::read(&path)?;
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        if digest != attachment.digest {
+            return Err(AuthorityError::Invalid(
+                "authority attachment digest changed".into(),
+            ));
+        }
+        Ok(path)
     }
 
     fn append_record(&self, encoded: &[u8]) -> Result<()> {
@@ -1915,6 +1986,7 @@ mod tests {
         );
         assert_eq!(authority.state().last_sequence, 5);
         assert!(authority.state().active_turn.is_none());
+        drop(authority);
 
         let reopened = SessionAuthority::open(
             &session_path,
@@ -1933,6 +2005,128 @@ mod tests {
             reopened.state().closed_turns[&turn_id].outcome,
             TurnOutcome::Revoked
         );
+    }
+
+    #[test]
+    fn open_refuses_concurrent_writer_without_recovering_live_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_path = temp.path().join("session-1.json");
+        let mut authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-1",
+            ActorIdentity {
+                principal: "operator".into(),
+                ingress: "tui".into(),
+            },
+            NOW,
+        )
+        .unwrap();
+        let prompt_id = Uuid::new_v4();
+        authority
+            .admit_prompt(
+                Uuid::new_v4(),
+                NOW,
+                PromptAdmitted {
+                    submission_id: Uuid::new_v4(),
+                    prompt_id,
+                    principal: "operator".into(),
+                    ingress: "tui".into(),
+                    queue_mode: QueueMode::UntilReady,
+                    content: PromptContent {
+                        text: "still running".into(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        authority
+            .start_turn(Uuid::new_v4(), NOW, Uuid::new_v4(), prompt_id)
+            .unwrap();
+        let before = authority.state().clone();
+
+        let error = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-2",
+            ActorIdentity {
+                principal: "system".into(),
+                ingress: "resume".into(),
+            },
+            "2026-08-19T18:01:00Z",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("active writer"));
+        assert_eq!(authority.state(), &before);
+        assert_eq!(
+            SessionAuthorityStore::adjacent_to(&session_path)
+                .unwrap()
+                .load()
+                .unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn open_validates_stream_identity_before_recovery_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_path = temp.path().join("session-1.json");
+        let mut authority = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "workspace-1",
+            "generation-1",
+            ActorIdentity {
+                principal: "operator".into(),
+                ingress: "tui".into(),
+            },
+            NOW,
+        )
+        .unwrap();
+        let prompt_id = Uuid::new_v4();
+        authority
+            .admit_prompt(
+                Uuid::new_v4(),
+                NOW,
+                PromptAdmitted {
+                    submission_id: Uuid::new_v4(),
+                    prompt_id,
+                    principal: "operator".into(),
+                    ingress: "tui".into(),
+                    queue_mode: QueueMode::UntilReady,
+                    content: PromptContent {
+                        text: "unsettled".into(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        authority
+            .start_turn(Uuid::new_v4(), NOW, Uuid::new_v4(), prompt_id)
+            .unwrap();
+        drop(authority);
+        let store = SessionAuthorityStore::adjacent_to(&session_path).unwrap();
+        let log_before = fs::read(&store.log_path).unwrap();
+
+        let error = SessionAuthority::open(
+            &session_path,
+            "session-1",
+            "wrong-workspace",
+            "generation-2",
+            ActorIdentity {
+                principal: "system".into(),
+                ingress: "resume".into(),
+            },
+            "2026-08-19T18:01:00Z",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("different workspace"));
+        assert_eq!(fs::read(&store.log_path).unwrap(), log_before);
+        assert!(store.load().unwrap().active_turn.is_some());
     }
 
     #[test]

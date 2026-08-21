@@ -1816,6 +1816,65 @@ impl EventBus {
         anyhow::bail!("no feature handles internal tool '{tool_name}'")
     }
 
+    pub(crate) async fn execute_internal_with_lease(
+        &self,
+        lease: &crate::invocation_service::ExecutionLease,
+        name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<omegon_traits::ToolResult> {
+        lease
+            .claim_dispatch(call_id, name)
+            .and_then(|_| {
+                self.validate_execution_lease(
+                    lease,
+                    call_id,
+                    omegon_traits::RuntimeInvocationKind::Internal,
+                    name,
+                )
+            })
+            .and_then(|_| lease.persist_dispatched())
+            .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
+
+        let idx = self
+            .internal_tool_owners
+            .get(name)
+            .copied()
+            .or_else(|| {
+                self.tool_defs
+                    .iter()
+                    .find(|(_, definition)| definition.name == name)
+                    .map(|(idx, _)| *idx)
+            })
+            .ok_or_else(|| anyhow::anyhow!("no feature handles internal tool '{name}'"))?;
+        lease
+            .invocation_control()
+            .acknowledge()
+            .map_err(anyhow::Error::msg)?;
+        let result = self.features[idx]
+            .execute(name, call_id, args, cancel)
+            .await;
+        let (outcome, terminal) = if result.is_ok() {
+            (
+                crate::session_authority::InvocationOutcome::Completed,
+                crate::invocation_service::LeaseTerminal::Completed,
+            )
+        } else {
+            (
+                crate::session_authority::InvocationOutcome::Failed,
+                crate::invocation_service::LeaseTerminal::Failed,
+            )
+        };
+        lease
+            .persist_settlement(outcome)
+            .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
+        if !lease.close(terminal) {
+            anyhow::bail!("invocation:lease_closed: internal execution lease was already closed");
+        }
+        result
+    }
+
     /// Get the configured timeout for a tool.
     pub fn tool_timeout(&self, tool_name: &str) -> Duration {
         self.tool_timeouts
@@ -2554,6 +2613,53 @@ mod tests {
             result,
             CommandResult::Display(message) if message == "Notified: hello"
         ));
+        assert_eq!(
+            lease.terminal(),
+            crate::invocation_service::LeaseTerminal::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_dispatch_requires_and_settles_an_internal_lease() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(CounterFeature { event_count: 3 }));
+        bus.register_internal_tool("internal_count", "counter");
+        bus.finalize();
+        let scope = crate::invocation_service::InvocationScope {
+            principal: "kernel:test".into(),
+            principal_class: omegon_traits::RuntimePrincipalClass::Internal,
+            surface: omegon_traits::RuntimeSurface::Internal,
+            ..Default::default()
+        };
+        let crate::invocation_service::InvocationAdmission::Lease(lease) =
+            crate::invocation_service::InvocationService::admit_invocation(
+                &bus,
+                omegon_traits::RuntimeInvocationKind::Internal,
+                "internal_count",
+                crate::invocation_service::InvocationRequest {
+                    call_id: "internal-call",
+                    scope,
+                    permission_policy: None,
+                    permission_role: None,
+                    permission_name: "internal_count",
+                    permission_subjects: &[],
+                },
+            )
+        else {
+            panic!("declared internal invocation should receive a lease")
+        };
+
+        let result = bus
+            .execute_internal_with_lease(
+                &lease,
+                "internal_count",
+                "internal-call",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content[0].as_text(), Some("count: 3"));
         assert_eq!(
             lease.terminal(),
             crate::invocation_service::LeaseTerminal::Completed

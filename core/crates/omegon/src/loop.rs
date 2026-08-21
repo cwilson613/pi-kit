@@ -3457,6 +3457,48 @@ fn invocation_outcome(
     }
 }
 
+async fn execute_internal_invocation(
+    bus: &crate::bus::EventBus,
+    name: &str,
+    call_id: &str,
+    args: Value,
+    cancel: CancellationToken,
+    parent_scope: &crate::invocation_service::InvocationScope,
+) -> anyhow::Result<omegon_traits::ToolResult> {
+    let scope = crate::invocation_service::InvocationScope {
+        principal: "kernel:permission-grant".into(),
+        principal_class: omegon_traits::RuntimePrincipalClass::Internal,
+        surface: omegon_traits::RuntimeSurface::Internal,
+        session_id: parent_scope.session_id.clone(),
+        turn_id: parent_scope.turn_id,
+        authority: parent_scope.authority.clone(),
+    };
+    let admission = crate::invocation_service::InvocationService::admit_invocation(
+        bus,
+        omegon_traits::RuntimeInvocationKind::Internal,
+        name,
+        crate::invocation_service::InvocationRequest {
+            call_id,
+            scope,
+            permission_policy: None,
+            permission_role: None,
+            permission_name: name,
+            permission_subjects: &[],
+        },
+    );
+    let lease = match admission {
+        crate::invocation_service::InvocationAdmission::Lease(lease) => lease,
+        crate::invocation_service::InvocationAdmission::Denied(denial) => {
+            anyhow::bail!("{}: {}", denial.code.as_str(), denial.message)
+        }
+        crate::invocation_service::InvocationAdmission::ApprovalRequired(_) => {
+            anyhow::bail!("invocation:approval_denied: internal invocation requires approval")
+        }
+    };
+    bus.execute_internal_with_lease(&lease, name, call_id, args, cancel)
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_tool_invocation(
     bus: &crate::bus::EventBus,
@@ -4025,14 +4067,15 @@ async fn execute_tool_invocation(
                         "path": target,
                         "scope": "session",
                     });
-                    if let Err(e) = bus
-                        .execute_internal(
-                            crate::tool_registry::core::TRUST_DIRECTORY,
-                            "__permission_grant",
-                            trust_args,
-                            cancel.clone(),
-                        )
-                        .await
+                    if let Err(e) = execute_internal_invocation(
+                        bus,
+                        crate::tool_registry::core::TRUST_DIRECTORY,
+                        &format!("{visible_call_id}:permission-grant"),
+                        trust_args,
+                        cancel.clone(),
+                        invocation_scope,
+                    )
+                    .await
                     {
                         tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
                     }
@@ -4063,14 +4106,15 @@ async fn execute_tool_invocation(
                         "path": perm_err.directory,
                         "scope": "session",
                     });
-                    if let Err(e) = bus
-                        .execute_internal(
-                            crate::tool_registry::core::TRUST_DIRECTORY,
-                            "__permission_grant",
-                            trust_args,
-                            cancel.clone(),
-                        )
-                        .await
+                    if let Err(e) = execute_internal_invocation(
+                        bus,
+                        crate::tool_registry::core::TRUST_DIRECTORY,
+                        &format!("{visible_call_id}:permission-grant"),
+                        trust_args,
+                        cancel.clone(),
+                        invocation_scope,
+                    )
+                    .await
                     {
                         tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
                     }
@@ -4101,14 +4145,15 @@ async fn execute_tool_invocation(
                         "path": perm_err.directory,
                         "scope": "persistent",
                     });
-                    if let Err(e) = bus
-                        .execute_internal(
-                            crate::tool_registry::core::TRUST_DIRECTORY,
-                            "__permission_grant",
-                            trust_args,
-                            cancel.clone(),
-                        )
-                        .await
+                    if let Err(e) = execute_internal_invocation(
+                        bus,
+                        crate::tool_registry::core::TRUST_DIRECTORY,
+                        &format!("{visible_call_id}:permission-grant"),
+                        trust_args,
+                        cancel.clone(),
+                        invocation_scope,
+                    )
+                    .await
                     {
                         tracing::error!(error = %e, "trust_directory internal call failed — permission may not take effect");
                     }

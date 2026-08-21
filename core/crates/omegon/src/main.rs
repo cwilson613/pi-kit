@@ -3104,7 +3104,8 @@ async fn run_embedded_command(
                     Some(operator_commands::OperatorCommand::ManagedDelegateControl { method, respond_to, .. }) => {
                         let _ = respond_to.send(serde_json::json!({"type": format!("{method}_result"), "accepted": false, "error": "managed delegation requires the interactive runtime"}));
                     }
-                    Some(operator_commands::OperatorCommand::ExecuteControl { request, respond_to }) => {
+                    Some(operator_commands::OperatorCommand::ExecuteControl { request, respond_to })
+                    | Some(operator_commands::OperatorCommand::ExecuteControlFrom { request, respond_to, .. }) => {
                         tracing::info!(request = ?request, "daemon: IPC control request");
                         let response = control_runtime::execute_daemon_control(
                             request,
@@ -5055,6 +5056,41 @@ fn build_tui_secret_readiness_snapshot(
                         model: &cli.model,
                         dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
                     },
+                    invocation_scope: operator_control_scope(
+                        omegon_traits::RuntimeSurface::Tui,
+                    ),
+                };
+                let response = control_runtime::execute_control(&mut ctx, request).await;
+                if let Some(output) = response.output.clone() {
+                    let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
+                }
+                if let Some(respond_to) = respond_to {
+                    let _ = respond_to.send(omegon_traits::ControlOutputResponse {
+                        accepted: response.accepted,
+                        output: response.output,
+                    });
+                }
+            }
+
+            operator_commands::OperatorCommand::ExecuteControlFrom {
+                request,
+                respond_to,
+                surface,
+            } => {
+                let mut ctx = control_runtime::ControlContext {
+                    runtime_state: &mut runtime_state,
+                    agent: &mut agent,
+                    shared_settings: &shared_settings,
+                    bridge: &bridge,
+                    route_controller: Some(route_controller.clone()),
+                    login_prompt_tx: &login_prompt_tx,
+                    events_tx: &events_tx,
+                    cli: &CliRuntimeView {
+                        no_session: cli.no_session,
+                        model: &cli.model,
+                        dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
+                    },
+                    invocation_scope: operator_control_scope(surface),
                 };
                 let response = control_runtime::execute_control(&mut ctx, request).await;
                 if let Some(output) = response.output.clone() {
@@ -5640,6 +5676,9 @@ fn build_tui_secret_readiness_snapshot(
                         model: &cli.model,
                         dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
                     },
+                    invocation_scope: operator_control_scope(
+                        omegon_traits::RuntimeSurface::Tui,
+                    ),
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
@@ -5671,6 +5710,9 @@ fn build_tui_secret_readiness_snapshot(
                         model: &cli.model,
                         dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
                     },
+                    invocation_scope: operator_control_scope(
+                        omegon_traits::RuntimeSurface::Tui,
+                    ),
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
@@ -5875,7 +5917,11 @@ fn build_tui_secret_readiness_snapshot(
                                         via: "websocket",
                                     },
                                     web::WebCommand::ExecuteControl { request, respond_to } => {
-                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ExecuteControl { request, respond_to }).await.is_err() {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ExecuteControlFrom {
+                                            request,
+                                            respond_to,
+                                            surface: omegon_traits::RuntimeSurface::Web,
+                                        }).await.is_err() {
                                             break;
                                         }
                                         continue;
@@ -5894,11 +5940,12 @@ fn build_tui_secret_readiness_snapshot(
                                     }
                                     web::WebCommand::CancelCleaveChild { label, respond_to } => {
                                         let (control_tx, control_rx) = tokio::sync::oneshot::channel();
-                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ExecuteControl {
+                                        if cmd_tx_clone.send(operator_commands::OperatorCommand::ExecuteControlFrom {
                                             request: crate::operator_commands::InterfaceControlRequest::CleaveCancelChild {
                                                 label,
                                             },
                                             respond_to: Some(control_tx),
+                                            surface: omegon_traits::RuntimeSurface::Web,
                                         }).await.is_err() {
                                             break;
                                         }
@@ -8192,6 +8239,28 @@ fn invoke_tui_command(
         })
 }
 
+fn operator_control_scope(
+    surface: omegon_traits::RuntimeSurface,
+) -> crate::invocation_service::InvocationScope {
+    let principal = match surface {
+        omegon_traits::RuntimeSurface::Tui => "tui-operator",
+        omegon_traits::RuntimeSurface::Cli => "cli-operator",
+        omegon_traits::RuntimeSurface::Acp => "acp-operator",
+        omegon_traits::RuntimeSurface::Ipc => "ipc-operator",
+        omegon_traits::RuntimeSurface::Web => "web-operator",
+        omegon_traits::RuntimeSurface::Daemon => "daemon-operator",
+        omegon_traits::RuntimeSurface::Headless => "headless-operator",
+        omegon_traits::RuntimeSurface::Model => "model",
+        omegon_traits::RuntimeSurface::Internal => "internal",
+    };
+    crate::invocation_service::InvocationScope {
+        principal: principal.into(),
+        principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+        surface,
+        ..Default::default()
+    }
+}
+
 /// Single source of truth for capacity report generation. The interactive bus
 /// path and the remote slash path both render `/usage` and `/limits`; keeping
 /// two copies is how the surfaces drift apart.
@@ -8286,6 +8355,7 @@ async fn execute_remote_slash_command(
                 model: &cli.model,
                 dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
             },
+            invocation_scope: operator_control_scope(omegon_traits::RuntimeSurface::Cli),
         };
         return control_runtime::execute_control(&mut ctx, control_request).await;
     }

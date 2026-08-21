@@ -375,6 +375,12 @@ pub enum OperatorCommand {
         request: InterfaceControlRequest,
         respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
     },
+    /// Execute a canonical control request forwarded by a non-TUI surface.
+    ExecuteControlFrom {
+        request: InterfaceControlRequest,
+        respond_to: Option<tokio::sync::oneshot::Sender<omegon_traits::ControlOutputResponse>>,
+        surface: omegon_traits::RuntimeSurface,
+    },
     /// Execute an authenticated Auspex supervisor request against the live delegate feature.
     ManagedDelegateControl {
         method: String,

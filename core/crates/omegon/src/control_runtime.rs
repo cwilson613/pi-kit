@@ -20,6 +20,7 @@ pub struct ControlContext<'a> {
     pub login_prompt_tx: &'a std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
     pub events_tx: &'a broadcast::Sender<AgentEvent>,
     pub cli: &'a CliRuntimeView<'a>,
+    pub invocation_scope: crate::invocation_service::InvocationScope,
 }
 
 pub use crate::operator_commands::InterfaceControlRequest as ControlRequest;
@@ -599,6 +600,23 @@ pub async fn execute_active_harness_command(
             finish_active_harness_response(response, respond_to, events_tx);
             return ActiveHarnessCommandResult::Handled;
         }
+        OperatorCommand::ExecuteControlFrom {
+            request,
+            respond_to,
+            surface,
+        } => {
+            let Some(response) = execute_harness_control(ctx, &request).await else {
+                return ActiveHarnessCommandResult::Unsupported(
+                    OperatorCommand::ExecuteControlFrom {
+                        request,
+                        respond_to,
+                        surface,
+                    },
+                );
+            };
+            finish_active_harness_response(response, respond_to, events_tx);
+            return ActiveHarnessCommandResult::Handled;
+        }
         other => return ActiveHarnessCommandResult::Unsupported(other),
     };
 
@@ -874,7 +892,9 @@ pub async fn execute_control(
         ControlRequest::SessionStatsView => {
             session_stats_view_response(ctx.runtime_state, ctx.shared_settings, ctx.agent).await
         }
-        ControlRequest::TreeView { args } => tree_view_response(ctx.runtime_state, &args).await,
+        ControlRequest::TreeView { args } => {
+            tree_view_response(ctx.runtime_state, &args, &ctx.invocation_scope).await
+        }
         ControlRequest::NoteAdd { text } => note_add_response(ctx.agent, &text).await,
         ControlRequest::NotesView => notes_view_response(ctx.agent).await,
         ControlRequest::NotesClear => notes_clear_response(ctx.agent).await,
@@ -946,7 +966,9 @@ pub async fn execute_control(
             .await
         }
         ControlRequest::VaultStatus => vault_status_response(ctx.agent).await,
-        ControlRequest::CleaveStatus => cleave_status_response(ctx.runtime_state).await,
+        ControlRequest::CleaveStatus => {
+            cleave_status_response(ctx.runtime_state, &ctx.invocation_scope).await
+        }
         ControlRequest::Smoke(crate::smoke_surface::SmokeCommand::List) => SlashCommandResponse {
             accepted: true,
             output: Some(crate::smoke_surface::smoke_list_text()),
@@ -960,9 +982,11 @@ pub async fn execute_control(
             )
         }
         ControlRequest::CleaveCancelChild { label } => {
-            cleave_cancel_child_response(ctx.runtime_state, &label).await
+            cleave_cancel_child_response(ctx.runtime_state, &label, &ctx.invocation_scope).await
         }
-        ControlRequest::DelegateStatus => delegate_status_response(ctx.runtime_state).await,
+        ControlRequest::DelegateStatus => {
+            delegate_status_response(ctx.runtime_state, &ctx.invocation_scope).await
+        }
         // Stateless variants already handled above; catch remaining
         other => SlashCommandResponse {
             accepted: false,
@@ -2175,8 +2199,10 @@ pub async fn session_stats_view_response(
 pub async fn tree_view_response(
     runtime_state: &mut InteractiveAgentState,
     args: &str,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
-    match runtime_state.bus.dispatch_command("design", args) {
+    match dispatch_control_feature_command(&mut runtime_state.bus, "design", args, invocation_scope)
+    {
         omegon_traits::CommandResult::Display(msg) => SlashCommandResponse {
             accepted: true,
             output: Some(msg),
@@ -5094,8 +5120,14 @@ pub async fn vault_init_policy_response() -> SlashCommandResponse {
 
 pub async fn cleave_status_response(
     runtime_state: &mut InteractiveAgentState,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
-    match runtime_state.bus.dispatch_command("cleave", "status") {
+    match dispatch_control_feature_command(
+        &mut runtime_state.bus,
+        "cleave",
+        "status",
+        invocation_scope,
+    ) {
         omegon_traits::CommandResult::Display(text) => SlashCommandResponse {
             accepted: true,
             output: Some(text),
@@ -5114,11 +5146,14 @@ pub async fn cleave_status_response(
 pub async fn cleave_cancel_child_response(
     runtime_state: &mut InteractiveAgentState,
     label: &str,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
-    match runtime_state
-        .bus
-        .dispatch_command("cleave", &format!("cancel {label}"))
-    {
+    match dispatch_control_feature_command(
+        &mut runtime_state.bus,
+        "cleave",
+        &format!("cancel {label}"),
+        invocation_scope,
+    ) {
         omegon_traits::CommandResult::Display(text) => SlashCommandResponse {
             accepted: true,
             output: Some(text),
@@ -5136,8 +5171,14 @@ pub async fn cleave_cancel_child_response(
 
 pub async fn delegate_status_response(
     runtime_state: &mut InteractiveAgentState,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
-    match runtime_state.bus.dispatch_command("delegate", "status") {
+    match dispatch_control_feature_command(
+        &mut runtime_state.bus,
+        "delegate",
+        "status",
+        invocation_scope,
+    ) {
         omegon_traits::CommandResult::Display(text) => SlashCommandResponse {
             accepted: true,
             output: Some(text),
@@ -5151,6 +5192,37 @@ pub async fn delegate_status_response(
             output: Some("Delegate feature is unavailable.".to_string()),
         },
     }
+}
+
+fn dispatch_control_feature_command(
+    bus: &mut crate::bus::EventBus,
+    name: &str,
+    args: &str,
+    invocation_scope: &crate::invocation_service::InvocationScope,
+) -> omegon_traits::CommandResult {
+    if !matches!(
+        invocation_scope.surface,
+        omegon_traits::RuntimeSurface::Tui
+            | omegon_traits::RuntimeSurface::Cli
+            | omegon_traits::RuntimeSurface::Acp
+    ) {
+        tracing::debug!(
+            command = name,
+            surface = ?invocation_scope.surface,
+            "control feature command remains on compatibility dispatch"
+        );
+        return bus.dispatch_command(name, args);
+    }
+
+    let call_id = format!("control-command:{}", uuid::Uuid::new_v4());
+    bus.invoke_command(name, &call_id, args, invocation_scope.clone(), None)
+        .unwrap_or_else(|denial| {
+            omegon_traits::CommandResult::Display(format!(
+                "{}: {}",
+                denial.code.as_str(),
+                denial.message
+            ))
+        })
 }
 
 pub(crate) fn format_auth_status(status: &auth::AuthStatus) -> String {
@@ -5225,6 +5297,62 @@ pub(crate) fn format_auth_status(status: &auth::AuthStatus) -> String {
 mod tests {
     use super::*;
 
+    struct ControlCommandFeature;
+
+    #[async_trait::async_trait]
+    impl omegon_traits::Feature for ControlCommandFeature {
+        fn name(&self) -> &str {
+            "control-command-test"
+        }
+
+        fn commands(&self) -> Vec<omegon_traits::CommandDefinition> {
+            vec![omegon_traits::CommandDefinition {
+                name: "control_test".into(),
+                description: "control command lease test".into(),
+                subcommands: vec![],
+                availability: omegon_traits::CommandAvailability::ALL,
+                safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: Default::default(),
+            }]
+        }
+
+        fn handle_command(&mut self, name: &str, _args: &str) -> omegon_traits::CommandResult {
+            if name == "control_test" {
+                omegon_traits::CommandResult::Handled
+            } else {
+                omegon_traits::CommandResult::NotHandled
+            }
+        }
+    }
+
+    #[test]
+    fn tui_control_feature_bridge_enforces_operator_lease_admission() {
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(ControlCommandFeature));
+        bus.finalize();
+        let model_scope = crate::invocation_service::InvocationScope {
+            surface: omegon_traits::RuntimeSurface::Tui,
+            ..Default::default()
+        };
+        let denied = dispatch_control_feature_command(&mut bus, "control_test", "", &model_scope);
+        assert!(matches!(
+            denied,
+            omegon_traits::CommandResult::Display(message)
+                if message.starts_with("invocation:rbac_denied:")
+        ));
+
+        let operator_scope = crate::invocation_service::InvocationScope {
+            principal: "tui-operator".into(),
+            principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+            surface: omegon_traits::RuntimeSurface::Tui,
+            ..Default::default()
+        };
+        assert!(matches!(
+            dispatch_control_feature_command(&mut bus, "control_test", "", &operator_scope,),
+            omegon_traits::CommandResult::Handled
+        ));
+    }
+
     #[tokio::test]
     async fn active_harness_dispatch_responds_without_waiting_for_inference() {
         let temp = tempfile::tempdir().unwrap();
@@ -5269,6 +5397,46 @@ mod tests {
             settings::ThinkingLevel::High
         );
         blocked_worker.abort();
+    }
+
+    #[tokio::test]
+    async fn active_harness_preserves_non_tui_control_surface_on_handoff() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(temp.path()).unwrap());
+        let handles = crate::runtime_state::RuntimeStateHandles::default();
+        let context = HarnessControlContext {
+            shared_settings: &settings,
+            secrets: &secrets,
+            cwd: temp.path(),
+            dashboard_handles: &handles,
+            route_controller: None,
+        };
+        let (events_tx, _) = broadcast::channel(8);
+
+        let result = execute_active_harness_command(
+            &context,
+            crate::operator_commands::OperatorCommand::ExecuteControlFrom {
+                request: ControlRequest::TreeView {
+                    args: "status".into(),
+                },
+                respond_to: None,
+                surface: omegon_traits::RuntimeSurface::Ipc,
+            },
+            &events_tx,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            ActiveHarnessCommandResult::Unsupported(
+                crate::operator_commands::OperatorCommand::ExecuteControlFrom {
+                    surface: omegon_traits::RuntimeSurface::Ipc,
+                    ..
+                }
+            )
+        ));
     }
 
     #[test]

@@ -342,6 +342,7 @@ pub(crate) fn is_harness_owned_command(
         | crate::operator_commands::OperatorCommand::ModelUnpin { .. }
         | crate::operator_commands::OperatorCommand::SetThinking { .. }
         | crate::operator_commands::OperatorCommand::ExecuteControl { .. }
+        | crate::operator_commands::OperatorCommand::ExecuteControlFrom { .. }
         | crate::operator_commands::OperatorCommand::ManagedDelegateControl { .. }
         | crate::operator_commands::OperatorCommand::RunShellCommand { .. }
         | crate::operator_commands::OperatorCommand::ShellHandoff { .. }

@@ -788,9 +788,10 @@ impl IpcConnection {
                     };
                     let accepted = if let Some(request) = request {
                         cfg.command_tx
-                            .send(TuiCommand::ExecuteControl {
+                            .send(TuiCommand::ExecuteControlFrom {
                                 request,
                                 respond_to: Some(reply_tx),
+                                surface: omegon_traits::RuntimeSurface::Ipc,
                             })
                             .await
                             .is_ok()

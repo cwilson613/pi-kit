@@ -1842,6 +1842,12 @@ pub struct ToolDefinition {
     pub capabilities: Vec<ToolCapability>,
 }
 
+/// One non-tool ACP transport invocation owned by a runtime feature.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeAcpInvocationDefinition {
+    pub name: String,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Bus events — flow DOWN from agent loop → features → TUI
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2507,6 +2513,21 @@ pub trait Feature: Send + Sync {
     /// `None` preserves the principals from `runtime_tool_policy` or adaptation.
     fn runtime_tool_principals(&self, _tool_name: &str) -> Option<Vec<RuntimePrincipalClass>> {
         None
+    }
+
+    /// ACP transport invocations owned by this feature. These are not model tools.
+    fn runtime_acp_invocations(&self) -> Vec<RuntimeAcpInvocationDefinition> {
+        vec![]
+    }
+
+    /// Execute one ACP transport invocation declared by this feature.
+    async fn execute_acp_invocation(
+        &self,
+        _name: &str,
+        _args: Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<Value> {
+        anyhow::bail!("ACP invocation not implemented")
     }
 
     /// Tool definitions this feature provides. Called once at startup.

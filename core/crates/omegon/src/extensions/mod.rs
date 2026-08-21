@@ -877,6 +877,10 @@ fn extension_tool_principals(tool_name: &str) -> Option<Vec<omegon_traits::Runti
     }
 }
 
+pub(crate) fn extension_rpc_invocation_name(extension_name: &str) -> String {
+    format!("extension_rpc:{extension_name}")
+}
+
 #[async_trait::async_trait]
 impl Feature for ExtensionFeature {
     fn name(&self) -> &str {
@@ -928,6 +932,47 @@ impl Feature for ExtensionFeature {
         tool_name: &str,
     ) -> Option<Vec<omegon_traits::RuntimePrincipalClass>> {
         extension_tool_principals(tool_name)
+    }
+
+    fn runtime_acp_invocations(&self) -> Vec<omegon_traits::RuntimeAcpInvocationDefinition> {
+        vec![omegon_traits::RuntimeAcpInvocationDefinition {
+            name: extension_rpc_invocation_name(&self.runtime.name),
+        }]
+    }
+
+    async fn execute_acp_invocation(
+        &self,
+        name: &str,
+        args: Value,
+        cancel: CancellationToken,
+    ) -> Result<Value> {
+        if name != extension_rpc_invocation_name(&self.runtime.name) {
+            anyhow::bail!(
+                "extension '{}' does not own ACP route '{name}'",
+                self.runtime.name
+            );
+        }
+        let method = args
+            .get("method")
+            .and_then(Value::as_str)
+            .filter(|method| !method.trim().is_empty())
+            .ok_or_else(|| anyhow!("invalid_request: 'method' field must not be empty"))?;
+        let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
+        self.rpc_call_with_cancel(method, params, cancel, Some(EXTENSION_TOOL_RPC_TIMEOUT))
+            .await
+            .map_err(|error| {
+                if is_extension_transport_error(&error) {
+                    crate::invocation_service::UnknownCompletionError {
+                        reason: format!(
+                            "extension '{}' ACP method '{}' completion is unknown: {error}",
+                            self.runtime.name, method
+                        ),
+                    }
+                    .into()
+                } else {
+                    error
+                }
+            })
     }
 
     async fn execute(

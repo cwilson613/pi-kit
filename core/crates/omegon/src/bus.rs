@@ -347,6 +347,8 @@ pub struct EventBus {
     /// (because they're not LLM-visible) to the feature index that handles them.
     /// Populated explicitly via `register_internal_tool`.
     internal_tool_owners: HashMap<String, usize>,
+    /// ACP transport invocation owners derived from the accepted graph.
+    acp_invocation_owners: HashMap<String, usize>,
     /// Structurally validated composition from which legacy caches were built.
     accepted_graph: Option<std::sync::Arc<crate::contribution_graph::RuntimeCandidateGraph>>,
     /// Identity of the atomically published composition represented by the graph and caches.
@@ -371,6 +373,7 @@ impl EventBus {
             command_defs: Vec::new(),
             disabled_tools: None,
             internal_tool_owners: HashMap::new(),
+            acp_invocation_owners: HashMap::new(),
             accepted_graph: None,
             accepted_generation_id: None,
             composition_diagnostics: Vec::new(),
@@ -641,6 +644,7 @@ impl EventBus {
             provenance: omegon_traits::ToolProvenance,
             tools: Vec<ToolDefinition>,
             commands: Vec<CommandDefinition>,
+            acp_invocations: Vec<omegon_traits::RuntimeAcpInvocationDefinition>,
             command_aliases: Vec<omegon_traits::CommandAlias>,
             internal_tools: Vec<String>,
             tool_policies: BTreeMap<String, omegon_traits::RuntimeToolPolicy>,
@@ -707,6 +711,7 @@ impl EventBus {
                 .collect::<Vec<_>>();
             internal_tools.sort();
             let tools = feature.tools();
+            let acp_invocations = feature.runtime_acp_invocations();
             let tool_policies = tools
                 .iter()
                 .filter_map(|tool| {
@@ -747,6 +752,7 @@ impl EventBus {
                 provenance: feature.tool_provenance(),
                 tools,
                 commands,
+                acp_invocations,
                 command_aliases: feature.command_aliases(),
                 internal_tools,
                 tool_policies,
@@ -987,6 +993,30 @@ impl EventBus {
                                     .unwrap_or_else(|| vec![RuntimeSurface::Model]),
                             }
                         })
+                        .chain(feature.acp_invocations.iter().map(|invocation| {
+                            let effects = conservative_external_effects();
+                            RuntimeContributionCapabilityDeclaration {
+                                id: RuntimeCapabilityId::new(format!(
+                                    "acp:{}",
+                                    stable_feature_component(&invocation.name)
+                                ))
+                                .expect("encoded ACP invocation forms a stable capability id"),
+                                kind: RuntimeCapabilityKind::TransportAdapter,
+                                bindings: vec![RuntimeInvocationBinding {
+                                    kind: omegon_traits::RuntimeInvocationKind::Acp,
+                                    name: invocation.name.clone(),
+                                    role: RuntimeInvocationBindingRole::Canonical,
+                                }],
+                                execution: policy(
+                                    &invocation.name,
+                                    &effects,
+                                    RuntimePrincipalClass::Operator,
+                                ),
+                                effects,
+                                transition: transition(),
+                                surfaces: vec![RuntimeSurface::Acp],
+                            }
+                        }))
                         .chain(command_groups.into_iter().map(
                             |(canonical, (commands, bindings))| {
                                 let effects = if external {
@@ -1172,6 +1202,7 @@ impl EventBus {
         let mut tool_defs = Vec::new();
         let mut command_defs = Vec::new();
         let mut internal_tool_owners = HashMap::new();
+        let mut acp_invocation_owners = HashMap::new();
         for wave in &graph.activation_waves {
             for contribution_id in wave {
                 if contribution_id.as_str() != "system:tool-groups"
@@ -1227,6 +1258,26 @@ impl EventBus {
                     );
                 }
             }
+            for definition in &feature.acp_invocations {
+                let key = (
+                    omegon_traits::RuntimeInvocationKind::Acp,
+                    definition.name.clone(),
+                );
+                if graph
+                    .invocation_owners
+                    .get(&key)
+                    .is_some_and(|(owner, _)| owner == &feature.contribution_id)
+                {
+                    acp_invocation_owners.insert(definition.name.clone(), feature.feature_index);
+                } else {
+                    self.pending_features.clear();
+                    self.pending_internal_tools.clear();
+                    anyhow::bail!(
+                        "staged ACP invocation is absent from the accepted graph: {}",
+                        definition.name
+                    );
+                }
+            }
             for name in &feature.internal_tools {
                 let key = (omegon_traits::RuntimeInvocationKind::Internal, name.clone());
                 if graph
@@ -1253,11 +1304,14 @@ impl EventBus {
                     omegon_traits::RuntimeInvocationKind::Tool
                         | omegon_traits::RuntimeInvocationKind::Command
                         | omegon_traits::RuntimeInvocationKind::Internal
+                        | omegon_traits::RuntimeInvocationKind::Acp
                 )
             })
             .count();
-        let implemented_bindings =
-            tool_defs.len() + command_defs.len() + internal_tool_owners.len();
+        let implemented_bindings = tool_defs.len()
+            + command_defs.len()
+            + internal_tool_owners.len()
+            + acp_invocation_owners.len();
         if implemented_bindings != accepted_bindings {
             self.pending_features.clear();
             self.pending_internal_tools.clear();
@@ -1287,6 +1341,7 @@ impl EventBus {
         self.tool_defs = tool_defs;
         self.command_defs = command_defs;
         self.internal_tool_owners = internal_tool_owners;
+        self.acp_invocation_owners = acp_invocation_owners;
         self.composition_diagnostics = build.diagnostics;
         self.accepted_graph = Some(std::sync::Arc::new(graph));
         self.accepted_generation_id = Some(
@@ -2035,6 +2090,93 @@ impl EventBus {
             .await
     }
 
+    pub(crate) async fn invoke_acp(
+        &self,
+        name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        scope: crate::invocation_service::InvocationScope,
+    ) -> anyhow::Result<Value> {
+        let admission = crate::invocation_service::InvocationService::admit_invocation(
+            self,
+            omegon_traits::RuntimeInvocationKind::Acp,
+            name,
+            crate::invocation_service::InvocationRequest {
+                call_id,
+                scope,
+                permission_policy: None,
+                permission_role: None,
+                permission_name: name,
+                permission_subjects: &[],
+            },
+        );
+        let lease = match admission {
+            crate::invocation_service::InvocationAdmission::Lease(lease) => lease,
+            crate::invocation_service::InvocationAdmission::Denied(denial) => {
+                anyhow::bail!("{}: {}", denial.code.as_str(), denial.message)
+            }
+            crate::invocation_service::InvocationAdmission::ApprovalRequired(_) => {
+                anyhow::bail!("invocation:approval_denied: ACP invocation requires approval")
+            }
+        };
+        lease
+            .claim_dispatch(call_id, name)
+            .and_then(|_| {
+                self.validate_execution_lease(
+                    &lease,
+                    call_id,
+                    omegon_traits::RuntimeInvocationKind::Acp,
+                    name,
+                )
+            })
+            .and_then(|_| lease.persist_dispatched())
+            .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
+        let owner = self
+            .acp_invocation_owners
+            .get(name)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("no feature handles ACP invocation '{name}'"))?;
+        lease
+            .invocation_control()
+            .acknowledge()
+            .map_err(anyhow::Error::msg)?;
+        let result = self.features[owner]
+            .execute_acp_invocation(name, args, cancel)
+            .await;
+        if let Err(error) = &result
+            && error
+                .downcast_ref::<crate::invocation_service::UnknownCompletionError>()
+                .is_some()
+        {
+            lease
+                .persist_unknown("owner_completion_unknown")
+                .map_err(|denial| {
+                    anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message)
+                })?;
+            lease.revoke();
+            return result;
+        }
+        let (outcome, terminal) = if result.is_ok() {
+            (
+                crate::session_authority::InvocationOutcome::Completed,
+                crate::invocation_service::LeaseTerminal::Completed,
+            )
+        } else {
+            (
+                crate::session_authority::InvocationOutcome::Failed,
+                crate::invocation_service::LeaseTerminal::Failed,
+            )
+        };
+        lease
+            .persist_settlement(outcome)
+            .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
+        if !lease.close(terminal) {
+            anyhow::bail!("invocation:lease_closed: ACP invocation lease was already closed");
+        }
+        result
+    }
+
     /// Get the configured timeout for a tool.
     pub fn tool_timeout(&self, tool_name: &str) -> Duration {
         self.tool_timeouts
@@ -2382,6 +2524,31 @@ mod tests {
     }
 
     struct ServiceToolFeature;
+
+    struct AcpInvocationFeature;
+
+    #[async_trait]
+    impl Feature for AcpInvocationFeature {
+        fn name(&self) -> &str {
+            "acp-invocation"
+        }
+
+        fn runtime_acp_invocations(&self) -> Vec<omegon_traits::RuntimeAcpInvocationDefinition> {
+            vec![omegon_traits::RuntimeAcpInvocationDefinition {
+                name: "extension_rpc:test".into(),
+            }]
+        }
+
+        async fn execute_acp_invocation(
+            &self,
+            name: &str,
+            args: serde_json::Value,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<serde_json::Value> {
+            assert_eq!(name, "extension_rpc:test");
+            Ok(args)
+        }
+    }
 
     #[async_trait]
     impl Feature for ServiceToolFeature {
@@ -2976,6 +3143,33 @@ mod tests {
                 }
             )
         ));
+    }
+
+    #[tokio::test]
+    async fn acp_transport_invocation_uses_declared_operator_lease() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(AcpInvocationFeature));
+        bus.try_finalize().unwrap();
+        let scope = crate::invocation_service::InvocationScope {
+            principal: "acp-client".into(),
+            principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+            surface: omegon_traits::RuntimeSurface::Acp,
+            ..Default::default()
+        };
+
+        let result = bus
+            .invoke_acp(
+                "extension_rpc:test",
+                "acp-call",
+                json!({"method": "ping", "params": {"value": 7}}),
+                tokio_util::sync::CancellationToken::new(),
+                scope,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result["method"], "ping");
+        assert_eq!(result["params"]["value"], 7);
     }
 
     #[test]

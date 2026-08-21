@@ -81,6 +81,13 @@ pub enum WorkerRequest {
         request: crate::operator_commands::InterfaceControlRequest,
         response_tx: oneshot::Sender<WorkerResponse>,
     },
+    /// Invoke one extension-owned ACP transport route through kernel admission.
+    ExtensionRpcCall {
+        extension: String,
+        method: String,
+        params: serde_json::Value,
+        response_tx: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
     /// Connect MCP servers forwarded by the ACP client.
     ConnectMcpServers {
         servers: Vec<(String, crate::plugins::mcp::McpServerConfig)>,
@@ -1064,6 +1071,33 @@ async fn worker_loop(
                     error: None,
                     cancelled: false,
                 });
+            }
+
+            WorkerRequest::ExtensionRpcCall {
+                extension,
+                method,
+                params,
+                response_tx,
+            } => {
+                let route = crate::extensions::extension_rpc_invocation_name(&extension);
+                let call_id = format!("acp-extension-rpc:{}", uuid::Uuid::new_v4());
+                let scope = crate::invocation_service::InvocationScope {
+                    principal: "acp-client".into(),
+                    principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+                    surface: omegon_traits::RuntimeSurface::Acp,
+                    ..Default::default()
+                };
+                let result = bus
+                    .invoke_acp(
+                        &route,
+                        &call_id,
+                        serde_json::json!({"method": method, "params": params}),
+                        CancellationToken::new(),
+                        scope,
+                    )
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = response_tx.send(result);
             }
 
             WorkerRequest::ConnectMcpServers { servers } => {

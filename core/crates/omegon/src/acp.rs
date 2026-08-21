@@ -3087,13 +3087,38 @@ impl OmegonAcpAgent {
                     .get("params")
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!({}));
-                extension_rpc::call_extension_rpc(
-                    &self.extension_rpc_handles,
-                    extension,
-                    rpc_method,
-                    rpc_params,
-                )
-                .await
+                if rpc_method.trim().is_empty() {
+                    anyhow::bail!("invalid_request: 'method' field must not be empty");
+                }
+                if !self.extension_rpc_handles.borrow().contains_key(extension) {
+                    anyhow::bail!(
+                        "extension_not_loaded: extension '{extension}' is not loaded or is not callable"
+                    );
+                }
+                let request_tx = self
+                    .worker
+                    .borrow()
+                    .as_ref()
+                    .map(|worker| worker.request_tx.clone())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("worker_unavailable: ACP worker is not running")
+                    })?;
+                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                request_tx
+                    .send(WorkerRequest::ExtensionRpcCall {
+                        extension: extension.to_string(),
+                        method: rpc_method.to_string(),
+                        params: rpc_params,
+                        response_tx,
+                    })
+                    .await
+                    .map_err(|_| anyhow::anyhow!("worker_unavailable: ACP worker stopped"))?;
+                response_rx
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("worker_unavailable: ACP worker dropped response")
+                    })?
+                    .map_err(|error| anyhow::anyhow!("method_failed: {error}"))
             }
 
             "extensions/get" => {

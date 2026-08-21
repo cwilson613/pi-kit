@@ -1862,6 +1862,52 @@ impl EventBus {
         CommandResult::NotHandled
     }
 
+    pub(crate) fn dispatch_command_with_lease(
+        &mut self,
+        lease: &crate::invocation_service::ExecutionLease,
+        name: &str,
+        call_id: &str,
+        args: &str,
+    ) -> Result<CommandResult, crate::invocation_service::InvocationDenial> {
+        use crate::invocation_service::{InvocationDenialCode, LeaseTerminal, denial};
+
+        lease.claim_dispatch(call_id, name)?;
+        self.validate_execution_lease(
+            lease,
+            call_id,
+            omegon_traits::RuntimeInvocationKind::Command,
+            name,
+        )?;
+        lease.persist_dispatched()?;
+        lease.invocation_control().acknowledge().map_err(|error| {
+            denial(
+                InvocationDenialCode::AuthorityUnavailable,
+                format!("failed to persist command acknowledgement: {error}"),
+            )
+        })?;
+
+        let result = self.dispatch_command(name, args);
+        let (outcome, terminal) = if matches!(result, CommandResult::NotHandled) {
+            (
+                crate::session_authority::InvocationOutcome::Failed,
+                LeaseTerminal::Failed,
+            )
+        } else {
+            (
+                crate::session_authority::InvocationOutcome::Completed,
+                LeaseTerminal::Completed,
+            )
+        };
+        lease.persist_settlement(outcome)?;
+        if !lease.close(terminal) {
+            return Err(denial(
+                InvocationDenialCode::LeaseClosed,
+                "command execution lease was already closed",
+            ));
+        }
+        Ok(result)
+    }
+
     // ─── Introspection ──────────────────────────────────────────────
 
     /// Number of registered features.
@@ -2467,14 +2513,17 @@ mod tests {
         else {
             panic!("declared operator command should receive a lease")
         };
-        lease.claim_dispatch("notify-call", "notify").unwrap();
-        bus.validate_execution_lease(
-            &lease,
-            "notify-call",
-            omegon_traits::RuntimeInvocationKind::Command,
-            "notify",
-        )
-        .unwrap();
+        let result = bus
+            .dispatch_command_with_lease(&lease, "notify", "notify-call", "hello")
+            .unwrap();
+        assert!(matches!(
+            result,
+            CommandResult::Display(message) if message == "Notified: hello"
+        ));
+        assert_eq!(
+            lease.terminal(),
+            crate::invocation_service::LeaseTerminal::Completed
+        );
     }
 
     #[test]

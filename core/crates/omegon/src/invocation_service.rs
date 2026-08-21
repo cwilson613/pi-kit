@@ -664,6 +664,15 @@ pub(crate) struct InvocationAdmissionRequest<'a> {
     pub permission_role: Option<styrene_rbac::Role>,
 }
 
+pub(crate) struct InvocationRequest<'a> {
+    pub call_id: &'a str,
+    pub scope: InvocationScope,
+    pub permission_policy: Option<&'a LayeredPermissionPolicy>,
+    pub permission_role: Option<styrene_rbac::Role>,
+    pub permission_name: &'a str,
+    pub permission_subjects: &'a [crate::permissions::PermissionSubject],
+}
+
 pub(crate) struct InvocationService;
 
 impl InvocationService {
@@ -672,11 +681,32 @@ impl InvocationService {
         execution_tool_name: &str,
         request: InvocationAdmissionRequest<'_>,
     ) -> InvocationAdmission {
-        let resolved =
-            match bus.resolve_invocation(RuntimeInvocationKind::Tool, execution_tool_name) {
-                Ok(resolved) => resolved,
-                Err(denial) => return InvocationAdmission::Denied(denial),
-            };
+        let subjects = subjects_from_tool_args(request.visible_tool_name, request.args);
+        Self::admit_invocation(
+            bus,
+            RuntimeInvocationKind::Tool,
+            execution_tool_name,
+            InvocationRequest {
+                call_id: request.call_id,
+                scope: request.scope,
+                permission_policy: request.permission_policy,
+                permission_role: request.permission_role,
+                permission_name: request.visible_tool_name,
+                permission_subjects: &subjects,
+            },
+        )
+    }
+
+    pub fn admit_invocation(
+        bus: &crate::bus::EventBus,
+        kind: RuntimeInvocationKind,
+        invocation_name: &str,
+        request: InvocationRequest<'_>,
+    ) -> InvocationAdmission {
+        let resolved = match bus.resolve_invocation(kind, invocation_name) {
+            Ok(resolved) => resolved,
+            Err(denial) => return InvocationAdmission::Denied(denial),
+        };
         if !resolved.surfaces.contains(&request.scope.surface) {
             return InvocationAdmission::Denied(denial(
                 InvocationDenialCode::UnsupportedSurface,
@@ -707,8 +737,8 @@ impl InvocationService {
         }
 
         if let Some(policy) = request.permission_policy {
-            let subjects = subjects_from_tool_args(request.visible_tool_name, request.args);
-            let decision = policy.evaluate_subjects(request.visible_tool_name, &subjects);
+            let decision =
+                policy.evaluate_subjects(request.permission_name, request.permission_subjects);
             match decision.action {
                 PermissionAction::Deny => {
                     return InvocationAdmission::Denied(InvocationDenial {
@@ -719,7 +749,10 @@ impl InvocationService {
                 }
                 PermissionAction::Prompt => {
                     return InvocationAdmission::ApprovalRequired(PendingInvocationApproval {
-                        requested: permission_subject(request.visible_tool_name, subjects.first()),
+                        requested: permission_subject(
+                            request.permission_name,
+                            request.permission_subjects.first(),
+                        ),
                         policy_layer: decision.layer,
                         call_id: request.call_id.to_string(),
                         scope: request.scope,

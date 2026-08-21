@@ -1460,7 +1460,8 @@ impl EventBus {
         &self,
         lease: &crate::invocation_service::ExecutionLease,
         call_id: &str,
-        tool_name: &str,
+        kind: omegon_traits::RuntimeInvocationKind,
+        invocation_name: &str,
     ) -> Result<(), crate::invocation_service::InvocationDenial> {
         use crate::invocation_service::{InvocationDenialCode, LeaseTerminal, denial};
 
@@ -1471,8 +1472,8 @@ impl EventBus {
             ));
         }
         if lease.call_id != call_id
-            || lease.invocation_name != tool_name
-            || lease.kind != omegon_traits::RuntimeInvocationKind::Tool
+            || lease.invocation_name != invocation_name
+            || lease.kind != kind
         {
             lease.revoke();
             return Err(denial(
@@ -1487,7 +1488,7 @@ impl EventBus {
                 "execution lease was issued for a stale composition generation",
             ));
         }
-        let current = self.resolve_invocation(lease.kind, tool_name)?;
+        let current = self.resolve_invocation(kind, invocation_name)?;
         if current.capability_id != lease.capability_id
             || current.contribution_id != lease.contribution_id
             || current.owner_generation_id != lease.owner_generation_id
@@ -1743,8 +1744,13 @@ impl EventBus {
         sink: omegon_traits::ToolProgressSink,
         context: omegon_traits::ToolExecutionContext,
     ) -> anyhow::Result<omegon_traits::ToolResult> {
-        self.validate_execution_lease(lease, call_id, tool_name)
-            .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
+        self.validate_execution_lease(
+            lease,
+            call_id,
+            omegon_traits::RuntimeInvocationKind::Tool,
+            tool_name,
+        )
+        .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
         let timeout = lease.execution_timeout(&args);
         for (idx, def) in &self.tool_defs {
             if def.name == tool_name {
@@ -2413,6 +2419,62 @@ mod tests {
             denial.code,
             crate::invocation_service::InvocationDenialCode::UnknownInvocation
         );
+    }
+
+    #[test]
+    fn operator_command_admission_uses_declared_kind_principal_and_surface() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(NotifierFeature));
+        bus.finalize();
+        let request = |scope| crate::invocation_service::InvocationRequest {
+            call_id: "notify-call",
+            scope,
+            permission_policy: None,
+            permission_role: None,
+            permission_name: "notify",
+            permission_subjects: &[],
+        };
+
+        let model_admission = crate::invocation_service::InvocationService::admit_invocation(
+            &bus,
+            omegon_traits::RuntimeInvocationKind::Command,
+            "notify",
+            request(crate::invocation_service::InvocationScope::default()),
+        );
+        assert!(matches!(
+            model_admission,
+            crate::invocation_service::InvocationAdmission::Denied(
+                crate::invocation_service::InvocationDenial {
+                    code: crate::invocation_service::InvocationDenialCode::UnsupportedSurface,
+                    ..
+                }
+            )
+        ));
+
+        let scope = crate::invocation_service::InvocationScope {
+            principal: "operator".into(),
+            principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+            surface: omegon_traits::RuntimeSurface::Tui,
+            ..Default::default()
+        };
+        let crate::invocation_service::InvocationAdmission::Lease(lease) =
+            crate::invocation_service::InvocationService::admit_invocation(
+                &bus,
+                omegon_traits::RuntimeInvocationKind::Command,
+                "notify",
+                request(scope),
+            )
+        else {
+            panic!("declared operator command should receive a lease")
+        };
+        lease.claim_dispatch("notify-call", "notify").unwrap();
+        bus.validate_execution_lease(
+            &lease,
+            "notify-call",
+            omegon_traits::RuntimeInvocationKind::Command,
+            "notify",
+        )
+        .unwrap();
     }
 
     #[test]

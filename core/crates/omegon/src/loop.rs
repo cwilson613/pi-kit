@@ -3584,8 +3584,12 @@ async fn execute_tool_invocation(
     if let Err(denial) = lease.claim_dispatch(visible_call_id, execution_tool_name) {
         return invocation_denial_result(visible_tool_name, denial);
     }
-    if let Err(denial) = bus.validate_execution_lease(&lease, visible_call_id, execution_tool_name)
-    {
+    if let Err(denial) = bus.validate_execution_lease(
+        &lease,
+        visible_call_id,
+        omegon_traits::RuntimeInvocationKind::Tool,
+        execution_tool_name,
+    ) {
         return invocation_denial_result(visible_tool_name, denial);
     }
     if let Err(denial) = lease.persist_dispatched() {

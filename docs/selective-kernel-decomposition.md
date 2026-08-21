@@ -367,9 +367,10 @@ existing Web and IPC bridges. Automatic memory ingestion and host-mediated
 persona/tone switches use internal bindings and leases, and memory mutations no
 longer claim read-only orientation. Managed-delegation tools admit declared
 service principals on Web/Daemon surfaces and no longer dispatch directly.
+Operator context-pack reads use a typed read-only context service rather than
+entering tool admission.
 Idle and post-loop calls remain ephemeral rather than receiving fabricated turn
-authority. Read-only context access still needs a typed service handle, while
-the extension-provided voice stop, extension polling RPC, and nested
+authority. The extension-provided voice stop, extension polling RPC, and nested
 extension/MCP host actions remain compatibility paths, so the Slice-3 exit gate
 is not yet met.
 

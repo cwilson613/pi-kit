@@ -854,21 +854,27 @@ impl ExtensionPollingHandle {
 }
 
 fn extension_tool_surfaces(tool_name: &str) -> Option<Vec<omegon_traits::RuntimeSurface>> {
-    (tool_name == "voice_session_stop").then(|| {
-        vec![
+    match tool_name {
+        "voice_session_stop" => Some(vec![
             omegon_traits::RuntimeSurface::Model,
             omegon_traits::RuntimeSurface::Tui,
-        ]
-    })
+        ]),
+        "vox_route" => Some(vec![
+            omegon_traits::RuntimeSurface::Model,
+            omegon_traits::RuntimeSurface::Daemon,
+        ]),
+        _ => None,
+    }
 }
 
 fn extension_tool_principals(tool_name: &str) -> Option<Vec<omegon_traits::RuntimePrincipalClass>> {
-    (tool_name == "voice_session_stop").then(|| {
-        vec![
+    match tool_name {
+        "voice_session_stop" | "vox_route" => Some(vec![
             omegon_traits::RuntimePrincipalClass::Model,
             omegon_traits::RuntimePrincipalClass::Service,
-        ]
-    })
+        ]),
+        _ => None,
+    }
 }
 
 #[async_trait::async_trait]
@@ -2058,6 +2064,24 @@ mod tests {
         );
         assert_eq!(extension_tool_surfaces("other_extension_tool"), None);
         assert_eq!(extension_tool_principals("other_extension_tool"), None);
+    }
+
+    #[test]
+    fn vox_route_declares_model_and_daemon_service_access() {
+        assert_eq!(
+            extension_tool_surfaces("vox_route"),
+            Some(vec![
+                omegon_traits::RuntimeSurface::Model,
+                omegon_traits::RuntimeSurface::Daemon,
+            ])
+        );
+        assert_eq!(
+            extension_tool_principals("vox_route"),
+            Some(vec![
+                omegon_traits::RuntimePrincipalClass::Model,
+                omegon_traits::RuntimePrincipalClass::Service,
+            ])
+        );
     }
 
     #[test]

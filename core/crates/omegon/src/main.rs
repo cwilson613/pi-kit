@@ -2658,16 +2658,7 @@ async fn run_embedded_command(
 
     let _mqtt_bridge = maybe_start_mqtt_bridge(&cwd, agent.session_id.clone(), events_tx.clone());
 
-    if !agent.vox_polling_handles.is_empty() {
-        for handle in agent.vox_polling_handles {
-            crate::extensions::vox_bridge::start_vox_bridge(
-                handle,
-                vox_daemon_events.clone(),
-                crate::extensions::vox_bridge::VoxBridgeConfig::default(),
-                global_cancel.clone(),
-            );
-        }
-    }
+    let vox_bridge_enabled = agent.bus.has_tool("vox_route");
 
     let voice_status =
         std::sync::Arc::new(std::sync::Mutex::new(agent.initial_harness_status.clone()));
@@ -2757,7 +2748,9 @@ async fn run_embedded_command(
     idle_tick.tick().await;
 
     // Vox event bridge poll — drain inbound messages from extensions
-    let mut vox_poll = tokio::time::interval(tokio::time::Duration::from_millis(250));
+    let mut vox_poll = tokio::time::interval(tokio::time::Duration::from_millis(
+        crate::extensions::vox_bridge::VoxBridgeConfig::default().poll_interval_ms,
+    ));
     vox_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
@@ -2782,6 +2775,40 @@ async fn run_embedded_command(
                 }
             }
             _ = vox_poll.tick() => {
+                if vox_bridge_enabled {
+                    let call_id = format!("daemon-vox-route:{}", uuid::Uuid::new_v4());
+                    let scope = crate::invocation_service::InvocationScope {
+                        principal: "daemon:vox-bridge".into(),
+                        principal_class: omegon_traits::RuntimePrincipalClass::Service,
+                        surface: omegon_traits::RuntimeSurface::Daemon,
+                        ..Default::default()
+                    };
+                    let result = {
+                        let guard = default_session.state.lock().await;
+                        match guard.as_ref() {
+                            Some(session) => session.bus.invoke_tool(
+                                "vox_route",
+                                &call_id,
+                                serde_json::json!({}),
+                                tokio_util::sync::CancellationToken::new(),
+                                scope,
+                            ).await,
+                            None => Err(anyhow::anyhow!("daemon session is busy")),
+                        }
+                    };
+                    match result {
+                        Ok(result) => {
+                            let envelopes =
+                                crate::extensions::vox_bridge::events_from_tool_result(&result);
+                            if !envelopes.is_empty()
+                                && let Ok(mut queue) = vox_daemon_events.lock()
+                            {
+                                queue.extend(envelopes);
+                            }
+                        }
+                        Err(error) => tracing::debug!(%error, "leased vox_route poll failed"),
+                    }
+                }
                 // Drain up to 32 events per tick to bound memory pressure.
                 // Events beyond the cap stay in the queue for the next tick.
                 const MAX_EVENTS_PER_TICK: usize = 32;

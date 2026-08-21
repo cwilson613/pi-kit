@@ -21,13 +21,7 @@
 //!                              Extension RPC → vox → Discord/Slack/...
 //! ```
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use serde_json::{Value, json};
-use tokio_util::sync::CancellationToken;
-
-use super::ExtensionPollingHandle;
 
 /// Configuration for the vox event bridge.
 #[derive(Debug, Clone)]
@@ -44,72 +38,29 @@ impl Default for VoxBridgeConfig {
     }
 }
 
-/// Start the vox event bridge as a background task.
-///
-/// Polls `vox_route` on the extension subprocess and pushes inbound messages
-/// into the daemon event queue as formatted prompts with reply context.
-pub fn start_vox_bridge(
-    handle: ExtensionPollingHandle,
-    daemon_events: Arc<Mutex<Vec<omegon_traits::DaemonEventEnvelope>>>,
-    config: VoxBridgeConfig,
-    cancel: CancellationToken,
-) {
-    let ext_name = handle.extension_name().to_string();
-    tracing::info!(
-        extension = %ext_name,
-        poll_ms = config.poll_interval_ms,
-        "starting vox event bridge"
-    );
-
-    crate::task_spawn::spawn_best_effort_result("vox-event-bridge", async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(config.poll_interval_ms));
-
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    tracing::info!("vox event bridge shutting down");
-                    return Ok(());
+/// Convert a leased `vox_route` tool result into daemon event envelopes.
+pub fn events_from_tool_result(
+    result: &omegon_traits::ToolResult,
+) -> Vec<omegon_traits::DaemonEventEnvelope> {
+    let route_result = result
+        .details
+        .get("structured")
+        .filter(|value| value.get("messages").is_some())
+        .cloned()
+        .or_else(|| {
+            result.content.iter().find_map(|block| match block {
+                omegon_traits::ContentBlock::Text { text } => {
+                    serde_json::from_str::<Value>(text).ok()
                 }
-                _ = interval.tick() => {}
-            }
-
-            // Poll vox_route via direct RPC (not through the agent/EventBus)
-            let result = handle.rpc_call("execute_vox_route", json!({})).await;
-
-            let route_result = match result {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::debug!(error = %e, "vox_route poll failed");
-                    continue;
-                }
-            };
-
-            let messages = match route_result.get("messages").and_then(|v| v.as_array()) {
-                Some(msgs) if !msgs.is_empty() => msgs.clone(),
-                _ => continue,
-            };
-
-            for msg in &messages {
-                let envelope = match format_vox_event(msg) {
-                    Some(env) => env,
-                    None => continue,
-                };
-
-                tracing::info!(
-                    source = %envelope.source,
-                    event_id = %envelope.event_id,
-                    "vox bridge: injecting inbound message"
-                );
-
-                match daemon_events.lock() {
-                    Ok(mut queue) => queue.push(envelope),
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to push vox event to daemon queue");
-                    }
-                }
-            }
-        }
-    });
+                omegon_traits::ContentBlock::Image { .. } => None,
+            })
+        });
+    route_result
+        .and_then(|value| value.get("messages").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(format_vox_event)
+        .collect()
 }
 
 /// Format a vox_route message into a DaemonEventEnvelope.
@@ -220,6 +171,33 @@ fn format_vox_event(msg: &Value) -> Option<omegon_traits::DaemonEventEnvelope> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leased_tool_result_projects_vox_events() {
+        let result = omegon_traits::ToolResult {
+            content: vec![omegon_traits::ContentBlock::Text {
+                text: json!({
+                    "messages": [{
+                        "session_key": {},
+                        "reply_address": {},
+                        "message": {
+                            "id": "msg-leased",
+                            "channel": "discord",
+                            "sender": {"id": "U1", "display_name": "alice"},
+                            "body": [{"type": "text", "content": "hello"}]
+                        }
+                    }]
+                })
+                .to_string(),
+            }],
+            details: json!({}),
+        };
+
+        let events = events_from_tool_result(&result);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, "vox-msg-leased");
+    }
 
     #[test]
     fn format_untrusted_user_message() {

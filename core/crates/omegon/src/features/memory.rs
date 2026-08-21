@@ -260,7 +260,7 @@ or facts better represented as Flynt/project documents.".into(),
                         }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_RECALL.into(),
@@ -316,7 +316,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_SUPERSEDE.into(),
@@ -331,7 +331,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         "content": { "type": "string" }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_CONNECT.into(),
@@ -347,7 +347,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         "description": { "type": "string" }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_FOCUS.into(),
@@ -363,7 +363,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_RELEASE.into(),
@@ -373,7 +373,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                     "type": "object",
                     "properties": {}
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_EPISODES.into(),
@@ -408,7 +408,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_SEARCH_ARCHIVE.into(),
@@ -444,7 +444,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         "artifact_ref_sub": { "type": "string" }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
         ]
     }
@@ -1159,6 +1159,45 @@ mod tests {
         assert!(names.contains(&"memory_compact"));
         assert!(names.contains(&"memory_search_archive"));
         assert!(names.contains(&"memory_ingest_lifecycle"));
+    }
+
+    #[test]
+    fn durable_memory_mutations_are_declared_state_changing() {
+        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
+        let feature = MemoryFeature::new(backend, "test".into());
+        let tools = feature.tools();
+
+        for name in [
+            "memory_store",
+            "memory_archive",
+            "memory_supersede",
+            "memory_connect",
+            "memory_focus",
+            "memory_release",
+            "memory_compact",
+            "memory_ingest_lifecycle",
+        ] {
+            let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+            assert!(
+                tool.capabilities
+                    .contains(&omegon_traits::ToolCapability::StateChanging),
+                "{name} must declare mutation authority"
+            );
+        }
+        for name in [
+            "memory_recall",
+            "memory_query",
+            "memory_episodes",
+            "memory_search_archive",
+        ] {
+            let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+            assert!(
+                !tool
+                    .capabilities
+                    .contains(&omegon_traits::ToolCapability::StateChanging),
+                "{name} must remain read-only"
+            );
+        }
     }
 
     #[tokio::test]

@@ -349,6 +349,13 @@ preparation. Malformed evidence and emergency-writer failure fail closed. Normal
 execution cannot clear a fence; only deterministic reconciliation or an
 explicit audited operator recovery decision may do so.
 
+Stable call identity is also checked against unknown invocations across prior
+turns. A mutating unknown cannot be replayed unless its original persisted
+contract was idempotent or used owner-enforced deduplication for that exact call
+ID; replacement metadata cannot retroactively grant safety. Legacy unknown
+records fail closed. This denial does not itself enable safe replay: attempt
+lineage, request fingerprints, and a retry scheduler remain separate work.
+
 ### 5. Admission combiner and host effects
 
 Policy providers may be replaceable, but the kernel combines and enforces their

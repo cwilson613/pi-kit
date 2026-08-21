@@ -297,6 +297,20 @@ transport loss after acknowledgement uses the same durable unknown state and
 is not automatically replayed. Unknown classification does not claim success,
 failure, or absence of side effects.
 
+Before preparing a call, authority-backed admission checks the stable call ID
+against unknown invocations across the session, including prior closed turns.
+For a mutating durable unknown, replay is unsafe unless the original persisted
+contract was idempotent or carried owner-enforced deduplication with that exact
+stable call ID. A current replacement declaration cannot retroactively make the
+original handoff safe. Legacy unknown records lack sufficient execution evidence
+and fail closed. Unsafe replay is denied as
+`invocation:unsafe_unknown_retry` before another lease or `Prepared` fact exists.
+
+This classification does not enable safe replay. Same-turn duplicate call IDs
+remain invalid, and no retry-attempt lineage or request fingerprint exists yet.
+Provider-request retries occur before completed tool-call dispatch and are not
+invocation replay.
+
 ### `invocation.settled` v1
 
 Payload:

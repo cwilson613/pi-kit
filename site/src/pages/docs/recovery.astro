@@ -105,6 +105,12 @@ import { snippet } from "../../lib/snippets";
     tool failure. Do not delete or edit fence files and do not blindly retry the mutation.
   </p>
   <p>
+    Omegon also rejects reuse of a stable call ID when its original mutating invocation remains
+    unknown and did not persist idempotency or exact owner-enforced deduplication. This check spans
+    prior turns and cannot be overridden by newer contribution metadata. A safe-retry scheduler is
+    not currently exposed; verify owner state or use an audited reconciliation path instead.
+  </p>
+  <p>
     The current <code>omegon-maintain</code> release does not inspect, reconcile, or clear runtime
     invocation fences. Clearing requires deterministic owner reconciliation or a future explicit,
     audited operator recovery action; session quarantine does not clear these records.

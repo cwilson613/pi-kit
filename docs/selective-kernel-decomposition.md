@@ -371,10 +371,12 @@ Operator context-pack reads use a typed read-only context service rather than
 entering tool admission.
 The extension-provided voice stop declares TUI service authority and executes
 under the promoted turn's durable scope.
+Daemon vox polling invokes the declared `vox_route` tool under an ephemeral
+Service/Daemon lease and projects the result into the existing event envelope.
 Lease-less imperative extension HostActions fail closed, and operator approval
 does not manufacture project, runtime, or trusted-origin authority.
 Idle and post-loop calls remain ephemeral rather than receiving fabricated turn
-authority. ACP and vox extension RPC plus parent-bound declarative extension/MCP
+authority. Arbitrary ACP extension RPC plus parent-bound declarative extension/MCP
 host actions remain compatibility paths, so the Slice-3 exit gate is not yet met.
 
 ### 5. Admission combiner and host effects

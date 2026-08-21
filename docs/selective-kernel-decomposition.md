@@ -378,9 +378,12 @@ transport capability and dispatch on the worker-owned EventBus; the current
 protocol does not pretend to know per-method effects.
 Lease-less imperative extension HostActions fail closed, and operator approval
 does not manufacture project, runtime, or trusted-origin authority.
+Declarative native HostActions and MCP review candidates require a host-only
+parent guard that checks live dispatch state, conservative effect containment,
+and exactly-once child identity.
 Idle and post-loop calls remain ephemeral rather than receiving fabricated turn
-authority. Parent-bound declarative extension/MCP host actions remain a
-compatibility path, so the Slice-3 exit gate is not yet met.
+authority. Slice 3.7's privileged compatibility-path migration is complete;
+Slice 3.8 still owns the co-delivered permission and recovery documentation.
 
 ### 5. Admission combiner and host effects
 

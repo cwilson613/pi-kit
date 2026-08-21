@@ -20,6 +20,14 @@ When another trusted in-process service calls it through a typed handle
 Then the query need not use the privileged invocation pipeline
 And it cannot use that direct path to obtain privileged effects
 
+#### Scenario: Extension requests a nested host effect
+Given an admitted extension or MCP tool returns a declarative HostAction
+When the host evaluates the nested effect
+Then it requires a live dispatching parent lease
+And the nested effects must be contained by the parent's admitted effects
+And the child dispatch identity can be consumed only once
+And operator approval cannot replace missing parent, project, runtime, or origin authority
+
 #### Scenario: Stale-generation lease reaches dispatch
 Given a call received a lease for an owner generation that has since been revoked
 When dispatch revalidates the lease

@@ -10,7 +10,8 @@ use chrono::DateTime;
 use omegon_traits::{
     RuntimeCapabilityId, RuntimeCapabilityTransitionPolicy, RuntimeCompositionGenerationId,
     RuntimeContributionGenerationId, RuntimeContributionId, RuntimeEffect, RuntimeExecutionPolicy,
-    RuntimeInvocationKind, RuntimePrincipalClass, RuntimeSurface,
+    RuntimeInvocationKind, RuntimeMutationDomainId, RuntimeMutationFenceKey, RuntimePrincipalClass,
+    RuntimeSurface,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -26,6 +27,7 @@ const MAX_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
 const RECOVERY_NAMESPACE: Uuid = Uuid::from_u128(0x5907_b852_acde_4b53_a6b1_2d1a_c964_868a);
 const INVOCATION_COMMAND_NAMESPACE: Uuid =
     Uuid::from_u128(0x39b4_58e2_e917_4210_9b34_d45d_c14d_48da);
+const INVOCATION_FENCE_NAMESPACE: Uuid = Uuid::from_u128(0x8fe0_670a_a844_40ce_9e2d_a57e_83f5_8b4a);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AuthorityError {
@@ -223,6 +225,147 @@ pub(crate) struct InvocationSettled {
     pub(crate) invocation_id: Uuid,
     pub(crate) outcome: InvocationOutcome,
     pub(crate) terminal_evidence_reference: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum InvocationFenceFailurePhase {
+    Acknowledgement,
+    TerminalSettlement,
+    AuditSettlement,
+}
+
+impl InvocationFenceFailurePhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Acknowledgement => "acknowledgement",
+            Self::TerminalSettlement => "terminal_settlement",
+            Self::AuditSettlement => "audit_settlement",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InvocationMutationFenceEvidence {
+    pub(crate) schema_version: u16,
+    pub(crate) record_kind: String,
+    pub(crate) fence_id: Uuid,
+    pub(crate) mutation_domain: RuntimeMutationDomainId,
+    pub(crate) fence_key: RuntimeMutationFenceKey,
+    pub(crate) invocation_id: Uuid,
+    pub(crate) call_id: String,
+    pub(crate) capability_id: RuntimeCapabilityId,
+    pub(crate) owner_contribution_id: RuntimeContributionId,
+    pub(crate) owner_generation_id: RuntimeContributionGenerationId,
+    pub(crate) issue_generation_id: RuntimeCompositionGenerationId,
+    pub(crate) lease_id: Uuid,
+    pub(crate) session_id: String,
+    pub(crate) turn_id: Uuid,
+    pub(crate) failure_phase: InvocationFenceFailurePhase,
+    pub(crate) recorded_at: String,
+    pub(crate) failure_reason: String,
+}
+
+impl InvocationMutationFenceEvidence {
+    pub(crate) fn new(
+        mutation_domain: RuntimeMutationDomainId,
+        fence_key: RuntimeMutationFenceKey,
+        invocation_id: Uuid,
+        call_id: String,
+        capability_id: RuntimeCapabilityId,
+        owner_contribution_id: RuntimeContributionId,
+        owner_generation_id: RuntimeContributionGenerationId,
+        issue_generation_id: RuntimeCompositionGenerationId,
+        lease_id: Uuid,
+        session_id: String,
+        turn_id: Uuid,
+        failure_phase: InvocationFenceFailurePhase,
+        recorded_at: String,
+        failure_reason: String,
+    ) -> Result<Self> {
+        let fence_id = invocation_mutation_fence_id(
+            &mutation_domain,
+            &fence_key,
+            invocation_id,
+            lease_id,
+            failure_phase,
+        );
+        let evidence = Self {
+            schema_version: 1,
+            record_kind: "invocation_mutation_fence".into(),
+            fence_id,
+            mutation_domain,
+            fence_key,
+            invocation_id,
+            call_id,
+            capability_id,
+            owner_contribution_id,
+            owner_generation_id,
+            issue_generation_id,
+            lease_id,
+            session_id,
+            turn_id,
+            failure_phase,
+            recorded_at,
+            failure_reason,
+        };
+        evidence.validate()?;
+        Ok(evidence)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.schema_version != 1 || self.record_kind != "invocation_mutation_fence" {
+            return Err(AuthorityError::Invalid(
+                "unsupported invocation mutation fence record".into(),
+            ));
+        }
+        if self.call_id.is_empty()
+            || self.call_id.len() > 512
+            || self.session_id.is_empty()
+            || self.session_id.len() > 512
+            || self.failure_reason.is_empty()
+            || self.failure_reason.len() > 1024
+        {
+            return Err(AuthorityError::Invalid(
+                "invocation mutation fence contains invalid bounded text".into(),
+            ));
+        }
+        DateTime::parse_from_rfc3339(&self.recorded_at)
+            .map_err(|_| AuthorityError::Invalid("fence recorded_at is not RFC3339".into()))?;
+        let expected = invocation_mutation_fence_id(
+            &self.mutation_domain,
+            &self.fence_key,
+            self.invocation_id,
+            self.lease_id,
+            self.failure_phase,
+        );
+        if self.fence_id != expected {
+            return Err(AuthorityError::Invalid(
+                "invocation mutation fence identity is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn invocation_mutation_fence_id(
+    domain: &RuntimeMutationDomainId,
+    key: &RuntimeMutationFenceKey,
+    invocation_id: Uuid,
+    lease_id: Uuid,
+    phase: InvocationFenceFailurePhase,
+) -> Uuid {
+    Uuid::new_v5(
+        &INVOCATION_FENCE_NAMESPACE,
+        format!(
+            "{}\0{}\0{invocation_id}\0{lease_id}\0{}",
+            domain.as_str(),
+            key.as_str(),
+            phase.as_str()
+        )
+        .as_bytes(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1179,6 +1322,21 @@ impl SessionAuthorityHandle {
         self.lock()
             .classify_invocation_unknown(recorded_at, classification)
     }
+
+    pub(crate) fn record_mutation_fence(
+        &self,
+        evidence: &InvocationMutationFenceEvidence,
+    ) -> Result<()> {
+        self.lock().store.record_mutation_fence(evidence)
+    }
+
+    pub(crate) fn active_mutation_fence(
+        &self,
+        domain: &RuntimeMutationDomainId,
+        key: &RuntimeMutationFenceKey,
+    ) -> Result<Option<InvocationMutationFenceEvidence>> {
+        self.lock().store.active_mutation_fence(domain, key)
+    }
 }
 
 impl SessionAuthority {
@@ -1194,6 +1352,7 @@ impl SessionAuthority {
         let workspace_identity = workspace_identity.into();
         let runtime_generation_id = runtime_generation_id.into();
         let store = SessionAuthorityStore::adjacent_to(session_snapshot)?;
+        store.ensure_emergency_fence_dir()?;
         let writer_lease = crate::filelock::try_acquire_lock(&store.writer_lease_path())
             .map_err(|error| AuthorityError::Invalid(error.to_string()))?
             .ok_or_else(|| {
@@ -1477,11 +1636,20 @@ fn command_fingerprint(payload: &SessionFactPayload) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn read_strict_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let bytes = fs::read(path)?;
+    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+    let value = T::deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(value)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SessionAuthorityStore {
     log_path: PathBuf,
     snapshot_path: PathBuf,
     attachment_dir: PathBuf,
+    emergency_fence_dir: PathBuf,
 }
 
 impl SessionAuthorityStore {
@@ -1497,6 +1665,7 @@ impl SessionAuthorityStore {
             log_path: parent.join(format!("{stem}.authority.jsonl")),
             snapshot_path: parent.join(format!("{stem}.authority.snapshot.json")),
             attachment_dir: parent.join(format!("{stem}.authority.attachments")),
+            emergency_fence_dir: parent.join("invocation-mutation-fences"),
         })
     }
 
@@ -1510,9 +1679,97 @@ impl SessionAuthorityStore {
     fn from_paths(log_path: PathBuf, snapshot_path: PathBuf) -> Self {
         Self {
             attachment_dir: log_path.with_extension("attachments"),
+            emergency_fence_dir: log_path
+                .parent()
+                .expect("test authority log has a parent")
+                .join("invocation-mutation-fences"),
             log_path,
             snapshot_path,
         }
+    }
+
+    fn ensure_emergency_fence_dir(&self) -> Result<()> {
+        if !self.emergency_fence_dir.exists() {
+            fs::create_dir_all(&self.emergency_fence_dir)?;
+            if let Some(parent) = self.emergency_fence_dir.parent() {
+                File::open(parent)?.sync_all()?;
+            }
+        }
+        if !self.emergency_fence_dir.is_dir() {
+            return Err(AuthorityError::Invalid(
+                "invocation mutation fence path is not a directory".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_mutation_fence(&self, evidence: &InvocationMutationFenceEvidence) -> Result<()> {
+        self.ensure_emergency_fence_dir()?;
+        evidence.validate()?;
+        let path = self
+            .emergency_fence_dir
+            .join(format!("{}.json", evidence.fence_id));
+        let encoded = serde_json::to_vec(evidence)?;
+        if encoded.len() > MAX_RECORD_BYTES {
+            return Err(AuthorityError::Invalid(
+                "invocation mutation fence exceeds 1 MiB".into(),
+            ));
+        }
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(&encoded)?;
+                file.write_all(b"\n")?;
+                file.sync_all()?;
+                File::open(&self.emergency_fence_dir)?.sync_all()?;
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing = read_strict_json::<InvocationMutationFenceEvidence>(&path)?;
+                existing.validate()?;
+                if existing == *evidence {
+                    Ok(())
+                } else {
+                    Err(AuthorityError::Invalid(
+                        "invocation mutation fence identity collision".into(),
+                    ))
+                }
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn active_mutation_fence(
+        &self,
+        domain: &RuntimeMutationDomainId,
+        key: &RuntimeMutationFenceKey,
+    ) -> Result<Option<InvocationMutationFenceEvidence>> {
+        self.ensure_emergency_fence_dir()?;
+        let mut paths = fs::read_dir(&self.emergency_fence_dir)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        paths.sort();
+        let mut matching = None;
+        for path in paths {
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.file_type().is_file()
+                || path.extension().and_then(|value| value.to_str()) != Some("json")
+            {
+                return Err(AuthorityError::Invalid(
+                    "invocation mutation fence directory contains an invalid entry".into(),
+                ));
+            }
+            if metadata.len() > MAX_RECORD_BYTES as u64 {
+                return Err(AuthorityError::Invalid(
+                    "invocation mutation fence exceeds 1 MiB".into(),
+                ));
+            }
+            let evidence = read_strict_json::<InvocationMutationFenceEvidence>(&path)?;
+            evidence.validate()?;
+            if &evidence.mutation_domain == domain && &evidence.fence_key == key {
+                matching = Some(evidence);
+            }
+        }
+        Ok(matching)
     }
 
     pub(crate) fn load(&self) -> Result<SessionAuthorityState> {
@@ -2024,6 +2281,66 @@ mod tests {
             },
             surfaces: vec![RuntimeSurface::Model],
         }
+    }
+
+    fn mutation_fence_evidence() -> InvocationMutationFenceEvidence {
+        InvocationMutationFenceEvidence::new(
+            RuntimeMutationDomainId::new("workspace:runtime").unwrap(),
+            RuntimeMutationFenceKey::new("capability:write").unwrap(),
+            Uuid::new_v4(),
+            "call-write".into(),
+            RuntimeCapabilityId::new("tool:write").unwrap(),
+            RuntimeContributionId::new("feature:writer").unwrap(),
+            RuntimeContributionGenerationId::new("contribution:writer-v1").unwrap(),
+            RuntimeCompositionGenerationId::new("composition:test").unwrap(),
+            Uuid::new_v4(),
+            "session-1".into(),
+            Uuid::new_v4(),
+            InvocationFenceFailurePhase::TerminalSettlement,
+            "2026-08-20T12:00:00Z".into(),
+            "authority append failed".into(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn emergency_mutation_fence_is_durable_idempotent_and_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionAuthorityStore::from_paths(
+            directory.path().join("session.authority.jsonl"),
+            directory.path().join("session.authority.snapshot.json"),
+        );
+        let evidence = mutation_fence_evidence();
+        store.record_mutation_fence(&evidence).unwrap();
+        store.record_mutation_fence(&evidence).unwrap();
+        assert_eq!(
+            store
+                .active_mutation_fence(&evidence.mutation_domain, &evidence.fence_key)
+                .unwrap(),
+            Some(evidence.clone())
+        );
+
+        let reopened = SessionAuthorityStore::from_paths(
+            directory.path().join("session.authority.jsonl"),
+            directory.path().join("session.authority.snapshot.json"),
+        );
+        assert_eq!(
+            reopened
+                .active_mutation_fence(&evidence.mutation_domain, &evidence.fence_key)
+                .unwrap(),
+            Some(evidence.clone())
+        );
+
+        fs::write(
+            reopened.emergency_fence_dir.join("malformed.json"),
+            b"not-json",
+        )
+        .unwrap();
+        assert!(
+            reopened
+                .active_mutation_fence(&evidence.mutation_domain, &evidence.fence_key)
+                .is_err()
+        );
     }
 
     #[test]

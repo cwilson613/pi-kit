@@ -100,6 +100,7 @@ pub fn new_shared_command_tx() -> SharedCommandTx {
     Arc::new(Mutex::new(None))
 }
 
+#[derive(Clone)]
 pub struct ContextProvider {
     command_tx: SharedCommandTx,
     metrics: Arc<Mutex<SharedContextMetrics>>,
@@ -206,6 +207,18 @@ impl ContextProvider {
             memory_mind,
             repo_path,
         }
+    }
+
+    /// Request a read-only context pack without entering privileged tool admission.
+    pub async fn request_context(&self, args: Value) -> anyhow::Result<ToolResult> {
+        <Self as Feature>::execute(
+            self,
+            crate::tool_registry::context::REQUEST_CONTEXT,
+            "context-service",
+            args,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
     }
 
     fn runtime_state(&self) -> ContextRuntimeState {

@@ -111,6 +111,7 @@ fn emit_runtime_queue_snapshot(
 
 pub(crate) struct InteractiveAgentState {
     pub(crate) bus: crate::bus::EventBus,
+    pub(crate) context_service: std::sync::Arc<crate::features::context::ContextProvider>,
     pub(crate) context_manager: crate::context::ContextManager,
     pub(crate) conversation: crate::conversation::ConversationState,
     pub(crate) inference_runtime: crate::inference_runtime::InferenceRuntimeState,
@@ -163,6 +164,7 @@ fn split_interactive_agent(
     };
     let state = InteractiveAgentState {
         bus: agent.bus,
+        context_service: agent.context_service,
         context_manager: agent.context_manager,
         conversation: agent.conversation,
         inference_runtime: agent.inference_runtime,

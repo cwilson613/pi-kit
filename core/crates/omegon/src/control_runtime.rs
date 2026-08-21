@@ -2664,16 +2664,7 @@ pub async fn context_request_response(
             "reason": "Operator-requested direct context inspection from slash command"
         }]
     });
-    match runtime_state
-        .bus
-        .execute_tool(
-            crate::tool_registry::context::REQUEST_CONTEXT,
-            "slash-context-request",
-            args,
-            tokio_util::sync::CancellationToken::new(),
-        )
-        .await
-    {
+    match runtime_state.context_service.request_context(args).await {
         Ok(result) => {
             let text = result
                 .content
@@ -2702,16 +2693,7 @@ pub async fn context_request_json_response(
 ) -> SlashCommandResponse {
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(args) if args.get("requests").and_then(|v| v.as_array()).is_some() => {
-            match runtime_state
-                .bus
-                .execute_tool(
-                    crate::tool_registry::context::REQUEST_CONTEXT,
-                    "slash-context-request",
-                    args,
-                    tokio_util::sync::CancellationToken::new(),
-                )
-                .await
-            {
+            match runtime_state.context_service.request_context(args).await {
                 Ok(result) => {
                     let text = result
                         .content
@@ -6143,6 +6125,10 @@ mod context_compaction_tests {
         conversation.intent.stats.turns = 99;
         InteractiveAgentState {
             bus: crate::bus::EventBus::new(),
+            context_service: Arc::new(crate::features::context::ContextProvider::new(
+                crate::features::context::SharedContextMetrics::new(),
+                crate::features::context::new_shared_command_tx(),
+            )),
             context_manager: crate::context::ContextManager::new(String::new(), Vec::new()),
             conversation,
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(
@@ -6211,9 +6197,30 @@ mod context_compaction_tests {
     }
 
     #[tokio::test]
+    async fn context_request_uses_typed_read_only_service() {
+        let mut state = test_runtime_state_with_evictable_context();
+
+        let response = context_request_response(&mut state, "session_state", "current work").await;
+
+        assert!(response.accepted);
+        let output = response.output.expect("context response");
+        assert!(output.contains("Retrieved 1 supported context pack"));
+        assert!(output.contains("Session State"));
+        assert!(
+            !state
+                .bus
+                .has_tool(crate::tool_registry::context::REQUEST_CONTEXT)
+        );
+    }
+
+    #[tokio::test]
     async fn manual_context_compact_emits_no_payload_diagnostic() {
         let mut state = InteractiveAgentState {
             bus: crate::bus::EventBus::new(),
+            context_service: Arc::new(crate::features::context::ContextProvider::new(
+                crate::features::context::SharedContextMetrics::new(),
+                crate::features::context::new_shared_command_tx(),
+            )),
             context_manager: crate::context::ContextManager::new(String::new(), Vec::new()),
             conversation: crate::conversation::ConversationState::new(),
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(

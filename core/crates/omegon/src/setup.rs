@@ -61,6 +61,8 @@ pub struct AgentSetup {
     /// Shared context metrics — updated each turn, read by ContextProvider
     pub context_metrics:
         std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
+    /// Typed read-only context-pack service for host/operator surfaces.
+    pub context_service: std::sync::Arc<crate::features::context::ContextProvider>,
     /// Shared command channel — set by main after TUI init
     pub command_tx: crate::features::context::SharedCommandTx,
     pub context_manager: ContextManager,
@@ -1017,8 +1019,8 @@ impl AgentSetup {
         // ─── Context management provider ───────────────────────────────
         let context_metrics = features::context::SharedContextMetrics::new();
         let command_tx = features::context::new_shared_command_tx();
-        bus.register(Box::new(
-            features::context::ContextProvider::new_with_sources(
+        let context_service =
+            std::sync::Arc::new(features::context::ContextProvider::new_with_sources(
                 context_metrics.clone(),
                 command_tx.clone(),
                 settings.clone(),
@@ -1026,8 +1028,8 @@ impl AgentSetup {
                 context_memory_backend.clone(),
                 context_memory_mind.clone(),
                 Some(project_root.clone()),
-            ),
-        ));
+            ));
+        bus.register(Box::new(context_service.as_ref().clone()));
 
         // ─── Operator-installed extensions (RPC + OCI) ────────────────
         // All extensions, including bundled ones (scribe-rpc), are discovered here
@@ -1576,6 +1578,7 @@ impl AgentSetup {
             runtime_ownership,
             startup_skill_activation_events: Vec::new(),
             context_metrics,
+            context_service,
             command_tx,
             context_manager,
             conversation,

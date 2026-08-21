@@ -6096,13 +6096,8 @@ fn build_tui_secret_readiness_snapshot(
                     };
 
                     let message = match runtime_state
-                        .bus
-                        .execute_tool(
-                            crate::tool_registry::context::REQUEST_CONTEXT,
-                            "tui-context-request",
-                            tool_args,
-                            tokio_util::sync::CancellationToken::new(),
-                        )
+                        .context_service
+                        .request_context(tool_args)
                         .await
                     {
                         Ok(result) => result
@@ -9825,6 +9820,10 @@ mod tests {
             runtime_ownership: crate::workspace::runtime::RuntimeOwnership::test_stub(),
             startup_skill_activation_events: Vec::new(),
             context_metrics: crate::features::context::SharedContextMetrics::new(),
+            context_service: Arc::new(crate::features::context::ContextProvider::new(
+                crate::features::context::SharedContextMetrics::new(),
+                crate::features::context::new_shared_command_tx(),
+            )),
             command_tx: crate::features::context::new_shared_command_tx(),
             context_manager: crate::context::ContextManager::new("test prompt".into(), vec![]),
             conversation: crate::conversation::ConversationState::new(),
@@ -9871,6 +9870,7 @@ mod tests {
         let session_id = "2026-08-12T12-00-00_deadbeef".to_string();
         let state = std::sync::Arc::new(tokio::sync::Mutex::new(InteractiveAgentState {
             bus: setup.bus,
+            context_service: setup.context_service,
             context_manager: setup.context_manager,
             conversation: setup.conversation,
             inference_runtime: setup.inference_runtime,
@@ -10258,6 +10258,7 @@ mod tests {
         let session_id = "2026-08-12T12-00-01_deadbeef";
         let state = std::sync::Arc::new(tokio::sync::Mutex::new(InteractiveAgentState {
             bus: setup.bus,
+            context_service: setup.context_service,
             context_manager: setup.context_manager,
             conversation: setup.conversation,
             inference_runtime: setup.inference_runtime,
@@ -11656,6 +11657,10 @@ mod tests {
     fn plan_view_returns_last_completed_plan_when_no_active_plan_exists() {
         let mut runtime_state = InteractiveAgentState {
             bus: crate::bus::EventBus::new(),
+            context_service: Arc::new(crate::features::context::ContextProvider::new(
+                crate::features::context::SharedContextMetrics::new(),
+                crate::features::context::new_shared_command_tx(),
+            )),
             context_manager: crate::context::ContextManager::new(String::new(), Vec::new()),
             conversation: crate::conversation::ConversationState::new(),
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(
@@ -11694,6 +11699,10 @@ mod tests {
 
         let mut runtime_state = InteractiveAgentState {
             bus: crate::bus::EventBus::new(),
+            context_service: Arc::new(crate::features::context::ContextProvider::new(
+                crate::features::context::SharedContextMetrics::new(),
+                crate::features::context::new_shared_command_tx(),
+            )),
             context_manager: crate::context::ContextManager::new(String::new(), Vec::new()),
             conversation: crate::conversation::ConversationState::new(),
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(

@@ -1816,8 +1816,23 @@ pub async fn run(
                     source,
                 } => {
                     let args = serde_json::json!({ "content": content, "section": section });
+                    let call_id = format!("turn-auto-ingest:{}", uuid::Uuid::new_v4());
+                    let scope = crate::invocation_service::InvocationScope {
+                        principal: "kernel:turn-auto-ingest".into(),
+                        principal_class: omegon_traits::RuntimePrincipalClass::Internal,
+                        surface: omegon_traits::RuntimeSurface::Internal,
+                        session_id: config.invocation_scope.session_id.clone(),
+                        turn_id: config.invocation_scope.turn_id,
+                        authority: config.invocation_scope.authority.clone(),
+                    };
                     if let Err(e) = bus
-                        .execute_tool("memory_store", "auto_ingest", args, cancel.clone())
+                        .invoke_internal(
+                            crate::tool_registry::memory::MEMORY_STORE,
+                            &call_id,
+                            args,
+                            cancel.clone(),
+                            scope,
+                        )
                         .await
                     {
                         tracing::debug!(source, "auto-store fact skipped: {e}");
@@ -1945,13 +1960,21 @@ pub async fn run(
                     source,
                 } => {
                     let args = serde_json::json!({ "content": content, "section": section });
+                    let call_id = format!("post-loop-auto-ingest:{}", uuid::Uuid::new_v4());
+                    let scope = crate::invocation_service::InvocationScope {
+                        principal: "kernel:post-loop-auto-ingest".into(),
+                        principal_class: omegon_traits::RuntimePrincipalClass::Internal,
+                        surface: omegon_traits::RuntimeSurface::Internal,
+                        ..Default::default()
+                    };
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(5),
-                        bus.execute_tool(
-                            "memory_store",
-                            "post_loop_auto_ingest",
+                        bus.invoke_internal(
+                            crate::tool_registry::memory::MEMORY_STORE,
+                            &call_id,
                             args,
                             cancel.clone(),
+                            scope,
                         ),
                     )
                     .await

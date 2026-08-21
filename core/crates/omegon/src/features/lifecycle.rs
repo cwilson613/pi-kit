@@ -1268,6 +1268,21 @@ impl Feature for LifecycleFeature {
         ]
     }
 
+    fn runtime_command_surfaces(
+        &self,
+        command_name: &str,
+    ) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+        (command_name == "design").then(|| {
+            vec![
+                omegon_traits::RuntimeSurface::Tui,
+                omegon_traits::RuntimeSurface::Cli,
+                omegon_traits::RuntimeSurface::Acp,
+                omegon_traits::RuntimeSurface::Ipc,
+                omegon_traits::RuntimeSurface::Web,
+            ]
+        })
+    }
+
     fn handle_command(&mut self, name: &str, args: &str) -> CommandResult {
         match name {
             "design-focus" => {

@@ -8,7 +8,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const MAX_RESULT_BYTES: usize = 1024 * 1024;
 pub const MAX_REASON_BYTES: usize = 1024;
 
-pub const AGENTS_STATUS_TOOL: &str = "agents_status";
+pub const AGENTS_STATUS_TOOL: &str = crate::tool_registry::delegate::DELEGATE_STATUS;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentsStatusBody {

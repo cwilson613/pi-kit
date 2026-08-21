@@ -2934,11 +2934,12 @@ async fn run_embedded_command(
                             Ok((envelope, crate::managed_agent_supervisor::SupervisorOperation::Execute { tool, args })) => {
                                 let session = default_session.state.lock().await;
                                 match session.as_ref() {
-                                    Some(session) => match session.bus.execute_tool(
+                                    Some(session) => match invoke_managed_delegate_tool(
+                                        &session.bus,
                                         tool,
-                                        "auspex-supervisor",
                                         args,
-                                        tokio_util::sync::CancellationToken::new(),
+                                        &envelope,
+                                        omegon_traits::RuntimeSurface::Daemon,
                                     ).await {
                                         Ok(result) => crate::managed_agent_supervisor::response(&method, &envelope, result)
                                             .unwrap_or_else(|error| crate::managed_agent_supervisor::error_response(&method, &envelope, &error)),
@@ -5031,7 +5032,13 @@ fn build_tui_secret_readiness_snapshot(
                             }
                         }
                         crate::managed_agent_supervisor::SupervisorOperation::Execute { tool, args } => {
-                            match runtime_state.bus.execute_tool(tool, "auspex-supervisor", args, tokio_util::sync::CancellationToken::new()).await {
+                            match invoke_managed_delegate_tool(
+                                &runtime_state.bus,
+                                tool,
+                                args,
+                                &envelope,
+                                omegon_traits::RuntimeSurface::Web,
+                            ).await {
                                 Ok(result) => crate::managed_agent_supervisor::response(&method, &envelope, result).unwrap_or_else(|error| crate::managed_agent_supervisor::error_response(&method, &envelope, &error)),
                                 Err(error) => crate::managed_agent_supervisor::error_response(&method, &envelope, &error.to_string()),
                             }
@@ -8267,6 +8274,31 @@ fn operator_control_scope(
         surface,
         ..Default::default()
     }
+}
+
+async fn invoke_managed_delegate_tool(
+    bus: &crate::bus::EventBus,
+    tool_name: &str,
+    args: serde_json::Value,
+    envelope: &crate::managed_agent_supervisor::Envelope<serde_json::Value>,
+    surface: omegon_traits::RuntimeSurface,
+) -> anyhow::Result<omegon_traits::ToolResult> {
+    let call_id = format!("managed-delegate:{}", uuid::Uuid::new_v4());
+    let worker = envelope.worker_id.chars().take(128).collect::<String>();
+    let scope = crate::invocation_service::InvocationScope {
+        principal: format!("managed-agent:{worker}"),
+        principal_class: omegon_traits::RuntimePrincipalClass::Service,
+        surface,
+        ..Default::default()
+    };
+    bus.invoke_tool(
+        tool_name,
+        &call_id,
+        args,
+        tokio_util::sync::CancellationToken::new(),
+        scope,
+    )
+    .await
 }
 
 /// Single source of truth for capacity report generation. The interactive bus

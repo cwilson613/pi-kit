@@ -5213,20 +5213,6 @@ fn dispatch_control_feature_command(
     args: &str,
     invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> omegon_traits::CommandResult {
-    if !matches!(
-        invocation_scope.surface,
-        omegon_traits::RuntimeSurface::Tui
-            | omegon_traits::RuntimeSurface::Cli
-            | omegon_traits::RuntimeSurface::Acp
-    ) {
-        tracing::debug!(
-            command = name,
-            surface = ?invocation_scope.surface,
-            "control feature command remains on compatibility dispatch"
-        );
-        return bus.dispatch_command(name, args);
-    }
-
     let call_id = format!("control-command:{}", uuid::Uuid::new_v4());
     bus.invoke_command(name, &call_id, args, invocation_scope.clone(), None)
         .unwrap_or_else(|denial| {
@@ -5363,6 +5349,18 @@ mod tests {
         assert!(matches!(
             dispatch_control_feature_command(&mut bus, "control_test", "", &operator_scope,),
             omegon_traits::CommandResult::Handled
+        ));
+
+        let web_scope = crate::invocation_service::InvocationScope {
+            principal: "web-operator".into(),
+            principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+            surface: omegon_traits::RuntimeSurface::Web,
+            ..Default::default()
+        };
+        assert!(matches!(
+            dispatch_control_feature_command(&mut bus, "control_test", "", &web_scope),
+            omegon_traits::CommandResult::Display(message)
+                if message.starts_with("invocation:unsupported_surface:")
         ));
     }
 

@@ -1692,7 +1692,7 @@ impl Feature for DelegateFeature {
                     },
                     "required": ["task_id"]
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::delegate::DELEGATE_STATUS.to_string(),
@@ -1722,6 +1722,42 @@ impl Feature for DelegateFeature {
                 ],
             },
         ]
+    }
+
+    fn runtime_tool_surfaces(&self, tool_name: &str) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+        matches!(
+            tool_name,
+            crate::tool_registry::delegate::DELEGATE
+                | crate::tool_registry::delegate::DELEGATE_RESULT
+                | crate::tool_registry::delegate::DELEGATE_STATUS
+                | crate::tool_registry::delegate::DELEGATE_CANCEL
+        )
+        .then(|| {
+            vec![
+                omegon_traits::RuntimeSurface::Model,
+                omegon_traits::RuntimeSurface::Web,
+                omegon_traits::RuntimeSurface::Daemon,
+            ]
+        })
+    }
+
+    fn runtime_tool_principals(
+        &self,
+        tool_name: &str,
+    ) -> Option<Vec<omegon_traits::RuntimePrincipalClass>> {
+        matches!(
+            tool_name,
+            crate::tool_registry::delegate::DELEGATE
+                | crate::tool_registry::delegate::DELEGATE_RESULT
+                | crate::tool_registry::delegate::DELEGATE_STATUS
+                | crate::tool_registry::delegate::DELEGATE_CANCEL
+        )
+        .then(|| {
+            vec![
+                omegon_traits::RuntimePrincipalClass::Model,
+                omegon_traits::RuntimePrincipalClass::Service,
+            ]
+        })
     }
 
     async fn execute(
@@ -2280,6 +2316,21 @@ No delegate tasks found.
         ]
     }
 
+    fn runtime_command_surfaces(
+        &self,
+        command_name: &str,
+    ) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+        (command_name == crate::tool_registry::delegate::DELEGATE).then(|| {
+            vec![
+                omegon_traits::RuntimeSurface::Tui,
+                omegon_traits::RuntimeSurface::Cli,
+                omegon_traits::RuntimeSurface::Acp,
+                omegon_traits::RuntimeSurface::Ipc,
+                omegon_traits::RuntimeSurface::Web,
+            ]
+        })
+    }
+
     fn command_aliases(&self) -> Vec<omegon_traits::CommandAlias> {
         vec![omegon_traits::CommandAlias {
             alias: "subagent".into(),
@@ -2778,6 +2829,38 @@ mod tests {
         )
         .expect("test managed store");
         omegon_secrets::SecretsManager::new_with_managed_store(config_dir, store).expect("manager")
+    }
+
+    #[test]
+    fn managed_delegate_tools_declare_service_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let feature = DelegateFeature::new(temp.path(), vec![], false);
+
+        for tool_name in [
+            crate::tool_registry::delegate::DELEGATE,
+            crate::tool_registry::delegate::DELEGATE_RESULT,
+            crate::tool_registry::delegate::DELEGATE_STATUS,
+            crate::tool_registry::delegate::DELEGATE_CANCEL,
+        ] {
+            let surfaces = feature.runtime_tool_surfaces(tool_name).unwrap();
+            assert!(surfaces.contains(&omegon_traits::RuntimeSurface::Model));
+            assert!(surfaces.contains(&omegon_traits::RuntimeSurface::Web));
+            assert!(surfaces.contains(&omegon_traits::RuntimeSurface::Daemon));
+            let principals = feature.runtime_tool_principals(tool_name).unwrap();
+            assert!(principals.contains(&omegon_traits::RuntimePrincipalClass::Model));
+            assert!(principals.contains(&omegon_traits::RuntimePrincipalClass::Service));
+        }
+
+        let result = feature
+            .tools()
+            .into_iter()
+            .find(|tool| tool.name == crate::tool_registry::delegate::DELEGATE_RESULT)
+            .unwrap();
+        assert!(
+            result
+                .capabilities
+                .contains(&omegon_traits::ToolCapability::StateChanging)
+        );
     }
 
     #[test]

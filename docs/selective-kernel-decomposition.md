@@ -356,6 +356,17 @@ ID; replacement metadata cannot retroactively grant safety. Legacy unknown
 records fail closed. This denial does not itself enable safe replay: attempt
 lineage, request fingerprints, and a retry scheduler remain separate work.
 
+The pipeline now admits and validates invocation kinds beyond model tools.
+Graph-registered feature commands from TUI, CLI remote execution, and ACP use
+explicit operator principals and declared surfaces, while model-loop path grants
+use an internal principal and inherit the parent session/turn authority. Both
+paths acknowledge and settle before returning and close their leases exactly
+once. Idle operator commands remain ephemeral rather than receiving fabricated
+turn authority. Control-runtime calls without retained ingress provenance,
+direct service-triggered tools, extension polling RPC, and nested extension/MCP
+host actions remain explicit compatibility paths, so the Slice-3 exit gate is
+not yet met.
+
 ### 5. Admission combiner and host effects
 
 Policy providers may be replaceable, but the kernel combines and enforces their

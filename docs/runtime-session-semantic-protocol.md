@@ -312,8 +312,29 @@ execution lease closes. Outcomes distinguish completed, failed, cancelled,
 timed-out, and revoked execution. Settlement is exactly once. A prior unknown
 classification may be reconciled only from authoritative owner evidence under
 the Slice 3 policy; reconciliation cannot change an already closed turn
-outcome. Settlement durability failure withholds ordinary completion; mutation
-fencing and emergency recovery evidence are Slice 3.5 responsibilities.
+outcome. Settlement durability failure withholds ordinary completion and, for a
+mutating declaration, durably fences its declared domain and key.
+
+## Emergency mutation fences
+
+Every mutating execution policy carries a validated mutation domain and fence
+key. If acknowledgement, unknown classification, or terminal settlement cannot
+be committed after dispatch, the runtime writes an independent version-1
+`invocation_mutation_fence` record before returning the durability failure. The
+record retains fence, invocation, visible call, capability, owner contribution,
+owner generation, composition generation, lease, session, turn, failure phase,
+timestamp, and bounded failure-reason identity.
+
+Emergency records live in the shared `invocation-mutation-fences/` directory
+beside session authority files, not in the authority JSONL whose failure they
+must survive. Each record is append-only, synced before use, strictly decoded,
+and deterministically identified. A matching fence denies later authority-backed
+mutation before `Prepared`; an unreadable, malformed, or unwritable fence store
+fails closed. If the emergency write itself fails, the current runtime poisons
+mutation admission in memory. Ordinary execution and restart recovery never
+remove a fence. Removal requires deterministic reconciliation or an explicit
+audited operator recovery path; no such operator clearing command is exposed by
+this slice.
 
 ### `turn.closed` v1
 
@@ -359,6 +380,7 @@ The initial physical record is an adjacent sidecar:
 ```text
 <session-id>.authority.jsonl
 <session-id>.authority.snapshot.json
+invocation-mutation-fences/<fence-id>.json
 ```
 
 Records use strict JSON decoding: duplicate or unknown fields, missing required

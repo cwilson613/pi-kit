@@ -43,6 +43,12 @@ import { snippet } from "../../lib/snippets";
     runtime queue updates. A cancellation request leaves the turn busy while owned cleanup runs.
   </p>
   <p>
+    Mutating calls also carry a durable mutation domain and fence key. If owner acknowledgement or
+    terminal settlement cannot be recorded after dispatch, Omegon withholds ordinary completion,
+    writes independent emergency evidence, and blocks later matching mutations rather than risking
+    an unqualified repeat.
+  </p>
+  <p>
     Conversation JSON remains a compatibility snapshot. On restart, Omegon validates the
     authority stream, closes an interrupted active turn conservatively, and restores eligible
     queued prompts that reached durable admission. ACP withdraws orphaned queued requests when

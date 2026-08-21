@@ -97,6 +97,19 @@ import { snippet } from "../../lib/snippets";
     synthesize events, change completion state, or semantically repair a conversation.
   </p>
 
+  <h2>Invocation Mutation Fences</h2>
+  <p>
+    If a mutating invocation may have reached its owner but acknowledgement or settlement cannot be
+    made durable, Omegon records independent emergency fence evidence and denies later mutations with
+    the same declared domain and key. This is an unknown-settlement safety condition, not an ordinary
+    tool failure. Do not delete or edit fence files and do not blindly retry the mutation.
+  </p>
+  <p>
+    The current <code>omegon-maintain</code> release does not inspect, reconcile, or clear runtime
+    invocation fences. Clearing requires deterministic owner reconciliation or a future explicit,
+    audited operator recovery action; session quarantine does not clear these records.
+  </p>
+
   <h2>Runtime Ownership Records</h2>
   <pre><code>{snippet("maintenance.resource_list")}
 

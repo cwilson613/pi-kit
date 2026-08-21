@@ -340,6 +340,15 @@ or deduplication. If result or audit settlement cannot be persisted, the kernel
 fences further mutation, writes an emergency recovery record through its
 last-resort channel, and does not report ordinary completion.
 
+Every mutating execution declaration identifies a durable domain and fence key.
+Emergency fence evidence is append-only and independent of the authority stream
+whose failure triggered it; it binds the invocation, visible call, capability,
+owner and composition generations, lease, session, turn, and failure phase.
+Matching mutation admission checks this shared evidence immediately before
+preparation. Malformed evidence and emergency-writer failure fail closed. Normal
+execution cannot clear a fence; only deterministic reconciliation or an
+explicit audited operator recovery decision may do so.
+
 ### 5. Admission combiner and host effects
 
 Policy providers may be replaceable, but the kernel combines and enforces their

@@ -361,11 +361,16 @@ Graph-registered feature commands from TUI, CLI remote execution, and ACP use
 explicit operator principals and declared surfaces, while model-loop path grants
 use an internal principal and inherit the parent session/turn authority. Both
 paths acknowledge and settle before returning and close their leases exactly
-once. Idle operator commands remain ephemeral rather than receiving fabricated
-turn authority. Control-runtime calls without retained ingress provenance,
-direct service-triggered tools, extension polling RPC, and nested extension/MCP
-host actions remain explicit compatibility paths, so the Slice-3 exit gate is
-not yet met.
+once. Non-TUI control forwarding retains its surface; TUI and CLI feature
+bridges are leased, while Web and IPC remain explicit compatibility dispatch
+until their declarations authorize those surfaces. Automatic memory ingestion
+and host-mediated persona/tone switches use internal bindings and leases, and
+memory mutations no longer claim read-only orientation. Idle and post-loop
+calls remain ephemeral rather than receiving fabricated turn authority.
+Read-only context access still needs a typed service handle or precise internal
+policy, while service-triggered delegation, voice effects, extension polling
+RPC, and nested extension/MCP host actions remain compatibility paths, so the
+Slice-3 exit gate is not yet met.
 
 ### 5. Admission combiner and host effects
 

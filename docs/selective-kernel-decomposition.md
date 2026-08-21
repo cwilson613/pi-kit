@@ -369,10 +369,11 @@ longer claim read-only orientation. Managed-delegation tools admit declared
 service principals on Web/Daemon surfaces and no longer dispatch directly.
 Operator context-pack reads use a typed read-only context service rather than
 entering tool admission.
+The extension-provided voice stop declares TUI service authority and executes
+under the promoted turn's durable scope.
 Idle and post-loop calls remain ephemeral rather than receiving fabricated turn
-authority. The extension-provided voice stop, extension polling RPC, and nested
-extension/MCP host actions remain compatibility paths, so the Slice-3 exit gate
-is not yet met.
+authority. Extension polling RPC and nested extension/MCP host actions remain
+compatibility paths, so the Slice-3 exit gate is not yet met.
 
 ### 5. Admission combiner and host effects
 

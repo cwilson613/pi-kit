@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use omegon_traits::{
     RuntimeCapabilityId, RuntimeCapabilityTransitionPolicy, RuntimeCompositionGenerationId,
     RuntimeContributionGenerationId, RuntimeContributionId, RuntimeDeduplication, RuntimeEffect,
-    RuntimeExecutionPolicy, RuntimeInvocationKind, RuntimePrincipalClass, RuntimeSurface,
-    RuntimeTimeoutClass,
+    RuntimeExecutionPolicy, RuntimeInvocationKind, RuntimeMutationFence, RuntimePrincipalClass,
+    RuntimeSurface, RuntimeTimeoutClass,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -24,6 +24,63 @@ use crate::permissions::{
 #[error("unknown invocation completion: {reason}")]
 pub(crate) struct UnknownCompletionError {
     pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct MutationFenceRecorder {
+    authority: crate::session_authority::SessionAuthorityHandle,
+    mutation_fence: RuntimeMutationFence,
+    invocation_id: Uuid,
+    call_id: String,
+    capability_id: RuntimeCapabilityId,
+    contribution_id: RuntimeContributionId,
+    owner_generation_id: RuntimeContributionGenerationId,
+    issue_generation_id: RuntimeCompositionGenerationId,
+    lease_id: Uuid,
+    session_id: String,
+    turn_id: Uuid,
+}
+
+impl MutationFenceRecorder {
+    fn record(
+        &self,
+        phase: crate::session_authority::InvocationFenceFailurePhase,
+        reason: &str,
+    ) -> Result<(), String> {
+        let failure_reason = reason.chars().take(1024).collect::<String>();
+        let evidence = crate::session_authority::InvocationMutationFenceEvidence::new(
+            self.mutation_fence.domain.clone(),
+            self.mutation_fence.key.clone(),
+            self.invocation_id,
+            self.call_id.clone(),
+            self.capability_id.clone(),
+            self.contribution_id.clone(),
+            self.owner_generation_id.clone(),
+            self.issue_generation_id.clone(),
+            self.lease_id,
+            self.session_id.clone(),
+            self.turn_id,
+            phase,
+            recorded_at_now(),
+            failure_reason,
+        )
+        .map_err(|error| format!("failed to construct emergency mutation fence: {error}"))?;
+        self.authority
+            .record_mutation_fence(&evidence)
+            .map_err(|error| format!("failed to persist emergency mutation fence: {error}"))
+    }
+}
+
+fn durability_failure_message(
+    recorder: Option<&MutationFenceRecorder>,
+    phase: crate::session_authority::InvocationFenceFailurePhase,
+    reason: impl Into<String>,
+) -> String {
+    let reason = reason.into();
+    match recorder.map(|recorder| recorder.record(phase, &reason)) {
+        Some(Err(fence_error)) => format!("{reason}; {fence_error}"),
+        _ => reason,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +132,7 @@ pub(crate) enum InvocationDenialCode {
     StaleGeneration,
     LeaseClosed,
     LeaseMismatch,
+    MutationFenced,
 }
 
 impl InvocationDenialCode {
@@ -90,6 +148,7 @@ impl InvocationDenialCode {
             Self::StaleGeneration => "invocation:stale_generation",
             Self::LeaseClosed => "invocation:lease_closed",
             Self::LeaseMismatch => "invocation:lease_mismatch",
+            Self::MutationFenced => "invocation:mutation_fenced",
         }
     }
 }
@@ -133,6 +192,7 @@ pub(crate) struct ExecutionLease {
     pub transition: RuntimeCapabilityTransitionPolicy,
     pub surfaces: Vec<RuntimeSurface>,
     authority: Option<crate::session_authority::SessionAuthorityHandle>,
+    mutation_fence_recorder: Option<MutationFenceRecorder>,
     acknowledged: Arc<std::sync::Mutex<bool>>,
     terminal: Arc<AtomicU8>,
 }
@@ -157,6 +217,29 @@ impl ExecutionLease {
         scope: InvocationScope,
         resolved: ResolvedInvocation,
     ) -> Self {
+        let mutation_fence_recorder = match (
+            scope.authority.clone(),
+            resolved.execution.mutation_fence.clone(),
+            scope.session_id.clone(),
+            scope.turn_id,
+        ) {
+            (Some(authority), Some(mutation_fence), Some(session_id), Some(turn_id)) => {
+                Some(MutationFenceRecorder {
+                    authority,
+                    mutation_fence,
+                    invocation_id,
+                    call_id: call_id.to_string(),
+                    capability_id: resolved.capability_id.clone(),
+                    contribution_id: resolved.contribution_id.clone(),
+                    owner_generation_id: resolved.owner_generation_id.clone(),
+                    issue_generation_id: resolved.composition_generation_id.clone(),
+                    lease_id,
+                    session_id,
+                    turn_id,
+                })
+            }
+            _ => None,
+        };
         Self {
             lease_id,
             invocation_id,
@@ -178,6 +261,7 @@ impl ExecutionLease {
             transition: resolved.transition,
             surfaces: resolved.surfaces,
             authority: scope.authority,
+            mutation_fence_recorder,
             acknowledged: Arc::new(std::sync::Mutex::new(false)),
             terminal: Arc::new(AtomicU8::new(LeaseTerminal::Open as u8)),
         }
@@ -214,6 +298,26 @@ impl ExecutionLease {
                 InvocationDenialCode::AuthorityUnavailable,
                 "invocation scope does not match the session authority writer",
             ));
+        }
+        if let Some(mutation_fence) = &resolved.execution.mutation_fence {
+            match authority.active_mutation_fence(&mutation_fence.domain, &mutation_fence.key) {
+                Ok(Some(evidence)) => {
+                    return Err(denial(
+                        InvocationDenialCode::MutationFenced,
+                        format!(
+                            "mutation domain is fenced by unresolved invocation {} ({})",
+                            evidence.invocation_id, evidence.fence_id
+                        ),
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return Err(denial(
+                        InvocationDenialCode::MutationFenced,
+                        format!("mutation fence state is unavailable: {error}"),
+                    ));
+                }
+            }
         }
 
         let lease_id = Uuid::new_v4();
@@ -300,27 +404,34 @@ impl ExecutionLease {
     pub fn invocation_control(&self) -> omegon_traits::InvocationControl {
         let authority = self.authority.clone();
         let acknowledged = self.acknowledged.clone();
+        let mutation_fence_recorder = self.mutation_fence_recorder.clone();
         let invocation_id = self.invocation_id;
         let lease_id = self.lease_id;
         omegon_traits::InvocationControl::new(move || {
-            let mut acknowledged = acknowledged
-                .lock()
-                .map_err(|_| "invocation acknowledgement state is unavailable".to_string())?;
+            let mut acknowledged = acknowledged.lock().map_err(|_| {
+                durability_failure_message(
+                    mutation_fence_recorder.as_ref(),
+                    crate::session_authority::InvocationFenceFailurePhase::Acknowledgement,
+                    "invocation acknowledgement state is unavailable",
+                )
+            })?;
             if *acknowledged {
                 return Ok(());
             }
             if let Some(authority) = &authority {
-                authority
-                    .acknowledge_invocation(
-                        &recorded_at_now(),
-                        crate::session_authority::InvocationAcknowledged {
-                            invocation_id,
-                            lease_id,
-                        },
-                    )
-                    .map_err(|error| {
-                        format!("failed to persist invocation acknowledgement: {error}")
-                    })?;
+                if let Err(error) = authority.acknowledge_invocation(
+                    &recorded_at_now(),
+                    crate::session_authority::InvocationAcknowledged {
+                        invocation_id,
+                        lease_id,
+                    },
+                ) {
+                    return Err(durability_failure_message(
+                        mutation_fence_recorder.as_ref(),
+                        crate::session_authority::InvocationFenceFailurePhase::Acknowledgement,
+                        format!("failed to persist invocation acknowledgement: {error}"),
+                    ));
+                }
             }
             *acknowledged = true;
             Ok(())
@@ -356,17 +467,27 @@ impl ExecutionLease {
         let Some(authority) = &self.authority else {
             return Ok(());
         };
-        if !*self.acknowledged.lock().map_err(|_| {
+        let acknowledged = self.acknowledged.lock().map_err(|_| {
             denial(
                 InvocationDenialCode::AuthorityUnavailable,
-                "invocation acknowledgement state is unavailable",
+                durability_failure_message(
+                    self.mutation_fence_recorder.as_ref(),
+                    crate::session_authority::InvocationFenceFailurePhase::Acknowledgement,
+                    "invocation acknowledgement state is unavailable",
+                ),
             )
-        })? {
+        })?;
+        if !*acknowledged {
             return Err(denial(
                 InvocationDenialCode::AuthorityUnavailable,
-                "owner has not durably acknowledged the invocation",
+                durability_failure_message(
+                    self.mutation_fence_recorder.as_ref(),
+                    crate::session_authority::InvocationFenceFailurePhase::Acknowledgement,
+                    "owner has not durably acknowledged the invocation",
+                ),
             ));
         }
+        drop(acknowledged);
         authority
             .settle_invocation(
                 &recorded_at_now(),
@@ -381,7 +502,11 @@ impl ExecutionLease {
                 self.revoke();
                 denial(
                     InvocationDenialCode::AuthorityUnavailable,
-                    format!("failed to persist invocation settlement: {error}"),
+                    durability_failure_message(
+                        self.mutation_fence_recorder.as_ref(),
+                        crate::session_authority::InvocationFenceFailurePhase::TerminalSettlement,
+                        format!("failed to persist invocation settlement: {error}"),
+                    ),
                 )
             })
     }
@@ -404,7 +529,11 @@ impl ExecutionLease {
                 self.revoke();
                 denial(
                     InvocationDenialCode::AuthorityUnavailable,
-                    format!("failed to persist unknown completion: {error}"),
+                    durability_failure_message(
+                        self.mutation_fence_recorder.as_ref(),
+                        crate::session_authority::InvocationFenceFailurePhase::TerminalSettlement,
+                        format!("failed to persist unknown completion: {error}"),
+                    ),
                 )
             })
     }
@@ -733,6 +862,122 @@ mod tests {
                 ..
             }) if settlement.outcome == crate::session_authority::InvocationOutcome::Completed
         ));
+    }
+
+    #[test]
+    fn settlement_failure_fences_matching_mutation_but_not_an_unrelated_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let recorded_at = "2026-08-20T12:00:00Z";
+        let mut authority = crate::session_authority::SessionAuthority::open(
+            &directory.path().join("session.json"),
+            "session-1",
+            "workspace-1",
+            "composition:test",
+            crate::session_authority::ActorIdentity {
+                principal: "operator".into(),
+                ingress: "test".into(),
+            },
+            recorded_at,
+        )
+        .unwrap();
+        let prompt_id = Uuid::new_v4();
+        authority
+            .admit_prompt(
+                Uuid::new_v4(),
+                recorded_at,
+                crate::session_authority::PromptAdmitted {
+                    submission_id: Uuid::new_v4(),
+                    prompt_id,
+                    principal: "operator".into(),
+                    ingress: "test".into(),
+                    queue_mode: crate::session_authority::QueueMode::UntilReady,
+                    content: crate::session_authority::PromptContent {
+                        text: "run".into(),
+                        attachments: vec![],
+                    },
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        let turn_id = Uuid::new_v4();
+        authority
+            .start_turn(Uuid::new_v4(), recorded_at, turn_id, prompt_id)
+            .unwrap();
+        let authority = crate::session_authority::SessionAuthorityHandle::new(authority);
+        let scope = InvocationScope {
+            session_id: Some("session-1".into()),
+            turn_id: Some(turn_id),
+            authority: Some(authority.clone()),
+            ..Default::default()
+        };
+        let mut resolved = fixture_resolution();
+        resolved.name = "write".into();
+        resolved.capability_id = RuntimeCapabilityId::new("tool:write").unwrap();
+        resolved.effects.push(RuntimeEffect::FilesystemWrite);
+        resolved.execution.transaction =
+            omegon_traits::RuntimeTransactionBehavior::IndependentMutation;
+        resolved.execution.mutation_fence = Some(omegon_traits::RuntimeMutationFence {
+            domain: omegon_traits::RuntimeMutationDomainId::new("workspace:runtime").unwrap(),
+            key: omegon_traits::RuntimeMutationFenceKey::new("capability:write").unwrap(),
+        });
+
+        let lease =
+            ExecutionLease::prepare_and_issue("call-1", scope.clone(), resolved.clone()).unwrap();
+        lease.claim_dispatch("call-1", "write").unwrap();
+        lease.persist_dispatched().unwrap();
+        lease.invocation_control().acknowledge().unwrap();
+        authority
+            .classify_invocation_unknown(
+                recorded_at,
+                crate::session_authority::InvocationClassifiedUnknown {
+                    invocation_id: lease.invocation_id,
+                    reason_code: "simulated_writer_failure".into(),
+                    recovery_rule_version: 2,
+                },
+            )
+            .unwrap();
+
+        let error = lease
+            .persist_settlement(crate::session_authority::InvocationOutcome::Completed)
+            .unwrap_err();
+        assert_eq!(error.code, InvocationDenialCode::AuthorityUnavailable);
+        let fence = resolved.execution.mutation_fence.clone().unwrap();
+        assert!(
+            authority
+                .active_mutation_fence(&fence.domain, &fence.key)
+                .unwrap()
+                .is_some()
+        );
+
+        let denied = ExecutionLease::prepare_and_issue("call-2", scope.clone(), resolved.clone())
+            .unwrap_err();
+        assert_eq!(denied.code, InvocationDenialCode::MutationFenced);
+
+        resolved.execution.mutation_fence = Some(omegon_traits::RuntimeMutationFence {
+            domain: fence.domain,
+            key: omegon_traits::RuntimeMutationFenceKey::new("capability:other-write").unwrap(),
+        });
+        let unrelated = ExecutionLease::prepare_and_issue("call-3", scope, resolved).unwrap();
+        unrelated.claim_dispatch("call-3", "write").unwrap();
+        unrelated.persist_dispatched().unwrap();
+        authority
+            .classify_invocation_unknown(
+                recorded_at,
+                crate::session_authority::InvocationClassifiedUnknown {
+                    invocation_id: unrelated.invocation_id,
+                    reason_code: "simulated_acknowledgement_failure".into(),
+                    recovery_rule_version: 2,
+                },
+            )
+            .unwrap();
+        assert!(unrelated.invocation_control().acknowledge().is_err());
+        let unrelated_fence = unrelated.execution.mutation_fence.as_ref().unwrap();
+        assert!(
+            authority
+                .active_mutation_fence(&unrelated_fence.domain, &unrelated_fence.key)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

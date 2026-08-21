@@ -1181,6 +1181,7 @@ pub(crate) struct SessionAuthority {
     session_id: String,
     stream_id: Uuid,
     runtime_generation_id: String,
+    mutation_fence_poisoned: bool,
 }
 
 #[derive(Clone)]
@@ -1327,7 +1328,14 @@ impl SessionAuthorityHandle {
         &self,
         evidence: &InvocationMutationFenceEvidence,
     ) -> Result<()> {
-        self.lock().store.record_mutation_fence(evidence)
+        let mut authority = self.lock();
+        match authority.store.record_mutation_fence(evidence) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                authority.mutation_fence_poisoned = true;
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn active_mutation_fence(
@@ -1335,7 +1343,13 @@ impl SessionAuthorityHandle {
         domain: &RuntimeMutationDomainId,
         key: &RuntimeMutationFenceKey,
     ) -> Result<Option<InvocationMutationFenceEvidence>> {
-        self.lock().store.active_mutation_fence(domain, key)
+        let authority = self.lock();
+        if authority.mutation_fence_poisoned {
+            return Err(AuthorityError::Invalid(
+                "invocation mutation fence writer is poisoned".into(),
+            ));
+        }
+        authority.store.active_mutation_fence(domain, key)
     }
 }
 
@@ -1417,6 +1431,7 @@ impl SessionAuthority {
             session_id,
             stream_id,
             runtime_generation_id,
+            mutation_fence_poisoned: false,
         })
     }
 
@@ -2338,6 +2353,36 @@ mod tests {
         .unwrap();
         assert!(
             reopened
+                .active_mutation_fence(&evidence.mutation_domain, &evidence.fence_key)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn failed_emergency_fence_write_poisons_runtime_mutation_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let authority = SessionAuthorityHandle::new(
+            SessionAuthority::open(
+                &directory.path().join("session.json"),
+                "session-1",
+                "workspace-1",
+                "composition:test",
+                ActorIdentity {
+                    principal: "operator".into(),
+                    ingress: "test".into(),
+                },
+                "2026-08-20T12:00:00Z",
+            )
+            .unwrap(),
+        );
+        let fence_dir = directory.path().join("invocation-mutation-fences");
+        fs::remove_dir(&fence_dir).unwrap();
+        fs::write(&fence_dir, b"not-a-directory").unwrap();
+        let evidence = mutation_fence_evidence();
+
+        assert!(authority.record_mutation_fence(&evidence).is_err());
+        assert!(
+            authority
                 .active_mutation_fence(&evidence.mutation_domain, &evidence.fence_key)
                 .is_err()
         );

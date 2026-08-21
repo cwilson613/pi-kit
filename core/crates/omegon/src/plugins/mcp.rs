@@ -1431,12 +1431,41 @@ async fn mcp_host_action_outcomes_with_context(
                     continue;
                 }
             };
-        let scoped = crate::extensions::host_actions::ScopedHostActionId {
+        let mut scoped = crate::extensions::host_actions::ScopedHostActionId {
             origin: crate::extensions::host_actions::HostActionOrigin::mcp(server_name),
             session_id: "mcp-tool-result".to_string(),
             tool_call_id: tool_name.to_string(),
             action_id: action.id.clone(),
         };
+        let authorization = context
+            .host_action_invocation
+            .as_ref()
+            .ok_or_else(|| "declared outer invocation lease is required".to_string())
+            .and_then(|guard| {
+                guard.authorize(
+                    &format!("mcp:{server_name}:{tool_name}:{idx}"),
+                    &action.action_type,
+                    &crate::extensions::host_actions::required_host_action_effects(),
+                )
+            });
+        match authorization {
+            Ok(parent) => {
+                scoped.session_id = parent
+                    .session_id
+                    .unwrap_or_else(|| format!("ephemeral:{}", parent.invocation_id));
+            }
+            Err(error) => {
+                out.push(json!({
+                    "action_id": action.id,
+                    "status": "denied",
+                    "error": {
+                        "code": "outer_lease_required",
+                        "message": error,
+                    }
+                }));
+                continue;
+            }
+        }
 
         let decision = if let Some(sink) = &context.host_action_approval {
             let request = crate::extensions::approval::build_host_action_permission_request(
@@ -1788,6 +1817,41 @@ mod tests {
         assert_eq!(outcome["result"]["tool"], "open");
         assert_eq!(outcome["result"]["action_type"], "terminal.create@1");
         assert_eq!(outcome["result"]["auto_execution"], "downgraded_to_manual");
+    }
+
+    #[tokio::test]
+    async fn mcp_host_action_review_requires_outer_lease_guard() {
+        let mut meta = rmcp::model::Meta::new();
+        meta.insert(
+            "omegon/hostActions".to_string(),
+            json!([{
+                "id": "open-reader",
+                "type": "terminal.create@1",
+                "params": {"command": "bookokrat"}
+            }]),
+        );
+        let mut result = CallToolResult::success(vec![rmcp::model::Content::text("ok")]);
+        result.meta = Some(meta);
+        let policy = McpHostActionPolicy {
+            allowed: vec!["terminal.create@1".to_string()],
+            tools: vec!["open".to_string()],
+            manual: true,
+        };
+
+        let details = mcp_tool_result_details_with_context(
+            "reader",
+            "open",
+            &result,
+            Some(&policy),
+            &omegon_traits::ToolExecutionContext::default(),
+        )
+        .await;
+
+        assert_eq!(details["host_action_outcomes"][0]["status"], "denied");
+        assert_eq!(
+            details["host_action_outcomes"][0]["error"]["code"],
+            "outer_lease_required"
+        );
     }
 
     #[test]

@@ -1841,7 +1841,7 @@ impl EventBus {
         args: Value,
         cancel: tokio_util::sync::CancellationToken,
         sink: omegon_traits::ToolProgressSink,
-        context: omegon_traits::ToolExecutionContext,
+        mut context: omegon_traits::ToolExecutionContext,
     ) -> anyhow::Result<omegon_traits::ToolResult> {
         self.validate_execution_lease(
             lease,
@@ -1850,6 +1850,8 @@ impl EventBus {
             tool_name,
         )
         .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
+        context.invocation = Some(lease.dispatch_metadata());
+        context.host_action_invocation = Some(lease.host_action_guard());
         let timeout = lease.execution_timeout(&args);
         for (idx, def) in &self.tool_defs {
             if def.name == tool_name {

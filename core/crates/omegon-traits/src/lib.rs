@@ -2425,10 +2425,43 @@ impl InvocationControl {
     }
 }
 
+#[derive(Clone)]
+pub struct HostActionInvocationGuard {
+    authorize: std::sync::Arc<HostActionAuthorizeFn>,
+}
+
+type HostActionAuthorizeFn = dyn Fn(&str, &str, &[RuntimeEffect]) -> Result<InvocationDispatchMetadata, String>
+    + Send
+    + Sync;
+
+impl HostActionInvocationGuard {
+    #[doc(hidden)]
+    pub fn new(
+        authorize: impl Fn(&str, &str, &[RuntimeEffect]) -> Result<InvocationDispatchMetadata, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            authorize: std::sync::Arc::new(authorize),
+        }
+    }
+
+    pub fn authorize(
+        &self,
+        dispatch_key: &str,
+        action_type: &str,
+        required_effects: &[RuntimeEffect],
+    ) -> Result<InvocationDispatchMetadata, String> {
+        (self.authorize)(dispatch_key, action_type, required_effects)
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct ToolExecutionContext {
     pub host_action_approval: Option<HostActionApprovalSink>,
     pub invocation: Option<InvocationDispatchMetadata>,
+    pub host_action_invocation: Option<HostActionInvocationGuard>,
 }
 
 /// Callback used by host-action-aware tool providers to request an operator

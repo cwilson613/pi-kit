@@ -462,6 +462,36 @@ impl ExecutionLease {
         })
     }
 
+    pub fn host_action_guard(&self) -> omegon_traits::HostActionInvocationGuard {
+        let terminal = self.terminal.clone();
+        let admitted_effects = self.admitted_effects.clone();
+        let metadata = self.dispatch_metadata();
+        let dispatched = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        omegon_traits::HostActionInvocationGuard::new(
+            move |dispatch_key, action_type, required_effects| {
+                if terminal.load(Ordering::Acquire) != LeaseTerminal::Dispatching as u8 {
+                    return Err("parent invocation lease is not dispatching".into());
+                }
+                if let Some(effect) = required_effects
+                    .iter()
+                    .find(|effect| !admitted_effects.contains(effect))
+                {
+                    return Err(format!(
+                        "parent invocation does not admit required HostAction effect {effect:?}"
+                    ));
+                }
+                let identity = format!("{dispatch_key}:{action_type}");
+                let mut dispatched = dispatched
+                    .lock()
+                    .map_err(|_| "HostAction dispatch identity state is unavailable".to_string())?;
+                if !dispatched.insert(identity) {
+                    return Err("HostAction dispatch identity was already consumed".into());
+                }
+                Ok(metadata.clone())
+            },
+        )
+    }
+
     pub fn persist_dispatched(&self) -> Result<(), InvocationDenial> {
         let Some(authority) = &self.authority else {
             return Ok(());
@@ -816,6 +846,64 @@ mod tests {
         let error = lease.claim_dispatch("call-2", "read").unwrap_err();
         assert_eq!(error.code, InvocationDenialCode::LeaseMismatch);
         assert_eq!(lease.terminal(), LeaseTerminal::Open);
+    }
+
+    #[test]
+    fn host_action_guard_requires_live_parent_effects_and_unique_dispatch() {
+        let lease =
+            ExecutionLease::issue("call-1", InvocationScope::default(), fixture_resolution());
+        let guard = lease.host_action_guard();
+        assert!(
+            guard
+                .authorize(
+                    "call-1:0",
+                    "resource.open@1",
+                    &[RuntimeEffect::FilesystemRead]
+                )
+                .is_err(),
+            "open but undispatched parent must not authorize child effects"
+        );
+
+        lease.claim_dispatch("call-1", "read").unwrap();
+        let metadata = guard
+            .authorize(
+                "call-1:0",
+                "resource.open@1",
+                &[RuntimeEffect::FilesystemRead],
+            )
+            .unwrap();
+        assert_eq!(metadata.visible_call_id, "call-1");
+        assert!(
+            guard
+                .authorize(
+                    "call-1:0",
+                    "resource.open@1",
+                    &[RuntimeEffect::FilesystemRead]
+                )
+                .is_err(),
+            "child dispatch identity must be exactly once"
+        );
+        assert!(
+            guard
+                .authorize(
+                    "call-1:1",
+                    "terminal.create@1",
+                    &[RuntimeEffect::ProcessSpawn]
+                )
+                .is_err(),
+            "child effects must be a subset of parent admission"
+        );
+        assert!(lease.close(LeaseTerminal::Completed));
+        assert!(
+            guard
+                .authorize(
+                    "call-1:2",
+                    "resource.open@1",
+                    &[RuntimeEffect::FilesystemRead]
+                )
+                .is_err(),
+            "settled parent must not authorize child effects"
+        );
     }
 
     #[test]

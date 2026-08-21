@@ -3786,6 +3786,7 @@ async fn execute_tool_invocation(
         omegon_traits::ToolExecutionContext {
             host_action_approval: Some(approval_sink),
             invocation: Some(lease.dispatch_metadata()),
+            ..Default::default()
         }
     } else {
         omegon_traits::ToolExecutionContext {

@@ -8,6 +8,20 @@ use std::collections::{BTreeMap, BTreeSet};
 const PACKAGE_INSTALL_V1: &str = "package.install@1";
 const RESOURCE_OPEN_V1: &str = omegon_extension::actions::resource::RESOURCE_OPEN_V1;
 
+pub(crate) fn required_host_action_effects() -> Vec<omegon_traits::RuntimeEffect> {
+    use omegon_traits::RuntimeEffect;
+    vec![
+        RuntimeEffect::FilesystemRead,
+        RuntimeEffect::FilesystemWrite,
+        RuntimeEffect::ProcessSpawn,
+        RuntimeEffect::NetworkAccess,
+        RuntimeEffect::SecretDelivery,
+        RuntimeEffect::TerminalAccess,
+        RuntimeEffect::DurableStateWrite,
+        RuntimeEffect::RuntimeControl,
+    ]
+}
+
 /// Host-attached origin for an untrusted HostAction candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HostActionOriginKind {
@@ -537,7 +551,7 @@ pub(super) async fn process_declarative_host_actions_with_context(
     let runtime_policy = RuntimeHostActionPolicy::default();
 
     for (idx, action) in actions.into_iter().enumerate() {
-        let scoped = ScopedHostActionId {
+        let mut scoped = ScopedHostActionId {
             origin: HostActionOrigin::native_extension(extension_name),
             session_id: "tool-result".to_string(),
             tool_call_id: tool_call_id.to_string(),
@@ -611,6 +625,48 @@ pub(super) async fn process_declarative_host_actions_with_context(
         } else {
             HostActionApprovalDecision::Approved
         };
+
+        if approval_decision == HostActionApprovalDecision::Approved {
+            let parsed = match serde_json::from_value::<HostAction>(action.clone()) {
+                Ok(action) => action,
+                Err(err) => {
+                    outcomes.push(serialization_error_outcome(err));
+                    continue;
+                }
+            };
+            let authorization = context
+                .host_action_invocation
+                .as_ref()
+                .ok_or_else(|| "declared outer invocation lease is required".to_string())
+                .and_then(|guard| {
+                    guard.authorize(
+                        &format!("{tool_call_id}:{idx}"),
+                        &parsed.action_type,
+                        &required_host_action_effects(),
+                    )
+                });
+            match authorization {
+                Ok(parent) => {
+                    scoped.session_id = parent
+                        .session_id
+                        .unwrap_or_else(|| format!("ephemeral:{}", parent.invocation_id));
+                }
+                Err(error) => {
+                    let outcome = audited_outcome(
+                        &scoped,
+                        Some(&parsed.action_type),
+                        parsed.id,
+                        HostActionStatus::Denied,
+                        "outer_lease_required",
+                        error,
+                    );
+                    outcomes.push(
+                        serde_json::to_value(outcome).unwrap_or_else(serialization_error_outcome),
+                    );
+                    continue;
+                }
+            }
+        }
 
         let outcome = process_host_action_candidate_with_approval_decision(
             action,
@@ -3156,6 +3212,35 @@ allowed_kinds = [{kinds}]
         assert_eq!(approvals.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(outcomes[0]["status"], "denied");
         assert_eq!(outcomes[0]["error"]["code"], "operator_denied");
+    }
+
+    #[tokio::test]
+    async fn declarative_approved_action_requires_outer_lease_guard() {
+        let manifest = terminal_manifest(&["bookokrat"], &[], &[]);
+        let sink: omegon_traits::HostActionApprovalSink = std::sync::Arc::new(|_| {
+            Box::pin(async { serde_json::to_value(HostActionApprovalDecision::Approved).unwrap() })
+        });
+        let context = omegon_traits::ToolExecutionContext {
+            host_action_approval: Some(sink),
+            ..Default::default()
+        };
+
+        let outcomes = process_declarative_host_actions_with_context(
+            vec![json!({
+                "id": "open-reader",
+                "type": "terminal.create@1",
+                "execution": "manual",
+                "params": {"command": "bookokrat"}
+            })],
+            &manifest,
+            "reader",
+            "call-1",
+            &context,
+        )
+        .await;
+
+        assert_eq!(outcomes[0]["status"], "denied");
+        assert_eq!(outcomes[0]["error"]["code"], "outer_lease_required");
     }
 
     #[test]

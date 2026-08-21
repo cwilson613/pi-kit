@@ -290,9 +290,6 @@ pub(super) fn process_host_action_candidate_with_approval_decision(
             HostActionApprovalDecision::Approved => {
                 let mut approved_policy = runtime_policy.clone();
                 approved_policy.operator_approved = true;
-                approved_policy.project_allows_auto = true;
-                approved_policy.runtime_allows_auto = true;
-                approved_policy.origin_trusted_for_auto = true;
                 return process_host_action_candidate(
                     candidate,
                     manifest,
@@ -310,22 +307,35 @@ pub(super) fn process_host_action_candidate_with_approval_decision(
 
 pub(super) fn process_native_extension_action_execute(
     action: Value,
-    manifest: &ExtensionManifest,
+    _manifest: &ExtensionManifest,
     extension_name: &str,
 ) -> HostActionOutcome {
-    process_host_action_candidate(
-        action,
-        manifest,
-        ScopedHostActionId {
-            origin: HostActionOrigin::native_extension(extension_name),
-            session_id: "extension-rpc".to_string(),
-            tool_call_id: "actions/execute".to_string(),
-            action_id: "<pending-parse>".to_string(),
-        },
-        &RuntimeHostActionPolicy::default(),
-        &HostActionExecutorRegistry::with_real_terminal_backend(
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        ),
+    let scoped_id = ScopedHostActionId {
+        origin: HostActionOrigin::native_extension(extension_name),
+        session_id: "extension-rpc".to_string(),
+        tool_call_id: "actions/execute".to_string(),
+        action_id: "<pending-parse>".to_string(),
+    };
+    let action = match serde_json::from_value::<HostAction>(action) {
+        Ok(action) => action,
+        Err(err) => {
+            return audited_outcome(
+                &scoped_id,
+                None,
+                "<invalid>",
+                HostActionStatus::Invalid,
+                "invalid_action",
+                format!("invalid HostAction candidate: {err}"),
+            );
+        }
+    };
+    audited_outcome(
+        &scoped_id,
+        Some(&action.action_type),
+        action.id,
+        HostActionStatus::Denied,
+        "outer_lease_required",
+        "imperative HostAction execution requires a declared outer invocation lease",
     )
 }
 
@@ -2072,15 +2082,15 @@ allowed_kinds = [{kinds}]
     }
 
     #[test]
-    fn imperative_action_execute_uses_same_manifest_denial_policy() {
+    fn imperative_action_execute_checks_lease_before_action_support() {
         let outcome = process_native_extension_action_execute(
             json!({"id": "open-file", "type": "file.open@1", "params": {}}),
             &manifest(&["terminal.create@1"]),
             "reader",
         );
 
-        assert_eq!(outcome.status, HostActionStatus::Unsupported);
-        assert_eq!(outcome.error.unwrap().code, "unsupported_action");
+        assert_eq!(outcome.status, HostActionStatus::Denied);
+        assert_eq!(outcome.error.unwrap().code, "outer_lease_required");
     }
 
     #[test]
@@ -2095,7 +2105,7 @@ allowed_kinds = [{kinds}]
     }
 
     #[test]
-    fn imperative_action_execute_returns_denied_for_supported_but_manifest_denied() {
+    fn imperative_action_execute_checks_lease_before_manifest_policy() {
         let outcome = process_native_extension_action_execute(
             json!({"id": "open-reader", "type": "terminal.create@1", "params": {}}),
             &manifest(&[]),
@@ -2103,7 +2113,7 @@ allowed_kinds = [{kinds}]
         );
 
         assert_eq!(outcome.status, HostActionStatus::Denied);
-        assert_eq!(outcome.error.unwrap().code, "manifest_denied");
+        assert_eq!(outcome.error.unwrap().code, "outer_lease_required");
     }
 
     #[test]
@@ -3166,7 +3176,7 @@ allowed_kinds = [{kinds}]
             json!({
                 "id": "open-reader",
                 "type": "terminal.create@1",
-                "execution": "auto_if_allowed",
+                "execution": "manual",
                 "params": {"command": "bookokrat"}
             }),
             &manifest,
@@ -3178,6 +3188,34 @@ allowed_kinds = [{kinds}]
 
         assert_eq!(outcome.status, HostActionStatus::Completed);
         assert_eq!(outcome.result.unwrap()["terminal_id"], "term-approved");
+    }
+
+    #[test]
+    fn host_action_approval_does_not_widen_auto_execution_policy() {
+        let manifest = terminal_manifest(&["bookokrat"], &[], &[]);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let registry =
+            HostActionExecutorRegistry::with_terminal_backend(Box::new(CountingBackend {
+                calls: calls.clone(),
+            }));
+
+        let outcome = process_host_action_candidate_with_approval_decision(
+            json!({
+                "id": "open-reader",
+                "type": "terminal.create@1",
+                "execution": "auto_if_allowed",
+                "params": {"command": "bookokrat"}
+            }),
+            &manifest,
+            scoped(),
+            &RuntimeHostActionPolicy::default(),
+            &registry,
+            HostActionApprovalDecision::Approved,
+        );
+
+        assert_eq!(outcome.status, HostActionStatus::Denied);
+        assert_eq!(outcome.error.unwrap().code, "auto_not_allowed");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]

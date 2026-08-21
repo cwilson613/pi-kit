@@ -2608,7 +2608,7 @@ binary = "voice-extension.sh"
     }
 
     #[test]
-    fn host_rpc_actions_execute_cannot_bypass_manifest_policy() {
+    fn host_rpc_actions_execute_requires_outer_lease() {
         let manifest = test_manifest(HashMap::new());
         let request = omegon_extension::RpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -2622,7 +2622,7 @@ binary = "voice-extension.sh"
         let response =
             host_rpc_response_for_extension_request(&manifest, "test-extension", &request).unwrap();
         assert_eq!(response["result"]["status"], "denied");
-        assert_eq!(response["result"]["error"]["code"], "manifest_denied");
+        assert_eq!(response["result"]["error"]["code"], "outer_lease_required");
     }
 
     #[test]

@@ -6282,7 +6282,7 @@ fn build_tui_secret_readiness_snapshot(
                         }
                         _ => {
                             // Unknown auth command - fall through to bus
-                            let result = runtime_state.bus.dispatch_command(&name, &args);
+                            let result = invoke_tui_command(&mut runtime_state.bus, &name, &args);
                             match result {
                                 omegon_traits::CommandResult::Display(body) => {
                                     let _ = events_tx.send(AgentEvent::CommandSurface {
@@ -6301,7 +6301,7 @@ fn build_tui_secret_readiness_snapshot(
                     }
                 } else {
                     // Regular bus command
-                    let result = runtime_state.bus.dispatch_command(&name, &args);
+                    let result = invoke_tui_command(&mut runtime_state.bus, &name, &args);
                     match result {
                         omegon_traits::CommandResult::Display(body) => {
                             // Command output carries its own provenance so operator
@@ -8170,6 +8170,28 @@ fn slash_command_line(name: &str, args: &str) -> String {
     }
 }
 
+fn invoke_tui_command(
+    bus: &mut crate::bus::EventBus,
+    name: &str,
+    args: &str,
+) -> omegon_traits::CommandResult {
+    let call_id = format!("tui-command:{}", uuid::Uuid::new_v4());
+    let scope = crate::invocation_service::InvocationScope {
+        principal: "tui-operator".into(),
+        principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+        surface: omegon_traits::RuntimeSurface::Tui,
+        ..Default::default()
+    };
+    bus.invoke_command(name, &call_id, args, scope, None)
+        .unwrap_or_else(|denial| {
+            omegon_traits::CommandResult::Display(format!(
+                "{}: {}",
+                denial.code.as_str(),
+                denial.message
+            ))
+        })
+}
+
 /// Single source of truth for capacity report generation. The interactive bus
 /// path and the remote slash path both render `/usage` and `/limits`; keeping
 /// two copies is how the surfaces drift apart.
@@ -8459,16 +8481,30 @@ fn execute_registered_remote_command(
         });
     }
 
-    match runtime_state.bus.dispatch_command(name, args) {
-        CommandResult::Display(text) => Some(SlashCommandResponse {
+    let call_id = format!("cli-command:{}", uuid::Uuid::new_v4());
+    let scope = crate::invocation_service::InvocationScope {
+        principal: "cli-operator".into(),
+        principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+        surface: omegon_traits::RuntimeSurface::Cli,
+        ..Default::default()
+    };
+    match runtime_state
+        .bus
+        .invoke_command(name, &call_id, args, scope, None)
+    {
+        Err(denial) => Some(SlashCommandResponse {
+            accepted: false,
+            output: Some(format!("{}: {}", denial.code.as_str(), denial.message)),
+        }),
+        Ok(CommandResult::Display(text)) => Some(SlashCommandResponse {
             accepted: true,
             output: Some(text),
         }),
-        CommandResult::Handled => Some(SlashCommandResponse {
+        Ok(CommandResult::Handled) => Some(SlashCommandResponse {
             accepted: true,
             output: None,
         }),
-        CommandResult::NotHandled => Some(SlashCommandResponse {
+        Ok(CommandResult::NotHandled) => Some(SlashCommandResponse {
             accepted: false,
             output: Some(format!(
                 "Command /{name} was registered but did not handle the request."

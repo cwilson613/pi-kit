@@ -1908,6 +1908,40 @@ impl EventBus {
         Ok(result)
     }
 
+    pub(crate) fn invoke_command(
+        &mut self,
+        name: &str,
+        call_id: &str,
+        args: &str,
+        scope: crate::invocation_service::InvocationScope,
+        permission_role: Option<styrene_rbac::Role>,
+    ) -> Result<CommandResult, crate::invocation_service::InvocationDenial> {
+        let admission = crate::invocation_service::InvocationService::admit_invocation(
+            self,
+            omegon_traits::RuntimeInvocationKind::Command,
+            name,
+            crate::invocation_service::InvocationRequest {
+                call_id,
+                scope,
+                permission_policy: None,
+                permission_role,
+                permission_name: name,
+                permission_subjects: &[],
+            },
+        );
+        let lease = match admission {
+            crate::invocation_service::InvocationAdmission::Lease(lease) => lease,
+            crate::invocation_service::InvocationAdmission::Denied(denial) => return Err(denial),
+            crate::invocation_service::InvocationAdmission::ApprovalRequired(_) => {
+                return Err(crate::invocation_service::denial(
+                    crate::invocation_service::InvocationDenialCode::ApprovalDenied,
+                    "command invocation requires approval before dispatch",
+                ));
+            }
+        };
+        self.dispatch_command_with_lease(&lease, name, call_id, args)
+    }
+
     // ─── Introspection ──────────────────────────────────────────────
 
     /// Number of registered features.

@@ -1660,7 +1660,7 @@ async fn handle_control_request(
         ),
 
         // ── Design tree ────────────────────────────────
-        "tree_view" => match bus.dispatch_command("design", args) {
+        "tree_view" => match invoke_acp_command(bus, "design", args) {
             omegon_traits::CommandResult::Display(msg) => msg,
             omegon_traits::CommandResult::Handled => "Design tree command handled.".into(),
             omegon_traits::CommandResult::NotHandled => "Design tree not available.".into(),
@@ -1738,13 +1738,35 @@ pub(crate) fn handle_registered_acp_command(
         ));
     }
 
-    match bus.dispatch_command(name, args) {
+    match invoke_acp_command(bus, name, args) {
         omegon_traits::CommandResult::Display(text) => Some(text),
         omegon_traits::CommandResult::Handled => Some(format!("/{name} handled.")),
         omegon_traits::CommandResult::NotHandled => Some(format!(
             "Command /{name} was registered but did not handle the request."
         )),
     }
+}
+
+fn invoke_acp_command(
+    bus: &mut crate::bus::EventBus,
+    name: &str,
+    args: &str,
+) -> omegon_traits::CommandResult {
+    let call_id = format!("acp-command:{}", uuid::Uuid::new_v4());
+    let scope = crate::invocation_service::InvocationScope {
+        principal: "acp-operator".into(),
+        principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+        surface: omegon_traits::RuntimeSurface::Acp,
+        ..Default::default()
+    };
+    bus.invoke_command(name, &call_id, args, scope, None)
+        .unwrap_or_else(|denial| {
+            omegon_traits::CommandResult::Display(format!(
+                "{}: {}",
+                denial.code.as_str(),
+                denial.message
+            ))
+        })
 }
 
 fn workspace_ctx<'a>(

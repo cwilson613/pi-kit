@@ -541,6 +541,7 @@ async fn stop_voice_session_if_requested(
     prompt: &PromptEnvelope,
     bus: &crate::bus::EventBus,
     events_tx: &tokio::sync::broadcast::Sender<AgentEvent>,
+    scope: crate::invocation_service::InvocationScope,
 ) {
     if !prompt.requests_voice_close() {
         return;
@@ -553,12 +554,14 @@ async fn stop_voice_session_if_requested(
         return;
     }
 
+    let call_id = format!("voice-over-and-out-stop:{}", uuid::Uuid::new_v4());
     match bus
-        .execute_tool(
+        .invoke_tool(
             "voice_session_stop",
-            "voice-over-and-out-stop",
+            &call_id,
             serde_json::json!({}),
             tokio_util::sync::CancellationToken::new(),
+            scope,
         )
         .await
     {

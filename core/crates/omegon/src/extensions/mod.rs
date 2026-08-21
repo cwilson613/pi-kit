@@ -853,6 +853,24 @@ impl ExtensionPollingHandle {
     }
 }
 
+fn extension_tool_surfaces(tool_name: &str) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+    (tool_name == "voice_session_stop").then(|| {
+        vec![
+            omegon_traits::RuntimeSurface::Model,
+            omegon_traits::RuntimeSurface::Tui,
+        ]
+    })
+}
+
+fn extension_tool_principals(tool_name: &str) -> Option<Vec<omegon_traits::RuntimePrincipalClass>> {
+    (tool_name == "voice_session_stop").then(|| {
+        vec![
+            omegon_traits::RuntimePrincipalClass::Model,
+            omegon_traits::RuntimePrincipalClass::Service,
+        ]
+    })
+}
+
 #[async_trait::async_trait]
 impl Feature for ExtensionFeature {
     fn name(&self) -> &str {
@@ -893,6 +911,17 @@ impl Feature for ExtensionFeature {
 
     fn tools(&self) -> Vec<ToolDefinition> {
         self.tools.clone()
+    }
+
+    fn runtime_tool_surfaces(&self, tool_name: &str) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+        extension_tool_surfaces(tool_name)
+    }
+
+    fn runtime_tool_principals(
+        &self,
+        tool_name: &str,
+    ) -> Option<Vec<omegon_traits::RuntimePrincipalClass>> {
+        extension_tool_principals(tool_name)
     }
 
     async fn execute(
@@ -2009,6 +2038,26 @@ mod tests {
     #[test]
     fn extension_manifest_paths() {
         // Placeholder for integration tests
+    }
+
+    #[test]
+    fn voice_stop_declares_model_and_tui_service_access() {
+        assert_eq!(
+            extension_tool_surfaces("voice_session_stop"),
+            Some(vec![
+                omegon_traits::RuntimeSurface::Model,
+                omegon_traits::RuntimeSurface::Tui,
+            ])
+        );
+        assert_eq!(
+            extension_tool_principals("voice_session_stop"),
+            Some(vec![
+                omegon_traits::RuntimePrincipalClass::Model,
+                omegon_traits::RuntimePrincipalClass::Service,
+            ])
+        );
+        assert_eq!(extension_tool_surfaces("other_extension_tool"), None);
+        assert_eq!(extension_tool_principals("other_extension_tool"), None);
     }
 
     #[test]

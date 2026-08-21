@@ -6494,8 +6494,24 @@ fn build_tui_secret_readiness_snapshot(
                         text: active.prompt.text.clone(),
                         image_paths: active.prompt.image_paths.clone(),
                     });
-                    stop_voice_session_if_requested(&active.prompt, &runtime_state.bus, &events_tx)
-                        .await;
+                    let invocation_authority = runtime.invocation_authority();
+                    let voice_scope = crate::invocation_service::InvocationScope {
+                        principal: "kernel:voice-lifecycle".into(),
+                        principal_class: omegon_traits::RuntimePrincipalClass::Service,
+                        surface: omegon_traits::RuntimeSurface::Tui,
+                        session_id: invocation_authority
+                            .as_ref()
+                            .map(|authority| authority.session_id()),
+                        turn_id: active.authority_turn_id,
+                        authority: invocation_authority.clone(),
+                    };
+                    stop_voice_session_if_requested(
+                        &active.prompt,
+                        &runtime_state.bus,
+                        &events_tx,
+                        voice_scope,
+                    )
+                    .await;
                     mark_interactive_session_busy(&agent.dashboard_handles, true);
                     lifecycle.transition("worker_spawned", runtime.queue_depth(), &events_tx);
 
@@ -6510,7 +6526,6 @@ fn build_tui_secret_readiness_snapshot(
                     if let Ok(mut guard) = shared_cancel.lock() {
                         *guard = Some(turn_cancel.clone());
                     }
-                    let invocation_authority = runtime.invocation_authority();
                     let invocation_session_id = invocation_authority
                         .as_ref()
                         .map(|_| agent.session_id.clone());

@@ -1003,8 +1003,21 @@ async fn worker_loop(
                     let name = name.to_string();
                     let cancel = CancellationToken::new();
                     let args = serde_json::json!({ "name": name });
+                    let call_id = format!("acp-persona-switch:{}", uuid::Uuid::new_v4());
+                    let scope = crate::invocation_service::InvocationScope {
+                        principal: "kernel:acp-persona-switch".into(),
+                        principal_class: omegon_traits::RuntimePrincipalClass::Internal,
+                        surface: omegon_traits::RuntimeSurface::Internal,
+                        ..Default::default()
+                    };
                     match bus
-                        .execute_tool("switch_persona", "ctrl", args, cancel)
+                        .invoke_internal(
+                            crate::tool_registry::persona::SWITCH_PERSONA,
+                            &call_id,
+                            args,
+                            cancel,
+                            scope,
+                        )
                         .await
                     {
                         Ok(result) => {

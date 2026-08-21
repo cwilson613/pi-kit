@@ -992,6 +992,8 @@ impl AgentSetup {
                 cwd.clone(),
             ),
         ));
+        bus.register_internal_tool(crate::tool_registry::persona::SWITCH_PERSONA, "persona");
+        bus.register_internal_tool(crate::tool_registry::persona::SWITCH_TONE, "persona");
         bus.register(Box::new(features::skills::SkillsFeature::new(
             shared_augment_registry,
             cwd.clone(),

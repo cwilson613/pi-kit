@@ -3534,24 +3534,28 @@ pub async fn profile_apply_response(
         .bus
         .apply_operator_tool_profile(slim, &posture_disabled, &posture_enabled);
     if let Some(persona) = profile.persona.as_deref() {
+        let call_id = format!("profile-apply-persona:{}", uuid::Uuid::new_v4());
         let _ = runtime_state
             .bus
-            .execute_tool(
+            .invoke_internal(
                 crate::tool_registry::persona::SWITCH_PERSONA,
-                "profile-apply-persona",
+                &call_id,
                 serde_json::json!({ "name": persona, "reason": "profile apply" }),
                 tokio_util::sync::CancellationToken::new(),
+                internal_control_scope("kernel:profile-apply-persona"),
             )
             .await;
     }
     if let Some(tone) = profile.tone.as_deref() {
+        let call_id = format!("profile-apply-tone:{}", uuid::Uuid::new_v4());
         let _ = runtime_state
             .bus
-            .execute_tool(
+            .invoke_internal(
                 crate::tool_registry::persona::SWITCH_TONE,
-                "profile-apply-tone",
+                &call_id,
                 serde_json::json!({ "name": tone, "reason": "profile apply" }),
                 tokio_util::sync::CancellationToken::new(),
+                internal_control_scope("kernel:profile-apply-tone"),
             )
             .await;
     }
@@ -3593,6 +3597,15 @@ pub async fn profile_apply_response(
             "Profile applied to live runtime. Integration and extension load policy changes take effect on next startup."
                 .into(),
         ),
+    }
+}
+
+fn internal_control_scope(principal: &str) -> crate::invocation_service::InvocationScope {
+    crate::invocation_service::InvocationScope {
+        principal: principal.into(),
+        principal_class: omegon_traits::RuntimePrincipalClass::Internal,
+        surface: omegon_traits::RuntimeSurface::Internal,
+        ..Default::default()
     }
 }
 

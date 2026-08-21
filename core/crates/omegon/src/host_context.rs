@@ -723,18 +723,12 @@ async fn delegate_write(
         .write_text_file(path.clone(), content.to_string())
         .await;
     if let Err(host_err) = host_result {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|local_err| {
-                anyhow::anyhow!(
-                    "host write failed for {path_str}: {host_err}; local parent creation failed: {local_err}"
-                )
-            })?;
+        return Err(crate::invocation_service::UnknownCompletionError {
+            reason: format!(
+                "host write response failed after mutation handoff for {path_str}: {host_err}"
+            ),
         }
-        std::fs::write(&path, content).map_err(|local_err| {
-            anyhow::anyhow!(
-                "host write failed for {path_str}: {host_err}; local fallback failed: {local_err}"
-            )
-        })?;
+        .into());
     }
 
     let line_count = content.lines().count();
@@ -859,5 +853,24 @@ mod tests {
             &dir.path().join("missing.txt"),
             &anyhow::anyhow!("unsupported")
         ));
+    }
+
+    #[test]
+    fn host_write_transport_failure_is_unknown_and_never_a_local_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("not-written.txt");
+        let error = anyhow::Error::new(crate::invocation_service::UnknownCompletionError {
+            reason: format!(
+                "host write response failed after mutation handoff for {}: channel closed",
+                path.display()
+            ),
+        });
+
+        assert!(
+            error
+                .downcast_ref::<crate::invocation_service::UnknownCompletionError>()
+                .is_some()
+        );
+        assert!(!path.exists());
     }
 }

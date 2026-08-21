@@ -62,10 +62,10 @@ fn mutating_execution_requires_a_durable_fence_identity() {
     );
 
     declaration.capabilities[0].execution.mutation_fence =
-        Some(omegon_traits::RuntimeMutationFence {
+        Some(Box::new(omegon_traits::RuntimeMutationFence {
             domain: omegon_traits::RuntimeMutationDomainId::new("workspace:runtime").unwrap(),
             key: omegon_traits::RuntimeMutationFenceKey::new("capability:read").unwrap(),
-        });
+        }));
     declaration.validate().unwrap();
 
     declaration.capabilities[0]

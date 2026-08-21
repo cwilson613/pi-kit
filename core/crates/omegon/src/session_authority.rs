@@ -267,48 +267,50 @@ pub(crate) struct InvocationMutationFenceEvidence {
     pub(crate) failure_reason: String,
 }
 
+pub(crate) struct InvocationMutationFenceEvidenceDraft {
+    pub(crate) mutation_domain: RuntimeMutationDomainId,
+    pub(crate) fence_key: RuntimeMutationFenceKey,
+    pub(crate) invocation_id: Uuid,
+    pub(crate) call_id: String,
+    pub(crate) capability_id: RuntimeCapabilityId,
+    pub(crate) owner_contribution_id: RuntimeContributionId,
+    pub(crate) owner_generation_id: RuntimeContributionGenerationId,
+    pub(crate) issue_generation_id: RuntimeCompositionGenerationId,
+    pub(crate) lease_id: Uuid,
+    pub(crate) session_id: String,
+    pub(crate) turn_id: Uuid,
+    pub(crate) failure_phase: InvocationFenceFailurePhase,
+    pub(crate) recorded_at: String,
+    pub(crate) failure_reason: String,
+}
+
 impl InvocationMutationFenceEvidence {
-    pub(crate) fn new(
-        mutation_domain: RuntimeMutationDomainId,
-        fence_key: RuntimeMutationFenceKey,
-        invocation_id: Uuid,
-        call_id: String,
-        capability_id: RuntimeCapabilityId,
-        owner_contribution_id: RuntimeContributionId,
-        owner_generation_id: RuntimeContributionGenerationId,
-        issue_generation_id: RuntimeCompositionGenerationId,
-        lease_id: Uuid,
-        session_id: String,
-        turn_id: Uuid,
-        failure_phase: InvocationFenceFailurePhase,
-        recorded_at: String,
-        failure_reason: String,
-    ) -> Result<Self> {
+    pub(crate) fn new(draft: InvocationMutationFenceEvidenceDraft) -> Result<Self> {
         let fence_id = invocation_mutation_fence_id(
-            &mutation_domain,
-            &fence_key,
-            invocation_id,
-            lease_id,
-            failure_phase,
+            &draft.mutation_domain,
+            &draft.fence_key,
+            draft.invocation_id,
+            draft.lease_id,
+            draft.failure_phase,
         );
         let evidence = Self {
             schema_version: 1,
             record_kind: "invocation_mutation_fence".into(),
             fence_id,
-            mutation_domain,
-            fence_key,
-            invocation_id,
-            call_id,
-            capability_id,
-            owner_contribution_id,
-            owner_generation_id,
-            issue_generation_id,
-            lease_id,
-            session_id,
-            turn_id,
-            failure_phase,
-            recorded_at,
-            failure_reason,
+            mutation_domain: draft.mutation_domain,
+            fence_key: draft.fence_key,
+            invocation_id: draft.invocation_id,
+            call_id: draft.call_id,
+            capability_id: draft.capability_id,
+            owner_contribution_id: draft.owner_contribution_id,
+            owner_generation_id: draft.owner_generation_id,
+            issue_generation_id: draft.issue_generation_id,
+            lease_id: draft.lease_id,
+            session_id: draft.session_id,
+            turn_id: draft.turn_id,
+            failure_phase: draft.failure_phase,
+            recorded_at: draft.recorded_at,
+            failure_reason: draft.failure_reason,
         };
         evidence.validate()?;
         Ok(evidence)
@@ -2299,22 +2301,23 @@ mod tests {
     }
 
     fn mutation_fence_evidence() -> InvocationMutationFenceEvidence {
-        InvocationMutationFenceEvidence::new(
-            RuntimeMutationDomainId::new("workspace:runtime").unwrap(),
-            RuntimeMutationFenceKey::new("capability:write").unwrap(),
-            Uuid::new_v4(),
-            "call-write".into(),
-            RuntimeCapabilityId::new("tool:write").unwrap(),
-            RuntimeContributionId::new("feature:writer").unwrap(),
-            RuntimeContributionGenerationId::new("contribution:writer-v1").unwrap(),
-            RuntimeCompositionGenerationId::new("composition:test").unwrap(),
-            Uuid::new_v4(),
-            "session-1".into(),
-            Uuid::new_v4(),
-            InvocationFenceFailurePhase::TerminalSettlement,
-            "2026-08-20T12:00:00Z".into(),
-            "authority append failed".into(),
-        )
+        InvocationMutationFenceEvidence::new(InvocationMutationFenceEvidenceDraft {
+            mutation_domain: RuntimeMutationDomainId::new("workspace:runtime").unwrap(),
+            fence_key: RuntimeMutationFenceKey::new("capability:write").unwrap(),
+            invocation_id: Uuid::new_v4(),
+            call_id: "call-write".into(),
+            capability_id: RuntimeCapabilityId::new("tool:write").unwrap(),
+            owner_contribution_id: RuntimeContributionId::new("feature:writer").unwrap(),
+            owner_generation_id: RuntimeContributionGenerationId::new("contribution:writer-v1")
+                .unwrap(),
+            issue_generation_id: RuntimeCompositionGenerationId::new("composition:test").unwrap(),
+            lease_id: Uuid::new_v4(),
+            session_id: "session-1".into(),
+            turn_id: Uuid::new_v4(),
+            failure_phase: InvocationFenceFailurePhase::TerminalSettlement,
+            recorded_at: "2026-08-20T12:00:00Z".into(),
+            failure_reason: "authority append failed".into(),
+        })
         .unwrap()
     }
 

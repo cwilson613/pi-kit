@@ -252,7 +252,8 @@ fn adapted_tool_policy(definition: &ToolDefinition) -> omegon_traits::RuntimeToo
             } else {
                 RuntimeTransactionBehavior::None
             },
-            mutation_fence: mutates.then(|| conservative_mutation_fence(&definition.name)),
+            mutation_fence: mutates
+                .then(|| Box::new(conservative_mutation_fence(&definition.name))),
             max_attempts: None,
         },
     }
@@ -832,7 +833,7 @@ impl EventBus {
                 } else {
                     RuntimeTransactionBehavior::None
                 },
-                mutation_fence: mutates.then(|| conservative_mutation_fence(name)),
+                mutation_fence: mutates.then(|| Box::new(conservative_mutation_fence(name))),
                 max_attempts: None,
             }
         };
@@ -2117,7 +2118,8 @@ mod tests {
                     } else {
                         omegon_traits::RuntimeTransactionBehavior::None
                     },
-                    mutation_fence: mutates.then(|| conservative_mutation_fence(self.tool_name)),
+                    mutation_fence: mutates
+                        .then(|| Box::new(conservative_mutation_fence(self.tool_name))),
                     max_attempts: None,
                 },
             })

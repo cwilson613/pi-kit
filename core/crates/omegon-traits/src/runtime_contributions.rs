@@ -469,7 +469,7 @@ pub struct RuntimeExecutionPolicy {
     #[serde(default, skip_serializing_if = "is_non_transactional")]
     pub transaction: RuntimeTransactionBehavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mutation_fence: Option<RuntimeMutationFence>,
+    pub mutation_fence: Option<Box<RuntimeMutationFence>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_attempts: Option<u16>,
 }

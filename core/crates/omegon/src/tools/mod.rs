@@ -771,11 +771,15 @@ impl ToolProvider for CoreTools {
                         deduplication: RuntimeDeduplication::Unsupported,
                         parallelism,
                         transaction,
-                        mutation_fence: mutates.then(|| RuntimeMutationFence {
-                            domain: RuntimeMutationDomainId::new("workspace:runtime")
-                                .expect("static mutation domain is valid"),
-                            key: RuntimeMutationFenceKey::new(format!("capability:{tool_name}"))
+                        mutation_fence: mutates.then(|| {
+                            Box::new(RuntimeMutationFence {
+                                domain: RuntimeMutationDomainId::new("workspace:runtime")
+                                    .expect("static mutation domain is valid"),
+                                key: RuntimeMutationFenceKey::new(format!(
+                                    "capability:{tool_name}"
+                                ))
                                 .expect("core tool name is a valid fence key"),
+                            })
                         }),
                         max_attempts: idempotent.then_some(2),
                     },

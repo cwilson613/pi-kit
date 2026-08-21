@@ -135,6 +135,7 @@ pub(crate) enum InvocationDenialCode {
     LeaseClosed,
     LeaseMismatch,
     MutationFenced,
+    UnsafeUnknownRetry,
 }
 
 impl InvocationDenialCode {
@@ -151,6 +152,7 @@ impl InvocationDenialCode {
             Self::LeaseClosed => "invocation:lease_closed",
             Self::LeaseMismatch => "invocation:lease_mismatch",
             Self::MutationFenced => "invocation:mutation_fenced",
+            Self::UnsafeUnknownRetry => "invocation:unsafe_unknown_retry",
         }
     }
 }
@@ -300,6 +302,26 @@ impl ExecutionLease {
                 InvocationDenialCode::AuthorityUnavailable,
                 "invocation scope does not match the session authority writer",
             ));
+        }
+        match authority.unknown_retry_disposition(call_id) {
+            Ok(crate::session_authority::UnknownRetryDisposition::Unsafe { invocation_id }) => {
+                return Err(denial(
+                    InvocationDenialCode::UnsafeUnknownRetry,
+                    format!(
+                        "stable call {call_id} has unresolved mutating invocation {invocation_id} without original idempotency or owner-enforced deduplication"
+                    ),
+                ));
+            }
+            Ok(
+                crate::session_authority::UnknownRetryDisposition::None
+                | crate::session_authority::UnknownRetryDisposition::Safe { .. },
+            ) => {}
+            Err(error) => {
+                return Err(denial(
+                    InvocationDenialCode::UnsafeUnknownRetry,
+                    format!("unknown-completion retry state is invalid: {error}"),
+                ));
+            }
         }
         if let Some(mutation_fence) = &resolved.execution.mutation_fence {
             match authority.active_mutation_fence(&mutation_fence.domain, &mutation_fence.key) {
@@ -938,6 +960,26 @@ mod tests {
                 },
             )
             .unwrap();
+
+        let invocation_count = authority.state().invocations.len();
+        let mut retry_scope = scope.clone();
+        retry_scope.turn_id = Some(Uuid::new_v4());
+        let retry =
+            ExecutionLease::prepare_and_issue("call-1", retry_scope.clone(), resolved.clone())
+                .unwrap_err();
+        assert_eq!(retry.code, InvocationDenialCode::UnsafeUnknownRetry);
+        assert!(retry.message.contains(&lease.invocation_id.to_string()));
+        assert_eq!(authority.state().invocations.len(), invocation_count);
+
+        let mut newly_claimed_safe = resolved.clone();
+        newly_claimed_safe.execution.idempotency = omegon_traits::RuntimeIdempotency::Idempotent;
+        newly_claimed_safe.execution.retry_class =
+            omegon_traits::RuntimeRetryClass::IdempotentFailure;
+        newly_claimed_safe.execution.max_attempts = Some(3);
+        let retry = ExecutionLease::prepare_and_issue("call-1", retry_scope, newly_claimed_safe)
+            .unwrap_err();
+        assert_eq!(retry.code, InvocationDenialCode::UnsafeUnknownRetry);
+        assert_eq!(authority.state().invocations.len(), invocation_count);
 
         let error = lease
             .persist_settlement(crate::session_authority::InvocationOutcome::Completed)

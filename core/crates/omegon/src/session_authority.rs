@@ -682,6 +682,13 @@ impl InvocationState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnknownRetryDisposition {
+    None,
+    Safe { invocation_id: Uuid },
+    Unsafe { invocation_id: Uuid },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CommandReceipt {
@@ -719,6 +726,48 @@ pub(crate) struct SessionAuthorityState {
 }
 
 impl SessionAuthorityState {
+    fn unknown_retry_disposition(&self, call_id: &str) -> Result<UnknownRetryDisposition> {
+        let mut disposition = UnknownRetryDisposition::None;
+        for (invocation_id, invocation) in &self.invocations {
+            if invocation.call_id() != call_id {
+                continue;
+            }
+            let candidate = match invocation {
+                InvocationState::Unknown { .. } => UnknownRetryDisposition::Unsafe {
+                    invocation_id: *invocation_id,
+                },
+                InvocationState::DurableUnknown { preparation, .. }
+                    if omegon_traits::runtime_effects_mutate(&preparation.admitted_effects) =>
+                {
+                    let safe = preparation.execution.idempotency
+                        == omegon_traits::RuntimeIdempotency::Idempotent
+                        || (preparation.execution.deduplication
+                            == omegon_traits::RuntimeDeduplication::OwnerEnforcedStableCallId
+                            && preparation.deduplication_id.as_deref() == Some(call_id));
+                    if safe {
+                        UnknownRetryDisposition::Safe {
+                            invocation_id: *invocation_id,
+                        }
+                    } else {
+                        UnknownRetryDisposition::Unsafe {
+                            invocation_id: *invocation_id,
+                        }
+                    }
+                }
+                _ => UnknownRetryDisposition::None,
+            };
+            if candidate != UnknownRetryDisposition::None {
+                if disposition != UnknownRetryDisposition::None {
+                    return Err(AuthorityError::Invalid(
+                        "multiple unknown invocations share one stable call identity".into(),
+                    ));
+                }
+                disposition = candidate;
+            }
+        }
+        Ok(disposition)
+    }
+
     pub(crate) fn apply(&mut self, fact: &SessionFact) -> Result<()> {
         let expected_sequence =
             self.last_sequence
@@ -1219,6 +1268,13 @@ impl SessionAuthorityHandle {
 
     pub(crate) fn state(&self) -> SessionAuthorityState {
         self.lock().state().clone()
+    }
+
+    pub(crate) fn unknown_retry_disposition(
+        &self,
+        call_id: &str,
+    ) -> Result<UnknownRetryDisposition> {
+        self.lock().state().unknown_retry_disposition(call_id)
     }
 
     pub(crate) fn session_id(&self) -> String {
@@ -2388,6 +2444,120 @@ mod tests {
             authority
                 .active_mutation_fence(&evidence.mutation_domain, &evidence.fence_key)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn unknown_retry_safety_uses_the_original_mutation_contract() {
+        fn durable_unknown(preparation: InvocationPrepared) -> SessionAuthorityState {
+            let invocation_id = preparation.invocation_id;
+            let lease_id = preparation.lease_id;
+            let mut state = SessionAuthorityState::default();
+            state.invocations.insert(
+                invocation_id,
+                InvocationState::DurableUnknown {
+                    preparation,
+                    dispatch: InvocationDispatched {
+                        invocation_id,
+                        lease_id,
+                    },
+                    acknowledgement: None,
+                    classification: InvocationClassifiedUnknown {
+                        invocation_id,
+                        reason_code: "runtime_loss_after_dispatch".into(),
+                        recovery_rule_version: 2,
+                    },
+                },
+            );
+            state
+        }
+
+        let turn_id = Uuid::new_v4();
+        let mut unsafe_preparation = prepared(turn_id, "stable-call");
+        unsafe_preparation
+            .admitted_effects
+            .push(RuntimeEffect::FilesystemWrite);
+        unsafe_preparation.execution.idempotency = omegon_traits::RuntimeIdempotency::NonIdempotent;
+        unsafe_preparation.execution.deduplication =
+            omegon_traits::RuntimeDeduplication::Unsupported;
+        unsafe_preparation.deduplication_id = None;
+        let unsafe_id = unsafe_preparation.invocation_id;
+        assert_eq!(
+            durable_unknown(unsafe_preparation.clone())
+                .unknown_retry_disposition("stable-call")
+                .unwrap(),
+            UnknownRetryDisposition::Unsafe {
+                invocation_id: unsafe_id
+            }
+        );
+
+        let mut idempotent = unsafe_preparation.clone();
+        idempotent.execution.idempotency = omegon_traits::RuntimeIdempotency::Idempotent;
+        assert_eq!(
+            durable_unknown(idempotent)
+                .unknown_retry_disposition("stable-call")
+                .unwrap(),
+            UnknownRetryDisposition::Safe {
+                invocation_id: unsafe_id
+            }
+        );
+
+        let mut deduplicated = unsafe_preparation.clone();
+        deduplicated.execution.deduplication =
+            omegon_traits::RuntimeDeduplication::OwnerEnforcedStableCallId;
+        deduplicated.deduplication_id = Some("stable-call".into());
+        assert_eq!(
+            durable_unknown(deduplicated)
+                .unknown_retry_disposition("stable-call")
+                .unwrap(),
+            UnknownRetryDisposition::Safe {
+                invocation_id: unsafe_id
+            }
+        );
+
+        let mut mismatched = unsafe_preparation.clone();
+        mismatched.execution.deduplication =
+            omegon_traits::RuntimeDeduplication::OwnerEnforcedStableCallId;
+        mismatched.deduplication_id = Some("another-call".into());
+        assert!(matches!(
+            durable_unknown(mismatched)
+                .unknown_retry_disposition("stable-call")
+                .unwrap(),
+            UnknownRetryDisposition::Unsafe { .. }
+        ));
+
+        let read_only = prepared(turn_id, "stable-call");
+        assert_eq!(
+            durable_unknown(read_only)
+                .unknown_retry_disposition("stable-call")
+                .unwrap(),
+            UnknownRetryDisposition::None
+        );
+
+        let legacy_id = Uuid::new_v4();
+        let registration = InvocationRegistered {
+            invocation_id: legacy_id,
+            turn_id,
+            call_id: "legacy-call".into(),
+            owner_generation_id: None,
+        };
+        let mut legacy = SessionAuthorityState::default();
+        legacy.invocations.insert(
+            legacy_id,
+            InvocationState::Unknown {
+                registration,
+                classification: InvocationClassifiedUnknown {
+                    invocation_id: legacy_id,
+                    reason_code: "runtime_loss".into(),
+                    recovery_rule_version: 1,
+                },
+            },
+        );
+        assert_eq!(
+            legacy.unknown_retry_disposition("legacy-call").unwrap(),
+            UnknownRetryDisposition::Unsafe {
+                invocation_id: legacy_id
+            }
         );
     }
 

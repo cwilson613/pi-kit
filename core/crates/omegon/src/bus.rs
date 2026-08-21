@@ -644,6 +644,9 @@ impl EventBus {
             command_aliases: Vec<omegon_traits::CommandAlias>,
             internal_tools: Vec<String>,
             tool_policies: BTreeMap<String, omegon_traits::RuntimeToolPolicy>,
+            tool_surfaces: BTreeMap<String, Vec<RuntimeSurface>>,
+            tool_principals: BTreeMap<String, Vec<RuntimePrincipalClass>>,
+            command_surfaces: BTreeMap<String, Vec<RuntimeSurface>>,
             lifecycle: Option<RuntimeLifecyclePolicy>,
             composition_transition: Option<RuntimeCompositionTransitionPolicy>,
         }
@@ -712,16 +715,44 @@ impl EventBus {
                         .map(|policy| (tool.name.clone(), policy))
                 })
                 .collect();
+            let tool_surfaces = tools
+                .iter()
+                .filter_map(|tool| {
+                    feature
+                        .runtime_tool_surfaces(&tool.name)
+                        .map(|surfaces| (tool.name.clone(), surfaces))
+                })
+                .collect();
+            let tool_principals = tools
+                .iter()
+                .filter_map(|tool| {
+                    feature
+                        .runtime_tool_principals(&tool.name)
+                        .map(|principals| (tool.name.clone(), principals))
+                })
+                .collect();
+            let commands = feature.commands();
+            let command_surfaces = commands
+                .iter()
+                .filter_map(|command| {
+                    feature
+                        .runtime_command_surfaces(&command.name)
+                        .map(|surfaces| (command.name.clone(), surfaces))
+                })
+                .collect();
             frozen.push(FrozenFeature {
                 contribution_id,
                 feature_index,
                 name: feature.name().to_string(),
                 provenance: feature.tool_provenance(),
                 tools,
-                commands: feature.commands(),
+                commands,
                 command_aliases: feature.command_aliases(),
                 internal_tools,
                 tool_policies,
+                tool_surfaces,
+                tool_principals,
+                command_surfaces,
                 lifecycle: feature.runtime_lifecycle_policy(),
                 composition_transition: feature.runtime_transition_policy(),
             });
@@ -918,7 +949,7 @@ impl EventBus {
                         .tools
                         .iter()
                         .map(|tool| {
-                            let tool_policy = if external {
+                            let mut tool_policy = if external {
                                 let effects = conservative_external_effects();
                                 omegon_traits::RuntimeToolPolicy {
                                     execution: policy(
@@ -935,6 +966,9 @@ impl EventBus {
                                     .cloned()
                                     .unwrap_or_else(|| adapted_tool_policy(tool))
                             };
+                            if let Some(principals) = feature.tool_principals.get(&tool.name) {
+                                tool_policy.execution.principals = principals.clone();
+                            }
                             RuntimeContributionCapabilityDeclaration {
                                 id: RuntimeCapabilityId::tool(&tool.name),
                                 kind: RuntimeCapabilityKind::Tool,
@@ -946,7 +980,11 @@ impl EventBus {
                                 effects: tool_policy.effects,
                                 execution: tool_policy.execution,
                                 transition: transition(),
-                                surfaces: vec![RuntimeSurface::Model],
+                                surfaces: feature
+                                    .tool_surfaces
+                                    .get(&tool.name)
+                                    .cloned()
+                                    .unwrap_or_else(|| vec![RuntimeSurface::Model]),
                             }
                         })
                         .chain(command_groups.into_iter().map(
@@ -961,12 +999,18 @@ impl EventBus {
                                         .into_iter()
                                         .collect::<Vec<_>>()
                                 };
-                                let surfaces = commands
-                                    .iter()
-                                    .flat_map(|command| adapted_command_surfaces(command))
-                                    .collect::<BTreeSet<_>>()
-                                    .into_iter()
-                                    .collect::<Vec<_>>();
+                                let surfaces = feature
+                                    .command_surfaces
+                                    .get(&canonical)
+                                    .cloned()
+                                    .unwrap_or_else(|| {
+                                        commands
+                                            .iter()
+                                            .flat_map(|command| adapted_command_surfaces(command))
+                                            .collect::<BTreeSet<_>>()
+                                            .into_iter()
+                                            .collect::<Vec<_>>()
+                                    });
                                 RuntimeContributionCapabilityDeclaration {
                                     id: RuntimeCapabilityId::action(&canonical),
                                     kind: RuntimeCapabilityKind::OperatorAction,
@@ -1785,6 +1829,88 @@ impl EventBus {
         anyhow::bail!("no feature provides tool '{tool_name}'")
     }
 
+    pub(crate) async fn invoke_tool(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        scope: crate::invocation_service::InvocationScope,
+    ) -> anyhow::Result<omegon_traits::ToolResult> {
+        let admission = crate::invocation_service::InvocationService::admit_invocation(
+            self,
+            omegon_traits::RuntimeInvocationKind::Tool,
+            tool_name,
+            crate::invocation_service::InvocationRequest {
+                call_id,
+                scope,
+                permission_policy: None,
+                permission_role: None,
+                permission_name: tool_name,
+                permission_subjects: &[],
+            },
+        );
+        let lease = match admission {
+            crate::invocation_service::InvocationAdmission::Lease(lease) => lease,
+            crate::invocation_service::InvocationAdmission::Denied(denial) => {
+                anyhow::bail!("{}: {}", denial.code.as_str(), denial.message)
+            }
+            crate::invocation_service::InvocationAdmission::ApprovalRequired(_) => {
+                anyhow::bail!("invocation:approval_denied: tool invocation requires approval")
+            }
+        };
+        lease
+            .claim_dispatch(call_id, tool_name)
+            .and_then(|_| {
+                self.validate_execution_lease(
+                    &lease,
+                    call_id,
+                    omegon_traits::RuntimeInvocationKind::Tool,
+                    tool_name,
+                )
+            })
+            .and_then(|_| lease.persist_dispatched())
+            .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
+
+        let result = self
+            .execute_tool_with_lease(
+                &lease,
+                tool_name,
+                call_id,
+                args,
+                cancel,
+                omegon_traits::ToolProgressSink::noop(),
+                omegon_traits::ToolExecutionContext::default(),
+            )
+            .await;
+        let is_error = match &result {
+            Err(_) => true,
+            Ok(result) => result
+                .details
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        let (outcome, terminal) = if is_error {
+            (
+                crate::session_authority::InvocationOutcome::Failed,
+                crate::invocation_service::LeaseTerminal::Failed,
+            )
+        } else {
+            (
+                crate::session_authority::InvocationOutcome::Completed,
+                crate::invocation_service::LeaseTerminal::Completed,
+            )
+        };
+        lease
+            .persist_settlement(outcome)
+            .map_err(|denial| anyhow::anyhow!("{}: {}", denial.code.as_str(), denial.message))?;
+        if !lease.close(terminal) {
+            anyhow::bail!("invocation:lease_closed: tool execution lease was already closed");
+        }
+        result
+    }
+
     /// Execute an internal tool that may not be in the LLM-visible tool_defs.
     ///
     /// Execute an internal tool that may not be in the LLM-visible tool_defs.
@@ -2255,6 +2381,81 @@ mod tests {
         principals: Vec<omegon_traits::RuntimePrincipalClass>,
     }
 
+    struct ServiceToolFeature;
+
+    #[async_trait]
+    impl Feature for ServiceToolFeature {
+        fn name(&self) -> &str {
+            "service-tool"
+        }
+
+        fn tools(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: "service_status".into(),
+                label: "service status".into(),
+                description: "service invocation test".into(),
+                parameters: json!({"type": "object", "properties": {}}),
+                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+            }]
+        }
+
+        fn runtime_tool_surfaces(
+            &self,
+            tool_name: &str,
+        ) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+            (tool_name == "service_status").then(|| vec![omegon_traits::RuntimeSurface::Web])
+        }
+
+        fn runtime_tool_principals(
+            &self,
+            tool_name: &str,
+        ) -> Option<Vec<omegon_traits::RuntimePrincipalClass>> {
+            (tool_name == "service_status")
+                .then(|| vec![omegon_traits::RuntimePrincipalClass::Service])
+        }
+
+        fn commands(&self) -> Vec<CommandDefinition> {
+            vec![CommandDefinition {
+                name: "service_command".into(),
+                description: "service command surface test".into(),
+                subcommands: vec![],
+                availability: omegon_traits::CommandAvailability::ALL,
+                safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: Default::default(),
+            }]
+        }
+
+        fn runtime_command_surfaces(
+            &self,
+            command_name: &str,
+        ) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+            (command_name == "service_command").then(|| vec![omegon_traits::RuntimeSurface::Web])
+        }
+
+        fn handle_command(&mut self, name: &str, _args: &str) -> CommandResult {
+            if name == "service_command" {
+                CommandResult::Handled
+            } else {
+                CommandResult::NotHandled
+            }
+        }
+
+        async fn execute(
+            &self,
+            _tool_name: &str,
+            _call_id: &str,
+            _args: serde_json::Value,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult {
+                content: vec![ContentBlock::Text {
+                    text: "service ready".into(),
+                }],
+                details: json!({}),
+            })
+        }
+    }
+
     #[async_trait]
     impl Feature for DeclaredPolicyFeature {
         fn name(&self) -> &str {
@@ -2710,6 +2911,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.content[0].as_text(), Some("count: 3"));
+    }
+
+    #[tokio::test]
+    async fn service_tool_uses_declared_principal_surface_and_lease() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(ServiceToolFeature));
+        bus.finalize();
+        let scope = crate::invocation_service::InvocationScope {
+            principal: "managed-worker".into(),
+            principal_class: omegon_traits::RuntimePrincipalClass::Service,
+            surface: omegon_traits::RuntimeSurface::Web,
+            ..Default::default()
+        };
+
+        let result = bus
+            .invoke_tool(
+                "service_status",
+                "service-call",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+                scope,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content[0].as_text(), Some("service ready"));
+
+        let command_scope = crate::invocation_service::InvocationScope {
+            principal: "web-operator".into(),
+            principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+            surface: omegon_traits::RuntimeSurface::Web,
+            ..Default::default()
+        };
+        assert!(matches!(
+            bus.invoke_command(
+                "service_command",
+                "service-command-call",
+                "",
+                command_scope,
+                None,
+            )
+            .unwrap(),
+            CommandResult::Handled
+        ));
+
+        let denial = crate::invocation_service::InvocationService::admit_tool(
+            &bus,
+            "service_status",
+            crate::invocation_service::InvocationAdmissionRequest {
+                call_id: "model-call",
+                visible_tool_name: "service_status",
+                args: &json!({}),
+                scope: crate::invocation_service::InvocationScope::default(),
+                permission_policy: None,
+                permission_role: None,
+            },
+        );
+        assert!(matches!(
+            denial,
+            crate::invocation_service::InvocationAdmission::Denied(
+                crate::invocation_service::InvocationDenial {
+                    code: crate::invocation_service::InvocationDenialCode::UnsupportedSurface,
+                    ..
+                }
+            )
+        ));
     }
 
     #[test]

@@ -2497,6 +2497,18 @@ pub trait Feature: Send + Sync {
         None
     }
 
+    /// Explicit invocation surfaces for one owned tool. Returning `None`
+    /// preserves the model-only compatibility declaration.
+    fn runtime_tool_surfaces(&self, _tool_name: &str) -> Option<Vec<RuntimeSurface>> {
+        None
+    }
+
+    /// Explicit principal classes eligible to invoke one owned tool. Returning
+    /// `None` preserves the principals from `runtime_tool_policy` or adaptation.
+    fn runtime_tool_principals(&self, _tool_name: &str) -> Option<Vec<RuntimePrincipalClass>> {
+        None
+    }
+
     /// Tool definitions this feature provides. Called once at startup.
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![]
@@ -2570,6 +2582,12 @@ pub trait Feature: Send + Sync {
     /// Slash commands this feature registers. Called once at startup.
     fn commands(&self) -> Vec<CommandDefinition> {
         vec![]
+    }
+
+    /// Explicit invocation surfaces for one canonical command capability.
+    /// Returning `None` derives TUI/CLI/ACP surfaces from command availability.
+    fn runtime_command_surfaces(&self, _command_name: &str) -> Option<Vec<RuntimeSurface>> {
+        None
     }
 
     /// Explicit aliases owned by this feature. Aliases bind to the canonical

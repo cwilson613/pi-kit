@@ -66,6 +66,8 @@ scoped_id!(
 scoped_id!(RuntimeDiagnosticCode, "diagnostic code");
 scoped_id!(RuntimeCapabilityGroupId, "capability group id");
 scoped_id!(RuntimeContributionResourceId, "contribution resource id");
+scoped_id!(RuntimeMutationDomainId, "mutation domain id");
+scoped_id!(RuntimeMutationFenceKey, "mutation fence key");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeContributionSchemaVersion {
@@ -449,6 +451,12 @@ pub enum RuntimeTransactionBehavior {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeMutationFence {
+    pub domain: RuntimeMutationDomainId,
+    pub key: RuntimeMutationFenceKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeExecutionPolicy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub principals: Vec<RuntimePrincipalClass>,
@@ -460,6 +468,8 @@ pub struct RuntimeExecutionPolicy {
     pub parallelism: RuntimeParallelism,
     #[serde(default, skip_serializing_if = "is_non_transactional")]
     pub transaction: RuntimeTransactionBehavior,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_fence: Option<RuntimeMutationFence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_attempts: Option<u16>,
 }
@@ -492,22 +502,32 @@ impl RuntimeExecutionPolicy {
             return Err("best-effort rollback execution must be serial");
         }
 
-        let mutates = effects.iter().any(|effect| {
-            matches!(
-                effect,
-                RuntimeEffect::FilesystemWrite
-                    | RuntimeEffect::DurableStateWrite
-                    | RuntimeEffect::RuntimeControl
-            )
-        });
+        let mutates = runtime_effects_mutate(effects);
         if mutates && self.transaction == RuntimeTransactionBehavior::None {
             return Err("mutating execution must declare transaction behavior");
+        }
+        if mutates && self.mutation_fence.is_none() {
+            return Err("mutating execution must declare a mutation fence");
         }
         if !mutates && self.transaction != RuntimeTransactionBehavior::None {
             return Err("non-mutating execution cannot declare mutation transaction behavior");
         }
+        if !mutates && self.mutation_fence.is_some() {
+            return Err("non-mutating execution cannot declare a mutation fence");
+        }
         Ok(())
     }
+}
+
+pub fn runtime_effects_mutate(effects: &[RuntimeEffect]) -> bool {
+    effects.iter().any(|effect| {
+        matches!(
+            effect,
+            RuntimeEffect::FilesystemWrite
+                | RuntimeEffect::DurableStateWrite
+                | RuntimeEffect::RuntimeControl
+        )
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

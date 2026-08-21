@@ -745,12 +745,14 @@ impl ToolProvider for CoreTools {
     fn runtime_tool_policy(&self, tool_name: &str) -> Option<omegon_traits::RuntimeToolPolicy> {
         use omegon_traits::{
             RuntimeDeduplication, RuntimeEffect, RuntimeExecutionPolicy, RuntimeIdempotency,
+            RuntimeMutationDomainId, RuntimeMutationFence, RuntimeMutationFenceKey,
             RuntimeParallelism, RuntimePrincipalClass, RuntimeRetryClass, RuntimeTimeoutClass,
-            RuntimeToolPolicy, RuntimeTransactionBehavior,
+            RuntimeToolPolicy, RuntimeTransactionBehavior, runtime_effects_mutate,
         };
 
         let policy =
             |effects: Vec<RuntimeEffect>, timeout_class, parallelism, transaction, idempotent| {
+                let mutates = runtime_effects_mutate(&effects);
                 RuntimeToolPolicy {
                     effects,
                     execution: RuntimeExecutionPolicy {
@@ -769,6 +771,12 @@ impl ToolProvider for CoreTools {
                         deduplication: RuntimeDeduplication::Unsupported,
                         parallelism,
                         transaction,
+                        mutation_fence: mutates.then(|| RuntimeMutationFence {
+                            domain: RuntimeMutationDomainId::new("workspace:runtime")
+                                .expect("static mutation domain is valid"),
+                            key: RuntimeMutationFenceKey::new(format!("capability:{tool_name}"))
+                                .expect("core tool name is a valid fence key"),
+                        }),
                         max_attempts: idempotent.then_some(2),
                     },
                 }

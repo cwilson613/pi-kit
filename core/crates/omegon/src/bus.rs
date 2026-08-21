@@ -153,6 +153,18 @@ fn stable_feature_component(name: &str) -> String {
     }
 }
 
+fn conservative_mutation_fence(name: &str) -> omegon_traits::RuntimeMutationFence {
+    omegon_traits::RuntimeMutationFence {
+        domain: omegon_traits::RuntimeMutationDomainId::new("workspace:runtime")
+            .expect("static mutation domain is valid"),
+        key: omegon_traits::RuntimeMutationFenceKey::new(format!(
+            "capability:{}",
+            stable_feature_component(name)
+        ))
+        .expect("encoded capability name is a valid fence key"),
+    }
+}
+
 fn adapted_tool_effects(definition: &ToolDefinition) -> Vec<omegon_traits::RuntimeEffect> {
     use omegon_traits::{RuntimeEffect, ToolCapability};
 
@@ -240,6 +252,7 @@ fn adapted_tool_policy(definition: &ToolDefinition) -> omegon_traits::RuntimeToo
             } else {
                 RuntimeTransactionBehavior::None
             },
+            mutation_fence: mutates.then(|| conservative_mutation_fence(&definition.name)),
             max_attempts: None,
         },
     }
@@ -785,7 +798,8 @@ impl EventBus {
             })
             .collect::<Vec<_>>();
 
-        let policy = |effects: &[omegon_traits::RuntimeEffect],
+        let policy = |name: &str,
+                      effects: &[omegon_traits::RuntimeEffect],
                       principal: RuntimePrincipalClass| {
             let idempotent = effects
                 .iter()
@@ -818,6 +832,7 @@ impl EventBus {
                 } else {
                     RuntimeTransactionBehavior::None
                 },
+                mutation_fence: mutates.then(|| conservative_mutation_fence(name)),
                 max_attempts: None,
             }
         };
@@ -905,7 +920,11 @@ impl EventBus {
                             let tool_policy = if external {
                                 let effects = conservative_external_effects();
                                 omegon_traits::RuntimeToolPolicy {
-                                    execution: policy(&effects, RuntimePrincipalClass::Model),
+                                    execution: policy(
+                                        &tool.name,
+                                        &effects,
+                                        RuntimePrincipalClass::Model,
+                                    ),
                                     effects,
                                 }
                             } else {
@@ -951,7 +970,11 @@ impl EventBus {
                                     id: RuntimeCapabilityId::action(&canonical),
                                     kind: RuntimeCapabilityKind::OperatorAction,
                                     bindings,
-                                    execution: policy(&effects, RuntimePrincipalClass::Operator),
+                                    execution: policy(
+                                        &canonical,
+                                        &effects,
+                                        RuntimePrincipalClass::Operator,
+                                    ),
                                     effects,
                                     transition: transition(),
                                     surfaces,
@@ -979,7 +1002,7 @@ impl EventBus {
                             name: name.clone(),
                             role: RuntimeInvocationBindingRole::Canonical,
                         }],
-                        execution: policy(&effects, RuntimePrincipalClass::Internal),
+                        execution: policy(name, &effects, RuntimePrincipalClass::Internal),
                         effects,
                         transition: transition(),
                         surfaces: vec![RuntimeSurface::Internal],
@@ -2094,6 +2117,7 @@ mod tests {
                     } else {
                         omegon_traits::RuntimeTransactionBehavior::None
                     },
+                    mutation_fence: mutates.then(|| conservative_mutation_fence(self.tool_name)),
                     max_attempts: None,
                 },
             })

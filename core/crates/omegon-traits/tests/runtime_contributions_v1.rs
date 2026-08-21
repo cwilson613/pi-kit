@@ -47,6 +47,39 @@ fn execution_policy_defaults_are_conservative_and_validate_fail_closed() {
 }
 
 #[test]
+fn mutating_execution_requires_a_durable_fence_identity() {
+    let mut declaration: RuntimeContributionDeclaration = serde_json::from_str(include_str!(
+        "fixtures/runtime-contribution-declaration-v1.json"
+    ))
+    .unwrap();
+    let capability = &mut declaration.capabilities[0];
+    capability.effects.push(RuntimeEffect::FilesystemWrite);
+    capability.execution.transaction =
+        omegon_traits::RuntimeTransactionBehavior::IndependentMutation;
+    assert_eq!(
+        declaration.validate().unwrap_err(),
+        "mutating execution must declare a mutation fence"
+    );
+
+    declaration.capabilities[0].execution.mutation_fence =
+        Some(omegon_traits::RuntimeMutationFence {
+            domain: omegon_traits::RuntimeMutationDomainId::new("workspace:runtime").unwrap(),
+            key: omegon_traits::RuntimeMutationFenceKey::new("capability:read").unwrap(),
+        });
+    declaration.validate().unwrap();
+
+    declaration.capabilities[0]
+        .effects
+        .retain(|effect| *effect != RuntimeEffect::FilesystemWrite);
+    declaration.capabilities[0].execution.transaction =
+        omegon_traits::RuntimeTransactionBehavior::None;
+    assert_eq!(
+        declaration.validate().unwrap_err(),
+        "non-mutating execution cannot declare a mutation fence"
+    );
+}
+
+#[test]
 fn generation_v1_fixture_round_trips() {
     assert_fixture_round_trip::<RuntimeCompositionGeneration>(include_str!(
         "fixtures/runtime-composition-generation-v1.json"

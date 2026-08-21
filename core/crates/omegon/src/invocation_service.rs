@@ -766,6 +766,7 @@ mod tests {
                 deduplication: omegon_traits::RuntimeDeduplication::Unsupported,
                 parallelism: omegon_traits::RuntimeParallelism::Serial,
                 transaction: omegon_traits::RuntimeTransactionBehavior::None,
+                mutation_fence: None,
                 max_attempts: None,
             },
             transition: RuntimeCapabilityTransitionPolicy {

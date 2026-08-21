@@ -596,6 +596,7 @@ impl ToolProvider for WebSearchProvider {
                 deduplication: RuntimeDeduplication::Unsupported,
                 parallelism: RuntimeParallelism::ParallelSafe,
                 transaction: RuntimeTransactionBehavior::None,
+                mutation_fence: None,
                 max_attempts: Some(2),
             },
         })

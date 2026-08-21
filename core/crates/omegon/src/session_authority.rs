@@ -2015,6 +2015,7 @@ mod tests {
                 deduplication: omegon_traits::RuntimeDeduplication::OwnerEnforcedStableCallId,
                 parallelism: omegon_traits::RuntimeParallelism::Serial,
                 transaction: omegon_traits::RuntimeTransactionBehavior::None,
+                mutation_fence: None,
                 max_attempts: Some(2),
             },
             transition: RuntimeCapabilityTransitionPolicy {

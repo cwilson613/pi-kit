@@ -1875,6 +1875,40 @@ impl EventBus {
         result
     }
 
+    pub(crate) async fn invoke_internal(
+        &self,
+        name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        scope: crate::invocation_service::InvocationScope,
+    ) -> anyhow::Result<omegon_traits::ToolResult> {
+        let admission = crate::invocation_service::InvocationService::admit_invocation(
+            self,
+            omegon_traits::RuntimeInvocationKind::Internal,
+            name,
+            crate::invocation_service::InvocationRequest {
+                call_id,
+                scope,
+                permission_policy: None,
+                permission_role: None,
+                permission_name: name,
+                permission_subjects: &[],
+            },
+        );
+        let lease = match admission {
+            crate::invocation_service::InvocationAdmission::Lease(lease) => lease,
+            crate::invocation_service::InvocationAdmission::Denied(denial) => {
+                anyhow::bail!("{}: {}", denial.code.as_str(), denial.message)
+            }
+            crate::invocation_service::InvocationAdmission::ApprovalRequired(_) => {
+                anyhow::bail!("invocation:approval_denied: internal invocation requires approval")
+            }
+        };
+        self.execute_internal_with_lease(&lease, name, call_id, args, cancel)
+            .await
+    }
+
     /// Get the configured timeout for a tool.
     pub fn tool_timeout(&self, tool_name: &str) -> Duration {
         self.tool_timeouts
@@ -2638,7 +2672,7 @@ mod tests {
                 "internal_count",
                 crate::invocation_service::InvocationRequest {
                     call_id: "internal-call",
-                    scope,
+                    scope: scope.clone(),
                     permission_policy: None,
                     permission_role: None,
                     permission_name: "internal_count",
@@ -2664,6 +2698,18 @@ mod tests {
             lease.terminal(),
             crate::invocation_service::LeaseTerminal::Completed
         );
+
+        let result = bus
+            .invoke_internal(
+                "internal_count",
+                "internal-call-2",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+                scope,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content[0].as_text(), Some("count: 3"));
     }
 
     #[test]

@@ -3473,29 +3473,7 @@ async fn execute_internal_invocation(
         turn_id: parent_scope.turn_id,
         authority: parent_scope.authority.clone(),
     };
-    let admission = crate::invocation_service::InvocationService::admit_invocation(
-        bus,
-        omegon_traits::RuntimeInvocationKind::Internal,
-        name,
-        crate::invocation_service::InvocationRequest {
-            call_id,
-            scope,
-            permission_policy: None,
-            permission_role: None,
-            permission_name: name,
-            permission_subjects: &[],
-        },
-    );
-    let lease = match admission {
-        crate::invocation_service::InvocationAdmission::Lease(lease) => lease,
-        crate::invocation_service::InvocationAdmission::Denied(denial) => {
-            anyhow::bail!("{}: {}", denial.code.as_str(), denial.message)
-        }
-        crate::invocation_service::InvocationAdmission::ApprovalRequired(_) => {
-            anyhow::bail!("invocation:approval_denied: internal invocation requires approval")
-        }
-    };
-    bus.execute_internal_with_lease(&lease, name, call_id, args, cancel)
+    bus.invoke_internal(name, call_id, args, cancel, scope)
         .await
 }
 

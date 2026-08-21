@@ -6404,13 +6404,21 @@ fn build_tui_secret_readiness_snapshot(
                         } => {
                             let args =
                                 serde_json::json!({ "content": content, "section": section });
+                            let call_id = format!("auto-ingest:{}", uuid::Uuid::new_v4());
+                            let scope = crate::invocation_service::InvocationScope {
+                                principal: "kernel:auto-ingest".into(),
+                                principal_class: omegon_traits::RuntimePrincipalClass::Internal,
+                                surface: omegon_traits::RuntimeSurface::Internal,
+                                ..Default::default()
+                            };
                             if let Err(e) = runtime_state
                                 .bus
-                                .execute_tool(
-                                    "memory_store",
-                                    "auto_ingest",
+                                .invoke_internal(
+                                    crate::tool_registry::memory::MEMORY_STORE,
+                                    &call_id,
                                     args,
                                     tokio_util::sync::CancellationToken::new(),
+                                    scope,
                                 )
                                 .await
                             {

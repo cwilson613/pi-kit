@@ -726,6 +726,10 @@ impl AgentSetup {
                             .with_extraction_model("anthropic:claude-haiku-4-5-20251001".into());
                     }
                     bus.register(Box::new(memory_feature));
+                    bus.register_internal_tool(
+                        crate::tool_registry::memory::MEMORY_STORE,
+                        "memory",
+                    );
                 }
                 Err(err) => {
                     let warning = format!(

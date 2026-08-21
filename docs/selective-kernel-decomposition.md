@@ -373,11 +373,14 @@ The extension-provided voice stop declares TUI service authority and executes
 under the promoted turn's durable scope.
 Daemon vox polling invokes the declared `vox_route` tool under an ephemeral
 Service/Daemon lease and projects the result into the existing event envelope.
+Arbitrary ACP methods use one extension-owned conservative Operator/ACP
+transport capability and dispatch on the worker-owned EventBus; the current
+protocol does not pretend to know per-method effects.
 Lease-less imperative extension HostActions fail closed, and operator approval
 does not manufacture project, runtime, or trusted-origin authority.
 Idle and post-loop calls remain ephemeral rather than receiving fabricated turn
-authority. Arbitrary ACP extension RPC plus parent-bound declarative extension/MCP
-host actions remain compatibility paths, so the Slice-3 exit gate is not yet met.
+authority. Parent-bound declarative extension/MCP host actions remain a
+compatibility path, so the Slice-3 exit gate is not yet met.
 
 ### 5. Admission combiner and host effects
 

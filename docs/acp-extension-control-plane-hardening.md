@@ -44,6 +44,8 @@ related:
 
 Generic extension RPC is a control-plane, not just an escape hatch. After 0.26.9, extension method invocation should become policy-aware, introspectable, and diagnosable. The control plane should explain not only whether an extension is loaded, but whether a particular operation is allowed and why.
 
+The current compatibility boundary admits one conservative ACP transport capability per loaded extension and dispatches it on the worker-owned EventBus. This avoids raw polling-handle authority and does not infer method safety from names; per-method declarations remain the intended refinement.
+
 ## Acceptance criteria
 
 - Extension manifests or runtime metadata can describe callable method policy.

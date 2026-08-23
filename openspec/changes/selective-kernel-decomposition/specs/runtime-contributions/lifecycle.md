@@ -140,3 +140,34 @@ Given the active profile does not require lifecycle capability
 When the lifecycle contribution fails activation
 Then the runtime reports the capability degraded or unavailable
 And unrelated admitted capabilities remain callable
+
+### Requirement: In-process service implementations are generation-bound
+
+Release-coupled in-process services must declare an `in_process_service` capability and pair it with exactly one typed implementation in the same candidate contribution generation. In-process services are not constitutional kernel services and do not gain third-party replacement authority. Graph validation, implementation parity, dependency activation, readiness, and publication of the typed service registry must be atomic. Published handles must identify capability, owner, and contribution generation and may be captured only at boot or a separately declared quiescent boundary. Candidate failure must preserve the complete prior graph and service registry. Service retirement must settle or honestly degrade every generation-owned resource before reporting a terminal cleanup state.
+
+#### Scenario: Declared service has no implementation
+Given a candidate declares an in-process service capability
+And no typed implementation for that capability exists in the candidate generation
+When candidate parity is validated
+Then candidate publication fails
+And the previous service registry remains callable
+
+#### Scenario: Optional service is absent
+Given a consumer declares an optional dependency on an in-process service
+And no admitted implementation is available
+When the candidate graph is activated
+Then the consumer receives typed unavailable or degraded service state
+And unrelated admitted capabilities remain callable
+And diagnostics do not fabricate an active service
+
+#### Scenario: Service generation changes
+Given an active session captured a typed service handle at an admitted boundary
+When a replacement service generation is promoted
+Then the captured handle retains its original owner and generation identity
+And the session does not silently switch implementations mid-turn
+
+#### Scenario: No-resource service retires
+Given an in-process service declares that it owns no tasks, subscriptions, temporary artifacts, or durable writers
+When its generation retires
+Then strict no-resource teardown settles deterministically
+And retirement does not inherit a best-effort host-process cleanup claim

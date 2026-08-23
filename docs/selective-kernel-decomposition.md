@@ -580,6 +580,16 @@ frontend and host adapters
 Crate extraction is subordinate to this graph. Moving code without changing
 authority, dependency, lifecycle, or failure isolation is not decomposition.
 
+Slice 6.1 begins with a declared-service substrate rather than another file
+move. A release-coupled in-process service publishes a bindingless
+`in_process_service` capability and exactly one typed implementation under the
+same contribution generation. Candidate graph validation, implementation
+parity, dependency activation, readiness, and typed-registry publication are
+atomic. Handles retain capability, owner, and generation identity and are
+captured only at boot or a declared quiescent boundary. Optional absence is
+typed local degradation, not synthetic active health. Retirement must settle
+generation-owned resources; services with none use strict no-resource teardown.
+
 ## Selective decomposition map
 
 | Current subsystem | Target tier | First boundary to establish |
@@ -1010,6 +1020,11 @@ and cursors without depending on missed broadcasts.
 
 ### Slice 6: extract optional domains
 
+- Establish generation-bound typed in-process service publication before moving
+  optional domain code. The first proof is read-only plans/work aggregation over
+  `styrene-work-model` and `styrene-work-runtime`; source errors become local
+  warnings, immutable snapshots feed shared readers, and service absence leaves
+  session-local plan mutation intact.
 - Convert memory, lifecycle, plans/work, behavior, context/compaction, codescan,
   and Git integration to declared in-process services.
 - Remove concrete feature imports from semantic surfaces.

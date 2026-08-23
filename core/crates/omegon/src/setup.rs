@@ -18,6 +18,12 @@ use crate::prompt;
 use crate::session;
 use crate::tools;
 
+pub(crate) async fn register_work_aggregation(bus: &mut EventBus, project_root: &Path) {
+    bus.register(Box::new(
+        features::work_aggregation::WorkAggregationFeature::from_repository(project_root).await,
+    ));
+}
+
 /// Summary of a resumed session, surfaced to the TUI for the welcome brief.
 #[derive(Debug, Clone)]
 pub struct ResumeInfo {
@@ -773,6 +779,10 @@ impl AgentSetup {
         let lifecycle_snapshot = LifecycleSnapshot::from_lifecycle_feature(&lifecycle_feature);
         let lifecycle_handle = lifecycle_feature.read_handle();
         bus.register(Box::new(lifecycle_feature));
+
+        // Publish one immutable repository-work snapshot with the same atomic
+        // composition boundary as the other statically linked contributions.
+        register_work_aggregation(&mut bus, &project_root).await;
 
         // ─── Sandbox setting (read once, shared by cleave + delegate) ──
         let sandbox = settings

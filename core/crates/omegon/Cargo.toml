@@ -26,6 +26,8 @@ omegon-secrets = { path = "../omegon-secrets", features = ["agent"] }
 omegon-opsx = { path = "../omegon-opsx" }
 omegon-skills = { path = "../omegon-skills" }
 omegon-web = { path = "../omegon-web" }
+styrene-work-model = { path = "../styrene-work-model" }
+styrene-work-runtime = { path = "../styrene-work-runtime" }
 tokio = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }

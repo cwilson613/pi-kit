@@ -5071,6 +5071,8 @@ dependencies = [
  "socket2 0.5.10",
  "styrene-mqtt",
  "styrene-rbac",
+ "styrene-work-model",
+ "styrene-work-runtime",
  "syntect",
  "sysinfo",
  "tachyonfx",

@@ -1029,6 +1029,10 @@ and cursors without depending on missed broadcasts.
   `styrene-work-model` and `styrene-work-runtime`; source errors become local
   warnings, immutable snapshots feed shared readers, and service absence leaves
   session-local plan mutation intact.
+- Slice 6.1.2 composes the first production half of that proof: an Omegon-owned
+  OpenSpec/design adapter publishes one immutable boot snapshot as the optional
+  `service:work-snapshot` in-process service. Shared CLI/loop/ACP reader cutover
+  remains separate, so direct compatibility scanners still exist.
 - Convert memory, lifecycle, plans/work, behavior, context/compaction, codescan,
   and Git integration to declared in-process services.
 - Remove concrete feature imports from semantic surfaces.

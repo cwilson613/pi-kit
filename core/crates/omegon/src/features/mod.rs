@@ -42,3 +42,4 @@ pub mod terminal_title;
 pub mod usage;
 pub mod user_commands;
 pub mod version_check;
+pub mod work_aggregation;

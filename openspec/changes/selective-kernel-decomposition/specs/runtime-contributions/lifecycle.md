@@ -55,19 +55,19 @@ An admitted dynamic probe must run without brokered host-effect leases, freeze i
 #### Scenario: Probe never becomes ready
 Given a quarantined contribution has started
 When its readiness deadline expires
-Then the candidate is marked failed or quarantined
-And its complete host-owned resource tree is settled within the applicable boundary
+Then the candidate is marked failed or quarantined only if its complete host-owned resource tree settles
+And otherwise its rejected resources remain under a nonterminal degraded owner
 And the previous active generation remains callable
 
 ### Requirement: Candidate activation is rollback-covered before publication
 
-Candidate graph construction, dependency activation, registration, readiness, and promotion must remain unpublished until the candidate is complete. Failure at any candidate stage must leave the previous generation callable, publish none of the candidate's registrations or authority, and settle every candidate-owned resource within the host ownership boundary.
+Candidate graph construction, dependency activation, registration, readiness, and promotion must remain unpublished until the candidate is complete. Failure at any candidate stage must leave the previous generation callable and publish none of the candidate's registrations or authority. Every candidate-owned resource within the host ownership boundary must settle before cleanup-settled, terminal-failure, or ownership-release claims; a deadline may return candidate rejection while unresolved resources remain under a nonterminal degraded owner for later retry.
 
 #### Scenario: Candidate fails after partial registration
 Given a candidate has created registrations and resources but has not been promoted
 When dependency activation or post-readiness initialization fails
 Then candidate registrations remain invisible to model and operator projections
-And candidate-owned resources are settled or honestly reported degraded across an unowned boundary
+And candidate resources are settled, retained as nonterminal degraded within an owned boundary, or reported unverified across an unowned boundary
 And strict-cleanup profiles refuse promotion when cleanup cannot be verified
 
 #### Scenario: Required composition remains unresolved
@@ -171,6 +171,79 @@ Given an in-process service declares that it owns no tasks, subscriptions, tempo
 When its generation retires
 Then strict no-resource teardown settles deterministically
 And retirement does not inherit a best-effort host-process cleanup claim
+
+### Requirement: Managed in-process services drain and clean up by generation
+
+Resource-bearing in-process services must use a managed contract distinct from no-resource read services. A managed implementation must not escape as a raw `Arc` or borrowed consumer reference. An object-safe request/response/error contract executes only inside a generation-owned call task through an identity-bearing handle; the handle owns admission, accounting, cancellation, panic handling, and typed draining/degraded/retired errors. Every handle consults one shared admission-table snapshot keyed by contribution generation, and one table replacement is the publication linearization point for all unchanged, replaced, removed, and new managed generations. Candidate resources must register under exactly one contribution generation before readiness and remain unpublished until promotion. Candidate rollback and active-generation retirement must use the same bounded cleanup engine. Unchanged contribution generations transfer without cleanup. Strict cleanup requires positive settlement before cleanup-settled, retired, terminal-failure, or ownership-release claims. A strict failure is nonterminal degraded cleanup with retained ownership and bounded evidence of identity and attempted stop/force-stop; best-effort cross-boundary cleanup may be unverified.
+
+#### Scenario: Candidate managed service is rejected
+Given a candidate owns managed resources that are not yet published
+When graph, implementation, readiness, resource, or policy validation fails
+Then only candidate admission and resources are closed
+And each resource is either settled or retained under a nonterminal degraded or unverified owner
+And the prior graph, typed registry, handles, and resources remain callable
+And the cleanup deadline is not restarted for each resource
+
+#### Scenario: Managed service generation is replaced
+Given an admitted call holds the old managed generation
+When an authorized candidate is atomically promoted
+Then the old gate stops admitting new calls before the new generation is observable
+And the admitted call may complete only within its declared active-call deadline
+And deadline expiry cancels, aborts, and joins remaining generation-owned call tasks before resource cleanup
+And a stale handle returns a typed draining, degraded, or retired error without switching implementations
+
+#### Scenario: Managed cleanup degrades after publication
+Given a replacement generation has already been published
+When a strict old-generation resource cannot settle by the cleanup deadline
+Then publication remains successful with nonterminal degraded cleanup evidence
+And the old owner remains available for later cleanup retry or shutdown
+And its lifecycle is not reported retired or cleanup-settled
+
+#### Scenario: Cross-boundary cleanup cannot be verified
+Given a best-effort resource crosses an ownership boundary Omegon cannot settle
+When retirement exhausts its cleanup deadline
+Then cleanup is unverified rather than settled
+And diagnostics retain the resource owner, generation, boundary, and bounded reason
+
+#### Scenario: Boot-only service changes after publication
+Given an accepted composition already exists
+When a candidate changes or introduces a boot-only in-process service
+Then publication is rejected before old-generation admission closes
+
+#### Scenario: Quiescent service changes after publication
+Given an accepted composition already exists
+And a candidate changes a service declared for quiescent-session activation
+When replacement is requested
+Then publication requires a current runtime/session-bound one-use supervisor proof
+And stale, cross-session, replayed, active-turn, unresolved-invocation, or active-call evidence fails closed
+
+#### Scenario: Cleanup follows declared dependencies
+Given managed resource controllers declare an acyclic cleanup dependency graph
+When generation cleanup begins
+Then every controller receives an idempotent stop request and a force-stop request only when cooperative settlement fails or no await budget remains
+And stop, conditional force-stop, and settlement follow reverse topological order under one non-resetting cleanup deadline
+And missing dependencies or cycles prevent candidate publication
+
+#### Scenario: Publication crosses its linearization point
+Given all candidate preparation and validation has succeeded
+When the shared admission table is replaced with one complete accepting/draining generation map
+Then publication is irrevocably committed and the candidate graph, registry, and generation become visible before exclusive mutation returns
+And failure before that point returns rejected with candidate rollback evidence
+And cleanup degradation after that point returns published with retirement evidence rather than a rollback error
+
+#### Scenario: Runtime shuts down with managed services
+Given the active composition owns managed resources
+When a normal host shutdown begins
+Then managed call admission closes before asynchronous resource settlement
+And settlement completes before process-level runtime ownership is removed
+And degraded shutdown leaves final ownership evidence for maintenance or stale pruning
+And Drop alone cannot claim asynchronous cleanup success
+
+#### Scenario: Publication caller is cancelled after commit
+Given managed publication crossed its linearization point and owns old-generation cleanup
+When the requesting future is cancelled or shutdown begins concurrently
+Then EventBus retains and joins the cleanup task through one serialized lifecycle owner
+And no resource controller or call task is detached
 
 ### Requirement: Behavior policy is a stateless optional service
 

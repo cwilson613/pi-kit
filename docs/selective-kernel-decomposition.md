@@ -617,6 +617,49 @@ service owns no task, subscription, process, temporary artifact, or durable
 writer. Resource-bearing domains remain deferred until generation-bound drain
 and cleanup exist.
 
+Slice 6.1.6 supplies that prerequisite without moving a production domain. It
+keeps the existing no-resource services unchanged and adds a separate managed
+service class whose implementation never escapes as an unrestricted `Arc`.
+An object-safe request/response/error contract runs only through
+`ManagedServiceHandle::invoke(request)` in a generation-owned task with
+cancellation, panic handling, and active-call accounting; no consumer receives
+the implementation by reference or `Arc`. Stale handles retain identity but
+return typed draining, degraded, or retired errors without switching owners.
+Candidate resources remain unpublished and roll back independently of the
+active graph.
+
+All handles consult one shared admission table keyed by contribution generation.
+After fallible preparation, replacing that complete table is the publication
+linearization point. Calls racing it use the old or new table, never a partially
+closed set; pre-point failure rolls back the candidate, while post-point cleanup
+degradation cannot falsely claim rollback. The active-call deadline starts at
+the table swap. Remaining calls are cancelled, aborted, and joined before a
+separate cleanup deadline begins. Resource controllers use a validated
+dependency DAG; stop, conditional force-stop, and settlement run in reverse
+topological order without resetting the deadline per resource.
+
+Strict cleanup requires positive settlement before retirement or ownership
+release. Timeout or failure is nonterminal degraded cleanup with retained owner
+and bounded evidence of attempted stop/force-stop; cross-boundary best-effort
+cleanup may be unverified. A later retry can finish retirement. Unchanged
+contribution generations transfer without cleanup. Boot-only service changes
+are always rejected after first publication. Quiescent-declared replacement
+requires a current runtime/session-bound one-use proof; this substrate ships no
+production proof issuer or migration command.
+
+EventBus retains cleanup tasks and lifecycle records, serializes replacement
+with explicit async shutdown, and prevents caller cancellation from detaching
+work. Clean shutdown removes process ownership only after strict settlement;
+degraded shutdown leaves final ownership evidence for maintenance or stale
+pruning. Drop can request cancellation/force-stop but cannot claim settlement.
+The RG01-RG12 synthetic campaign proves the machinery before codescan becomes
+the first production managed lane. Codescan is selected because its index is
+rebuildable and workspace-scoped, with no required subprocess or session
+authority; its lane must still consolidate the context-side SQLite writer,
+transactional path updates, cancellation, background task join, cache close,
+typed absence, and unrelated-context continuity. Memory, lifecycle, Git, and
+context/compaction remain deferred.
+
 ## Selective decomposition map
 
 | Current subsystem | Target tier | First boundary to establish |

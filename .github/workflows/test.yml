@@ -63,7 +63,7 @@ jobs:
       - name: Run frozen recovery campaign serially
         env:
           OMEGON_NERD_FONT: "1"
-        run: cargo test -p omegon --bin omegon session_recovery_campaign:: -- --test-threads=1 --nocapture
+        run: "cargo test -p omegon --bin omegon session_recovery_campaign:: -- --test-threads=1 --nocapture"
 
   rust-standalone-crates:
     name: Standalone crate tests

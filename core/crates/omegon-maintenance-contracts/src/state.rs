@@ -1,9 +1,9 @@
-use std::{fs::File, io::Read, path::Path};
+use std::{fs::File, io::Read, path::Path, sync::atomic::AtomicU64};
 
 #[cfg(unix)]
 use std::{
     io::Write,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::Ordering,
     time::{SystemTime, UNIX_EPOCH},
 };
 

@@ -328,6 +328,24 @@ fn effective_tool_timeout(
     }
 }
 
+#[derive(Clone)]
+struct PublishedInProcessService {
+    owner: omegon_traits::RuntimeContributionId,
+    generation_id: omegon_traits::RuntimeContributionGenerationId,
+    interface_id: omegon_traits::RuntimeServiceInterfaceId,
+    implementation: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    implementation_identity: usize,
+    implementation_type_id: std::any::TypeId,
+}
+
+#[derive(Clone)]
+pub(crate) struct InProcessServiceHandle<T: ?Sized> {
+    pub(crate) capability_id: omegon_traits::RuntimeCapabilityId,
+    pub(crate) owner: omegon_traits::RuntimeContributionId,
+    pub(crate) generation_id: omegon_traits::RuntimeContributionGenerationId,
+    pub(crate) service: std::sync::Arc<T>,
+}
+
 /// The event bus — owns all features and dispatches events to them.
 pub struct EventBus {
     features: Vec<Box<dyn Feature>>,
@@ -349,6 +367,8 @@ pub struct EventBus {
     internal_tool_owners: HashMap<String, usize>,
     /// ACP transport invocation owners derived from the accepted graph.
     acp_invocation_owners: HashMap<String, usize>,
+    /// Bindingless typed services atomically published with the accepted graph.
+    in_process_services: BTreeMap<omegon_traits::RuntimeCapabilityId, PublishedInProcessService>,
     /// Structurally validated composition from which legacy caches were built.
     accepted_graph: Option<std::sync::Arc<crate::contribution_graph::RuntimeCandidateGraph>>,
     /// Identity of the atomically published composition represented by the graph and caches.
@@ -374,6 +394,7 @@ impl EventBus {
             disabled_tools: None,
             internal_tool_owners: HashMap::new(),
             acp_invocation_owners: HashMap::new(),
+            in_process_services: BTreeMap::new(),
             accepted_graph: None,
             accepted_generation_id: None,
             composition_diagnostics: Vec::new(),
@@ -388,6 +409,44 @@ impl EventBus {
                 ("web_fetch".into(), Duration::from_secs(60)),
             ]),
         }
+    }
+
+    pub(crate) fn in_process_service<T>(
+        &self,
+        capability_id: &omegon_traits::RuntimeCapabilityId,
+        interface_id: &omegon_traits::RuntimeServiceInterfaceId,
+    ) -> anyhow::Result<Option<InProcessServiceHandle<T>>>
+    where
+        T: ?Sized + std::any::Any + Send + Sync,
+    {
+        let Some(published) = self.in_process_services.get(capability_id) else {
+            return Ok(None);
+        };
+        if &published.interface_id != interface_id {
+            anyhow::bail!(
+                "in-process service {} exposes interface {}, not {}",
+                capability_id.as_str(),
+                published.interface_id.as_str(),
+                interface_id.as_str()
+            );
+        }
+        let service = published
+            .implementation
+            .downcast_ref::<omegon_traits::RuntimeServiceHolder<T>>()
+            .map(|holder| std::sync::Arc::clone(&holder.service))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "in-process service {} has an incompatible implementation type for interface {}",
+                    capability_id.as_str(),
+                    interface_id.as_str()
+                )
+            })?;
+        Ok(Some(InProcessServiceHandle {
+            capability_id: capability_id.clone(),
+            owner: published.owner.clone(),
+            generation_id: published.generation_id.clone(),
+            service,
+        }))
     }
 
     pub fn apply_operator_tool_profile(
@@ -653,6 +712,9 @@ impl EventBus {
             command_surfaces: BTreeMap<String, Vec<RuntimeSurface>>,
             lifecycle: Option<RuntimeLifecyclePolicy>,
             composition_transition: Option<RuntimeCompositionTransitionPolicy>,
+            services: Vec<omegon_traits::RuntimeInProcessService>,
+            dependencies: Vec<omegon_traits::RuntimeContributionDependency>,
+            generation_id: RuntimeContributionGenerationId,
         }
 
         let replaced_names = self
@@ -761,6 +823,17 @@ impl EventBus {
                 command_surfaces,
                 lifecycle: feature.runtime_lifecycle_policy(),
                 composition_transition: feature.runtime_transition_policy(),
+                services: feature.runtime_in_process_services(),
+                dependencies: feature.runtime_dependencies(),
+                generation_id: feature
+                    .runtime_contribution_generation_id()
+                    .unwrap_or_else(|| {
+                        RuntimeContributionGenerationId::new(format!(
+                            "contribution:{}-static-v1",
+                            stable_feature_component(feature.name())
+                        ))
+                        .expect("feature names form stable generation identifiers")
+                    }),
             });
         }
         frozen.sort_by_key(|feature| feature.feature_index);
@@ -978,6 +1051,7 @@ impl EventBus {
                             RuntimeContributionCapabilityDeclaration {
                                 id: RuntimeCapabilityId::tool(&tool.name),
                                 kind: RuntimeCapabilityKind::Tool,
+                                service_interface: None,
                                 bindings: vec![RuntimeInvocationBinding {
                                     kind: omegon_traits::RuntimeInvocationKind::Tool,
                                     name: tool.name.clone(),
@@ -1002,6 +1076,7 @@ impl EventBus {
                                 ))
                                 .expect("encoded ACP invocation forms a stable capability id"),
                                 kind: RuntimeCapabilityKind::TransportAdapter,
+                                service_interface: None,
                                 bindings: vec![RuntimeInvocationBinding {
                                     kind: omegon_traits::RuntimeInvocationKind::Acp,
                                     name: invocation.name.clone(),
@@ -1044,6 +1119,7 @@ impl EventBus {
                                 RuntimeContributionCapabilityDeclaration {
                                     id: RuntimeCapabilityId::action(&canonical),
                                     kind: RuntimeCapabilityKind::OperatorAction,
+                                    service_interface: None,
                                     bindings,
                                     execution: policy(
                                         &canonical,
@@ -1072,6 +1148,7 @@ impl EventBus {
                         id: RuntimeCapabilityId::new(format!("internal:{name}"))
                             .expect("internal tool names form stable capability identifiers"),
                         kind: RuntimeCapabilityKind::KernelService,
+                        service_interface: None,
                         bindings: vec![RuntimeInvocationBinding {
                             kind: omegon_traits::RuntimeInvocationKind::Internal,
                             name: name.clone(),
@@ -1083,14 +1160,16 @@ impl EventBus {
                         surfaces: vec![RuntimeSurface::Internal],
                     }
                 }));
+                capabilities.extend(
+                    feature
+                        .services
+                        .iter()
+                        .map(|service| service.capability.clone()),
+                );
                 RuntimeContributionDeclaration {
                     schema_version: RuntimeContributionSchemaVersion::V1,
                     id: feature.contribution_id.clone(),
-                    generation_id: RuntimeContributionGenerationId::new(format!(
-                        "contribution:{}-static-v1",
-                        stable_feature_component(&feature.name)
-                    ))
-                    .expect("feature names form stable generation identifiers"),
+                    generation_id: feature.generation_id.clone(),
                     owner_tier: if external {
                         RuntimeOwnerTier::External
                     } else {
@@ -1105,7 +1184,7 @@ impl EventBus {
                     protocol: RuntimeProtocolRange::new(1, 1)
                         .expect("static protocol range is valid"),
                     platform: RuntimePlatformRequirements::default(),
-                    dependencies: vec![],
+                    dependencies: feature.dependencies.clone(),
                     conflicts: vec![],
                     replaces: vec![],
                     lifecycle: feature.lifecycle.clone().unwrap_or(RuntimeLifecyclePolicy {
@@ -1203,6 +1282,7 @@ impl EventBus {
         let mut command_defs = Vec::new();
         let mut internal_tool_owners = HashMap::new();
         let mut acp_invocation_owners = HashMap::new();
+        let mut in_process_services = BTreeMap::new();
         for wave in &graph.activation_waves {
             for contribution_id in wave {
                 if contribution_id.as_str() != "system:tool-groups"
@@ -1294,6 +1374,73 @@ impl EventBus {
                     );
                 }
             }
+            for service in &feature.services {
+                if service.capability.kind != RuntimeCapabilityKind::InProcessService
+                    || !service.capability.bindings.is_empty()
+                    || service.capability.service_interface.as_ref() != Some(&service.interface_id)
+                {
+                    self.pending_features.clear();
+                    self.pending_internal_tools.clear();
+                    anyhow::bail!(
+                        "in-process service {} must be bindingless and use the in_process_service capability kind",
+                        service.capability.id.as_str()
+                    );
+                }
+                if feature
+                    .composition_transition
+                    .as_ref()
+                    .is_none_or(|transition| {
+                        transition.cleanup != RuntimeCleanupRequirement::Strict
+                            || transition.cleanup_timeout_ms != 0
+                    })
+                {
+                    self.pending_features.clear();
+                    self.pending_internal_tools.clear();
+                    anyhow::bail!(
+                        "no-resource in-process service {} requires strict zero-timeout cleanup",
+                        service.capability.id.as_str()
+                    );
+                }
+                if !graph
+                    .capability_owners
+                    .get(&service.capability.id)
+                    .is_some_and(|owner| owner == &feature.contribution_id)
+                {
+                    self.pending_features.clear();
+                    self.pending_internal_tools.clear();
+                    anyhow::bail!(
+                        "staged in-process service is absent from the accepted graph: {}",
+                        service.capability.id.as_str()
+                    );
+                }
+                let generation_id = graph
+                    .declarations
+                    .get(&feature.contribution_id)
+                    .expect("accepted feature declaration exists")
+                    .generation_id
+                    .clone();
+                if in_process_services
+                    .insert(
+                        service.capability.id.clone(),
+                        PublishedInProcessService {
+                            owner: feature.contribution_id.clone(),
+                            generation_id,
+                            interface_id: service.interface_id.clone(),
+                            implementation: service.erased_implementation(),
+                            implementation_identity: service.implementation_identity(),
+                            implementation_type_id: service.implementation_type_id(),
+                        },
+                    )
+                    .is_some()
+                {
+                    self.pending_features.clear();
+                    self.pending_internal_tools.clear();
+                    anyhow::bail!(
+                        "multiple typed implementations were staged for in-process service {}",
+                        service.capability.id.as_str()
+                    );
+                }
+            }
         }
         let accepted_bindings = graph
             .invocation_owners
@@ -1319,6 +1466,57 @@ impl EventBus {
                 "accepted graph/implementation parity mismatch: {accepted_bindings} bindings, {implemented_bindings} implementations"
             );
         }
+        let accepted_services = graph
+            .declarations
+            .values()
+            .flat_map(|declaration| &declaration.capabilities)
+            .filter(|capability| capability.kind == RuntimeCapabilityKind::InProcessService)
+            .count();
+        if in_process_services.len() != accepted_services {
+            self.pending_features.clear();
+            self.pending_internal_tools.clear();
+            anyhow::bail!(
+                "accepted graph/service implementation parity mismatch: {accepted_services} services, {} implementations",
+                in_process_services.len()
+            );
+        }
+        for feature in &frozen {
+            let Some(active_declaration) = self
+                .accepted_graph
+                .as_ref()
+                .and_then(|graph| graph.declarations.get(&feature.contribution_id))
+            else {
+                continue;
+            };
+            if active_declaration.generation_id != feature.generation_id {
+                continue;
+            }
+            let active = self
+                .in_process_services
+                .iter()
+                .filter(|(_, service)| service.owner == feature.contribution_id)
+                .collect::<BTreeMap<_, _>>();
+            let candidate = in_process_services
+                .iter()
+                .filter(|(_, service)| service.owner == feature.contribution_id)
+                .collect::<BTreeMap<_, _>>();
+            let unchanged = active.len() == candidate.len()
+                && active.iter().all(|(capability_id, current)| {
+                    candidate.get(capability_id).is_some_and(|next| {
+                        current.interface_id == next.interface_id
+                            && current.implementation_identity == next.implementation_identity
+                            && current.implementation_type_id == next.implementation_type_id
+                    })
+                });
+            if !unchanged {
+                self.pending_features.clear();
+                self.pending_internal_tools.clear();
+                anyhow::bail!(
+                    "in-process service contract changed without changing contribution generation: {}",
+                    feature.contribution_id.as_str()
+                );
+            }
+        }
 
         for mutation in self.pending_features.drain(..) {
             match mutation {
@@ -1342,6 +1540,7 @@ impl EventBus {
         self.command_defs = command_defs;
         self.internal_tool_owners = internal_tool_owners;
         self.acp_invocation_owners = acp_invocation_owners;
+        self.in_process_services = in_process_services;
         self.composition_diagnostics = build.diagnostics;
         self.accepted_graph = Some(std::sync::Arc::new(graph));
         self.accepted_generation_id = Some(
@@ -1378,8 +1577,18 @@ impl EventBus {
                 definition: definition.clone(),
             }
         });
-        let declarations =
+        let mut declarations =
             crate::capability_admission::declarations_from_registries(tools, commands);
+        declarations.extend(self.in_process_services.iter().map(|(id, service)| {
+            omegon_traits::RuntimeCapabilityDeclaration {
+                id: id.clone(),
+                kind: omegon_traits::RuntimeCapabilityKind::InProcessService,
+                owner: omegon_traits::RuntimeCapabilityOwner::feature(
+                    service.owner.as_str().to_string(),
+                ),
+                invocations: Vec::new(),
+            }
+        }));
         let groups = crate::features::manage_tools::TOOL_GROUPS
             .iter()
             .map(|(name, members)| omegon_traits::RuntimeCapabilityGroup {
@@ -2529,6 +2738,109 @@ mod tests {
 
     struct AcpInvocationFeature;
 
+    trait ReadOnlyTestServiceContract: std::any::Any + Send + Sync {
+        fn value(&self) -> u64;
+    }
+
+    #[derive(Debug)]
+    struct ReadOnlyTestService {
+        value: u64,
+    }
+
+    impl ReadOnlyTestServiceContract for ReadOnlyTestService {
+        fn value(&self) -> u64 {
+            self.value
+        }
+    }
+
+    struct InProcessServiceFeature {
+        generation: &'static str,
+        interface: &'static str,
+        service: std::sync::Arc<dyn ReadOnlyTestServiceContract>,
+        publish: bool,
+        publish_additional: bool,
+    }
+
+    struct MalformedInProcessServiceFeature;
+
+    #[async_trait]
+    impl Feature for InProcessServiceFeature {
+        fn name(&self) -> &str {
+            "in-process-test"
+        }
+
+        fn runtime_contribution_generation_id(
+            &self,
+        ) -> Option<omegon_traits::RuntimeContributionGenerationId> {
+            Some(
+                omegon_traits::RuntimeContributionGenerationId::new(self.generation)
+                    .expect("test generation is valid"),
+            )
+        }
+
+        fn runtime_in_process_services(&self) -> Vec<omegon_traits::RuntimeInProcessService> {
+            if !self.publish {
+                return Vec::new();
+            }
+            let mut services = vec![
+                omegon_traits::RuntimeInProcessService::no_resource_read_service(
+                    omegon_traits::RuntimeCapabilityId::new("service:test-read")
+                        .expect("test capability is valid"),
+                    omegon_traits::RuntimeServiceInterfaceId::new(self.interface)
+                        .expect("test interface is valid"),
+                    std::sync::Arc::clone(&self.service),
+                ),
+            ];
+            if self.publish_additional {
+                services.push(
+                    omegon_traits::RuntimeInProcessService::no_resource_read_service(
+                        omegon_traits::RuntimeCapabilityId::new("service:test-read-extra").unwrap(),
+                        omegon_traits::RuntimeServiceInterfaceId::new("interface:test-read-v1")
+                            .unwrap(),
+                        std::sync::Arc::clone(&self.service),
+                    ),
+                );
+            }
+            services
+        }
+
+        fn runtime_lifecycle_policy(&self) -> Option<RuntimeLifecyclePolicy> {
+            Some(RuntimeLifecyclePolicy {
+                requirement: RuntimeLifecycleRequirement::Optional,
+                failure_disposition: RuntimeFailureDisposition::DegradeLocally,
+                readiness_timeout_ms: 0,
+                heartbeat_timeout_ms: None,
+                restart_limit: 0,
+            })
+        }
+
+        fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
+            Some(RuntimeCompositionTransitionPolicy {
+                activation_boundary: RuntimeActivationBoundary::Boot,
+                cleanup: RuntimeCleanupRequirement::Strict,
+                cleanup_timeout_ms: 0,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Feature for MalformedInProcessServiceFeature {
+        fn name(&self) -> &str {
+            "in-process-test"
+        }
+
+        fn runtime_in_process_services(&self) -> Vec<omegon_traits::RuntimeInProcessService> {
+            let mut service = omegon_traits::RuntimeInProcessService::no_resource_read_service(
+                omegon_traits::RuntimeCapabilityId::new("service:test-read").unwrap(),
+                omegon_traits::RuntimeServiceInterfaceId::new("interface:test-read-v1").unwrap(),
+                std::sync::Arc::new(ReadOnlyTestService { value: 3 })
+                    as std::sync::Arc<dyn ReadOnlyTestServiceContract>,
+            );
+            service.capability.kind = omegon_traits::RuntimeCapabilityKind::Tool;
+            vec![service]
+        }
+    }
+
     #[async_trait]
     impl Feature for AcpInvocationFeature {
         fn name(&self) -> &str {
@@ -3433,6 +3745,139 @@ mod tests {
                 .diagnostics
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn in_process_service_publication_is_atomic_and_generation_bound() {
+        let capability = omegon_traits::RuntimeCapabilityId::new("service:test-read").unwrap();
+        let interface =
+            omegon_traits::RuntimeServiceInterfaceId::new("interface:test-read-v1").unwrap();
+        let mut bus = EventBus::new();
+        bus.register(Box::new(InProcessServiceFeature {
+            generation: "service:test-v1",
+            interface: "interface:test-read-v1",
+            service: std::sync::Arc::new(ReadOnlyTestService { value: 1 })
+                as std::sync::Arc<dyn ReadOnlyTestServiceContract>,
+            publish: true,
+            publish_additional: false,
+        }));
+        bus.try_finalize().unwrap();
+
+        let first = bus
+            .in_process_service::<dyn ReadOnlyTestServiceContract>(&capability, &interface)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.capability_id, capability);
+        assert_eq!(first.owner.as_str(), "feature:in-process-test");
+        assert_eq!(first.generation_id.as_str(), "service:test-v1");
+        assert_eq!(first.service.value(), 1);
+        assert!(
+            bus.runtime_capability_registry()
+                .declarations
+                .iter()
+                .any(|declaration| declaration.id == capability
+                    && declaration.kind == omegon_traits::RuntimeCapabilityKind::InProcessService)
+        );
+        let wrong_interface =
+            omegon_traits::RuntimeServiceInterfaceId::new("interface:wrong-v1").unwrap();
+        assert!(
+            bus.in_process_service::<dyn ReadOnlyTestServiceContract>(
+                &capability,
+                &wrong_interface
+            )
+            .is_err()
+        );
+
+        let second_service = std::sync::Arc::new(ReadOnlyTestService { value: 2 })
+            as std::sync::Arc<dyn ReadOnlyTestServiceContract>;
+        bus.replace_feature(Box::new(InProcessServiceFeature {
+            generation: "service:test-v2",
+            interface: "interface:test-read-v1",
+            service: std::sync::Arc::clone(&second_service),
+            publish: true,
+            publish_additional: false,
+        }));
+        bus.try_finalize().unwrap();
+        let second = bus
+            .in_process_service::<dyn ReadOnlyTestServiceContract>(&capability, &interface)
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.generation_id.as_str(), "service:test-v2");
+        assert_eq!(second.service.value(), 2);
+        assert_eq!(first.generation_id.as_str(), "service:test-v1");
+        assert_eq!(first.service.value(), 1);
+
+        bus.replace_feature(Box::new(MalformedInProcessServiceFeature));
+        assert!(bus.try_finalize().is_err());
+        let retained = bus
+            .in_process_service::<dyn ReadOnlyTestServiceContract>(&capability, &interface)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.generation_id.as_str(), "service:test-v2");
+        assert_eq!(retained.service.value(), 2);
+
+        bus.replace_feature(Box::new(InProcessServiceFeature {
+            generation: "service:test-v2",
+            interface: "interface:test-read-v1",
+            service: std::sync::Arc::new(ReadOnlyTestService { value: 4 })
+                as std::sync::Arc<dyn ReadOnlyTestServiceContract>,
+            publish: true,
+            publish_additional: false,
+        }));
+        assert!(bus.try_finalize().is_err());
+        let retained = bus
+            .in_process_service::<dyn ReadOnlyTestServiceContract>(&capability, &interface)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.generation_id.as_str(), "service:test-v2");
+        assert_eq!(retained.service.value(), 2);
+
+        for replacement in [
+            InProcessServiceFeature {
+                generation: "service:test-v2",
+                interface: "interface:test-read-v2",
+                service: std::sync::Arc::clone(&second_service),
+                publish: true,
+                publish_additional: false,
+            },
+            InProcessServiceFeature {
+                generation: "service:test-v2",
+                interface: "interface:test-read-v1",
+                service: std::sync::Arc::clone(&second_service),
+                publish: false,
+                publish_additional: false,
+            },
+            InProcessServiceFeature {
+                generation: "service:test-v2",
+                interface: "interface:test-read-v1",
+                service: std::sync::Arc::clone(&second_service),
+                publish: true,
+                publish_additional: true,
+            },
+        ] {
+            bus.replace_feature(Box::new(replacement));
+            assert!(bus.try_finalize().is_err());
+        }
+
+        let empty_service = std::sync::Arc::new(ReadOnlyTestService { value: 0 })
+            as std::sync::Arc<dyn ReadOnlyTestServiceContract>;
+        let mut empty_bus = EventBus::new();
+        empty_bus.register(Box::new(InProcessServiceFeature {
+            generation: "service:empty-v1",
+            interface: "interface:test-read-v1",
+            service: std::sync::Arc::clone(&empty_service),
+            publish: false,
+            publish_additional: false,
+        }));
+        empty_bus.try_finalize().unwrap();
+        empty_bus.replace_feature(Box::new(InProcessServiceFeature {
+            generation: "service:empty-v1",
+            interface: "interface:test-read-v1",
+            service: empty_service,
+            publish: true,
+            publish_additional: false,
+        }));
+        assert!(empty_bus.try_finalize().is_err());
     }
 
     #[test]

@@ -94,6 +94,7 @@ impl<'de> Deserialize<'de> for RuntimeCapabilityId {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeCapabilityKind {
     KernelService,
+    InProcessService,
     Tool,
     OperatorAction,
     Skill,
@@ -229,6 +230,14 @@ mod runtime_capability_contract_tests {
         assert!(RuntimeCapabilityId::new("tool:../../read").is_err());
         assert!(serde_json::from_str::<RuntimeCapabilityId>(r#""tool:../../read""#).is_err());
         assert_eq!(RuntimeCapabilityId::tool("read").as_str(), "tool:read");
+    }
+
+    #[test]
+    fn in_process_service_kind_has_stable_wire_name() {
+        assert_eq!(
+            serde_json::to_string(&RuntimeCapabilityKind::InProcessService).unwrap(),
+            "\"in_process_service\""
+        );
     }
 }
 
@@ -2550,6 +2559,21 @@ pub trait Feature: Send + Sync {
     /// Dynamic activation and cleanup policy frozen with this feature's declaration.
     fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
         None
+    }
+
+    /// Explicit implementation generation for services that support replacement.
+    fn runtime_contribution_generation_id(&self) -> Option<RuntimeContributionGenerationId> {
+        None
+    }
+
+    /// Bindingless typed services published atomically with this feature's declaration.
+    fn runtime_in_process_services(&self) -> Vec<RuntimeInProcessService> {
+        vec![]
+    }
+
+    /// Graph-visible dependencies for this feature or its in-process services.
+    fn runtime_dependencies(&self) -> Vec<RuntimeContributionDependency> {
+        vec![]
     }
 
     /// Capability authority frozen into the declaration for one owned tool.

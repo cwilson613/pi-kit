@@ -783,6 +783,7 @@ mod tests {
             capabilities: vec![RuntimeContributionCapabilityDeclaration {
                 id: RuntimeCapabilityId::new(format!("tool:{capability_name}")).unwrap(),
                 kind: omegon_traits::RuntimeCapabilityKind::Tool,
+                service_interface: None,
                 bindings: vec![RuntimeInvocationBinding {
                     kind: RuntimeInvocationKind::Tool,
                     name: capability_name.into(),

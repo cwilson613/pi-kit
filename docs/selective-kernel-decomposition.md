@@ -589,6 +589,10 @@ atomic. Handles retain capability, owner, and generation identity and are
 captured only at boot or a declared quiescent boundary. Optional absence is
 typed local degradation, not synthetic active health. Retirement must settle
 generation-owned resources; services with none use strict no-resource teardown.
+Slice 6.1.1 implements this atomic typed registry only for no-resource read
+services and adds work-source error isolation; no production optional domain is
+registered yet. Resource-bearing services remain blocked until lifecycle-owned
+drain and cleanup evidence replaces declaration-only promises.
 
 ## Selective decomposition map
 

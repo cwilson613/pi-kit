@@ -5,6 +5,7 @@
 
 use crate::{RuntimeCapabilityId, RuntimeCapabilityKind, RuntimeInvocationKind};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::{any::Any, sync::Arc};
 
 macro_rules! scoped_id {
     ($name:ident, $description:literal) => {
@@ -63,6 +64,7 @@ scoped_id!(
     RuntimeContributionGenerationId,
     "contribution generation id"
 );
+scoped_id!(RuntimeServiceInterfaceId, "service interface id");
 scoped_id!(RuntimeDiagnosticCode, "diagnostic code");
 scoped_id!(RuntimeCapabilityGroupId, "capability group id");
 scoped_id!(RuntimeContributionResourceId, "contribution resource id");
@@ -568,6 +570,8 @@ pub struct RuntimeInvocationBinding {
 pub struct RuntimeContributionCapabilityDeclaration {
     pub id: RuntimeCapabilityId,
     pub kind: RuntimeCapabilityKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_interface: Option<RuntimeServiceInterfaceId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<RuntimeInvocationBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -576,6 +580,86 @@ pub struct RuntimeContributionCapabilityDeclaration {
     pub transition: RuntimeCapabilityTransitionPolicy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub surfaces: Vec<RuntimeSurface>,
+}
+
+#[derive(Clone)]
+pub struct RuntimeInProcessService {
+    pub capability: RuntimeContributionCapabilityDeclaration,
+    pub interface_id: RuntimeServiceInterfaceId,
+    implementation: Arc<dyn Any + Send + Sync>,
+    implementation_identity: usize,
+    implementation_type_id: std::any::TypeId,
+}
+
+#[doc(hidden)]
+pub struct RuntimeServiceHolder<T: ?Sized> {
+    pub service: Arc<T>,
+}
+
+impl std::fmt::Debug for RuntimeInProcessService {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeInProcessService")
+            .field("capability", &self.capability)
+            .field("interface_id", &self.interface_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RuntimeInProcessService {
+    pub fn no_resource_read_service<T>(
+        id: RuntimeCapabilityId,
+        interface_id: RuntimeServiceInterfaceId,
+        implementation: Arc<T>,
+    ) -> Self
+    where
+        T: ?Sized + Any + Send + Sync,
+    {
+        let implementation_identity = Arc::as_ptr(&implementation) as *const () as usize;
+        Self {
+            capability: RuntimeContributionCapabilityDeclaration {
+                id,
+                kind: RuntimeCapabilityKind::InProcessService,
+                service_interface: Some(interface_id.clone()),
+                bindings: Vec::new(),
+                effects: Vec::new(),
+                execution: RuntimeExecutionPolicy {
+                    principals: vec![RuntimePrincipalClass::Service],
+                    timeout_class: RuntimeTimeoutClass::Immediate,
+                    retry_class: RuntimeRetryClass::Never,
+                    idempotency: RuntimeIdempotency::Idempotent,
+                    deduplication: RuntimeDeduplication::Unsupported,
+                    parallelism: RuntimeParallelism::ParallelSafe,
+                    transaction: RuntimeTransactionBehavior::None,
+                    mutation_fence: None,
+                    max_attempts: Some(1),
+                },
+                transition: RuntimeCapabilityTransitionPolicy {
+                    authority_narrowing: RuntimeAuthorityNarrowing::CompleteExisting,
+                    active_call_timeout_ms: 0,
+                },
+                surfaces: vec![RuntimeSurface::Internal],
+            },
+            interface_id,
+            implementation: Arc::new(RuntimeServiceHolder {
+                service: implementation,
+            }),
+            implementation_identity,
+            implementation_type_id: std::any::TypeId::of::<RuntimeServiceHolder<T>>(),
+        }
+    }
+
+    pub fn erased_implementation(&self) -> Arc<dyn Any + Send + Sync> {
+        Arc::clone(&self.implementation)
+    }
+
+    pub fn implementation_identity(&self) -> usize {
+        self.implementation_identity
+    }
+
+    pub fn implementation_type_id(&self) -> std::any::TypeId {
+        self.implementation_type_id
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -694,6 +778,19 @@ impl RuntimeContributionDeclaration {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.protocol.validate()?;
         for capability in &self.capabilities {
+            match capability.kind {
+                RuntimeCapabilityKind::InProcessService
+                    if capability.service_interface.is_none()
+                        || !capability.bindings.is_empty() =>
+                {
+                    return Err("in-process service must declare an interface and no bindings");
+                }
+                RuntimeCapabilityKind::InProcessService => {}
+                _ if capability.service_interface.is_some() => {
+                    return Err("only in-process services may declare a service interface");
+                }
+                _ => {}
+            }
             capability.execution.validate(&capability.effects)?;
         }
         Ok(())

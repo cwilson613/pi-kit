@@ -686,6 +686,19 @@ missing catalog identity, partial mirror publication, or platform-specific
 atomic publication. These are exact red gaps, not permission to revise accepted
 vectors. Task 5.5 may correct behavior exposed by those fixtures while retaining
 event v1, reducer/cache v5, cursor v1, projection v1, and task-5.4 store schemas.
-Task 5.6 remains the only dual-write-removal and developer/applicable-public-doc
-boundary. This refinement is planning-only and changes no Rust, runtime,
-changelog, public docs/site, command/configuration, or canonical snippet.
+Task 5.6 remains the only compatibility-publication-removal and
+developer/applicable-public-doc boundary. Its refinement defines semantic
+self-sufficiency narrowly: full lineage, or mixed lineage carrying exactly one
+durable content-addressed legacy compatibility base. Those sessions stop
+rewriting `.json`/`.meta.json`; legacy and not-yet-materialized mixed sessions
+retain the pair only as a one-way import source. Opening a valid legacy pair
+beside pre-boundary authority materializes that base before the first full-spine
+step and fixes mixed lineage. Existing pair artifacts are not automatically
+deleted, but stale or missing pair bytes cannot affect a self-sufficient
+session. Maintenance becomes catalog-first for inventory, inspection, and
+quarantine, with pair fallback only for legacy import. Closeout does not invent
+the previously described rollback consumer switch: no such runtime selector
+exists. Event v1, reducer/cache v5, cursor v1, projection v1, and task-5.4 host
+schemas remain unchanged. This refinement is planning-only and changes no Rust,
+runtime, changelog, public docs/site, command/configuration, or canonical
+snippet.

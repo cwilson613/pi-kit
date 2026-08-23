@@ -353,7 +353,22 @@ I/O, notification, worker, and replacement boundaries, not timing sleeps. Its
 required matrix covers Linux, macOS, and Windows within 15 seconds per platform.
 Task 5.5 may fix behavior exposed by frozen red fixtures but may not change event
 v1, reducer/cache v5, cursor v1, projection v1, or task-5.4 store schemas. Task
-5.6 exclusively owns dual-write removal and developer/applicable public docs.
+5.6 exclusively owns compatibility-publication removal and developer/applicable
+public docs. Its closeout gate defines a self-sufficient session as full lineage,
+or mixed lineage with exactly one durable content-addressed
+`legacy-compatibility-base-v1`. Self-sufficient sessions must not rewrite the
+legacy `.json`/`.meta.json` pair. Legacy and not-yet-materialized mixed sessions
+may retain that pair only as a one-way import source. Opening a valid pair beside
+pre-boundary authority must materialize the compatibility LLM view exactly once
+and establish mixed lineage before a full-spine step. Pair absence or stale bytes
+after materialization must not affect semantic context, transcript, or resume;
+closeout does not automatically delete existing pair artifacts.
+
+Maintenance inventory, inspection, and quarantine must prefer the semantic
+catalog framing and identity-pin it, with legacy pair fallback. No rollback
+consumer-source selector is part of this closeout because none exists in the
+runtime. Event v1, reducer/cache v5, cursor v1, projection v1, and task-5.4 host
+schemas remain unchanged.
 
 Every manifest row maps to a concrete exhaustive executor that checks all frozen
 fields and invokes its target consumer after the declared fault setup. AC13

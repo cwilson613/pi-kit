@@ -2252,21 +2252,22 @@ owns applicable public docs. No configuration key is added.
 - Mixed Web historical output is exact suffix only. No Web/API renderer may
   concatenate the compatibility prefix and label it exact.
 
-Every task-5.4 authority-backed write continues semantic publication and updates
-the legacy `.json` and `.meta.json` compatibility pair through Slice 5.6
-closeout. Mirror publication follows semantic durability and may lag or fail
-without rolling authority back. A source marker binds each mirror to lineage and
-semantic frontier while retaining its old externally readable shape; unsupported
-old writers are denied once a lineage has crossed the full-spine boundary.
+Task 5.6 closes compatibility publication at a semantic self-sufficiency
+boundary. Full lineage and mixed lineage carrying exactly one durable
+content-addressed `legacy-compatibility-base-v1` stop rewriting the legacy
+`.json` and `.meta.json` pair. Legacy lineage and mixed lineage not yet carrying
+that source retain the pair only as a one-way import source. Opening a valid pair
+beside pre-boundary authority materializes the compatibility LLM view exactly
+once and establishes mixed lineage before any full-spine step. Existing pair
+artifacts are not automatically deleted, but missing or stale pair bytes cannot
+alter context, transcript, or resume after materialization.
 
-Rollback is a consumer-source switch, not a writer rollback. It may route
-presentation, catalog, or labeled compatibility resume back to a last valid
-mirror while semantic writing, host-state/observation durability, and mirror
-dual-write continue. It disables exact transcript/full resume where the mirror
-cannot satisfy exactness. It never truncates authority, rewrites a cursor,
-reclassifies lineage, or admits an old writer. Slice 5.6 may remove dual-write
-only after its closeout gate verifies supported-reader migration and documents
-the one-way boundary.
+Maintenance inventory, inspect, and quarantine prefer the semantic catalog and
+identity-pin its framing, with pair fallback for legacy sessions. The runtime has
+no rollback consumer-source selector, so closeout does not claim or add one.
+Semantic writing and forward-only lineage remain active; unsupported reduced
+writers cannot append a post-boundary turn, and no compatibility artifact can
+truncate authority, rewrite a cursor, reclassify lineage, or authorize exactness.
 
 ### Version and fixture strategy
 

@@ -594,6 +594,28 @@ services and adds work-source error isolation; no production optional domain is
 registered yet. Resource-bearing services remain blocked until lifecycle-owned
 drain and cleanup evidence replaces declaration-only promises.
 
+The second no-resource lane is stateless behavior policy. The optional
+`service:behavior-policy` / `interface:omegon-behavior-policy-v1` service accepts
+immutable host-normalized per-turn views and computes advisory classifications,
+evidence, pressure, and recovery decisions without retaining state. Explicit
+operator mode parsing, declared tool capabilities, authoritative observation
+normalization, operator-correction recovery, durable intent, controller and
+recovery counters, tool execution, events, and nudge insertion remain host-owned.
+Normal composition preserves canonical parity fixtures BP01-BP09 from the
+source design, pinned to the direct implementation at commit `9c3a9860`, and
+task 6.1.5 must materialize literal shared vectors before removing direct calls.
+During absence, hosts preserve intent,
+hold policy counters, and omit only behavior-policy-derived pressure and meta
+retries; operator-correction recovery, completion reconciliation, plan
+reminders, stuck recovery, and text-only recovery remain active. All loop hosts
+carry the same optional binding through `LoopCompatibilityBindings`, including
+ACP worker transfer. A present binding retains service identity; absence is
+`None` plus graph degradation and never fabricates an owner or generation. Each
+session keeps its own policy state. Like the work snapshot service, this
+service owns no task, subscription, process, temporary artifact, or durable
+writer. Resource-bearing domains remain deferred until generation-bound drain
+and cleanup exist.
+
 ## Selective decomposition map
 
 | Current subsystem | Target tier | First boundary to establish |
@@ -1040,6 +1062,14 @@ and cursors without depending on missed broadcasts.
   repository-plan reads through the shared snapshot projection. If the optional
   service is absent, session plans remain available and repository arrays are
   empty; production readers do not rescan the filesystem.
+- Slice 6.1.5 is frozen as a stateless behavior-policy service. It preserves
+  named direct-policy behavior when present; when absent, loop execution holds
+  policy counters and omits policy-derived pressure/meta retries without
+  suppressing host-owned operator-correction, completion, plan, stuck, or
+  text-only recovery.
+  Explicit mode parsing, tool capabilities, observation normalization, session
+  intent, controller/recovery state, tool execution, events, and nudges remain
+  host-owned.
 - Convert memory, lifecycle, plans/work, behavior, context/compaction, codescan,
   and Git integration to declared in-process services.
 - Remove concrete feature imports from semantic surfaces.

@@ -171,3 +171,33 @@ Given an in-process service declares that it owns no tasks, subscriptions, tempo
 When its generation retires
 Then strict no-resource teardown settles deterministically
 And retirement does not inherit a best-effort host-process cleanup claim
+
+### Requirement: Behavior policy is a stateless optional service
+
+The release-coupled behavior-policy implementation must publish `service:behavior-policy` / `interface:omegon-behavior-policy-v1` as an optional synchronous in-process service with strict no-resource teardown. Its object-safe contract may consume immutable host-normalized per-turn policy views and return only advisory unpinned task-mode inference, phase, drift, progress/evidence, pressure, pressure/meta-message, substantive-prose, and pathological-meta-response decisions. It must not retain conversation, tool, controller, frontend, or durable-session state. Session and host owners retain explicit operator mode parsing and correction recovery, declared tool capabilities, authoritative observation normalization, `IntentDocument`, persisted task mode, controller streaks, stuck/dead-mouse/meta counters, tool execution, event emission, and nudge insertion. Dynamic tool declarations and normalized observations are caller input rather than boot-cached service state.
+
+#### Scenario: Behavior policy is present
+Given an accepted behavior-policy generation was captured at boot
+When each interactive, daemon/control, headless, bounded, Sentry, and ACP host evaluates a turn through its generation-tagged binding
+Then results match canonical direct-policy fixtures BP01-BP09 pinned to commit `9c3a9860` and defined in the source design
+And ACP transfers that binding across its worker boundary
+And every host retains the binding's capability, owner, and generation identity
+And the session retains all controller, recovery-counter, observation, and durable intent authority
+
+#### Scenario: Behavior policy is absent
+Given the active profile omits the optional behavior-policy service
+When an ordinary text or tool turn executes
+Then the turn remains callable with neutral advisory policy results
+And every loop host and the ACP worker receives an absent optional binding plus graph unavailable or degraded evidence
+And no service owner or generation identity is fabricated
+And explicit operator mode declarations and existing session intent are preserved
+And controller and recovery counters are held rather than advanced from synthetic no-progress
+And no behavior-policy-derived first-turn, execution, evidence, or continuation nudge or meta retry is fabricated
+And host-owned operator-correction recovery, completion reconciliation, plan reminders, stuck recovery, and text-only recovery remain unchanged
+And the consumer performs no ambient registry lookup or direct classifier fallback
+
+#### Scenario: Sessions share one behavior implementation
+Given two sessions captured the same accepted behavior-policy generation
+When their controller and recovery counters diverge
+Then each session's decisions use only its own immutable input view
+And the behavior service retains no cross-session state or generation-owned resource

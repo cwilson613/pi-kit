@@ -2104,6 +2104,7 @@ struct DefaultSession {
     bus: bus::EventBus,
     context_manager: context::ContextManager,
     conversation: conversation::ConversationState,
+    work_snapshot: Option<Arc<styrene_work_runtime::WorkSnapshot>>,
 }
 
 /// Type alias for the shared session state. `None` means a turn is in progress.
@@ -2314,6 +2315,7 @@ async fn run_daemon_turn(
                 return Err(error);
             }
         };
+        config.compatibility.work_snapshot = state.work_snapshot.clone();
 
         state.conversation.push_user(active.prompt.text);
 
@@ -2861,6 +2863,7 @@ async fn run_embedded_command(
             bus: agent.bus,
             context_manager: agent.context_manager,
             conversation: agent.conversation,
+            work_snapshot: agent.work_snapshot,
         }))),
         supervisor: Arc::new(tokio::sync::Mutex::new(
             InteractiveRuntimeSupervisor::with_authority(daemon_authority)?,
@@ -5314,12 +5317,10 @@ fn build_tui_secret_readiness_snapshot(
                 respond_to,
             } => {
                 let response = execute_plan_slash_command(&mut runtime_state, command);
-                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let repo_root = setup::find_project_root(&cwd);
                 let projection = runtime_state
                     .conversation
                     .intent
-                    .plan_surface_projection_for_repo(&repo_root);
+                    .plan_surface_projection_for_repo(runtime_state.work_snapshot.as_deref());
                 if let Some(output) = response.output.clone() {
                     let _ = events_tx.send(AgentEvent::SystemNotification { message: output });
                 }
@@ -7633,7 +7634,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     );
     agent.conversation.push_user(prompt_text.clone());
 
-    let loop_config = bootstrap::build_loop_config(
+    let mut loop_config = bootstrap::build_loop_config(
         &shared_settings,
         &agent.cwd,
         &cli.model,
@@ -7644,6 +7645,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
             ..Default::default()
         },
     );
+    loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
 
     let resolved_provider = providers::resolve_execution_provider(&cli.model).await;
     tracing::info!(
@@ -9001,18 +9003,12 @@ Last completed plan
     }
 }
 
-fn work_plan_snapshot_with_lifecycle(
-    intent: &crate::conversation::IntentDocument,
-) -> serde_json::Value {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let repo_root = setup::find_project_root(&cwd);
-    intent.work_plan_snapshot_json_for_repo(&repo_root)
-}
-
 fn render_plan_show(runtime_state: &InteractiveAgentState, plan_id: &str) -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let repo_root = setup::find_project_root(&cwd);
-    crate::plan::render_plan_show_text(&runtime_state.conversation.intent, &repo_root, plan_id)
+    crate::plan::render_plan_show_text(
+        &runtime_state.conversation.intent,
+        runtime_state.work_snapshot.as_deref(),
+        plan_id,
+    )
 }
 
 fn render_plan_ledger(runtime_state: &InteractiveAgentState, plan_id: Option<&str>) -> String {
@@ -9039,9 +9035,10 @@ fn render_plan_ledger(runtime_state: &InteractiveAgentState, plan_id: Option<&st
 }
 
 fn render_plan_list(runtime_state: &InteractiveAgentState) -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let repo_root = setup::find_project_root(&cwd);
-    crate::plan::render_plan_list_text(&runtime_state.conversation.intent, &repo_root)
+    crate::plan::render_plan_list_text(
+        &runtime_state.conversation.intent,
+        runtime_state.work_snapshot.as_deref(),
+    )
 }
 
 async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
@@ -9596,6 +9593,7 @@ async fn run_bounded_task(
     loop_config.compatibility.invocation_scope.session_id = Some(agent.session_id.clone());
     loop_config.compatibility.invocation_scope.turn_id = invocation_turn_id;
     loop_config.compatibility.invocation_scope.authority = invocation_authority;
+    loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
 
     let bridge =
         match bootstrap::resolve_bridge_or_bail_with_secrets(model, Some(agent.secrets.as_ref()))
@@ -10092,6 +10090,7 @@ mod tests {
 
         setup::AgentSetup {
             bus: crate::bus::EventBus::new(),
+            work_snapshot: None,
             session_id: "test-session".into(),
             session_view_binding: crate::session_consumers::SessionViewBinding::new(
                 cwd.join("test-session.json"),
@@ -10156,6 +10155,7 @@ mod tests {
             context_manager: setup.context_manager,
             conversation: setup.conversation,
             inference_runtime: setup.inference_runtime,
+            work_snapshot: setup.work_snapshot,
         }));
         let retained = state.clone();
 
@@ -10554,6 +10554,7 @@ mod tests {
             context_manager: setup.context_manager,
             conversation: setup.conversation,
             inference_runtime: setup.inference_runtime,
+            work_snapshot: setup.work_snapshot,
         }));
         let _guard = state.lock().await;
 
@@ -12118,6 +12119,7 @@ mod tests {
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(
                 std::path::Path::new("."),
             ),
+            work_snapshot: None,
         };
         runtime_state
             .conversation
@@ -12137,14 +12139,18 @@ mod tests {
         assert!(output.contains("recover completed plan"), "{output}");
     }
 
-    #[test]
-    fn plan_list_renders_visible_completed_and_openspec_sections() {
+    #[tokio::test]
+    async fn plan_list_renders_visible_completed_and_openspec_sections() {
         let cwd = tempfile::tempdir().unwrap();
-        let _cwd = crate::test_support::cwd::CurrentDirGuard::enter(cwd.path());
-        std::fs::create_dir_all("openspec/changes/example/specs/lifecycle").unwrap();
-        std::fs::write("openspec/changes/example/proposal.md", "# Example\n").unwrap();
+        std::fs::create_dir_all(cwd.path().join("openspec/changes/example/specs/lifecycle"))
+            .unwrap();
         std::fs::write(
-            "openspec/changes/example/tasks.md",
+            cwd.path().join("openspec/changes/example/proposal.md"),
+            "# Example\n",
+        )
+        .unwrap();
+        std::fs::write(
+            cwd.path().join("openspec/changes/example/tasks.md"),
             "# Tasks\n\n## 1. Runtime\n<!-- specs: lifecycle/example -->\n\n- [x] 1.1 Done\n- [ ] 1.2 Pending\n",
         )
         .unwrap();
@@ -12159,6 +12165,13 @@ mod tests {
             conversation: crate::conversation::ConversationState::new(),
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(
                 std::path::Path::new("."),
+            ),
+            work_snapshot: Some(
+                crate::features::work_aggregation::WorkAggregationFeature::from_repository(
+                    cwd.path(),
+                )
+                .await
+                .snapshot(),
             ),
         };
         runtime_state

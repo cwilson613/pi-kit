@@ -1036,6 +1036,10 @@ and cursors without depending on missed broadcasts.
 - Slice 6.1.3 derives the existing repository plan/task read model from that
   snapshot with compatibility parity, including stable-ID diagnostics. It does
   not yet switch production readers.
+- Slice 6.1.4 captures the accepted service at boot and routes CLI, loop, and ACP
+  repository-plan reads through the shared snapshot projection. If the optional
+  service is absent, session plans remain available and repository arrays are
+  empty; production readers do not rescan the filesystem.
 - Convert memory, lifecycle, plans/work, behavior, context/compaction, codescan,
   and Git integration to declared in-process services.
 - Remove concrete feature imports from semantic surfaces.

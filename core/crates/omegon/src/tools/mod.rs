@@ -336,6 +336,83 @@ pub fn render_lifecycle_plan_list(repo_root: &Path) -> String {
     lines.join("\n")
 }
 
+fn render_lifecycle_plan_list_from_snapshot(
+    snapshot: &styrene_work_runtime::WorkSnapshot,
+) -> String {
+    let mut changes = snapshot
+        .items
+        .iter()
+        .filter(|item| item.lifecycle.workflow.as_deref() == Some("openspec"))
+        .collect::<Vec<_>>();
+    changes.sort_by(|left, right| left.title.cmp(&right.title));
+    let mut lines = vec!["OpenSpec".to_string()];
+    if changes.is_empty() {
+        lines.push("- none".into());
+        return lines.join("\n");
+    }
+    for change in changes.iter().take(PLAN_LIST_CHANGE_LIMIT) {
+        let facet = change.facets.openspec.as_ref();
+        let done = facet
+            .and_then(|value| value.get("done_tasks"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let total = facet
+            .and_then(|value| value.get("total_tasks"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        lines.push(format!(
+            "- {} · {} · {done}/{total}",
+            change.title, change.lifecycle.native_state
+        ));
+        let mut groups = std::collections::BTreeMap::<(usize, String), (usize, usize)>::new();
+        for task in snapshot.items.iter().filter(|item| {
+            item.lifecycle.workflow.as_deref() == Some("openspec_task")
+                && item
+                    .facets
+                    .openspec
+                    .as_ref()
+                    .and_then(|value| value.get("change_name"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(change.title.as_str())
+        }) {
+            let Some(facet) = task.facets.openspec.as_ref() else {
+                continue;
+            };
+            let Some(group) = facet.get("group").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let group_index = facet
+                .get("group_index")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(u64::MAX) as usize;
+            let entry = groups.entry((group_index, group.to_string())).or_default();
+            entry.1 += 1;
+            entry.0 += usize::from(
+                facet
+                    .get("done")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            );
+        }
+        for ((_, group), (done, total)) in groups.iter().take(PLAN_LIST_GROUP_LIMIT) {
+            lines.push(format!("  - {group} · {done}/{total}"));
+        }
+        if groups.len() > PLAN_LIST_GROUP_LIMIT {
+            lines.push(format!(
+                "  - … and {} more groups",
+                groups.len() - PLAN_LIST_GROUP_LIMIT
+            ));
+        }
+    }
+    if changes.len() > PLAN_LIST_CHANGE_LIMIT {
+        lines.push(format!(
+            "- … and {} more OpenSpec changes",
+            changes.len() - PLAN_LIST_CHANGE_LIMIT
+        ));
+    }
+    lines.join("\n")
+}
+
 /// Error returned by `WorkspaceBoundary::check_path` when a path is outside
 /// the workspace and not in any trusted directory. The dispatch layer
 /// intercepts this to show an interactive permission prompt in the TUI.
@@ -631,6 +708,8 @@ pub struct CoreTools {
     boundary: WorkspaceBoundary,
     terminal_tool_enabled: bool,
     secrets: Option<std::sync::Arc<omegon_secrets::SecretsManager>>,
+    work_snapshot:
+        std::sync::Arc<std::sync::OnceLock<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>>,
 }
 
 impl CoreTools {
@@ -642,6 +721,7 @@ impl CoreTools {
             boundary,
             terminal_tool_enabled: true,
             secrets: None,
+            work_snapshot: Default::default(),
         }
     }
 
@@ -657,6 +737,7 @@ impl CoreTools {
             boundary,
             terminal_tool_enabled: true,
             secrets: None,
+            work_snapshot: Default::default(),
         }
     }
 
@@ -669,6 +750,24 @@ impl CoreTools {
 
     pub fn with_secrets(mut self, secrets: std::sync::Arc<omegon_secrets::SecretsManager>) -> Self {
         self.secrets = Some(secrets);
+        self
+    }
+
+    pub fn with_work_snapshot(
+        mut self,
+        snapshot: std::sync::Arc<styrene_work_runtime::WorkSnapshot>,
+    ) -> Self {
+        self.work_snapshot = std::sync::Arc::new(std::sync::OnceLock::from(snapshot));
+        self
+    }
+
+    pub fn with_work_snapshot_slot(
+        mut self,
+        slot: std::sync::Arc<
+            std::sync::OnceLock<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+        >,
+    ) -> Self {
+        self.work_snapshot = slot;
         self
     }
 
@@ -1554,7 +1653,12 @@ impl ToolProvider for CoreTools {
                     "skip" => "Skipped current work item.".into(),
                     "clear" => "Cleared the active work plan.".into(),
                     "status" => "Work plan status rendered in context.".into(),
-                    "list" => render_lifecycle_plan_list(&self.cwd),
+                    "list" => self
+                        .work_snapshot
+                        .get()
+                        .map(std::sync::Arc::as_ref)
+                        .map(render_lifecycle_plan_list_from_snapshot)
+                        .unwrap_or_else(|| "OpenSpec\n- none".into()),
                     other => format!("Unknown plan action: {other}"),
                 };
                 Ok(ToolResult {
@@ -1888,6 +1992,38 @@ open_questions:
             .expect("design task");
         assert_eq!(task.intent, crate::conversation::TaskIntent::Design);
         assert_eq!(task.label, "What evidence is needed?");
+    }
+
+    #[tokio::test]
+    async fn plan_list_owner_uses_captured_snapshot_without_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let change = dir.path().join("openspec/changes/demo");
+        std::fs::create_dir_all(&change).unwrap();
+        std::fs::write(change.join("proposal.md"), "# Demo\n").unwrap();
+        std::fs::write(
+            change.join("tasks.md"),
+            "## 1. Group\n\n- [ ] 1.1 Pending <!-- task-id: stable -->\n",
+        )
+        .unwrap();
+        let feature =
+            crate::features::work_aggregation::WorkAggregationFeature::from_repository(dir.path())
+                .await;
+        let tools = CoreTools::new(dir.path().to_path_buf()).with_work_snapshot(feature.snapshot());
+
+        let result = tools
+            .execute(
+                crate::tool_registry::core::PLAN,
+                "plan-list",
+                serde_json::json!({"action": "list"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = result.content[0].as_text().unwrap();
+        assert_eq!(text, render_lifecycle_plan_list(dir.path()));
+        assert!(text.contains("OpenSpec"), "{text}");
+        assert!(text.contains("demo"), "{text}");
+        assert!(!text.contains("supplied by the session"), "{text}");
     }
 
     #[test]

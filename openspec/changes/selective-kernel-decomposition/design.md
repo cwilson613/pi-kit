@@ -64,6 +64,8 @@ Slice 6.1.2 registers the first production half of that lane. The statically lin
 
 Slice 6.1.3 adds the semantic conversion boundary without changing consumers. Source facets retain the OpenSpec grouping/order and structured task-identity findings needed to recreate the existing repository plan/task DTOs; duplicate stable markers remain diagnosable while normalized work identities stay unique. The shared `surfaces::plans` adapter has parity coverage against the direct scanner, so the following cutover can replace producer access without changing command or frontend shapes.
 
+Slice 6.1.4 captures the typed work snapshot immediately after accepted composition publication and carries that immutable handle through every loop host and the ACP worker boundary. Shared CLI, loop, and ACP repository-plan readers consume only the captured snapshot. Absence is explicit: session-local `IntentDocument` mutation and rendering continue, repository plans/tasks are empty, and no reader performs an ambient service lookup or direct filesystem fallback. The compatibility scanner remains only as the parity oracle for tests.
+
 ### Out-of-process contributions
 
 Native/OCI extensions, MCP, HTTP/OpenAPI, and optional remote providers/tools negotiate versioned capabilities. Unsandboxed native, script, and MCP processes are trusted host-authority code. Least authority is claimed only when verified confinement blocks direct host access and privileged effects cross kernel brokers.

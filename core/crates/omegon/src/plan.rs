@@ -1,7 +1,6 @@
 //! Plan registry, projections, evidence, and session-local plan view state.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 use crate::conversation::{
     CompletedWorkPlan, PlanMode, PlanScope, PlanSource, VisiblePlanState, WorkItem, WorkItemStatus,
@@ -542,8 +541,13 @@ pub struct PlanSurfaceInputs {
 }
 
 impl PlanSurfaceInputs {
-    pub fn from_intent(intent: &crate::conversation::IntentDocument, repo_root: &Path) -> Self {
-        let lifecycle = crate::tools::lifecycle_plan_projection(repo_root);
+    pub fn from_intent(
+        intent: &crate::conversation::IntentDocument,
+        work_snapshot: Option<&styrene_work_runtime::WorkSnapshot>,
+    ) -> Self {
+        let lifecycle = work_snapshot
+            .map(crate::surfaces::plans::from_work_snapshot)
+            .unwrap_or_default();
         let completed_session =
             intent
                 .last_completed_work_plan()
@@ -1276,13 +1280,16 @@ impl crate::conversation::IntentDocument {
 
     pub fn plan_surface_projection_for_repo(
         &self,
-        repo_root: &Path,
+        work_snapshot: Option<&styrene_work_runtime::WorkSnapshot>,
     ) -> omegon_traits::PlanSurfaceProjection {
-        PlanSurfaceInputs::from_intent(self, repo_root).to_agent_projection(self)
+        PlanSurfaceInputs::from_intent(self, work_snapshot).to_agent_projection(self)
     }
 
-    pub fn work_plan_snapshot_json_for_repo(&self, repo_root: &Path) -> serde_json::Value {
-        self.plan_surface_projection_for_repo(repo_root)
+    pub fn work_plan_snapshot_json_for_repo(
+        &self,
+        work_snapshot: Option<&styrene_work_runtime::WorkSnapshot>,
+    ) -> serde_json::Value {
+        self.plan_surface_projection_for_repo(work_snapshot)
             .legacy_snapshot_json()
     }
 
@@ -1727,10 +1734,10 @@ impl crate::conversation::IntentDocument {
 
 pub fn render_plan_show_text(
     intent: &crate::conversation::IntentDocument,
-    repo_root: &Path,
+    work_snapshot: Option<&styrene_work_runtime::WorkSnapshot>,
     plan_id: &str,
 ) -> String {
-    let projection = PlanSurfaceInputs::from_intent(intent, repo_root);
+    let projection = PlanSurfaceInputs::from_intent(intent, work_snapshot);
     let mut entries = intent.plan_registry().entries;
     entries.extend(projection.lifecycle_entries.clone());
     if let Some(entry) = entries.iter().find(|entry| entry.plan_id == plan_id) {
@@ -1776,9 +1783,9 @@ pub fn render_plan_show_text(
 
 pub fn render_plan_list_text(
     intent: &crate::conversation::IntentDocument,
-    repo_root: &Path,
+    work_snapshot: Option<&styrene_work_runtime::WorkSnapshot>,
 ) -> String {
-    let projection = PlanSurfaceInputs::from_intent(intent, repo_root);
+    let projection = PlanSurfaceInputs::from_intent(intent, work_snapshot);
     let mut lines = vec!["Plans".to_string()];
 
     if let Some(visible) = &projection.visible {
@@ -1948,7 +1955,6 @@ mod render_tests {
 
     #[test]
     fn completed_session_plan_leaves_history_without_visible_lane() {
-        let dir = tempfile::tempdir().unwrap();
         let mut intent = IntentDocument::default();
         intent.set_work_plan(vec!["finish validation".into()]);
         intent.approve_work_plan();
@@ -1960,7 +1966,7 @@ mod render_tests {
         assert!(intent.visible_plan.is_some());
         assert_eq!(intent.plan_mode, crate::conversation::PlanMode::Complete);
         assert_eq!(intent.last_completed_work_plan().unwrap().items.len(), 1);
-        let projection = PlanSurfaceInputs::from_intent(&intent, dir.path());
+        let projection = PlanSurfaceInputs::from_intent(&intent, None);
         assert!(projection.active_lane(&intent).is_none());
         assert_eq!(projection.completed_session.unwrap().completed, 1);
     }
@@ -2001,8 +2007,8 @@ mod render_tests {
         }));
     }
 
-    #[test]
-    fn render_plan_list_text_includes_visible_and_lifecycle_sections() {
+    #[tokio::test]
+    async fn render_plan_list_text_includes_visible_and_lifecycle_sections() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();
         std::fs::create_dir_all(repo.join("openspec/changes/example/specs/lifecycle")).unwrap();
@@ -2019,8 +2025,11 @@ mod render_tests {
 
         let mut intent = IntentDocument::default();
         intent.set_work_plan(vec!["visible work".into()]);
+        let feature =
+            crate::features::work_aggregation::WorkAggregationFeature::from_repository(repo).await;
+        let snapshot = feature.snapshot();
 
-        let output = render_plan_list_text(&intent, repo);
+        let output = render_plan_list_text(&intent, Some(snapshot.as_ref()));
 
         assert!(output.contains("Visible"), "{output}");
         assert!(output.contains("visible work"), "{output}");
@@ -2030,11 +2039,26 @@ mod render_tests {
     }
 
     #[test]
-    fn render_plan_show_text_reports_stale_missing_plan() {
+    fn absent_work_service_keeps_session_plan_without_scanning_repository() {
         let dir = tempfile::tempdir().unwrap();
+        let change = dir.path().join("openspec/changes/hidden");
+        std::fs::create_dir_all(&change).unwrap();
+        std::fs::write(change.join("proposal.md"), "# Hidden\n").unwrap();
+        std::fs::write(change.join("tasks.md"), "## 1. Work\n\n- [ ] 1.1 Hidden\n").unwrap();
+        let mut intent = IntentDocument::default();
+        intent.set_work_plan(vec!["session work".into()]);
+
+        let output = render_plan_list_text(&intent, None);
+        assert!(output.contains("session work"), "{output}");
+        assert!(!output.contains("hidden"), "{output}");
+        assert!(!output.contains("OpenSpec"), "{output}");
+    }
+
+    #[test]
+    fn render_plan_show_text_reports_stale_missing_plan() {
         let intent = IntentDocument::default();
 
-        let output = render_plan_show_text(&intent, dir.path(), "missing:plan");
+        let output = render_plan_show_text(&intent, None, "missing:plan");
 
         assert!(output.contains("Plan missing:plan"), "{output}");
         assert!(output.contains("stale"), "{output}");

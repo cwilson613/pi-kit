@@ -703,6 +703,14 @@ pub struct OmegonAcpAgent {
     session_cwd: RefCell<Option<std::path::PathBuf>>,
     turn_state: RefCell<AcpTurnState>,
     secrets: RefCell<Option<std::sync::Arc<omegon_secrets::SecretsManager>>>,
+    work_snapshot: RefCell<Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>>,
+    work_snapshot_rx: RefCell<
+        Option<
+            tokio::sync::oneshot::Receiver<
+                Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+            >,
+        >,
+    >,
     host_caps: RefCell<HostCapabilities>,
     extension_metadata: Rc<RefCell<std::collections::BTreeMap<String, serde_json::Value>>>,
     extension_rpc_handles:
@@ -713,6 +721,11 @@ pub struct OmegonAcpAgent {
 }
 
 impl OmegonAcpAgent {
+    fn clear_work_snapshot_capture(&self) {
+        self.work_snapshot.borrow_mut().take();
+        self.work_snapshot_rx.borrow_mut().take();
+    }
+
     pub fn new(model: &str) -> Self {
         Self::new_with_extension_metadata(model, Default::default())
     }
@@ -769,6 +782,8 @@ impl OmegonAcpAgent {
             session_cwd: RefCell::new(None),
             turn_state: RefCell::new(AcpTurnState::default()),
             secrets: RefCell::new(None),
+            work_snapshot: RefCell::new(None),
+            work_snapshot_rx: RefCell::new(None),
             host_caps: RefCell::new(HostCapabilities::default()),
             extension_metadata: Rc::new(RefCell::new(extension_metadata)),
             extension_rpc_handles: Rc::new(RefCell::new(Default::default())),
@@ -968,6 +983,17 @@ impl OmegonAcpAgent {
     }
 
     fn ensure_worker(&self, cwd: &std::path::Path) {
+        let cwd_changed = self
+            .session_cwd
+            .borrow()
+            .as_ref()
+            .is_some_and(|active| active != cwd);
+        if cwd_changed {
+            if let Some(worker) = self.worker.borrow_mut().take() {
+                let _ = worker.request_tx.try_send(WorkerRequest::Shutdown);
+            }
+            self.clear_work_snapshot_capture();
+        }
         if self.worker.borrow().is_none() {
             // Build HostContext if the client advertised any delegatable capabilities.
             let host_ctx = if self.host_caps.borrow().has_any_delegation() {
@@ -1016,6 +1042,12 @@ impl OmegonAcpAgent {
                     *secrets_cell.borrow_mut() = Some(mgr);
                 }
             });
+            let work_snapshot_rx = std::mem::replace(
+                &mut handle.work_snapshot_rx,
+                tokio::sync::oneshot::channel().1,
+            );
+            self.work_snapshot.borrow_mut().take();
+            *self.work_snapshot_rx.borrow_mut() = Some(work_snapshot_rx);
 
             // Persistent lifecycle subscriber. Worker setup can emit extension
             // metadata/handles before any prompt is sent; prompt-time subscribers
@@ -2149,6 +2181,7 @@ impl OmegonAcpAgent {
         self.send_to_worker(WorkerRequest::Cancel).await;
         self.send_to_worker(WorkerRequest::Shutdown).await;
         *self.worker.borrow_mut() = None;
+        self.clear_work_snapshot_capture();
         *self.session_id.borrow_mut() = None;
         *self.session_cwd.borrow_mut() = None;
         *self.turn_state.borrow_mut() = AcpTurnState::default();
@@ -2171,11 +2204,23 @@ impl OmegonAcpAgent {
 
 impl OmegonAcpAgent {
     fn acp_plan_projection_json(&self) -> serde_json::Value {
-        let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
-        let repo_root = crate::setup::find_project_root(&cwd);
-        crate::acp_plan_tasks::projection_json(&repo_root)
+        if self.work_snapshot.borrow().is_none() {
+            let received = self
+                .work_snapshot_rx
+                .borrow_mut()
+                .as_mut()
+                .map(tokio::sync::oneshot::Receiver::try_recv);
+            if let Some(Ok(snapshot)) = received {
+                *self.work_snapshot.borrow_mut() = snapshot;
+                self.work_snapshot_rx.borrow_mut().take();
+            } else if matches!(
+                received,
+                Some(Err(tokio::sync::oneshot::error::TryRecvError::Closed))
+            ) {
+                self.work_snapshot_rx.borrow_mut().take();
+            }
+        }
+        crate::acp_plan_tasks::projection_json(self.work_snapshot.borrow().as_deref())
     }
 
     fn repo_relative_path(&self, path: &std::path::Path) -> String {
@@ -5121,7 +5166,11 @@ mod extension_metadata_tests {
         )
         .unwrap();
         let agent = Rc::new(OmegonAcpAgent::new("test-model"));
-        *agent.session_cwd.borrow_mut() = Some(home.path().to_path_buf());
+        *agent.work_snapshot.borrow_mut() = Some(
+            crate::features::work_aggregation::WorkAggregationFeature::from_repository(home.path())
+                .await
+                .snapshot(),
+        );
 
         let plans = handle_acp_request_result(agent.clone(), "_plans/list", &serde_json::json!({}))
             .await
@@ -5211,6 +5260,20 @@ mod extension_metadata_tests {
         assert_eq!(stale["code"], "stale_revision");
     }
 
+    #[test]
+    fn worker_replacement_clears_cached_work_generation_and_pending_handoff() {
+        let agent = OmegonAcpAgent::new("test-model");
+        let runtime = styrene_work_runtime::WorkRuntime::new(Vec::new());
+        *agent.work_snapshot.borrow_mut() = Some(std::sync::Arc::new(runtime.snapshot().clone()));
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        *agent.work_snapshot_rx.borrow_mut() = Some(rx);
+
+        agent.clear_work_snapshot_capture();
+
+        assert!(agent.work_snapshot.borrow().is_none());
+        assert!(agent.work_snapshot_rx.borrow().is_none());
+    }
+
     #[tokio::test]
     async fn acp_plan_projection_reports_task_identity_findings() {
         let home = tempfile::tempdir().unwrap();
@@ -5233,7 +5296,11 @@ mod extension_metadata_tests {
         .unwrap();
 
         let agent = Rc::new(OmegonAcpAgent::new("test-model"));
-        *agent.session_cwd.borrow_mut() = Some(home.path().to_path_buf());
+        *agent.work_snapshot.borrow_mut() = Some(
+            crate::features::work_aggregation::WorkAggregationFeature::from_repository(home.path())
+                .await
+                .snapshot(),
+        );
         let response =
             handle_acp_request_result(agent.clone(), "_plans/list", &serde_json::json!({}))
                 .await

@@ -6308,6 +6308,7 @@ mod context_compaction_tests {
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(
                 std::path::Path::new("."),
             ),
+            work_snapshot: None,
         }
     }
 
@@ -6405,6 +6406,7 @@ mod context_compaction_tests {
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(
                 std::path::Path::new("."),
             ),
+            work_snapshot: None,
         };
         let mut agent = test_agent();
         let settings = crate::settings::shared("test:model");

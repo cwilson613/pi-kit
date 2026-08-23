@@ -19,9 +19,9 @@ use crate::session;
 use crate::tools;
 
 pub(crate) async fn register_work_aggregation(bus: &mut EventBus, project_root: &Path) {
-    bus.register(Box::new(
-        features::work_aggregation::WorkAggregationFeature::from_repository(project_root).await,
-    ));
+    let feature =
+        features::work_aggregation::WorkAggregationFeature::from_repository(project_root).await;
+    bus.register(Box::new(feature));
 }
 
 /// Summary of a resumed session, surfaced to the TUI for the welcome brief.
@@ -55,6 +55,8 @@ pub struct AgentSetup {
     /// The event bus — owns all features. The loop dispatches tools and
     /// emits events through the bus.
     pub bus: EventBus,
+    /// Immutable repository-work service captured from the accepted boot generation.
+    pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
     /// Stable session id for the current live conversation. Fresh sessions
     /// get a generated id at startup; resumed sessions reuse their saved id.
     pub session_id: String,
@@ -1081,7 +1083,10 @@ impl AgentSetup {
         } else {
             core_tools
         };
-        let core_tools = core_tools.with_secrets(secrets.clone());
+        let work_snapshot_slot = std::sync::Arc::new(std::sync::OnceLock::new());
+        let core_tools = core_tools
+            .with_secrets(secrets.clone())
+            .with_work_snapshot_slot(std::sync::Arc::clone(&work_snapshot_slot));
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "core-tools",
             Box::new(core_tools),
@@ -1138,6 +1143,12 @@ impl AgentSetup {
         }
         drop(plugin_admissions);
         drop(extension_admission);
+        let work_snapshot = features::work_aggregation::capture_work_snapshot(&bus)?;
+        if let Some(snapshot) = work_snapshot.as_ref() {
+            work_snapshot_slot
+                .set(std::sync::Arc::clone(snapshot))
+                .map_err(|_| anyhow::anyhow!("work snapshot slot was already initialized"))?;
+        }
 
         // Wire ManageTools state so runtime filtering and list output reflect
         // the bus's finalized model-visible tool cache.
@@ -1579,6 +1590,7 @@ impl AgentSetup {
 
         Ok(Self {
             bus,
+            work_snapshot,
             session_id,
             session_view_binding,
             instance_id,

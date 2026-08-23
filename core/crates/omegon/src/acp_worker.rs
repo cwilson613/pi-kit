@@ -284,6 +284,8 @@ pub struct WorkerHandle {
     /// Secrets manager from the worker — arrives asynchronously after setup.
     /// Used by the ACP transport to redact streaming output before emission.
     pub secrets_rx: tokio::sync::oneshot::Receiver<std::sync::Arc<omegon_secrets::SecretsManager>>,
+    pub work_snapshot_rx:
+        tokio::sync::oneshot::Receiver<Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>>,
 }
 
 /// Spawn the worker thread. Returns a handle for communication.
@@ -296,6 +298,7 @@ pub fn spawn_worker(
     let (request_tx, request_rx) = mpsc::channel::<WorkerRequest>(16);
     let (event_tx, event_rx) = tokio::sync::broadcast::channel::<WorkerEvent>(256);
     let (secrets_tx, secrets_rx) = tokio::sync::oneshot::channel();
+    let (work_snapshot_tx, work_snapshot_rx) = tokio::sync::oneshot::channel();
 
     let shared_settings = crate::settings::shared(&model);
     let worker_settings = shared_settings.clone();
@@ -318,6 +321,7 @@ pub fn spawn_worker(
                     request_rx,
                     event_tx,
                     secrets_tx,
+                    work_snapshot_tx,
                     host_ctx,
                     dangerously_bypass_permissions,
                 ),
@@ -330,6 +334,7 @@ pub fn spawn_worker(
         event_rx,
         settings: shared_settings,
         secrets_rx,
+        work_snapshot_rx,
     }
 }
 
@@ -408,6 +413,9 @@ async fn worker_loop(
     mut request_rx: mpsc::Receiver<WorkerRequest>,
     event_tx: tokio::sync::broadcast::Sender<WorkerEvent>,
     secrets_tx: tokio::sync::oneshot::Sender<std::sync::Arc<omegon_secrets::SecretsManager>>,
+    work_snapshot_tx: tokio::sync::oneshot::Sender<
+        Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+    >,
     host_ctx: Option<crate::host_context::HostContext>,
     dangerously_bypass_permissions: bool,
 ) {
@@ -505,6 +513,7 @@ async fn worker_loop(
         }
     }
     let mut bus = agent_setup.bus;
+    let work_snapshot = agent_setup.work_snapshot;
     let mut context_manager = agent_setup.context_manager;
     let mut conversation = agent_setup.conversation;
     let secrets = agent_setup.secrets;
@@ -514,6 +523,7 @@ async fn worker_loop(
     let mut resume_info = agent_setup.resume_info;
 
     let _ = secrets_tx.send(secrets.clone());
+    let _ = work_snapshot_tx.send(work_snapshot.clone());
     if !extension_metadata.is_empty() {
         let _ = event_tx.send(WorkerEvent::ExtensionMetadata(extension_metadata));
     }
@@ -850,6 +860,7 @@ async fn worker_loop(
                             authority: invocation_authority,
                         },
                         drain_late_requests: false,
+                        work_snapshot: work_snapshot.clone(),
                         ..Default::default()
                     },
                     cancel_keeps_prompt: None,

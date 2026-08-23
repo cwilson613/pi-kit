@@ -10,7 +10,7 @@ use crate::conversation::{
     WorkItemStatus,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LifecyclePlanProjection {
     pub entries: Vec<PlanRegistryEntry>,
     pub tasks: Vec<PlanItemProjection>,

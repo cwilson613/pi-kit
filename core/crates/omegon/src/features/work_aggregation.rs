@@ -34,6 +34,17 @@ pub(crate) fn work_snapshot_interface_id() -> RuntimeServiceInterfaceId {
     RuntimeServiceInterfaceId::new(WORK_SNAPSHOT_INTERFACE).expect("static interface id is valid")
 }
 
+pub(crate) fn capture_work_snapshot(
+    bus: &crate::bus::EventBus,
+) -> anyhow::Result<Option<Arc<WorkSnapshot>>> {
+    Ok(bus
+        .in_process_service::<WorkSnapshot>(
+            &work_snapshot_capability_id(),
+            &work_snapshot_interface_id(),
+        )?
+        .map(|handle| handle.service))
+}
+
 pub(crate) struct WorkAggregationFeature {
     snapshot: Arc<WorkSnapshot>,
 }
@@ -774,6 +785,8 @@ mod tests {
             .unwrap()
             .expect("work snapshot service");
         let snapshot = Arc::clone(&handle.service);
+        let captured = capture_work_snapshot(&bus).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&captured, &snapshot));
         assert_eq!(snapshot.sources.len(), 4);
         assert!(snapshot.warnings.is_empty());
         for id in [
@@ -956,6 +969,7 @@ mod tests {
             .unwrap()
             .is_none()
         );
+        assert!(capture_work_snapshot(&bus).unwrap().is_none());
     }
 
     #[tokio::test]

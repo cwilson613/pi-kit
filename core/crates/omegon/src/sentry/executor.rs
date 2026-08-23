@@ -903,7 +903,7 @@ async fn run_agent_task(
     );
     agent.conversation.push_user(prompt.to_string());
 
-    let loop_config = crate::bootstrap::build_loop_config(
+    let mut loop_config = crate::bootstrap::build_loop_config(
         &shared_settings,
         &agent.cwd,
         model,
@@ -914,6 +914,7 @@ async fn run_agent_task(
             ..Default::default()
         },
     );
+    loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
 
     let bridge = crate::bootstrap::resolve_bridge_or_bail(model).await?;
     let (events_tx, mut events_rx) = crate::bootstrap::wire_event_channel(&agent, 256);

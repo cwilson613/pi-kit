@@ -1078,15 +1078,25 @@ pub(crate) struct LoopSessionCompatibilityAdapter {
     dead_mouse_nudges: u8,
     meta_recovery_nudges: u8,
     dead_mouse_nudge_injected: bool,
+    work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
 }
 
 impl Default for LoopSessionCompatibilityAdapter {
     fn default() -> Self {
+        Self::new(None)
+    }
+}
+
+impl LoopSessionCompatibilityAdapter {
+    pub(crate) fn new(
+        work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+    ) -> Self {
         Self {
             stuck_detector: StuckDetector::new(),
             dead_mouse_nudges: 0,
             meta_recovery_nudges: 0,
             dead_mouse_nudge_injected: false,
+            work_snapshot,
         }
     }
 }
@@ -1382,12 +1392,11 @@ impl LoopSessionPolicyContract for LoopSessionCompatibilityAdapter {
     fn visible_plan_snapshot(
         &self,
         conversation: &ConversationState,
-        cwd: &std::path::Path,
+        _cwd: &std::path::Path,
     ) -> serde_json::Value {
-        let repo_root = crate::setup::find_project_root(cwd);
         conversation
             .intent
-            .work_plan_snapshot_json_for_repo(&repo_root)
+            .work_plan_snapshot_json_for_repo(self.work_snapshot.as_deref())
     }
 
     fn reconcile_plan_tools(
@@ -1398,10 +1407,18 @@ impl LoopSessionPolicyContract for LoopSessionCompatibilityAdapter {
         calls: &[ToolCall],
         results: &mut [ToolResultEntry],
     ) -> LoopPlanToolOutcome {
-        enrich_plan_list_tool_results(results, calls, &conversation.intent);
+        enrich_plan_list_tool_results(
+            results,
+            calls,
+            &conversation.intent,
+            self.work_snapshot.as_deref(),
+        );
         let snapshot_after = self.visible_plan_snapshot(conversation, cwd);
-        let projection = (snapshot_before != &snapshot_after)
-            .then(|| conversation.intent.plan_surface_projection_for_repo(cwd));
+        let projection = (snapshot_before != &snapshot_after).then(|| {
+            conversation
+                .intent
+                .plan_surface_projection_for_repo(self.work_snapshot.as_deref())
+        });
         let action = calls.iter().rev().find_map(plan_action);
         let notification =
             action.map(|action| plan_status_notification(action, &conversation.intent));
@@ -2003,14 +2020,13 @@ fn enrich_plan_list_tool_results(
     results: &mut [ToolResultEntry],
     calls: &[ToolCall],
     intent: &IntentDocument,
+    work_snapshot: Option<&styrene_work_runtime::WorkSnapshot>,
 ) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let repo_root = crate::setup::find_project_root(&cwd);
     for (call, result) in calls.iter().zip(results.iter_mut()) {
         if plan_action(call) != Some("list") {
             continue;
         }
-        let mut text = crate::plan::render_plan_list_text(intent, &repo_root);
+        let mut text = crate::plan::render_plan_list_text(intent, work_snapshot);
         text.push('\n');
         text.push_str(
             &result
@@ -3178,7 +3194,12 @@ mod tests {
             is_error: false,
             args_summary: None,
         }];
-        enrich_plan_list_tool_results(&mut results, &[plan_call("list")], &conversation.intent);
+        enrich_plan_list_tool_results(
+            &mut results,
+            &[plan_call("list")],
+            &conversation.intent,
+            None,
+        );
         let text = results[0].content[0].as_text().unwrap();
         assert!(text.contains("Inspect"));
         assert!(text.contains("owner result"));

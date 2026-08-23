@@ -6257,9 +6257,7 @@ impl SessionAuthorityStore {
     fn ensure_emergency_fence_dir(&self) -> Result<()> {
         if !self.emergency_fence_dir.exists() {
             fs::create_dir_all(&self.emergency_fence_dir)?;
-            if let Some(parent) = self.emergency_fence_dir.parent() {
-                File::open(parent)?.sync_all()?;
-            }
+            sync_parent(&self.emergency_fence_dir)?;
         }
         if !self.emergency_fence_dir.is_dir() {
             return Err(AuthorityError::Invalid(
@@ -6646,10 +6644,16 @@ fn write_snapshot(path: &Path, snapshot: &SessionAuthoritySnapshot) -> Result<()
     sync_parent(path)
 }
 
+#[cfg(unix)]
 fn sync_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         File::open(parent)?.sync_all()?;
     }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> Result<()> {
     Ok(())
 }
 

@@ -1,10 +1,11 @@
 use omegon_traits::{
-    RUNTIME_CONTRIBUTION_SCHEMA_VERSION, RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
-    RuntimeCompositionGeneration, RuntimeConfinementRequest, RuntimeContributionDeclaration,
-    RuntimeContributionId, RuntimeContributionLifecycleRecord, RuntimeDiagnosticCode,
-    RuntimeDynamicContributionPreflight, RuntimeEffect, RuntimeOwnedResourceRecord,
-    RuntimeProtocolRange, RuntimeTrustAdmission, RuntimeTrustAdmissionEvidence,
-    RuntimeTrustedCodeAuthority,
+    ManagedCallContext, ManagedServiceCallError, ManagedServiceContract, ManagedServiceFuture,
+    ManagedServiceGenerationState, RUNTIME_CONTRIBUTION_SCHEMA_VERSION,
+    RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION, RuntimeCompositionGeneration,
+    RuntimeConfinementRequest, RuntimeContributionDeclaration, RuntimeContributionId,
+    RuntimeContributionLifecycleRecord, RuntimeDiagnosticCode, RuntimeDynamicContributionPreflight,
+    RuntimeEffect, RuntimeOwnedResourceRecord, RuntimeProtocolRange, RuntimeTrustAdmission,
+    RuntimeTrustAdmissionEvidence, RuntimeTrustedCodeAuthority,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -246,4 +247,57 @@ fn lifecycle_records_reject_unbounded_reasons_and_false_cleanup_claims() {
         serde_json::from_value(value["resource"].clone()).unwrap();
     resource.kind = omegon_traits::RuntimeOwnedResourceKind::RemoteService;
     assert!(resource.validate().is_err());
+}
+
+#[test]
+fn managed_service_contract_is_object_safe_and_errors_have_stable_codes() {
+    struct FixtureService;
+
+    impl ManagedServiceContract for FixtureService {
+        type Request = ();
+        type Response = ();
+        type Error = &'static str;
+
+        fn execute<'a>(
+            &'a self,
+            _request: Self::Request,
+            _context: ManagedCallContext,
+        ) -> ManagedServiceFuture<'a, Self::Response, Self::Error> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn accepts_trait_object(
+        _service: &dyn ManagedServiceContract<Request = (), Response = (), Error = &'static str>,
+    ) {
+    }
+    accepts_trait_object(&FixtureService);
+
+    for (error, code) in [
+        (
+            ManagedServiceCallError::Operation("failed"),
+            "service:operation_failed",
+        ),
+        (ManagedServiceCallError::Cancelled, "service:call_cancelled"),
+        (ManagedServiceCallError::Panicked, "service:call_panicked"),
+        (
+            ManagedServiceCallError::GenerationDraining,
+            "service:generation_draining",
+        ),
+        (
+            ManagedServiceCallError::GenerationDegraded,
+            "service:generation_degraded",
+        ),
+        (
+            ManagedServiceCallError::GenerationRetired,
+            "service:generation_retired",
+        ),
+    ] {
+        assert_eq!(error.code(), code);
+    }
+
+    assert_ne!(
+        ManagedServiceGenerationState::Accepting,
+        ManagedServiceGenerationState::Draining
+    );
 }

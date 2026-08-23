@@ -160,6 +160,7 @@ pub mod routing;
 mod secret_cli;
 mod semantic_route;
 mod sentry;
+mod service_generation;
 mod session;
 mod session_advisory;
 mod session_authority;

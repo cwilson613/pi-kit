@@ -5,7 +5,7 @@
 
 use crate::{RuntimeCapabilityId, RuntimeCapabilityKind, RuntimeInvocationKind};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{any::Any, sync::Arc};
+use std::{any::Any, future::Future, pin::Pin, sync::Arc};
 
 macro_rules! scoped_id {
     ($name:ident, $description:literal) => {
@@ -594,6 +594,60 @@ pub struct RuntimeInProcessService {
 #[doc(hidden)]
 pub struct RuntimeServiceHolder<T: ?Sized> {
     pub service: Arc<T>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedCallContext {
+    pub capability_id: RuntimeCapabilityId,
+    pub owner: RuntimeContributionId,
+    pub generation_id: RuntimeContributionGenerationId,
+    pub cancellation: tokio_util::sync::CancellationToken,
+}
+
+pub type ManagedServiceFuture<'a, Response, Error> =
+    Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + 'a>>;
+
+pub trait ManagedServiceContract: Any + Send + Sync + 'static {
+    type Request: Send + 'static;
+    type Response: Send + 'static;
+    type Error: Send + 'static;
+
+    fn execute<'a>(
+        &'a self,
+        request: Self::Request,
+        context: ManagedCallContext,
+    ) -> ManagedServiceFuture<'a, Self::Response, Self::Error>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedServiceGenerationState {
+    Accepting,
+    Draining,
+    Degraded,
+    Retired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedServiceCallError<E> {
+    Operation(E),
+    Cancelled,
+    Panicked,
+    GenerationDraining,
+    GenerationDegraded,
+    GenerationRetired,
+}
+
+impl<E> ManagedServiceCallError<E> {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Operation(_) => "service:operation_failed",
+            Self::Cancelled => "service:call_cancelled",
+            Self::Panicked => "service:call_panicked",
+            Self::GenerationDraining => "service:generation_draining",
+            Self::GenerationDegraded => "service:generation_degraded",
+            Self::GenerationRetired => "service:generation_retired",
+        }
+    }
 }
 
 impl std::fmt::Debug for RuntimeInProcessService {

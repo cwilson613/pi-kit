@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
+- Added the internal managed-service call substrate for Slice 6.1.6. Object-safe managed contracts now execute through generation-owned tasks behind one shared admission table, preserve accounting across caller cancellation and panic, close admission before retained cleanup, and require positive joined-cleanup evidence before retirement or ownership release. Production publication, resource controllers, bounded cleanup orchestration, lifecycle diagnostics, and domain migration remain deferred.
+
 - Added the first Slice-6.1 declared-service substrate for statically linked, no-resource read services. Bindingless `in_process_service` capabilities now publish object-safe typed implementations atomically with the accepted contribution graph, carry stable interface/owner/generation identity, reject same-generation contract changes, and appear in capability inventory. Work-source implementation failures now degrade to bounded warnings while retaining prior snapshots as stale. Production optional-domain cutover and resource-bearing service lifecycle remain deferred.
 
 - Added the first production Slice-6 plans/work contribution. Omegon now normalizes OpenSpec changes/tasks and repository design nodes/questions through `styrene-work-runtime`, isolates absent or malformed sources as local warnings, and atomically publishes one immutable, generation-bound work snapshot service at boot. Existing plan commands, session-local plan authority, frontend DTOs, and wire shapes remain unchanged pending shared-reader cutover.

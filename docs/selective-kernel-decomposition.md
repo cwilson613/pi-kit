@@ -998,17 +998,14 @@ rows. Journal authority read failure is semantic-source-unavailable, authority
 with no catalog record is fatal, and semantic durability followed by mirror
 failure returns partial publication while preserving semantic resume.
 
-The named runtime red fixes now have focused coverage, and all 54 manifest rows
-enter consumer-specific campaign oracles. The final audit keeps task 5.5 open:
-AC13 still needs a chunk-bearing mixed-lineage fixture; several exact,
-adapter-specific frontend, legacy-host, evidence-replacement, and mirror rows
-still use shared law probes rather than their frozen interaction; and the
-within-budget macOS result still needs matching Linux and Windows campaign
-evidence. Task 5.5 may fix behavior exposed by those fixtures but cannot revise
-accepted authority/schema vectors. Task 5.6 alone removes dual-write or changes
-developer/applicable public session, migration, recovery, site, or snippet
-guidance. Task 5.5.0 itself is planning-only and has no runtime or changelog
-impact.
+The named runtime red fixes have focused coverage, and all 54 manifest rows
+enter exhaustive consumer-specific campaign oracles. AC13 uses a chunk-bearing
+mixed-lineage fixture and exercises immutable chunk reconstruction. The macOS,
+Ubuntu, and Windows campaigns pass within budget; GitHub Actions run
+`32622078435` at `b788f3b8` supplies the required Ubuntu and Windows evidence.
+Task 5.5 is complete without revising accepted authority/schema vectors. Task
+5.6 alone removes dual-write or changes developer/applicable public session,
+migration, recovery, site, or snippet guidance.
 
 Exit gate: late or restarted consumers reconstruct honest state from snapshots
 and cursors without depending on missed broadcasts.

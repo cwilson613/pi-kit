@@ -43,9 +43,10 @@ minimum abnormal/recovery terminalization are active. Task 5.2 completes the
 frozen compatibility, replay, response-attempt, provenance, compaction, cursor,
 recovery, fixture, and atomic session-replacement contract below. Task 5.3
 derives the four frozen projections, and task 5.4 now consumes them through the
-frozen validated-reader and plural-authority contracts. Task 5.5.0 freezes the
-54-scenario adverse-consumer campaign below; implementation remains task 5.5.
-Applicable public documentation and dual-write closeout remain task 5.6.
+frozen validated-reader and plural-authority contracts. Task 5.5 completes the
+frozen 54-scenario adverse-consumer campaign below with macOS, Ubuntu, and
+Windows evidence within budget. Applicable public documentation and dual-write
+closeout remain task 5.6.
 
 ## Implementation status
 
@@ -2735,7 +2736,7 @@ publication replacement, dual-write rollback, command names, fixtures, and
 version strategy without runtime changes. Slice 5.4 now migrates the named consumers
 under that freeze. Sessionless semantic lineage remains deferred rather than
 being implicitly approved by this slice.
-Slice 5.5 owns late, lagged, disconnected, restarted, corrupted-consumer,
+Slice 5.5 completed late, lagged, disconnected, restarted, corrupted-consumer,
 blob-loss, idempotency, and cursor recovery execution against the canonical
-corpus. None may redefine Slice-1 identity, sequence, required-event
+corpus without redefining Slice-1 identity, sequence, required-event
 compatibility, an existing v1 payload, or turn closure.

@@ -355,14 +355,13 @@ Task 5.5 may fix behavior exposed by frozen red fixtures but may not change even
 v1, reducer/cache v5, cursor v1, projection v1, or task-5.4 store schemas. Task
 5.6 exclusively owns dual-write removal and developer/applicable public docs.
 
-Implementation is complete: every manifest row maps to a concrete exhaustive
-executor that checks all frozen fields and invokes its target consumer after the
-declared fault setup. AC13 removes a real immutable chunk derived from a
-chunk-bearing mixed-lineage authority/projection fixture and verifies exact
-suffix recovery. The macOS campaign is locally evidenced within budget and a
-focused serial Ubuntu/Windows Actions matrix is installed. Requirement
-acceptance remains pending its first observed successful Ubuntu and Windows
-execution; no local Windows pass is claimed.
+Every manifest row maps to a concrete exhaustive executor that checks all frozen
+fields and invokes its target consumer after the declared fault setup. AC13
+removes a real immutable chunk derived from a chunk-bearing mixed-lineage
+authority/projection fixture and verifies exact suffix recovery. The macOS
+campaign is locally evidenced within budget. GitHub Actions run `32622078435` at
+`b788f3b8` passed all applicable Ubuntu and Windows campaign tests within the
+15-second platform budget, satisfying the requirement.
 
 #### Scenario: Replacement encounters corrupt derived chunks
 Given target authority and required host stores validate but a projector-owned chunk is proven corrupt

@@ -228,15 +228,12 @@ mixed Web-prefix export remain unavailable. Compatibility `.json`/`.meta.json`
 mirrors continue through Slice 5.6 and rollback cannot re-enable an old writer
 or downgrade semantic lineage. `/transcript` is reserved for exact committed
 semantic content and `/session-export` names presentation/evidence output. The
-native command help reflects that cutover. Adverse-consumer campaigns remain
-Slice 5.5; applicable public command/session/migration/recovery docs and
-dual-write closeout remain Slice 5.6, with no canonical snippet change in 5.4.
-The final Slice-5.5 audit dispatches every frozen manifest row through a
-consumer-specific oracle and passes the macOS runtime budget, but keeps the slice
-open because several rows still substitute shared law probes for the exact
-frozen interaction, AC13 lacks a chunk-bearing mixed-lineage seed, and
-Linux/Windows campaign evidence is absent. That audit does not move public
-documentation or dual-write closeout out of Slice 5.6.
+native command help reflects that cutover. Slice 5.5 dispatches every frozen
+manifest row through an exhaustive consumer-specific oracle, includes AC13's
+chunk-bearing mixed-lineage reconstruction seed, and passes the macOS, Ubuntu,
+and Windows runtime budgets. GitHub Actions run `32622078435` at `b788f3b8`
+supplies the required Ubuntu and Windows evidence. Applicable public
+command/session/migration/recovery docs and dual-write closeout remain Slice 5.6.
 
 Invocation admission and lease revalidation are now kind-aware rather than tool-only. Graph-registered feature commands from TUI, CLI remote execution, ACP, Web, and IPC enter with explicit operator principals and owner-declared surfaces, then acknowledge, settle, and close through the shared lease lifecycle before returning their result. Model-loop path grants invoke the graph-declared `trust_directory` internal owner under an internal principal while retaining parent session and turn authority. Automatic memory ingestion and host-mediated persona/tone switches use explicit internal bindings and leases, and model-facing memory mutations declare state-changing effects. Managed-delegation tools explicitly admit model and service principals on Model/Web/Daemon surfaces; authenticated supervisor calls now use service leases, and status resolves to the owned delegate-status binding. Operator context-pack reads call a typed read-only context service rather than entering tool admission. Extension-provided voice stop declares TUI service authority and executes under the promoted turn's durable scope. Daemon vox polling invokes the declared `vox_route` tool under an ephemeral Service/Daemon lease. Arbitrary ACP methods use one extension-owned conservative Operator/ACP transport capability because per-method effects are not yet declared; dispatch occurs on the worker-owned EventBus rather than a raw polling handle. Lease-less imperative extension HostActions fail closed, and approval contributes only operator intent without granting independent project, runtime, or origin trust. Declarative native HostActions and MCP review candidates require a host-only parent guard injected after revalidation; it checks live dispatch state, effect containment, and exactly-once child identity before execution or review. Idle and post-loop calls remain ephemeral because no active authority turn exists; the runtime does not fabricate durable scope. Reactive path grants and extension HostAction approval can only narrow an upstream lease decision.
 

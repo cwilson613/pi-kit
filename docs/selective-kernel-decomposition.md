@@ -70,12 +70,13 @@ provider streaming, admission, tool scheduling, context policy, compaction,
 behavior nudging, plan reconciliation, and concrete feature requests. Frontends
 and daemon paths retain partially independent command and runtime authorities.
 
-Current admission is layered but incomplete. Secret guards, Styrene role checks,
-configured permission rules, host approval, and path-boundary retry are combined
-inside tool dispatch. Unconfigured and unknown tool names currently default to
-allow in permission policy and RBAC mapping, and subject extraction recognizes
-selected tool names. The fail-closed effect model below is a target invariant,
-not current behavior.
+At that baseline, admission was layered but incomplete. Secret guards, Styrene
+role checks, configured permission rules, host approval, and path-boundary retry
+were combined inside tool dispatch. Unconfigured and unknown tool names
+defaulted to allow in permission policy and RBAC mapping, and subject extraction
+recognized selected tool names. Slice 3 now resolves privileged calls against
+the accepted capability graph and denies unknown owners, capabilities, or
+effects before permission-policy defaults can grant execution.
 
 The opportunity is not to invent another plugin API. It is to make the existing
 contracts authoritative and remove concrete policy from around them.
@@ -200,9 +201,9 @@ and legacy compatibility caches from the accepted graph. Dynamic code requires
 source-bound trust or verified-confinement evidence before probe execution;
 readiness, rollback, restart quarantine, composition generations, and cleanup
 assurance are typed. Native and ACP `/status` consume one semantic composition
-projection. Privileged invocation leases and dispatch authority remain Slice 3,
-so the authority-neutral capability inventory is still not itself an execution
-grant.
+projection. Slice 3 now makes the accepted graph authoritative for privileged
+invocation leases and dispatch; the capability inventory remains evidence and
+is not itself an execution grant.
 
 ### Extracted domains
 
@@ -333,12 +334,14 @@ Prepared -> Dispatched -> Acknowledged -> Settled
 ```
 
 `Prepared` is durable before authority is leased; `Dispatched` is durable before
-transport handoff. A stable call ID and deduplication key cross every RPC
-boundary. Every unsettled `Dispatched` call is conservatively unknown completion
-after recovery. It is not retried unless the owner contract proves idempotency
-or deduplication. If result or audit settlement cannot be persisted, the kernel
-fences further mutation, writes an emergency recovery record through its
-last-resort channel, and does not report ordinary completion.
+transport handoff. A stable call ID and optional owner-enforced deduplication ID
+cross owner boundaries. Every unsettled `Dispatched` or `Acknowledged` call is
+conservatively unknown completion after recovery. A mutating unknown cannot be
+retried unless its original contract proves idempotency or exact stable-call
+deduplication. If acknowledgement, unknown classification, or terminal
+settlement cannot be persisted after dispatch, the kernel fences further
+mutation, writes an emergency recovery record through its last-resort channel,
+and does not report ordinary completion.
 
 Every mutating execution declaration identifies a durable domain and fence key.
 Emergency fence evidence is append-only and independent of the authority stream
@@ -382,8 +385,8 @@ Declarative native HostActions and MCP review candidates require a host-only
 parent guard that checks live dispatch state, conservative effect containment,
 and exactly-once child identity.
 Idle and post-loop calls remain ephemeral rather than receiving fabricated turn
-authority. Slice 3.7's privileged compatibility-path migration is complete;
-Slice 3.8 still owns the co-delivered permission and recovery documentation.
+authority. Slice 3's privileged compatibility-path migration and co-delivered
+permission, retry, unknown-completion, and recovery documentation are complete.
 
 ### 5. Admission combiner and host effects
 
@@ -586,7 +589,7 @@ authority, dependency, lifecycle, or failure isolation is not decomposition.
 | Interactive coordinator/runtime supervisor | Kernel | Compile one frontend-neutral implementation and instantiate it once per session across hosts |
 | `loop.rs` | System loop driver plus kernel invocation client | Extract admission, tool scheduling, host effects, compaction, and feature-specific requests |
 | Conversation/session | Kernel event contract plus replaceable projections/storage | Inventory whole-file LLM-view snapshots, metadata checkpoints, narrative journal, and audit log; define semantic events before migration |
-| Provider routing | System service | One provider declaration owns identity, auth class, inventory, dialect, bridge factory, and fallback compatibility |
+| Provider routing | System service | One provider declaration owns identity, auth class, inventory/evidence authority, tool dialect/support, bridge factory, and fallback compatibility |
 | Core tools | System/in-process services | Replace name switches with declared effect and execution metadata |
 | Permissions/RBAC/secrets | Policy providers plus kernel combiner/effect executors | Deny unknown effects and bind decisions to owner/generation |
 | Memory | In-process service | Remove concrete `memory_store` knowledge from loop and provider resolution from feature |
@@ -689,8 +692,9 @@ remain direct.
 
 ### Slice 4: provider and loop seams
 
-- Define provider contributions that bind identity, model inventory, auth class,
-  schema dialect, bridge factory, and fallback compatibility.
+- Define provider contributions that bind identity, model inventory/evidence
+  authority, auth class, schema dialect/tool support, bridge factory, and
+  fallback compatibility.
 - Make one route service authoritative across interactive, daemon, child, and
   bounded execution.
 - Reduce `loop.rs` to a coherent driver over session, route, context, and
@@ -699,6 +703,84 @@ remain direct.
   it does not independently mutate canonical state or publish completion.
 - Keep the default driver release-coupled; replacement occurs at boot or a
   quiescent session boundary, not mid-turn.
+
+Task 4.1 now provides one validated built-in provider registry in the integration
+crate. Each declaration has a typed contribution owner/generation, runtime
+inventory binding, credential class, executable tool contract, bridge-factory
+binding, offering modality/capability evidence requirement, and directed
+model-family fallback relations. Candidate validation reports all missing
+semantics and rejects duplicate IDs/aliases, inventory-owner mismatches, and
+dangling/self fallback targets. The registry now owns known-provider parsing,
+schema lookup, family fallback, and bridge-factory selection while retaining the
+existing provider clients and host route adapters. Google API-key execution is
+truthfully declared as the current OpenAI-compatible adapter, Moonshot retains
+its full-schema exception, Ollama Cloud declares tools unsupported, and the
+currently unavailable Antigravity factory remains non-executable rather than
+masquerading as a credential failure.
+
+Task 4.2 now routes bridge and declared-fallback resolution through one
+`ProviderRouteService`. Compatibility bridge handles retain both selected and
+serving identities, so interactive, daemon, ACP, child, bounded, smoke,
+compaction, and lightweight completion dispatch no longer reconstruct fallback
+identity in host adapters.
+
+Before each provider stream, the runtime records a versioned route lease with
+selected and serving provider/model identities, schema dialect or unsupported
+state, credential-source class, bounded fallback reason, provider-contribution
+generation, and route policy. Session-backed requests append
+`route.lease_recorded` to the active turn's authority stream. Sessionless work
+uses a durable step-owned JSONL stream under the Omegon runtime home and never
+fabricates session or turn authority. Missing durability, partial session scope,
+stale contribution generation, and undeclared fallback all prevent dispatch.
+Provider retries reuse the request's captured lease for the same serving route;
+route re-resolution necessarily captures current contribution evidence.
+
+Task 4.3 places the compiled loop behind one release-coupled driver. Every
+interactive, ACP, daemon, headless/child, bounded, and Sentry turn constructs the
+same four required trait ports for session state, leased provider route, context
+assembly, and privileged invocation. The driver captures route and invocation
+authority before entering loop policy; partial session authority, a stale active
+turn, cross-session authority, missing serving identity, or disagreement between
+the route controller and bridge fails before execution.
+
+The driver returns a typed terminal proposal rather than requiring each host to
+reclassify ordinary success, provider exhaustion, and failure. Authority-backed
+hosts may still narrow that proposal for an admitted cancellation or bounded
+timeout, and commit it only after host-owned cleanup. `TurnEnd` and `AgentEnd`
+remain advisory projections, not canonical completion.
+
+Task 4.4 now keeps the release-coupled compatibility implementations outside
+production loop policy. The driver captures one opaque host binding and adapts
+the existing session projection, context manager, invocation runtime, and leased
+provider bridge behind the four required contracts. Provider route policy is
+snapshotted by the route port rather than calling back into `LoopConfig`; tool
+admission/batching/owner handoff, permission presentation, memory/lifecycle
+requests, context assembly/compaction, and plan/recovery/finalization policy stay
+in their owning adapters. Source guards reject concrete names, direct authority
+bypasses, and route or invocation adapter callbacks into loop orchestration.
+Task 4.5 now gives each durable session one execution owner for an atomic driver
+and route-service pair. Turn start captures the pair under the owner's migration
+gate. Mid-turn replacement returns in-memory `Pending` and cannot alter the
+active capture; neither ordinary closure nor the next start applies it. Only a
+deliberate `commit_pending_at_quiescence` call can append the migration and then
+publish the pair. Idle state, exact process-local and durable source, and the
+absence of every unresolved or unknown invocation are required. Durable failure
+retains the old pair, concurrent start and migration cannot mix pair members,
+legacy replay invents no binding, and resume boot binding appends no migration.
+All durable hosts consume the session capture; sessionless headless/Sentry,
+smoke, compaction, and lightweight routes consume the immutable boot binding.
+
+Task 4.6 closes Slice 4 documentation. The canonical provider-contribution and
+route-lease guide, related credential/fallback/session/recovery architecture,
+public site, README, and release notes now distinguish declaration, inventory,
+authentication, executable routing, selected and serving identity, interactive
+and sessionless fallback scopes, provider retry, and invocation replay. Public
+claims explicitly retain non-executable Antigravity, warning-only headless
+Anthropic subscription behavior, advisory inventory diagnostics, directed
+non-transitive fallback, bounded credential/authentication-class evidence, and
+the absence of historical lease commands or an exhaustive current inventory.
+No command or configuration syntax changed, and canonical site snippets remain
+unchanged. Full message/context/tool/step persistence remains Slice 5.
 
 Exit gate: the loop has no concrete provider, tool, memory, lifecycle, or
 frontend names.
@@ -715,6 +797,218 @@ frontend names.
 - Derive provider history, transcript surfaces, snapshots, and compaction
   checkpoints from the semantic record.
 - Add crash/interruption closure and replay tests before changing storage.
+
+Task 5.0 freezes the first production lane. One internal `loop.rs` iteration is
+one durable step. Context-overflow or provider-history repair closes the current
+request and creates the next request plus route lease inside that same step. The
+existing `route.lease_recorded` v1 remains unchanged; the new
+`model.request_route_joined` fact supplies request/step linkage.
+
+The exact task-5.1 v1 additions are `step.started`,
+`model.request_prepared`, `model.request_route_joined`,
+`assistant.content_appended`, `assistant.message_committed`,
+`provider.continuity_stored`, `tool.call_recorded`, `tool.result_recorded`,
+`model.request_closed`, `step.closed`, and `step.abandoned`. They use UUID
+entities, contiguous turn/step/request/content/call/result ordinals, immutable
+context manifests, and a schema-set digest over canonical composition plus
+composition/owner generations. Denied calls and denied results are canonical;
+admitted calls/results must agree with existing invocation facts.
+
+Assistant display output is appended and synced as bounded, coalesced chunks
+before broadcast, not synchronized once per provider token. Model-visible bytes,
+schema bytes, assistant chunks, call arguments, and results use a
+session-adjacent content-addressed blob store with verified digest, media type,
+length, storage class, and projection class. Hidden reasoning or opaque provider
+continuity is stored only when required for continuation, in restricted blobs
+excluded from default snapshots, transcripts, UI/ACP, diagnostics, exports,
+memory, tools, and extensions. Arbitrary raw provider payload storage is
+prohibited. The captured provider contribution must declare generation-bound
+continuity policy `none` or `restricted_required`, including allowed kinds and a
+blob ceiling; this policy remains outside the unchanged route-lease v1 payload.
+
+Task 5.1 now emits this vocabulary in production only for complete
+authority-backed sessions. Interactive, ACP, daemon, and bounded hosts perform
+deterministic abnormal terminalization after owned cleanup and before turn
+closure; recovery uses the same invocation-first, request-first ordering.
+Partial scopes fail closed, sessionless hosts retain route-only evidence, and no
+tool progress facts are added. Full compatibility
+and replay matrices are complete in 5.2; provider-history/transcript/frontend/compaction
+shadow derivation is complete in 5.3; legacy storage/consumer migration is complete
+in 5.4; sessionless semantic lineage is deferred; lagged, disconnected, corrupt, and restarted
+consumer fixtures remain 5.5. This activation changes no
+command, configuration, public site page, or canonical snippet.
+
+Task 5.2.0 froze the next lane without changing runtime. Authority lineages are
+forward-only after their first full-spine fact: older readers fail closed, old
+writers cannot run concurrently or downgrade the lineage, and legacy transcript
+bytes are never synthesized into authority. The compatibility matrix has three
+states: legacy has no semantic provider-history/exact-export claim; mixed has an
+explicit boundary and exact full-spine suffix only; full has semantic authority
+from its first eligible operation. Missing or tampered referenced blobs fail
+full recovery closed. Diagnostics alone may show unavailable placeholders.
+
+The next bounded task-5.2 component now provides a kernel-internal read-only
+replay API rather than exposing mutable session authority or JSONL parsing.
+Stable selected prefixes are strictly decoded and reduced to immutable typed
+records and an exact session/stream/sequence/event frontier; every referenced
+blob verifies before success. Foundational reducer/cache v5 state classifies
+legacy-only, mixed, and full-spine lineages and records the first full-spine
+boundary. Default content reads cannot dereference restricted continuity, whose
+read authorization binds the target request and serving lineage. Replay reports
+open, prepared-only, unknown, and abandoned state as durable evidence and never
+appends recovery facts or consults transcript/cache authority. The canonical
+fixture directory freezes concise JSONL and blob/meta bytes, with deterministic
+builders for longer semantic spines and corruption recipes.
+
+The frozen additions are `context.source_materialized`,
+`model.response_attempt_failed`, and the `compaction.started`,
+`compaction.request_prepared`, `compaction.response_attempt_failed`,
+`compaction.request_closed`, `compaction.summary_committed`,
+`compaction.applied`, and `compaction.abandoned` v1 family. Manual idle
+compaction is session-scoped and
+does not invent a prompt, turn, step, or turn-owned route lease. It holds the
+supervisor admission gate and atomically replaces derived context only after the
+applied fact is durable. Generic projector cursor v1 binds projector/schema
+versions, source cursor, output revision, and output digest; synced output must
+be atomically published before its cursor. The bounded generic cursor substrate
+now validates exact, stale, and invalid replay frontiers and publishes
+deterministic bytes through restrictive, crash-safe output-before-cursor storage.
+It does not activate or migrate a concrete projector. Task 5.2 now emits and
+reduces `model.response_attempt_failed`, materialized-source provenance, and the
+complete compaction authority family; recovery is invariant across durable
+compaction/invocation/request/step prefixes. Reducer/cache v5 indexes, strict
+replay and blob authorization, the canonical fixture corpus, atomic host session
+replacement, and the generic cursor substrate complete the slice. Concrete
+provider-history, transcript, frontend, and compaction-checkpoint derivation
+belongs to 5.3 and must consume rather than re-emit semantic authority;
+legacy consumer migration belongs to 5.4; adverse consumer fixtures belong to
+5.5. Sessionless work remains route-only until a separately designed lineage.
+
+Task 5.3.0 freezes that derivation before implementation. The internal projector
+IDs are `session.provider-history`, `session.transcript`,
+`session.frontend-snapshot`, and `session.compaction-checkpoint`; every projector
+and projection schema starts at version 1. A common availability envelope makes
+lineage and exactness explicit: full lineages may expose `exact_full`, mixed
+lineages expose only `exact_suffix` from the first full-spine boundary and mark
+full-session export unavailable, and legacy lineages expose no exact content.
+Provider history records immutable exact joined-request inputs, never a
+synthesized next-request context. The normal transcript records committed
+messages only. Frontend evidence may additionally include durable partial or
+abandoned chunks plus queue, active-turn, context, and semantic-conversation
+state. Committed content remains visible with abnormal status if its owner is
+later abandoned; live tool progress stays a downstream ephemeral overlay.
+
+Provider-history and transcript output is split into immutable bounded chunks
+and a bounded manifest under the existing 16 MiB generic output limit. Frontend
+and compaction checkpoint are bounded single outputs. All four exclude
+restricted continuity bytes and use semantic ordering, RFC 8785 canonical JSON,
+and SHA-256 over exact bytes. A session coordinator coalesces wakeups but always
+replays the latest stable frontier; each projector publishes independently and
+retains its previous stable cursor on failure. At the 5.3 boundary the
+implementation was shadow-only: it did
+not switch `ConversationState`, provider dispatch, transcript commands, TUI,
+ACP, Web, IPC, whole-file snapshots, or compaction compatibility consumers.
+Those migrations are now complete in 5.4. The 5.3 freeze changed no runtime or public behavior
+and therefore adds no public docs, site, command/configuration/snippet, or
+changelog note.
+
+Task 5.3 is now active in shadow mode. Each authority-backed supervisor owns one
+capacity-one, dirty-bit worker for its full session lifetime. Hints occur only
+after durable append, ordinary bursts use the frozen 50 ms/250 ms cadence, and
+terminal, startup/recovery, explicit flush, and shutdown boundaries are
+immediate. Every run strict-replays the latest stable frontier and independently
+invokes all four projectors. Replacement clears and stops the retired worker,
+uses session-specific roots to fence late old-authority activity, and transfers
+the join handle to the new supervisor for owned reaping without delaying host
+publication; sessionless supervisors start no worker. Typed failures are logged
+and inspectable without blocking authority or replacing prior outputs. The
+task-5.4 consumers now use the validated reader and remain source-guarded against
+direct projection-storage access.
+
+Task 5.4.0 freezes the migration lane. Semantic authority owns replay facts and
+the exact committed transcript, but it does not absorb every durable concern.
+`IntentDocument` and plans move to a separately versioned host-state checkpoint;
+operator observations move to a separately sequenced durable ledger; friendly
+name and description remain operator-owned metadata; semantic counters remain
+derived; audit remains an independent ledger with cursor/source-event dedup; and
+the narrative journal remains Markdown with canonical machine-readable source
+provenance on new entries. Sessionless semantic lineage remains deferred.
+
+Provider dispatch does not consume the provider-history projector. Under the
+session coordination boundary it materializes attributable host/generated
+input, captures synced authority EOF, and synchronously strict-reduces one
+bounded immutable `CurrentContextViewV1`. Semantic manifest order is final;
+every item carries source-event and owner-generation provenance. Missing blobs,
+unsupported facts, unattributed post-boundary input, bound violations, or any
+frontier mismatch fail before dispatch. Exact resume uses the same exact-
+frontier rule. A TUI, ACP, IPC, Web, catalog, or evidence surface may display a
+validated stale projection only with cursor and event-count lag disclosure.
+
+The replacement publication set adds host-state checkpoint/cursor, observation
+ledger, operator catalog metadata, derived catalog and telemetry snapshots,
+audit v2 source fields, and journal provenance to the authority/blob store and
+four existing semantic projections. Validated readers check identity, schema,
+canonical digest, cursor/output revision, replay frontier, chunks, and bounds.
+Provider dispatch has no fallback; exact transcript/resume synchronously catches
+up or fails; presentation surfaces may fail open only to labeled stale or
+unavailable state; audit/journal failure cannot block authority.
+
+`/transcript` is reserved for exact committed semantic transcript output.
+`/session-export` becomes the distinct current presentation/evidence export and
+must disclose partial, abandoned, overlay, lineage, exactness, and freshness
+state. Full lineages resume/export exactly. Mixed lineages may resume as an
+explicitly labeled immutable legacy base plus exact semantic suffix, but exact
+full-session export remains unavailable and Web historical output contains the
+suffix only. Legacy resume remains labeled compatibility behavior.
+
+Compatibility `.json` and `.meta.json` dual-write continues through Slice 5.6
+closeout. Semantic durability precedes mirror publication, mirror failure cannot
+roll authority back, and crossing the full-spine boundary permanently denies an
+old writer. Rollback may select the last valid mirror for presentation or
+labeled compatibility resume while semantic and mirror writers continue; it
+cannot truncate authority, rewrite cursors, restore an old writer, or claim
+exactness. New independent schemas start at their frozen versions without
+changing authority/event v1, reducer/cache v5, cursor v1, or task-5.3 projection
+v1. Task 5.4 now owns the implemented cutover tests; task 5.5 owns
+adverse-consumer campaigns and task 5.6 owns dual-write/applicable public
+documentation closeout. Public `/transcript`, `/session-export`, session,
+migration, and recovery pages therefore remain intentionally deferred in 5.4;
+native command help is current, and no canonical snippet changed.
+
+Task 5.5.0 freezes the campaign before implementation. The normative private
+protocol defines a closed fault/disposition vocabulary and 54 stable pairwise
+scenarios across lineage, lifecycle, and consumer axes. Exact consumers fail
+closed; validated projections/frontends may degrade only with cursor, lag,
+lineage, and availability disclosure; evidence and mirror consumers are best-
+effort only where their failure cannot masquerade as semantic success. Copied
+fixture sandboxes and deterministic I/O, notification, worker, and replacement
+injection replace sleeps. Required Linux, macOS, and Windows lanes each have a
+15-second budget.
+
+The freeze permits only one deterministic repair: a proven corrupt derived chunk
+may be quarantined and regenerated from validated authority under its owning
+projector lock. Replacement validates authority and required host stores, while
+missing or damaged derived projections may remain explicitly unavailable during
+new-generation rebuild. ACP completion follows worker/supervisor state despite
+skipped notifications and bounded drain; IPC lag automatically enqueues current
+reconciled state. Missing observation storage degrades open only with no durable
+evidence of prior existence; malformed/torn storage fails closed. Malformed
+semantic audit input halts semantic audit advancement and warns without invented
+rows. Journal authority read failure is semantic-source-unavailable, authority
+with no catalog record is fatal, and semantic durability followed by mirror
+failure returns partial publication while preserving semantic resume.
+
+The named runtime red fixes now have focused coverage, and all 54 manifest rows
+enter consumer-specific campaign oracles. The final audit keeps task 5.5 open:
+AC13 still needs a chunk-bearing mixed-lineage fixture; several exact,
+adapter-specific frontend, legacy-host, evidence-replacement, and mirror rows
+still use shared law probes rather than their frozen interaction; and the
+within-budget macOS result still needs matching Linux and Windows campaign
+evidence. Task 5.5 may fix behavior exposed by those fixtures but cannot revise
+accepted authority/schema vectors. Task 5.6 alone removes dual-write or changes
+developer/applicable public session, migration, recovery, site, or snippet
+guidance. Task 5.5.0 itself is planning-only and has no runtime or changelog
+impact.
 
 Exit gate: late or restarted consumers reconstruct honest state from snapshots
 and cursors without depending on missed broadcasts.
@@ -804,8 +1098,9 @@ The decomposition may proceed only while these remain true:
   behavior;
 - TUI, ACP, Web, IPC, CLI, and headless adapters pass semantic snapshot and
   action parity fixtures;
-- late, lagged, disconnected, and restarted consumers recover from snapshot
-  plus cursor;
+- the frozen 54-case late, lagged, disconnected, restarted, replacement, and
+  corruption campaign preserves each consumer's fail-closed/degraded/best-effort
+  law and operator-agency invariants;
 - the separate maintenance executable boots with zero ordinary plugins and can
   inspect its compiled composition, inert contributions, session framing,
   durable ownership records, release artifacts, and audit state; disable or

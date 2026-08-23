@@ -1,20 +1,27 @@
 ---
 import Docs from "../../../layouts/Docs.astro";
 ---
-<Docs title="Routing Policy" description="How omegon selects models, evaluates downgrades, and manages provider failover.">
+<Docs title="Routing Policy" description="How Omegon preserves model intent, resolves serving routes, and records dispatch evidence.">
   <h1>Routing Policy</h1>
-  <p>Omegon's routing layer selects concrete provider/model combinations for each inference request based on three constraints: model grade intent, thinking level, and context class.</p>
+  <p>
+    Omegon preserves the operator or caller's selected provider/model intent separately from the
+    serving provider/model that receives a request. They are equal on a direct route and both remain
+    visible when declared fallback compatibility produces a different serving route.
+  </p>
 
-  <!-- DIAGRAM:routing-flowchart | Flowchart: request arrives with (grade intent, thinking, context) → filter authenticated providers → match grade → check context floor → apply cooldown → score candidates → select. Show filter-out at each stage -->
-  <h2>Selection Flow</h2>
+  <h2>Resolution boundary</h2>
   <ol>
-    <li><strong>Filter to authenticated providers</strong> — only models with configured API keys or active OAuth sessions are considered</li>
-    <li><strong>Match model grade intent</strong> — filter to models that satisfy the requested grade (higher grades can serve lower requests)</li>
-    <li><strong>Check context floor</strong> — exclude models whose context ceiling is below the session's required minimum</li>
-    <li><strong>Apply provider preference</strong> — order by the operator's provider preference (default: Anthropic first)</li>
-    <li><strong>Check cooldowns</strong> — exclude providers/models that are in a cooldown period from recent failures</li>
-    <li><strong>Select best candidate</strong> — first viable match wins</li>
+    <li><strong>Capture intent</strong> - provider-neutral grade/provider policy or an exact concrete model pin.</li>
+    <li><strong>Resolve a contribution</strong> - require a validated, executable provider declaration and an accepted credential or declared local posture.</li>
+    <li><strong>Apply bounded compatibility</strong> - exact resolution probes only the selected provider; ordinary resolution may use only a directed, model-family-bounded fallback declared by that contribution.</li>
+    <li><strong>Record evidence</strong> - persist selected and serving route identity, contribution generation, route policy, tool-schema posture, credential-source/authentication-class evidence, and any bounded fallback reason before dispatch.</li>
   </ol>
+  <p>
+    Runtime inventory carries endpoint, offering, modality, capability, and provenance evidence.
+    Inventory diagnostics can identify missing evidence, but the current dispatch path does not use
+    those diagnostics as an eligibility gate. Inventory presence alone does not supply a bridge or
+    make a provider executable.
+  </p>
 
   <h2>Downgrade Classification</h2>
   <p>When a model switch would change the context class, the harness classifies the transition:</p>
@@ -28,16 +35,32 @@ import Docs from "../../../layouts/Docs.astro";
     </tbody>
   </table>
 
-  <h2>Failure Recovery</h2>
-  <p>Upstream failures are classified into recovery actions:</p>
+  <h2>Retry, fallback, and unknown completion</h2>
+  <p>
+    Upstream provider-request failures are classified before retry. Transient failures use capped
+    exponential backoff with jitter; bounded runs honor their configured attempt cap, while
+    interactive runs use failure-specific elapsed-time envelopes and can keep retrying Codex
+    overload while cancellation remains available.
+  </p>
   <ul>
-    <li><strong>Retryable flake</strong> (5xx, timeout) → retry same model once</li>
-    <li><strong>Rate limit</strong> (429) → cooldown provider, failover to alternative</li>
-    <li><strong>Auth failure</strong> (401/403) → surface to operator</li>
-    <li><strong>Context overflow</strong> → handled by compaction system</li>
-    <li><strong>User abort</strong> → no recovery action (not a failure)</li>
+    <li><strong>Transient provider or transport failure</strong> (overload, 5xx, timeout, selected network/stream failures) retries the request on the captured serving route within the active envelope.</li>
+    <li><strong>Fallback</strong> is a separate resolution step to a declared-compatible serving provider; retry does not grant fallback permission.</li>
+    <li><strong>Auth, quota, invalid request, or context overflow</strong> surfaces for explicit remediation or the applicable context policy.</li>
+    <li><strong>User abort</strong> performs no recovery action and is not a failure.</li>
   </ul>
+  <p>
+    This retry happens before a completed tool call is dispatched. It is not permission to replay
+    a privileged invocation after owner handoff; unknown mutating completion follows the durable
+    session recovery rules and is not blindly retried.
+  </p>
 
-  <h2>Route Matrix</h2>
-  <p>A reviewed snapshot of provider/model context ceilings is embedded in the binary at compile time. Runtime routing never trusts live provider claims. The matrix is updated through a scheduled refresh pipeline that detects drift, classifies changes, and requires human review for context decreases or route removals.</p>
+  <h2>Route lease durability</h2>
+  <p>
+    Session-backed dispatch appends <code>route.lease_recorded</code> for the active turn before the
+    provider call. The authority stream reduces those facts into snapshot <code>route_leases</code>.
+    Sessionless work records the same lease shape in a versioned step wrapper in
+    <code>runtime/route-leases.jsonl</code> under the Omegon home, with an ephemeral step identity and
+    no fabricated session or turn identity. There is currently no operator command that lists
+    historical route leases; current route and status views are not lease-history projections.
+  </p>
 </Docs>

@@ -93,6 +93,15 @@ import Docs from "../../layouts/Docs.astro";
     Quarantine prevents ordinary activation or silent respawn; it does not mean the code ran in a sandbox.
   </p>
 
+  <h2>MCP HostActions</h2>
+  <p>
+    MCP result metadata may propose declarative HostActions, but the server does not execute host
+    effects by declaration alone. Omegon requires the dispatching MCP tool's live parent lease,
+    verifies that requested effects fit within it, and consumes each child identity once. Manual
+    approval is only one gate and cannot widen project policy, runtime policy, or origin trust.
+    A lease-less or over-broad action fails closed.
+  </p>
+
   <h2>Dynamic tool inventory</h2>
   <p>
     Tool visibility is assembled at runtime from core tools, enabled capability groups,

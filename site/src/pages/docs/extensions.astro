@@ -55,6 +55,21 @@ import { snippet } from "../../lib/snippets";
     health, quarantine diagnostics, cleanup assurance, and compatibility-dispatch parity.
   </p>
 
+  <h2>Invocation and HostActions</h2>
+  <p>
+    Extension tools and generic ACP extension calls execute through generation-bound leases.
+    Generic ACP calls use one conservative extension-owned transport capability because current
+    manifests do not declare effects per RPC method; Omegon does not infer read-only or mutating
+    safety from method names. Ambiguous transport loss after dispatch becomes unknown completion,
+    not an automatic replay.
+  </p>
+  <p>
+    Lease-less imperative HostActions are denied. A declarative HostAction requires a live parent
+    invocation, effects contained by that parent's admitted effects, and an exactly-once child
+    identity. Operator approval cannot replace missing project/runtime policy, trusted-origin, or
+    parent authority.
+  </p>
+
   <h2>Available Extensions</h2>
 
   <h3>Vox &mdash; Communication Connector</h3>

@@ -78,8 +78,10 @@ import { snippet } from "../../lib/snippets";
   <pre><code>{snippet("auth.login_anthropic")}
 {snippet("quickstart.start_slim")}</code></pre>
   <p>
-    Opens a browser for OAuth authentication. This path is for interactive TUI use.
-    Omegon will block headless and automated entry points when this is your only Anthropic credential.
+    Opens a browser for OAuth authentication. Interactive TUI use is the intended low-friction path.
+    If this is your only Anthropic credential, headless execution emits an explicit operator-risk
+    warning and proceeds; it does not silently switch providers or pretend subscription OAuth has
+    API-key automation semantics.
   </p>
 
   <h3>Option B: API key path</h3>
@@ -113,7 +115,7 @@ import { snippet } from "../../lib/snippets";
     recovery companion. You can override normal startup posture with <code>om --full</code>
     or <code>omegon --slim</code>; maintenance is not an alias or mode.
   </p>
-  <p>See <a href="/docs/providers">Providers</a> for all supported auth modes and boundaries.</p>
+  <p>See <a href="/docs/providers">Providers</a> for representative auth postures and current boundaries.</p>
 
   <h2>Updates</h2>
   <p>

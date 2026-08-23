@@ -5,7 +5,9 @@ import Docs from "../../layouts/Docs.astro";
   <h1>Command Reference</h1>
   <p>
     Type <code>/</code> in the editor to see the command palette with fuzzy search.
-    All commands are prefixed with <code>/</code>.
+    All commands are prefixed with <code>/</code>. This reference describes native TUI slash
+    handling unless another surface is named; it does not imply that every command has identical
+    CLI, ACP, daemon, or web support.
   </p>
   <p>
     <strong>Slim mode note:</strong> In <code>om</code> (slim mode), <code>/help</code> shows
@@ -18,12 +20,23 @@ import Docs from "../../layouts/Docs.astro";
   <table>
     <thead><tr><th>Command</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>/model [name]</code></td><td>View or switch model. Opens selector popup, or pass a model ID directly.</td></tr>
+      <tr><td><code>/model</code> / <code>/model route</code></td><td>In the native TUI, open the model menu at current route state. This is not a cross-surface route-history command.</td></tr>
+      <tr><td><code>/model list</code></td><td>In the native TUI, open the concrete model selector.</td></tr>
+      <tr><td><code>/model providers</code></td><td>In the native TUI, open the model menu's provider view.</td></tr>
+      <tr><td><code>/model &lt;provider:model&gt;</code></td><td>Pin an exact concrete selected route for future turns.</td></tr>
+      <tr><td><code>/model grade &lt;F|D|C|B|A|S&gt;</code></td><td>Set provider-neutral capability-grade intent.</td></tr>
+      <tr><td><code>/model provider &lt;auto|local|upstream|endpoint&gt;</code></td><td>Set provider or endpoint selection intent; an endpoint ID may replace <code>endpoint</code>.</td></tr>
+      <tr><td><code>/model policy &lt;exact|minimum|nearest&gt;</code></td><td>Set grade matching policy. <code>exact</code> is exact grade, not a concrete route pin.</td></tr>
+      <tr><td><code>/model unpin</code></td><td>Clear the exact concrete model override and resume grade/provider intent routing.</td></tr>
       <tr><td><code>/think [level]</code></td><td>Set thinking level: <code>off</code>, <code>minimal</code>, <code>low</code>, <code>medium</code>, or <code>high</code>.</td></tr>
       <tr><td><code>/context compact</code></td><td>Trigger context compaction. Use <code>standard</code>, <code>extended</code>, or <code>massive</code> to select a context class.</td></tr>
       <tr><td><code>/context reset</code> / <code>/context clear</code></td><td>Save the current session and start a fresh conversation with cleared live context.</td></tr>
     </tbody>
   </table>
+  <p>
+    Current model/status views show current state only. No supported command lists the append-only
+    historical route leases recorded for session-backed or sessionless dispatch.
+  </p>
 
   <h2>Session &amp; Memory</h2>
   <table>
@@ -77,6 +90,13 @@ import Docs from "../../layouts/Docs.astro";
       <tr><td><code>/update</code></td><td>Check for updates, inspect release notes, and install verified stable, RC, or nightly builds depending on the selected update lane.</td></tr>
     </tbody>
   </table>
+
+  <p>
+    <code>/status</code> reports the current composition and lifecycle projection. It does not list
+    historical unknown invocations or mutation-fence evidence, and no supported slash command
+    currently reconciles or clears that state. See the <a href="/docs/recovery">recovery guide</a>
+    before retrying a mutation with unknown completion.
+  </p>
 
   <h2>Long-Running Automation</h2>
   <table>

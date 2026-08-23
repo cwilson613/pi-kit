@@ -19,11 +19,11 @@ import stats from "../../data/stats.json";
     <thead><tr><th>Claude Code</th><th>Omegon</th></tr></thead>
     <tbody>
       <tr><td>CLAUDE.md</td><td>Project memory — persistent facts with semantic search, knowledge graph, episodic recall. Not a flat file.</td></tr>
-      <tr><td>Model picker</td><td><code>/model</code> — {stats.providerCount} providers with tier-based routing and automatic failover</td></tr>
+      <tr><td>Model picker</td><td><code>/model</code> - provider-neutral intent or an exact concrete route pin, with explicit selected and serving route state</td></tr>
       <tr><td>Extended thinking toggle</td><td><code>/think off|minimal|low|medium|high</code> — five explicit levels</td></tr>
       <tr><td>Custom slash commands (.md)</td><td>{stats.skillCount} skills — specialized instruction sets loaded on demand (git, rust, python, security, OCI, etc.)</td></tr>
       <tr><td>Conversation history</td><td>Sessions — auto-save and <code>--resume</code> with recent history plus a summary of older context</td></tr>
-      <tr><td>Anthropic only</td><td>{stats.providerCount} inference providers — {stats.providerNames.join(", ")}</td></tr>
+      <tr><td>Anthropic only</td><td>Contribution-backed provider routing with provider-specific authentication and explicit compatibility boundaries</td></tr>
       <tr><td>—</td><td>Design tree — a structured knowledge graph of architecture decisions, open questions, dependencies, and implementation status. Nodes follow the lifecycle <code>seed → exploring → resolved → decided → implementing → implemented</code> and bridge into specification and implementation work.</td></tr>
       <tr><td>Subagents (shared working directory)</td><td>Cleave — each child runs in its own git worktree on its own branch. File scope enforcement, dependency-ordered dispatch waves, per-file conflict detection (never bulk-resolved), and adversarial review. See <a href="/docs/cleave">Cleave vs Subagents</a>.</td></tr>
       <tr><td>—</td><td>OpenSpec — spec-driven development lifecycle (propose, specify, execute, verify, archive)</td></tr>
@@ -98,7 +98,7 @@ import stats from "../../data/stats.json";
     <thead><tr><th>Codex CLI</th><th>Omegon</th></tr></thead>
     <tbody>
       <tr><td>AGENTS.md</td><td>Project memory + AGENTS.md support (both formats recognized)</td></tr>
-      <tr><td>OpenAI models only</td><td>{stats.providerCount} inference providers — including Ollama (Local) for fully offline operation and Ollama Cloud as a separate hosted path</td></tr>
+      <tr><td>OpenAI models only</td><td>Multiple contribution-backed routes, including local and separately authenticated hosted paths when configured and executable</td></tr>
       <tr><td>Cloud-dependent orchestration</td><td>Fully local orchestration — cloud is only used for inference, and even that is optional with Ollama</td></tr>
       <tr><td>Sandbox execution</td><td>OCI-based isolation is available when the sandbox runtime is configured. Provider credentials can come from secure stores or environment variables; avoid plaintext project files.</td></tr>
       <tr><td>Single-turn execution</td><td>Multi-turn sessions with auto-save and resume. The agent maintains context across turns and sessions.</td></tr>
@@ -139,7 +139,7 @@ import stats from "../../data/stats.json";
     <li>Parallel task execution via git worktrees with automatic merge and conflict detection</li>
     <li>Design tree for tracking architecture decisions across the life of a project</li>
     <li>Spec-driven development lifecycle with verification</li>
-    <li>{stats.providerCount} inference providers with automatic routing and failover</li>
+    <li>Provider-neutral model intent, exact route pinning, and fallback only through explicit policy and directed compatibility</li>
     <li>No IDE dependency — works over SSH, in tmux, in CI, on any machine with a terminal</li>
     <li>Secrets management and OCI tooling for production-grade security posture</li>
   </ul>

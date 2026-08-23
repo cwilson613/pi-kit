@@ -54,7 +54,7 @@ Given a routing request for grade "B"
 And providers [anthropic, openai-codex, ollama] are available
 When the route controller scores providers
 Then the selected route preserves the requested grade intent
-And the served bridge reports the authenticated provider/model that actually handles turns</code></pre>
+And the serving route reports the authenticated provider/model that receives the request</code></pre>
 
   <h2>Directory Structure</h2>
   <pre><code>openspec/

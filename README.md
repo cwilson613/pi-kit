@@ -288,20 +288,13 @@ Omegon exposes structured tools for:
 
 ### Inference providers
 
-- Anthropic/Claude
-- OpenAI API
-- OpenAI/Codex
-- OpenRouter
-- Groq
-- xAI (Grok)
-- Mistral AI
-- Cerebras
-- Google Gemini
-- Google Antigravity
-- OpenCode Go
-- Hugging Face
-- Ollama (Local)
-- Ollama Cloud
+Omegon resolves contribution-backed cloud, brokered, and local inference routes.
+The running model and auth views are authoritative for the current installation;
+the repository does not present a static provider list as an exhaustive executable
+inventory. In particular, Google Antigravity authentication and inventory are
+declared, but its current provider contribution is non-executable. See the
+[provider guide](https://omegon.styrene.io/docs/providers) for representative
+authentication postures and routing boundaries.
 
 ### Tutorial that actually does work
 

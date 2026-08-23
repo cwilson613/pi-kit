@@ -67,7 +67,15 @@ Candidates are quarantined from ordinary dispatch while they negotiate declarati
 | Armory context/script/OCI | Context readiness is bounded. Script and OCI process groups are killed and reaped on timeout or cancellation. Script paths must remain within the admitted snapshot. | Best effort at the contribution boundary. |
 | HTTP plugin | Requests use bounded HTTP timeouts and failures degrade locally. | Best effort. |
 
-A changed extension generation receives a fresh restart controller. A successful respawn within one generation does not erase earlier crash evidence. Generation-bound invocation leases and active-call drain/revocation are Slice 3 concerns and are not implied by this lifecycle.
+A changed extension generation receives a fresh restart controller. A successful respawn within one generation does not erase earlier crash evidence.
+
+## Invocation and host effects
+
+Extension tools execute through the shared generation-bound invocation path. Owner acknowledgement and terminal settlement become durable before ordinary completion is published; ambiguous transport loss after dispatch becomes unknown completion rather than an automatic replay.
+
+Generic ACP extension RPC uses one conservative extension-owned Operator/ACP transport capability because the current protocol does not declare effects per method. Dispatch runs on the worker-owned EventBus and does not infer safety from method names. Per-method read-only, mutating, host-action-mediated, or denied declarations remain future work.
+
+An extension cannot bypass admission by asking the host to execute an imperative action directly. Lease-less `actions/execute` requests fail closed. Declarative native and MCP HostActions require a live dispatching parent lease, effects contained by that lease, and an exactly-once child identity. Operator approval contributes intent only; it does not grant missing project policy, runtime policy, trusted-origin, or parent authority.
 
 ## Diagnostics
 

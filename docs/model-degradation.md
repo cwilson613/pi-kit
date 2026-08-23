@@ -20,6 +20,17 @@ related = ["context-class-taxonomy-and-routing-policy"]
 
 # Graceful Model Degradation & Provider Resilience
 
+## Disposition
+
+This records the historical TypeScript degradation design and inventory audit;
+its inventories, counts, fallback ladders, and implementation paths are not the
+current Rust routing contract. Current fallback is directed, non-transitive,
+selected-family bounded, and distinct between interactive `fallbackProviders`
+and sessionless route-service resolution. See
+[Provider contributions and route leases](provider-contributions-and-route-leases.md).
+Do not use this document to infer current providers, route eligibility, or
+automatic cross-tier degradation.
+
 ## Overview
 
 The current model routing system has hard boundaries between capability tiers. When all candidates for a role are unavailable (API key missing, model deprecated, auth failure), resolution returns `{ok: false}` with no fallback. This creates a cliff — users go from full capability to zero instead of gracefully degrading.\n\nGoal: build a degradation ladder from zero-provider (clear guidance) through single-provider (that provider serves all roles at varying quality) to full-matrix (optimal routing across Anthropic + OpenAI + local).\n\n## Current Problems\n\n1. **No cross-tier degradation**: If gloriana has no candidates, it fails — never tries victory-tier models as a fallback\n2. **Auth errors (403/401) don't failover**: They surface immediately instead of trying the next candidate\n3. **No zero-provider path**: No API keys + no Ollama = opaque failure, no guidance\n4. **Deprecated models cause retry loops**: Provider still lists them, routing selects them, they 403, classified as auth error, surfaced to user\n5. **GitHub Copilot isn't a first-class provider**: Copilot tokens hit OpenAI-compatible endpoints but with different model availability\n\n## Degradation Ladder (target)\n\n```\nLevel 0: Nothing       → Clear error: 'Configure at least one provider. Run /bootstrap'\nLevel 1: Local only    → Ollama serves ALL roles (reduced quality, not hard failure)\nLevel 2: One cloud key → That provider fills all tiers, local for background\nLevel 3: Both clouds   → Full tier separation, local augments\nLevel 4: All + local   → Complete matrix, optimal routing\n```">

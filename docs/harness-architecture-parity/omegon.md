@@ -106,8 +106,11 @@ after protocol handshake. OCI profiles can isolate full sessions or children.
 
 Important qualifications:
 
-- absence of a matching permission rule currently defaults to allow;
-- unmapped RBAC tools currently default to allow;
+- absence of a matching permission rule for a known, graph-admitted capability
+  currently defaults to allow at the permission layer;
+- unknown owners, capabilities, effects, schemas, and provenance receive no
+  privileged execution lease, so the permission default cannot admit an
+  undeclared tool;
 - `--dangerously-bypass-permissions` disables filesystem-boundary prompts and
   some command confirmations, but not configured policy, RBAC, extension
   policy, or sandbox enforcement;

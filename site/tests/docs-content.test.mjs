@@ -21,6 +21,13 @@ function readDoc(name) {
   return readFileSync(resolve(docsDir, name), 'utf8');
 }
 
+function docsPages(dir = docsDir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const path = resolve(dir, entry.name);
+    return entry.isDirectory() ? docsPages(path) : entry.name.endsWith('.astro') ? [path] : [];
+  });
+}
+
 test('install docs use canonical snippets for all channels', () => {
   const content = readDoc('install.astro');
 
@@ -68,7 +75,46 @@ test('sessions docs distinguish durable authority from conversation snapshots', 
   assert.match(content, /Conversation JSON remains a compatibility snapshot/);
   assert.match(content, /cancellation request leaves the turn busy/);
   assert.match(content, /Disables the conversation session snapshot and interactive authority sidecar/);
+  assert.match(content, /route\.lease_recorded/);
+  assert.match(content, /runtime\/route-leases\.jsonl/);
+  assert.match(content, /No current operator command lists historical route leases/);
   assert.doesNotMatch(content, /Resume exactly where you left off|full context restored|full replay/i);
+});
+
+test('provider routing docs preserve contribution and lease boundaries', () => {
+  const providers = readDoc('providers.astro');
+  const ecosystem = readDoc('ecosystem.astro');
+  const faq = readDoc('faq.astro');
+  const routing = readDoc('architecture/routing.astro');
+  const model = readDoc('three-axis-model.astro');
+  const commands = readDoc('commands.astro');
+  const install = readDoc('install.astro');
+  const migration = readDoc('migration.astro');
+  const openspec = readDoc('openspec.astro');
+  const publicDocs = docsPages().map(path => readFileSync(path, 'utf8')).join('\n');
+  const readme = readFileSync(resolve(here, '../../README.md'), 'utf8');
+  const combined = [providers, ecosystem, faq, routing, model, commands, install, migration, openspec, readme].join('\n');
+
+  assert.match(providers, /current provider contribution is non-executable/);
+  assert.match(providers, /fallbackProviders/);
+  assert.match(providers, /directed and non-transitive/);
+  assert.match(providers, /Sessionless callers do not inherit the interactive list/);
+  assert.match(providers, /never contains secret material/);
+  assert.match(ecosystem, /representative, not an exhaustive inventory of executable providers/);
+  assert.match(ecosystem, /Auth\/inventory only; current contribution is non-executable/);
+  assert.match(readme, /current provider contribution is non-executable/);
+  assert.match(install, /headless execution emits an explicit operator-risk\s+warning and proceeds/);
+  assert.match(model, /\/model unpin/);
+  assert.match(model, /In the native TUI, <code>\/model route<\/code>/);
+  assert.match(commands, /No supported command lists the append-only\s+historical route leases/);
+  assert.match(routing, /current dispatch path does not use\s+those diagnostics as an eligibility gate/);
+  assert.match(routing, /route\.lease_recorded/);
+  assert.match(openspec, /serving route reports/);
+  assert.doesNotMatch(combined, /served bridge|selected-vs-served|automatic failover/i);
+  assert.doesNotMatch(combined, /stats\.providerCount/);
+  assert.doesNotMatch(install, /block headless and automated entry points/i);
+
+  assert.doesNotMatch(publicDocs, /automatic failover/i);
 });
 
 test('release verification snippets do not trust arbitrary certificate identities', () => {

@@ -183,6 +183,7 @@ payload = HelloResponse
 | `server_instance_id`   | `string`   | Stable opaque ID for this process lifetime; changes on restart |
 | `started_at`           | `string`   | RFC 3339 UTC timestamp when process started            |
 | `session_id`           | `string \| null` | Active session ID if one exists                  |
+| `session_generation`   | `u64 \| null` | Atomically published host-session generation (additive v1 field) |
 | `capabilities`         | `string[]` | Server-advertised capabilities (see below)             |
 
 If the server cannot agree on a protocol version it returns
@@ -317,6 +318,15 @@ IpcStateSnapshot {
 | `git_branch`   | `string \| null`  |                                    |
 | `git_detached` | `bool`            |                                    |
 | `session_id`   | `string \| null`  |                                    |
+| `session_generation` | `u64 \| null` | Current host-session publication generation |
+| `stream_id` | `string \| null` | Validated semantic stream identity |
+| `projection_status` | `string \| null` | `exact_full`, `exact_suffix`, `legacy_unavailable`, or `unavailable` |
+| `projection_frontier` | `u64 \| null` | Validated authority frontier sequence |
+| `context_revision` | `u64 \| null` | Validated frontend context revision |
+| `queue_depth` | `usize` | Authoritative runtime queue depth; defaults to zero for older v1 payloads |
+| `active_turn` | `string \| null` | Authoritative active/idle/interrupted status |
+
+These fields are additive within protocol v1. `busy` and live queue fields are runtime-authoritative even when the semantic projection is stale or unavailable; projection failure must not leave operator controls locally busy.
 
 ### `IpcDesignTreeSnapshot`
 

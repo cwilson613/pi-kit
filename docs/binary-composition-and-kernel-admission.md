@@ -182,6 +182,62 @@ Mutating execution declarations now require a validated durable mutation domain 
 
 Before preparing a stable call identity, session authority now classifies any unresolved unknown invocation with that call ID across prior turns. Mutating replay is denied unless the original persisted contract was idempotent or carried owner-enforced deduplication for the exact call identity; current replacement metadata cannot retroactively authorize it. Legacy unknown records fail closed. This lane does not yet enable safe replay, relax duplicate-call rules, or add attempt lineage/request fingerprints. Provider-request retries remain a distinct pre-dispatch mechanism. ACP host writes also no longer fall back to a second local mutation after an ambiguous host response.
 
+Loop-driver and provider-route-service selection is one atomic release-coupled
+system-module binding. Each durable session owns one boot-selected pair and
+captures it at turn start; sessionless hosts use the immutable process boot
+pair. A mid-turn replacement remains in-memory `Pending` until a deliberate
+caller explicitly commits it at quiescence. Turn closure and subsequent turn
+start do not auto-promote it. The durable migration records distinct driver and
+route-service contribution generations only after idle and unknown-invocation
+guards pass, and publication follows the synced append. Resume boot binding is
+process-local and creates no migration history. This boundary does not make the
+release-coupled modules third-party plugins or add Slice 5 semantic facts.
+
+Slice 5.1 subsequently activates semantic emission inside that captured binding
+only when the invocation scope contains one complete, current session/turn
+authority. Partial authority cannot downgrade to sessionless operation;
+sessionless bindings continue to emit only their existing route evidence. The
+supervisor terminalizes any remaining semantic step after host-owned cleanup and
+before canonical turn closure, so TUI, ACP, daemon, and bounded hosts do not rely
+on advisory events or future destruction for durable abnormal completion.
+
+Slice 5.2 completes the authority-backed compatibility boundary around that
+binding: response attempts, event-backed context provenance, strict replay and
+blob verification, compaction facts/recovery, reducer/cache v5, and generic
+output-before-cursor storage are active. Interactive, ACP, and daemon session
+replacement validates the complete target authority and publishes session,
+execution, projection, and compatibility state atomically while idle. Slice 5.3
+now gives each authority-backed supervisor one session-lifetime shadow worker:
+post-durability hints use bounded dirty-bit coalescing, strict-replay the latest
+stable frontier, and independently publish provider-history, transcript,
+frontend, and compaction-checkpoint outputs. Replacement clears and stops the
+old notifier, fences its root, and transfers join ownership to the new
+supervisor without delaying host publication; sessionless bindings remain route-only and
+start no projector. Slice 5.4 now consumes those outputs through validated
+readers without adding a configuration surface.
+
+Task 5.4.0 froze that migration without changing runtime. Slice 5.4 provider dispatch
+now consumes a synchronous immutable current-context reduction at its captured
+latest durable frontier, never lagging provider-history or another background
+projection. Exact resume follows the same frontier rule; frontend adapters may
+show a validated stale snapshot only with disclosed lag. Host-owned intent/plan
+state, durable operator observations, operator metadata, semantic counters,
+audit, and Markdown journal retain distinct schemas and ownership. Mixed resume
+is a labeled legacy base plus exact semantic suffix, while exact full-session and
+mixed Web-prefix export remain unavailable. Compatibility `.json`/`.meta.json`
+mirrors continue through Slice 5.6 and rollback cannot re-enable an old writer
+or downgrade semantic lineage. `/transcript` is reserved for exact committed
+semantic content and `/session-export` names presentation/evidence output. The
+native command help reflects that cutover. Adverse-consumer campaigns remain
+Slice 5.5; applicable public command/session/migration/recovery docs and
+dual-write closeout remain Slice 5.6, with no canonical snippet change in 5.4.
+The final Slice-5.5 audit dispatches every frozen manifest row through a
+consumer-specific oracle and passes the macOS runtime budget, but keeps the slice
+open because several rows still substitute shared law probes for the exact
+frozen interaction, AC13 lacks a chunk-bearing mixed-lineage seed, and
+Linux/Windows campaign evidence is absent. That audit does not move public
+documentation or dual-write closeout out of Slice 5.6.
+
 Invocation admission and lease revalidation are now kind-aware rather than tool-only. Graph-registered feature commands from TUI, CLI remote execution, ACP, Web, and IPC enter with explicit operator principals and owner-declared surfaces, then acknowledge, settle, and close through the shared lease lifecycle before returning their result. Model-loop path grants invoke the graph-declared `trust_directory` internal owner under an internal principal while retaining parent session and turn authority. Automatic memory ingestion and host-mediated persona/tone switches use explicit internal bindings and leases, and model-facing memory mutations declare state-changing effects. Managed-delegation tools explicitly admit model and service principals on Model/Web/Daemon surfaces; authenticated supervisor calls now use service leases, and status resolves to the owned delegate-status binding. Operator context-pack reads call a typed read-only context service rather than entering tool admission. Extension-provided voice stop declares TUI service authority and executes under the promoted turn's durable scope. Daemon vox polling invokes the declared `vox_route` tool under an ephemeral Service/Daemon lease. Arbitrary ACP methods use one extension-owned conservative Operator/ACP transport capability because per-method effects are not yet declared; dispatch occurs on the worker-owned EventBus rather than a raw polling handle. Lease-less imperative extension HostActions fail closed, and approval contributes only operator intent without granting independent project, runtime, or origin trust. Declarative native HostActions and MCP review candidates require a host-only parent guard injected after revalidation; it checks live dispatch state, effect containment, and exactly-once child identity before execution or review. Idle and post-loop calls remain ephemeral because no active authority turn exists; the runtime does not fabricate durable scope. Reactive path grants and extension HostAction approval can only narrow an upstream lease decision.
 
 Capability execution declarations now include typed eligible principal classes, timeout class, retry/idempotency/deduplication policy, serial or parallel-safe scheduling, and explicit transaction behavior alongside required effects and transition policy. Candidate validation rejects empty principal sets, zero attempts, unsafe non-idempotent retry, parallel rollback, and mutation/effect contradictions. Leased model-tool admission derives RBAC from declared effects rather than the visible tool name, captures the complete policy, and revalidates it before owner execution. The scheduler uses declared parallelism and best-effort rollback eligibility; caller timeout arguments may narrow but not widen the declaration-class ceiling, including for host-delegated calls.

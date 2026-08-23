@@ -72,7 +72,7 @@ Subject extraction contract for the initial engine slice:
 
 Multi-subject tools aggregate to the strongest decision: `deny > prompt > allow`. Layering is a monotonic tightening lattice, not last-writer-wins: Lex, persona, project, and session policies are all evaluated, and lower layers may tighten an invocation but cannot loosen a higher-layer prompt or deny. A session `allow` therefore cannot bypass a project/persona/Lex `prompt` or `deny`.
 
-Unknown tools and tools without extracted subjects are currently default-open unless a tool-level rule exists. This preserves extension compatibility for the first enforcement slice, but it is not a security boundary; restrictive deployments should add explicit tool rules until a configurable unknown-tool default exists.
+A known, graph-admitted capability with no matching permission rule currently receives the permission layer's `allow` default, and a patterned rule without `otherwise` allows unmatched subjects. That default is not capability admission: unknown tools, owners, capabilities, effects, schemas, or provenance fail closed before a privileged lease is issued. Tools without extracted subjects still need explicit tool-level rules when operators want permission policy to narrow their already-declared authority.
 
 Pattern matching is lexical and glob-like (`*` any sequence, `?` one character). Path patterns are matched against extracted argument strings, not canonicalized filesystem paths; normalization/canonical path policy belongs to a later path-aware matcher.
 

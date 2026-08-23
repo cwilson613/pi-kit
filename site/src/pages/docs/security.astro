@@ -89,6 +89,12 @@ import { snippet } from "../../lib/snippets";
     until you choose a scope in the permission modal. The prompt shows the tool, exact target,
     and proposed directory before any grant is installed.
   </p>
+  <p>
+    A known capability with no matching permission rule currently receives the permission
+    layer's allow default. That default does not admit arbitrary names: privileged calls must
+    resolve a current declared owner, capability, effects, principal, and surface before Omegon
+    issues an execution lease. Unknown or incomplete declarations fail closed.
+  </p>
 
   <h2>Dynamic Contribution Trust</h2>
   <p>
@@ -144,7 +150,7 @@ import { snippet } from "../../lib/snippets";
   <h2>Process Safety</h2>
   <ul>
     <li>The agent executes tools directly under a layered tool policy. Per-tool rules can allow, prompt, or deny operations with wildcard subject matching.</li>
-    <li>Policy prompts are currently allow-once decisions until durable grants are configured; unknown tools remain default-open unless policy says otherwise.</li>
+    <li>Policy prompts are currently allow-once decisions until durable grants are configured; the no-rule allow default applies only after capability admission and cannot make an unknown tool executable.</li>
     <li>Bash mediation is static and advisory for common shell forms. Hard filesystem containment belongs to the sandbox layer.</li>
     <li>Outside-workspace file prompts wait for an explicit operator decision instead of timing out as denial; run cancellation still unblocks the wait.</li>
     <li>All tool calls are logged in the conversation with full arguments and results.</li>

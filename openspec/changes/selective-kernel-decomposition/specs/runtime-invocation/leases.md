@@ -88,7 +88,7 @@ And operator diagnostics identify the unresolved call identity
 
 ### Requirement: Settlement durability gates further mutation
 
-Every mutating capability declaration must identify its durable mutation domain and fence key. If acknowledgement, terminal result, or audit settlement cannot be durably recorded after dispatch, the kernel must durably fence that declared domain before admitting another mutation against it, retain emergency recovery evidence containing call, owner, generation, lease, and fence identities, and withhold ordinary completion. The fence may be removed only by deterministic reconciliation or an explicit audited operator recovery decision.
+Every mutating capability declaration must identify its durable mutation domain and fence key. If acknowledgement, unknown-completion classification, or terminal settlement cannot be durably recorded after dispatch, the kernel must durably fence that declared domain before admitting another mutation against it, retain emergency recovery evidence containing call, owner, generation, lease, and fence identities, and withhold ordinary completion. The fence may be removed only by deterministic reconciliation or an explicit audited operator recovery decision.
 
 #### Scenario: Durable writer fails after owner success
 Given an owner reports a successful mutation

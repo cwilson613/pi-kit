@@ -111,9 +111,19 @@ import { snippet } from "../../lib/snippets";
     not currently exposed; verify owner state or use an audited reconciliation path instead.
   </p>
   <p>
+    Provider retry is a different mechanism: it repeats an inference request before a completed
+    tool call is dispatched. Provider backoff never authorizes resending a mutation whose owner
+    completion is unknown.
+  </p>
+  <p>
     The current <code>omegon-maintain</code> release does not inspect, reconcile, or clear runtime
     invocation fences. Clearing requires deterministic owner reconciliation or a future explicit,
     audited operator recovery action; session quarantine does not clear these records.
+  </p>
+  <p>
+    Native <code>/status</code> reports current composition and lifecycle diagnostics, not a ledger
+    of historical unknown invocations or mutation fences. No supported runtime or maintenance
+    command currently lists, reconciles, or clears those records.
   </p>
 
   <h2>Runtime Ownership Records</h2>

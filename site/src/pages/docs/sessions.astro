@@ -44,9 +44,16 @@ import { snippet } from "../../lib/snippets";
   </p>
   <p>
     Mutating calls also carry a durable mutation domain and fence key. If owner acknowledgement or
-    terminal settlement cannot be recorded after dispatch, Omegon withholds ordinary completion,
-    writes independent emergency evidence, and blocks later matching mutations rather than risking
-    an unqualified repeat.
+    unknown-completion classification, or terminal settlement cannot be recorded after dispatch,
+    Omegon withholds ordinary completion, writes independent emergency evidence, and blocks later
+    matching mutations rather than risking an unqualified repeat. A prepared call has not reached
+    its owner; a dispatched or acknowledged call without settlement recovers as unknown completion.
+  </p>
+  <p>
+    Unknown completion does not mean failure and does not prove that no side effect occurred.
+    Omegon denies unsafe stable-call replay for mutations unless the original persisted contract
+    was idempotent or enforced exact stable-call deduplication. It does not currently schedule even
+    a safety-eligible replay automatically.
   </p>
   <p>
     Conversation JSON remains a compatibility snapshot. On restart, Omegon validates the
@@ -55,6 +62,14 @@ import { snippet } from "../../lib/snippets";
     their client response channel was lost. Corrupt or unsupported authority data fails recovery
     instead of being repaired from conversation JSON. A maintenance resume deny fails before conversation
     loading; follow the <a href="/docs/recovery">recovery guide</a> to inspect it.
+  </p>
+  <p>
+    Before a session-backed provider dispatch, authority appends a
+    <code>route.lease_recorded</code> fact for the active turn. It preserves selected and serving
+    provider/model identities plus bounded route, contribution, schema, and credential-class
+    evidence without secret material. Sessionless work instead writes a versioned step wrapper to
+    <code>runtime/route-leases.jsonl</code> under the Omegon home and does not fabricate session or
+    turn identity. No current operator command lists historical route leases.
   </p>
   <!-- DIAGRAM:session-lifecycle | Timeline: session start -> durable turn facts plus conversation snapshot on orderly exit -> resume validates authority -> interrupted work closes conservatively -> recent history and summarized older context load. Show project memory as separate persistence. -->
 

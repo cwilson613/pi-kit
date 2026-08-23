@@ -21,6 +21,16 @@ related = ["context-class-taxonomy-and-routing-policy"]
 
 # Provider fallback chain — task-aware resilience in the Rust agent loop
 
+## Disposition
+
+This deferred proposal is not the current fallback contract. The wrapper chain,
+task-aware tier ordering, and error-class behavior below were not adopted as
+written. Current behavior uses validated directed, non-transitive provider
+contributions, preserves selected and serving identity, and separates
+interactive `fallbackProviders` from sessionless declared-fallback resolution.
+See
+[Provider contributions and route leases](provider-contributions-and-route-leases.md).
+
 ## Overview
 
 The Rust core currently has a single provider — when it fails, the user sees an error. Need a fallback chain that's smarter than blind retry. Key insight: fallback strategy should be task-aware. A cleave child doing mechanical edits can fall back to a cheaper/local model without losing much. A deep architecture discussion should retry the same tier or notify the operator rather than silently degrading to a model that can't reason at the same level. The chain wraps Arc&lt;dyn LlmBridge&gt; with ordered fallbacks. Each fallback attempt logs which provider was used. Transient errors (429, 500, 503) trigger retry+fallback; auth errors (401, 403) are terminal. The existing model-degradation node (implemented) covers the TS harness — this is the Rust-native equivalent, integrated with the provider abstraction in providers.rs.

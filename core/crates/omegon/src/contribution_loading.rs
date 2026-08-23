@@ -1,9 +1,15 @@
 use std::{fs::File, path::Path};
 
+#[cfg(unix)]
+use omegon_maintenance_contracts::MaintenanceStateV1;
 use omegon_maintenance_contracts::{
     AuthorityKey, ContributionAdmissionGuard, ContributionKind, ContributionMutationGuard,
-    MaintenanceStateV1,
 };
+
+#[cfg(unix)]
+type FileMode = libc::mode_t;
+#[cfg(not(unix))]
+type FileMode = u32;
 
 pub(crate) struct GuardedContributionDirectory {
     directory: File,
@@ -159,11 +165,22 @@ impl GuardedContributionMutationDirectory {
         })
     }
 
+    #[cfg(not(unix))]
+    pub(crate) fn write_single_file_directory(
+        &self,
+        _raw_name: &[u8],
+        _file_name: &[u8],
+        _bytes: &[u8],
+        _overwrite: bool,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
     #[cfg(unix)]
     pub(crate) fn write_files_directory(
         &self,
         raw_name: &[u8],
-        files: &[(&[u8], &[u8], libc::mode_t)],
+        files: &[(&[u8], &[u8], FileMode)],
         overwrite: bool,
     ) -> anyhow::Result<()> {
         omegon_maintenance_contracts::validate_child_name(raw_name)?;
@@ -174,6 +191,16 @@ impl GuardedContributionMutationDirectory {
             }
             Ok(())
         })
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn write_files_directory(
+        &self,
+        _raw_name: &[u8],
+        _files: &[(&[u8], &[u8], FileMode)],
+        _overwrite: bool,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
     }
 
     #[cfg(unix)]
@@ -189,6 +216,16 @@ impl GuardedContributionMutationDirectory {
         self.stage_and_replace(raw_name, overwrite, |staging| {
             copy_source_tree(source, staging, 0, &mut entries, &mut bytes, true)
         })
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn import_directory(
+        &self,
+        _raw_name: &[u8],
+        _source: &File,
+        _overwrite: bool,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
     }
 
     #[cfg(unix)]
@@ -305,6 +342,15 @@ impl GuardedContributionMutationDirectory {
         })
     }
 
+    #[cfg(not(unix))]
+    pub(crate) fn replace_from_snapshot(
+        &self,
+        _raw_name: &[u8],
+        _source: &File,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
     #[cfg(unix)]
     pub(crate) fn remove_directory(&self, raw_name: &[u8]) -> anyhow::Result<bool> {
         omegon_maintenance_contracts::validate_child_name(raw_name)?;
@@ -321,6 +367,11 @@ impl GuardedContributionMutationDirectory {
             tracing::warn!(error = %error, "removed contribution but could not clean detached tree");
         }
         Ok(true)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn remove_directory(&self, _raw_name: &[u8]) -> anyhow::Result<bool> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
     }
 
     #[cfg(unix)]
@@ -407,6 +458,16 @@ impl GuardedContributionMutationDirectory {
         self.validate_binding()
     }
 
+    #[cfg(not(unix))]
+    pub(crate) fn write_file(
+        &self,
+        _raw_name: &[u8],
+        _bytes: &[u8],
+        _overwrite: bool,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
+    }
+
     #[cfg(unix)]
     pub(crate) fn remove_file(&self, raw_name: &[u8]) -> anyhow::Result<bool> {
         use std::ffi::CString;
@@ -431,6 +492,11 @@ impl GuardedContributionMutationDirectory {
         self.directory.sync_all()?;
         self.validate_binding()?;
         Ok(true)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn remove_file(&self, _raw_name: &[u8]) -> anyhow::Result<bool> {
+        anyhow::bail!("guarded contribution mutation requires Unix")
     }
 
     #[cfg(unix)]

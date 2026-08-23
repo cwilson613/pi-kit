@@ -789,6 +789,7 @@ script = "tools/run.sh"
         assert!(!marker.exists(), "denied dynamic code must not run");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn discover_plugins_filtered_honors_enabled_extensions() {
         let _lock = crate::test_support::env::lock_async().await;

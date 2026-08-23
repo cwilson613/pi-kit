@@ -13,9 +13,13 @@ use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "tui")]
 use crossterm::ExecutableCommand;
 #[cfg(feature = "tui")]
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::DisableMouseCapture;
+#[cfg(all(feature = "tui", unix))]
+use crossterm::event::EnableMouseCapture;
 #[cfg(feature = "tui")]
-use crossterm::terminal::{EnterAlternateScreen, disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::disable_raw_mode;
+#[cfg(all(feature = "tui", unix))]
+use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use std::collections::VecDeque;
 #[cfg(feature = "tui")]
 use std::io;
@@ -2891,8 +2895,11 @@ async fn run_embedded_command(
     ));
     vox_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    #[cfg(unix)]
     let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
         .expect("failed to register SIGHUP handler");
+    #[cfg(not(unix))]
+    let mut sighup = std::future::pending::<()>();
 
     tracing::info!("daemon dispatch loop started");
     loop {
@@ -2901,7 +2908,12 @@ async fn run_embedded_command(
                 tracing::info!("daemon shutting down (signal)");
                 break;
             }
-            _ = sighup.recv() => {
+            _ = async {
+                #[cfg(unix)]
+                sighup.recv().await;
+                #[cfg(not(unix))]
+                (&mut sighup).await;
+            } => {
                 tracing::info!("SIGHUP received — reloading configuration");
                 let _ = events_tx.send(AgentEvent::SystemNotification {
                     message: "Reloading configuration...".into(),

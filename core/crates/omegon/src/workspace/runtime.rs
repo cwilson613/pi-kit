@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
+#[cfg(unix)]
 use sha2::{Digest, Sha256};
 
 use super::types::{WorkspaceLease, WorkspaceRegistry};
@@ -388,11 +389,16 @@ pub fn prune_stale_instances(cwd: &Path) -> Vec<String> {
         }
 
         // Check if the PID is still alive
+        #[cfg(unix)]
         let pid_alive = dir_name
             .rsplit_once('-')
             .and_then(|(_, pid_str)| pid_str.parse::<i32>().ok())
             .map(|pid| unsafe { libc::kill(pid, 0) } == 0)
             .unwrap_or(false);
+        // Without a secure process-identity probe, retain the directory rather than
+        // risking deletion of a live runtime owned by another process.
+        #[cfg(not(unix))]
+        let pid_alive = true;
 
         if !pid_alive {
             let _ = std::fs::remove_dir_all(&path);

@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +38,7 @@ pub struct ProxyServer {
 }
 
 impl ProxyServer {
+    #[cfg(unix)]
     pub fn new(cwd: PathBuf) -> Result<Self> {
         let run_id = uuid::Uuid::new_v4()
             .to_string()
@@ -51,6 +54,11 @@ impl ProxyServer {
             cwd,
             boundary: None,
         })
+    }
+
+    #[cfg(not(unix))]
+    pub fn new(_cwd: PathBuf) -> Result<Self> {
+        anyhow::bail!("code-act proxy requires Unix domain sockets")
     }
 
     pub fn with_boundary(mut self, boundary: crate::tools::WorkspaceBoundary) -> Self {
@@ -105,6 +113,7 @@ def web_fetch(url: str) -> str:
         )
     }
 
+    #[cfg(unix)]
     pub async fn serve(&self, cancel: CancellationToken) -> Result<()> {
         if self.socket_path.exists() {
             std::fs::remove_file(&self.socket_path)?;
@@ -138,11 +147,17 @@ def web_fetch(url: str) -> str:
         Ok(())
     }
 
+    #[cfg(not(unix))]
+    pub async fn serve(&self, _cancel: CancellationToken) -> Result<()> {
+        anyhow::bail!("code-act proxy requires Unix domain sockets")
+    }
+
     pub fn cleanup(&self) {
         let _ = std::fs::remove_file(&self.socket_path);
     }
 }
 
+#[cfg(unix)]
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     cwd: &Path,
@@ -239,7 +254,7 @@ fn extract_text(result: &ToolResult) -> String {
         .join("\n")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

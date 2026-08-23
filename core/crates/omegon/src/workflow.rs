@@ -246,6 +246,7 @@ pub fn apply_phase_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::fs::File;
 
     const EXAMPLE_TOML: &str = r#"

@@ -415,8 +415,8 @@ pub(crate) fn create_user_persona(
     directory.write_files_directory(
         slug.as_bytes(),
         &[
-            (b"plugin.toml", manifest.as_bytes(), 0o600),
-            (b"PERSONA.md", directive.as_bytes(), 0o600),
+            (b"plugin.toml".as_slice(), manifest.as_bytes(), 0o600),
+            (b"PERSONA.md".as_slice(), directive.as_bytes(), 0o600),
         ],
         false,
     )?;

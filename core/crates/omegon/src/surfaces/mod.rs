@@ -17,6 +17,7 @@ pub mod menu;
 pub mod model_menu;
 pub mod operations;
 pub mod palette;
+pub mod plans;
 pub mod profile;
 pub(crate) mod session;
 pub mod settings;

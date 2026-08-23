@@ -59,8 +59,7 @@ impl WorkAggregationFeature {
         }
     }
 
-    #[cfg(test)]
-    fn snapshot(&self) -> Arc<WorkSnapshot> {
+    pub(crate) fn snapshot(&self) -> Arc<WorkSnapshot> {
         Arc::clone(&self.snapshot)
     }
 }
@@ -148,6 +147,14 @@ impl WorkSource for OpenSpecWorkSource {
         for change in crate::lifecycle::spec::list_changes(&self.repo_root) {
             let change_id = WorkId::new("openspec", &change.name)?;
             let change_state = openspec_state(change.state);
+            let identity_findings = if change.has_tasks {
+                omegon_opsx::OpenSpecRepository::new(&self.repo_root)
+                    .validate_task_stable_ids(&change.name)
+                    .map(|report| report.findings)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             items.push(WorkItem {
                 id: change_id.clone(),
                 kind: WorkKind::Change,
@@ -175,24 +182,46 @@ impl WorkSource for OpenSpecWorkSource {
                     openspec: Some(json!({
                         "change_name": change.name,
                         "done_tasks": change.done_tasks,
+                        "has_tasks": change.has_tasks,
+                        "identity_findings": identity_findings,
                         "total_tasks": change.total_tasks,
                     })),
                     ..WorkFacets::default()
                 },
             });
 
-            let mut seen_task_ids = std::collections::HashSet::new();
-            for group in change.task_groups {
-                for task in group.tasks {
+            let mut used_item_ids = std::collections::HashSet::<WorkId>::new();
+            for (group_index, group) in change.task_groups.into_iter().enumerate() {
+                for (task_index, task) in group.tasks.into_iter().enumerate() {
                     let stable_id = task
                         .stable_id
                         .clone()
                         .unwrap_or_else(|| format!("openspec:{}:task:{}", change.name, task.id));
-                    let item_id =
-                        WorkId::new("openspec-task", &format!("{}:{}", change.name, stable_id))?;
-                    if !seen_task_ids.insert(item_id.clone()) {
-                        continue;
+                    let base_item_value = openspec_task_identity_value(&change.name, &stable_id);
+                    let mut item_id = WorkId::new("openspec-task", &base_item_value)?;
+                    if used_item_ids.contains(&item_id) {
+                        let collision_key = content_key(&format!(
+                            "{group_index}\0{task_index}\0{}\0{}",
+                            task.id, task.description
+                        ));
+                        let mut collision_index = 0usize;
+                        loop {
+                            let suffix = if collision_index == 0 {
+                                collision_key.clone()
+                            } else {
+                                format!("{collision_key}-{collision_index}")
+                            };
+                            item_id = WorkId::new(
+                                "openspec-task",
+                                &format!("{base_item_value}:duplicate:{suffix}"),
+                            )?;
+                            if !used_item_ids.contains(&item_id) {
+                                break;
+                            }
+                            collision_index += 1;
+                        }
                     }
+                    used_item_ids.insert(item_id.clone());
                     let (category, native_state, terminal) = child_state(
                         change_state,
                         if task.done {
@@ -231,9 +260,12 @@ impl WorkSource for OpenSpecWorkSource {
                             openspec: Some(json!({
                                 "change_name": change.name,
                                 "group": group.title,
+                                "group_index": group_index,
                                 "task_id": task.id,
+                                "task_index": task_index,
                                 "stable_id": stable_id,
                                 "stable_id_explicit": task.stable_id.is_some(),
+                                "done": task.done,
                             })),
                             ..WorkFacets::default()
                         },
@@ -402,12 +434,13 @@ impl WorkSource for DesignWorkSource {
                     target: WorkId::new("openspec", change)?,
                 });
             }
-            let relative_path = node
+            let native_relative_path = node
                 .file_path
                 .strip_prefix(&self.repo_root)
                 .unwrap_or(&node.file_path)
                 .to_string_lossy()
-                .replace('\\', "/");
+                .to_string();
+            let relative_path = native_relative_path.replace('\\', "/");
             items.push(WorkItem {
                 id: node_id.clone(),
                 kind: design_kind(node.issue_type),
@@ -433,7 +466,7 @@ impl WorkSource for DesignWorkSource {
                         "design_node_id": node.id,
                         "openspec_change": node.openspec_change,
                         "open_question_count": node.open_questions.len(),
-                        "source_path": relative_path,
+                        "source_path": native_relative_path,
                     })),
                     ..WorkFacets::default()
                 },
@@ -649,6 +682,16 @@ fn content_key(content: &str) -> String {
         .collect()
 }
 
+fn openspec_task_identity_value(change_name: &str, stable_id: &str) -> String {
+    format!(
+        "c{}:{}s{}:{}",
+        change_name.len(),
+        change_name,
+        stable_id.len(),
+        stable_id
+    )
+}
+
 fn openspec_state(state: omegon_opsx::ChangeState) -> WorkState {
     match state {
         omegon_opsx::ChangeState::Proposed => WorkState::Draft,
@@ -735,7 +778,7 @@ mod tests {
         assert!(snapshot.warnings.is_empty());
         for id in [
             "openspec:demo",
-            "openspec-task:demo:stable-done",
+            "openspec-task:c4:demos11:stable-done",
             "design:plan-node",
         ] {
             assert!(
@@ -834,7 +877,11 @@ mod tests {
         let first = WorkAggregationFeature::from_repository(repo.path())
             .await
             .snapshot();
-        let task_id = WorkId::new("openspec-task", "demo:stable-task").unwrap();
+        let task_id = WorkId::new(
+            "openspec-task",
+            &openspec_task_identity_value("demo", "stable-task"),
+        )
+        .unwrap();
         assert!(first.items.iter().any(|item| item.id == task_id));
         let question_id = first
             .items
@@ -890,6 +937,14 @@ mod tests {
     }
 
     #[test]
+    fn openspec_task_identity_is_injective_across_colon_boundaries() {
+        assert_ne!(
+            openspec_task_identity_value("a:b", "c"),
+            openspec_task_identity_value("a", "b:c")
+        );
+    }
+
+    #[test]
     fn optional_work_contribution_can_be_omitted_from_composition() {
         let mut bus = crate::bus::EventBus::new();
         bus.try_finalize().unwrap();
@@ -932,14 +987,26 @@ mod tests {
         let finished = snapshot
             .items
             .iter()
-            .find(|item| item.id.as_str() == "openspec-task:abandoned:finished")
+            .find(|item| {
+                item.id.as_str()
+                    == format!(
+                        "openspec-task:{}",
+                        openspec_task_identity_value("abandoned", "finished")
+                    )
+            })
             .unwrap();
         assert_eq!(finished.lifecycle.category, WorkState::Completed);
         assert!(finished.lifecycle.terminal);
         let unfinished = snapshot
             .items
             .iter()
-            .find(|item| item.id.as_str() == "openspec-task:abandoned:unfinished")
+            .find(|item| {
+                item.id.as_str()
+                    == format!(
+                        "openspec-task:{}",
+                        openspec_task_identity_value("abandoned", "unfinished")
+                    )
+            })
             .unwrap();
         assert_eq!(unfinished.lifecycle.category, WorkState::Cancelled);
         assert!(unfinished.lifecycle.terminal);

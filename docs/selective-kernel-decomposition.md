@@ -1033,6 +1033,9 @@ and cursors without depending on missed broadcasts.
   OpenSpec/design adapter publishes one immutable boot snapshot as the optional
   `service:work-snapshot` in-process service. Shared CLI/loop/ACP reader cutover
   remains separate, so direct compatibility scanners still exist.
+- Slice 6.1.3 derives the existing repository plan/task read model from that
+  snapshot with compatibility parity, including stable-ID diagnostics. It does
+  not yet switch production readers.
 - Convert memory, lifecycle, plans/work, behavior, context/compaction, codescan,
   and Git integration to declared in-process services.
 - Remove concrete feature imports from semantic surfaces.

@@ -47,12 +47,7 @@ pub const PLAN_LIST_VISIBLE_ITEM_LIMIT: usize = 5;
 pub const PLAN_LIST_CHANGE_LIMIT: usize = 12;
 pub const PLAN_LIST_GROUP_LIMIT: usize = 4;
 
-#[derive(Debug, Clone)]
-pub struct LifecyclePlanProjection {
-    pub entries: Vec<crate::conversation::PlanRegistryEntry>,
-    pub tasks: Vec<crate::conversation::PlanItemProjection>,
-    pub task_identity_findings: Vec<crate::lifecycle::spec::TaskStableIdFinding>,
-}
+pub use crate::surfaces::plans::LifecyclePlanProjection;
 
 pub fn lifecycle_plan_projection(repo_root: &Path) -> LifecyclePlanProjection {
     use crate::conversation::{
@@ -153,7 +148,9 @@ pub fn lifecycle_plan_projection(repo_root: &Path) -> LifecyclePlanProjection {
         }
     }
     let design_nodes = crate::lifecycle::design::scan_design_docs(&repo_root.join("docs"));
-    for node in design_nodes.values() {
+    let mut design_nodes = design_nodes.values().collect::<Vec<_>>();
+    design_nodes.sort_by(|left, right| left.id.cmp(&right.id));
+    for node in design_nodes {
         if !matches!(
             node.status,
             crate::lifecycle::types::NodeStatus::Exploring

@@ -62,6 +62,8 @@ Slice 6.1.1 publishes only the substrate needed by that lane. The additive servi
 
 Slice 6.1.2 registers the first production half of that lane. The statically linked `work-aggregation` contribution performs one boot refresh, normalizes OpenSpec and design artifacts, and publishes an immutable `WorkSnapshot` through `service:work-snapshot` / `interface:styrene-work-snapshot-v1`. It owns no task, subscription, watcher, or durable writer. Existing CLI, loop, and ACP repository-plan readers remain on their compatibility scanners until the next bounded shared-reader cutover; therefore service absence is not yet claimed as a complete plans/work extraction.
 
+Slice 6.1.3 adds the semantic conversion boundary without changing consumers. Source facets retain the OpenSpec grouping/order and structured task-identity findings needed to recreate the existing repository plan/task DTOs; duplicate stable markers remain diagnosable while normalized work identities stay unique. The shared `surfaces::plans` adapter has parity coverage against the direct scanner, so the following cutover can replace producer access without changing command or frontend shapes.
+
 ### Out-of-process contributions
 
 Native/OCI extensions, MCP, HTTP/OpenAPI, and optional remote providers/tools negotiate versioned capabilities. Unsandboxed native, script, and MCP processes are trusted host-authority code. Least authority is claimed only when verified confinement blocks direct host access and privileged effects cross kernel brokers.

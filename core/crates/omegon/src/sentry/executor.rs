@@ -915,6 +915,7 @@ async fn run_agent_task(
         },
     );
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
+    loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
 
     let bridge = crate::bootstrap::resolve_bridge_or_bail(model).await?;
     let (events_tx, mut events_rx) = crate::bootstrap::wire_event_channel(&agent, 256);

@@ -157,6 +157,7 @@ pub(crate) struct InteractiveAgentState {
     pub(crate) conversation: crate::conversation::ConversationState,
     pub(crate) inference_runtime: crate::inference_runtime::InferenceRuntimeState,
     pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+    pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
 }
 
 pub(crate) struct InteractiveAgentHost {
@@ -213,6 +214,7 @@ fn split_interactive_agent(
         conversation: agent.conversation,
         inference_runtime: agent.inference_runtime,
         work_snapshot: agent.work_snapshot,
+        behavior_policy: agent.behavior_policy,
     };
     (host, state)
 }
@@ -301,6 +303,7 @@ async fn run_interactive_active_turn(
     loop_config.cancel_keeps_prompt = Some(cancel_keeps_prompt.clone());
     loop_config.compatibility.drain_late_requests = false;
     loop_config.compatibility.work_snapshot = runtime_state.work_snapshot.clone();
+    loop_config.compatibility.behavior_policy = runtime_state.behavior_policy.clone();
 
     if active.prompt.image_paths.is_empty() {
         runtime_state

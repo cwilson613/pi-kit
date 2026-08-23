@@ -57,6 +57,8 @@ pub struct AgentSetup {
     pub bus: EventBus,
     /// Immutable repository-work service captured from the accepted boot generation.
     pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+    /// Stateless behavior policy captured with its accepted service identity.
+    pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
     /// Stable session id for the current live conversation. Fresh sessions
     /// get a generated id at startup; resumed sessions reuse their saved id.
     pub session_id: String,
@@ -785,6 +787,12 @@ impl AgentSetup {
         // Publish one immutable repository-work snapshot with the same atomic
         // composition boundary as the other statically linked contributions.
         register_work_aggregation(&mut bus, &project_root).await;
+        bus.register(Box::new(
+            features::behavior_policy::BehaviorPolicyHostFeature,
+        ));
+        bus.register(Box::new(
+            features::behavior_policy::BehaviorPolicyFeature::default(),
+        ));
 
         // ─── Sandbox setting (read once, shared by cleave + delegate) ──
         let sandbox = settings
@@ -1144,6 +1152,7 @@ impl AgentSetup {
         drop(plugin_admissions);
         drop(extension_admission);
         let work_snapshot = features::work_aggregation::capture_work_snapshot(&bus)?;
+        let behavior_policy = features::behavior_policy::capture_behavior_policy(&bus)?;
         if let Some(snapshot) = work_snapshot.as_ref() {
             work_snapshot_slot
                 .set(std::sync::Arc::clone(snapshot))
@@ -1591,6 +1600,7 @@ impl AgentSetup {
         Ok(Self {
             bus,
             work_snapshot,
+            behavior_policy,
             session_id,
             session_view_binding,
             instance_id,

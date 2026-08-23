@@ -2105,6 +2105,7 @@ struct DefaultSession {
     context_manager: context::ContextManager,
     conversation: conversation::ConversationState,
     work_snapshot: Option<Arc<styrene_work_runtime::WorkSnapshot>>,
+    behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
 }
 
 /// Type alias for the shared session state. `None` means a turn is in progress.
@@ -2316,6 +2317,7 @@ async fn run_daemon_turn(
             }
         };
         config.compatibility.work_snapshot = state.work_snapshot.clone();
+        config.compatibility.behavior_policy = state.behavior_policy.clone();
 
         state.conversation.push_user(active.prompt.text);
 
@@ -2864,6 +2866,7 @@ async fn run_embedded_command(
             context_manager: agent.context_manager,
             conversation: agent.conversation,
             work_snapshot: agent.work_snapshot,
+            behavior_policy: agent.behavior_policy,
         }))),
         supervisor: Arc::new(tokio::sync::Mutex::new(
             InteractiveRuntimeSupervisor::with_authority(daemon_authority)?,
@@ -7646,6 +7649,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
         },
     );
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
+    loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
 
     let resolved_provider = providers::resolve_execution_provider(&cli.model).await;
     tracing::info!(
@@ -9594,6 +9598,7 @@ async fn run_bounded_task(
     loop_config.compatibility.invocation_scope.turn_id = invocation_turn_id;
     loop_config.compatibility.invocation_scope.authority = invocation_authority;
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
+    loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
 
     let bridge =
         match bootstrap::resolve_bridge_or_bail_with_secrets(model, Some(agent.secrets.as_ref()))
@@ -10091,6 +10096,7 @@ mod tests {
         setup::AgentSetup {
             bus: crate::bus::EventBus::new(),
             work_snapshot: None,
+            behavior_policy: None,
             session_id: "test-session".into(),
             session_view_binding: crate::session_consumers::SessionViewBinding::new(
                 cwd.join("test-session.json"),
@@ -10156,6 +10162,7 @@ mod tests {
             conversation: setup.conversation,
             inference_runtime: setup.inference_runtime,
             work_snapshot: setup.work_snapshot,
+            behavior_policy: setup.behavior_policy,
         }));
         let retained = state.clone();
 
@@ -10555,6 +10562,7 @@ mod tests {
             conversation: setup.conversation,
             inference_runtime: setup.inference_runtime,
             work_snapshot: setup.work_snapshot,
+            behavior_policy: setup.behavior_policy,
         }));
         let _guard = state.lock().await;
 
@@ -12120,6 +12128,7 @@ mod tests {
                 std::path::Path::new("."),
             ),
             work_snapshot: None,
+            behavior_policy: None,
         };
         runtime_state
             .conversation
@@ -12173,6 +12182,7 @@ mod tests {
                 .await
                 .snapshot(),
             ),
+            behavior_policy: None,
         };
         runtime_state
             .conversation

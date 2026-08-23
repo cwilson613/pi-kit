@@ -24,6 +24,7 @@ pub(crate) struct LoopCompatibilityBindings {
     pub(crate) route_step_id: uuid::Uuid,
     pub(crate) drain_late_requests: bool,
     pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+    pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
 }
 
 impl Default for LoopCompatibilityBindings {
@@ -38,6 +39,7 @@ impl Default for LoopCompatibilityBindings {
             route_step_id: uuid::Uuid::new_v4(),
             drain_late_requests: true,
             work_snapshot: None,
+            behavior_policy: None,
         }
     }
 }
@@ -1543,6 +1545,7 @@ impl<'a> LoopDriverTurn<'a> {
                 projection: conversation,
                 policy: crate::loop_session::LoopSessionCompatibilityAdapter::new(
                     config.compatibility.work_snapshot.clone(),
+                    config.compatibility.behavior_policy.clone(),
                 ),
                 advisory_events: events,
                 cancellation,

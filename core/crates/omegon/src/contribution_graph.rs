@@ -396,7 +396,19 @@ pub(crate) fn build_candidate_graph(mut request: CandidateGraphRequest) -> Candi
                         "required contribution dependency is unavailable".into(),
                     ));
                 }
-                None => {}
+                None => diagnostics.push(RuntimeContributionDiagnostic {
+                    code: RuntimeDiagnosticCode::new("graph:optional_dependency_unavailable")
+                        .expect("graph diagnostic code is valid"),
+                    severity: RuntimeDiagnosticSeverity::Warning,
+                    subject: RuntimeDiagnosticSubject {
+                        contribution_id: Some(declaration.id.clone()),
+                        capability_id: dependency_capability(&dependency.target),
+                        invocation: None,
+                    },
+                    related_contributions: dependency_contributions(&dependency.target),
+                    related_capabilities: dependency_capabilities(&dependency.target),
+                    message: "optional contribution dependency is unavailable".into(),
+                }),
             }
         }
     }
@@ -518,7 +530,10 @@ pub(crate) fn build_candidate_graph(mut request: CandidateGraphRequest) -> Candi
 
     diagnostics.sort_by_key(RuntimeContributionDiagnostic::stable_order_key);
     diagnostics.dedup();
-    if !diagnostics.is_empty() {
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == RuntimeDiagnosticSeverity::Error)
+    {
         return CandidateGraphBuild {
             graph: None,
             diagnostics,
@@ -873,6 +888,59 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 2]
         );
+    }
+
+    #[test]
+    fn optional_dependency_warning_preserves_graph_and_errors_still_reject() {
+        let mut optional = contribution("optional-consumer", "optional-tool");
+        let missing_capability = RuntimeCapabilityId::new("service:missing").unwrap();
+        optional.dependencies.push(RuntimeContributionDependency {
+            target: RuntimeDependencyTarget::Capability {
+                id: missing_capability.clone(),
+            },
+            requirement: RuntimeDependencyRequirement::Optional,
+        });
+
+        let accepted = build(vec![optional.clone()]);
+        assert!(accepted.graph.is_some());
+        assert_eq!(accepted.diagnostics.len(), 1);
+        let warning = &accepted.diagnostics[0];
+        assert_eq!(
+            warning.code.as_str(),
+            "graph:optional_dependency_unavailable"
+        );
+        assert_eq!(warning.severity, RuntimeDiagnosticSeverity::Warning);
+        assert_eq!(
+            warning
+                .subject
+                .contribution_id
+                .as_ref()
+                .map(|id| id.as_str()),
+            Some("feature:optional-consumer")
+        );
+        assert_eq!(
+            warning.subject.capability_id.as_ref(),
+            Some(&missing_capability)
+        );
+        assert_eq!(
+            warning.related_capabilities,
+            vec![missing_capability.clone()]
+        );
+        assert_eq!(
+            warning.message,
+            "optional contribution dependency is unavailable"
+        );
+
+        optional.dependencies.push(RuntimeContributionDependency {
+            target: RuntimeDependencyTarget::Contribution {
+                id: RuntimeContributionId::new("feature:required-missing").unwrap(),
+            },
+            requirement: RuntimeDependencyRequirement::Required,
+        });
+        let rejected = build(vec![optional]);
+        assert!(rejected.graph.is_none());
+        assert!(codes(&rejected).contains("graph:optional_dependency_unavailable"));
+        assert!(codes(&rejected).contains("graph:missing_dependency"));
     }
 
     #[test]

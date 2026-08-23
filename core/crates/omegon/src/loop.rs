@@ -99,15 +99,22 @@ use crate::behavior::{self, BehavioralTier, ControllerState};
 // aliases used by the main loop body.
 // auto-delegation disabled — import retained for the test that verifies it returns None
 use behavior::ToolCapabilityCatalog;
+#[cfg(test)]
 use behavior::assess_evidence;
 use behavior::behavioral_tier;
 #[cfg(test)]
 use behavior::classify_auto_delegate_plan;
+#[cfg(test)]
 use behavior::classify_drift_kind;
+#[cfg(test)]
 use behavior::classify_progress_signal;
+#[cfg(test)]
 use behavior::classify_turn_phase;
+#[cfg(test)]
 use behavior::continuation_pressure_message;
+#[cfg(test)]
 use behavior::continuation_pressure_tier;
+#[cfg(test)]
 use behavior::is_first_turn_orientation_churn;
 #[cfg(test)]
 use behavior::is_mutation_tool_name;
@@ -116,11 +123,14 @@ use behavior::is_repo_inspection_tool;
 #[cfg(test)]
 use behavior::is_validation_tool_name;
 use behavior::progress_nudge_reason_for_drift;
+#[cfg(test)]
 use behavior::should_inject_execution_pressure;
 
+#[cfg(test)]
 use behavior::evidence_sufficiency_message;
 use behavior::has_local_target_hypothesis;
 use behavior::is_slim_execution_bias;
+#[cfg(test)]
 use behavior::om_local_first_message;
 
 // Anchor: is_narrow_patch_candidate was here. Now using behavior::*.
@@ -144,6 +154,7 @@ pub(crate) async fn run_release_coupled(
     let invocation_scope = &session.invocation_scope;
     let route_step_id = session.route_step_id;
     let semantic_facts = session.semantic_facts;
+    let behavior_policy = config.compatibility.behavior_policy.as_ref();
     // tool_defs is refreshed each turn so manage_tools enable/disable takes effect
     // immediately in the schema sent to the LLM (not just in execution routing).
 
@@ -173,12 +184,10 @@ pub(crate) async fn run_release_coupled(
     let last_user_prompt = conversation.last_user_prompt().to_string();
     if let Some(mode) = crate::behavior::explicit_task_mode_from_prompt(&last_user_prompt) {
         conversation.intent.pin_task_mode(mode);
-    } else {
+    } else if let Some(policy) = behavior_policy {
         conversation
             .intent
-            .observe_task_mode(crate::behavior::infer_task_mode_from_prompt(
-                &last_user_prompt,
-            ));
+            .observe_task_mode(policy.service.infer_unpinned_task_mode(&last_user_prompt));
     }
     // Active model for this turn — updated each iteration from settings.
     // Used in TurnEnd events and error classification instead of the
@@ -996,30 +1005,49 @@ pub(crate) async fn run_release_coupled(
             final_response_turn_due = true;
         }
 
-        let dominant_phase = classify_turn_phase(&tool_catalog, &dispatch_calls, &results);
-        let drift_kind =
-            classify_drift_kind(&tool_catalog, turn, conversation, &dispatch_calls, &results);
+        let observations = crate::observation::ObservationNormalizer::new(&tool_catalog)
+            .normalize(&dispatch_calls, &results);
         let constraints_after = conversation.intent.constraints_discovered.len();
-        let progress_signal = classify_progress_signal(
-            constraints_after.saturating_sub(ambient_constraint_captures),
-            constraints_after,
-            &tool_catalog,
-            &dispatch_calls,
-            &results,
-        );
-        let evidence = assess_evidence(conversation, &tool_catalog, &dispatch_calls, &results);
-        controller.observe_turn(
-            TurnEndReason::ToolContinuation,
-            drift_kind,
-            progress_signal,
-            evidence,
-            behavior::is_substantive_interleaved_prose(&assistant_msg.text),
-        );
-        let no_progress_action = no_progress_terminal_action(
-            controller.no_progress_continuation_streak,
-            final_response_turn_due,
-            forced_synthesis_attempted,
-        );
+        let turn_assessment = behavior_policy.map(|binding| {
+            binding
+                .service
+                .assess_turn(&behavior::BehaviorTurnInput::from_host(
+                    turn,
+                    constraints_after.saturating_sub(ambient_constraint_captures),
+                    constraints_after,
+                    conversation,
+                    &tool_catalog,
+                    &dispatch_calls,
+                    &results,
+                    &observations,
+                ))
+        });
+        let dominant_phase = turn_assessment.and_then(|assessment| assessment.dominant_phase);
+        let drift_kind = turn_assessment.and_then(|assessment| assessment.drift_kind);
+        let progress_signal = turn_assessment
+            .map(|assessment| assessment.progress_signal)
+            .unwrap_or(omegon_traits::ProgressSignal::None);
+        if let (Some(binding), Some(assessment)) = (behavior_policy, turn_assessment) {
+            controller.observe_turn(
+                TurnEndReason::ToolContinuation,
+                assessment.drift_kind,
+                assessment.progress_signal,
+                assessment.evidence,
+                binding
+                    .service
+                    .assess_text(&assistant_msg.text)
+                    .substantive_interleaved_prose,
+            );
+        }
+        let no_progress_action = if behavior_policy.is_some() {
+            no_progress_terminal_action(
+                controller.no_progress_continuation_streak,
+                final_response_turn_due,
+                forced_synthesis_attempted,
+            )
+        } else {
+            NoProgressTerminalAction::Continue
+        };
         let no_progress_stop = no_progress_action == NoProgressTerminalAction::ForceSynthesis;
         if no_progress_stop {
             tracing::warn!(
@@ -1030,14 +1058,21 @@ pub(crate) async fn run_release_coupled(
             final_response_turn_due = true;
         }
         let behavior = behavioral_tier(config);
-        let continuation_tier = continuation_pressure_tier(
-            config,
-            &controller,
-            conversation,
-            &dispatch_calls,
-            dominant_phase,
-            behavior,
-        );
+        let pressure = behavior_policy.map(|binding| {
+            binding
+                .service
+                .assess_pressure(&behavior::BehaviorPressureInput::from_host(
+                    turn,
+                    config,
+                    conversation,
+                    &tool_catalog,
+                    &dispatch_calls,
+                    &results,
+                    dominant_phase,
+                    &controller,
+                ))
+        });
+        let continuation_tier = pressure.and_then(|assessment| assessment.continuation_tier);
 
         // Nudge injection macro — push message + emit audit event.
         macro_rules! inject_nudge {
@@ -1064,23 +1099,13 @@ pub(crate) async fn run_release_coupled(
         {
             inject_nudge!("realtime_plan_progress", message);
         } else if !completion_outcome.reconciled
-            && is_first_turn_orientation_churn(
-                turn,
-                config,
-                conversation,
-                &tool_catalog,
-                &dispatch_calls,
-            )
+            && pressure.is_some_and(|assessment| assessment.first_turn_orientation_churn)
         {
             tracing::info!("First-turn orientation churn — injecting execution-bias nudge");
-            let msg = match behavior {
-                BehavioralTier::Constrained => {
-                    "[System: Read the relevant file or answer the user. Do not use broad orientation tools.]"
-                }
-                BehavioralTier::Standard => {
-                    "[System: Focus on the user's request. Read the most relevant file, then answer them in chat.]"
-                }
-            };
+            let msg = behavior_policy
+                .expect("policy assessment requires a binding")
+                .service
+                .message(behavior::BehaviorMessageKind::FirstTurn(behavior));
             inject_nudge!("first_turn_execution_bias", msg);
         } else if is_slim_execution_bias(config)
             && controller.local_evidence_sufficient_streak > 0
@@ -1088,30 +1113,28 @@ pub(crate) async fn run_release_coupled(
             && continuation_tier.is_some()
         {
             tracing::info!("OM local-first lock — injecting patch-or-prove nudge");
-            inject_nudge!("om_local_first_lock", om_local_first_message(behavior));
+            inject_nudge!(
+                "om_local_first_lock",
+                behavior_policy
+                    .expect("continuation pressure requires a binding")
+                    .service
+                    .message(behavior::BehaviorMessageKind::LocalFirst(behavior))
+            );
         } else if controller.evidence_sufficient_streak > 0 && continuation_tier.is_some() {
             tracing::info!("Actionability threshold — injecting forced-convergence nudge");
             inject_nudge!(
                 "evidence_sufficiency",
-                evidence_sufficiency_message(behavior)
+                behavior_policy
+                    .expect("continuation pressure requires a binding")
+                    .service
+                    .message(behavior::BehaviorMessageKind::Evidence(behavior))
             );
-        } else if should_inject_execution_pressure(
-            turn,
-            config,
-            conversation,
-            &tool_catalog,
-            &dispatch_calls,
-            behavior,
-        ) {
+        } else if pressure.is_some_and(|assessment| assessment.execution_pressure) {
             tracing::info!("Execution stall — injecting execution-pressure nudge");
-            let msg = match behavior {
-                BehavioralTier::Constrained => {
-                    "[System: You have enough context. Answer the user now.]"
-                }
-                BehavioralTier::Standard => {
-                    "[System: You have enough context. Answer the user, or explain what's blocking you. Do not invent file-writing work the user didn't ask for.]"
-                }
-            };
+            let msg = behavior_policy
+                .expect("policy assessment requires a binding")
+                .service
+                .message(behavior::BehaviorMessageKind::ExecutionPressure(behavior));
             inject_nudge!("execution_pressure", msg);
         } else if let Some(tier) = continuation_tier {
             tracing::info!(
@@ -1120,7 +1143,10 @@ pub(crate) async fn run_release_coupled(
             );
             inject_nudge!(
                 format!("continuation_pressure_tier_{tier}"),
-                continuation_pressure_message(tier, behavior)
+                behavior_policy
+                    .expect("continuation pressure requires a binding")
+                    .service
+                    .message(behavior::BehaviorMessageKind::Continuation { tier, behavior })
             );
         }
 
@@ -1149,8 +1175,6 @@ pub(crate) async fn run_release_coupled(
 
         context_contract.record_activity(&dispatch_calls);
 
-        let observations = crate::observation::ObservationNormalizer::new(&tool_catalog)
-            .normalize(&dispatch_calls, &results);
         session_policy.record_tool_outcomes(
             &tool_catalog,
             &dispatch_calls,

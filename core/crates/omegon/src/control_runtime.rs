@@ -6309,6 +6309,7 @@ mod context_compaction_tests {
                 std::path::Path::new("."),
             ),
             work_snapshot: None,
+            behavior_policy: None,
         }
     }
 
@@ -6407,6 +6408,7 @@ mod context_compaction_tests {
                 std::path::Path::new("."),
             ),
             work_snapshot: None,
+            behavior_policy: None,
         };
         let mut agent = test_agent();
         let settings = crate::settings::shared("test:model");

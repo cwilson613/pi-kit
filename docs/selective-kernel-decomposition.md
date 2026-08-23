@@ -603,7 +603,8 @@ normalization, operator-correction recovery, durable intent, controller and
 recovery counters, tool execution, events, and nudge insertion remain host-owned.
 Normal composition preserves canonical parity fixtures BP01-BP09 from the
 source design, pinned to the direct implementation at commit `9c3a9860`, and
-task 6.1.5 must materialize literal shared vectors before removing direct calls.
+task 6.1.5 materializes literal service vectors while compatibility tests retain
+the direct baseline.
 During absence, hosts preserve intent,
 hold policy counters, and omit only behavior-policy-derived pressure and meta
 retries; operator-correction recovery, completion reconciliation, plan

@@ -1079,17 +1079,19 @@ pub(crate) struct LoopSessionCompatibilityAdapter {
     meta_recovery_nudges: u8,
     dead_mouse_nudge_injected: bool,
     work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+    behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
 }
 
 impl Default for LoopSessionCompatibilityAdapter {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, None)
     }
 }
 
 impl LoopSessionCompatibilityAdapter {
     pub(crate) fn new(
         work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+        behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
     ) -> Self {
         Self {
             stuck_detector: StuckDetector::new(),
@@ -1097,6 +1099,7 @@ impl LoopSessionCompatibilityAdapter {
             meta_recovery_nudges: 0,
             dead_mouse_nudge_injected: false,
             work_snapshot,
+            behavior_policy,
         }
     }
 }
@@ -1133,7 +1136,11 @@ impl LoopSessionPolicyContract for LoopSessionCompatibilityAdapter {
     }
 
     fn meta_recovery(&mut self, assistant_text: &str, turn: u32, max_turns: u32) -> Option<String> {
-        if !crate::behavior::is_pathological_meta_response(assistant_text)
+        let policy = self.behavior_policy.as_ref()?;
+        if !policy
+            .service
+            .assess_text(assistant_text)
+            .pathological_meta_response
             || turn >= max_turns
             || self.meta_recovery_nudges >= 2
         {
@@ -1144,7 +1151,11 @@ impl LoopSessionPolicyContract for LoopSessionCompatibilityAdapter {
             nudges = self.meta_recovery_nudges,
             "Pathological meta response — forcing concrete recovery retry"
         );
-        Some(crate::behavior::meta_recovery_retry_message())
+        Some(
+            policy
+                .service
+                .message(crate::behavior::BehaviorMessageKind::MetaRetry),
+        )
     }
 
     fn text_only_recovery(
@@ -2167,6 +2178,18 @@ mod tests {
         PlanBinding, PlanMode, PlanScope, PlanSource, VisiblePlanState, WorkItem, WorkItemStatus,
     };
     use crate::loop_driver::LoopResponseFactContract;
+
+    fn behavior_policy_binding() -> crate::behavior::BehaviorPolicyBinding {
+        crate::behavior::BehaviorPolicyBinding {
+            capability_id: crate::features::behavior_policy::behavior_policy_capability_id(),
+            owner: omegon_traits::RuntimeContributionId::new("feature:behavior-policy").unwrap(),
+            generation_id: omegon_traits::RuntimeContributionGenerationId::new(
+                "behavior-policy:v1",
+            )
+            .unwrap(),
+            service: std::sync::Arc::new(crate::behavior::DefaultBehaviorPolicy),
+        }
+    }
 
     fn authority_scope() -> (
         tempfile::TempDir,
@@ -3288,7 +3311,8 @@ mod tests {
 
     #[test]
     fn meta_recovery_is_bounded_and_preserves_guidance() {
-        let mut adapter = LoopSessionCompatibilityAdapter::default();
+        let mut adapter =
+            LoopSessionCompatibilityAdapter::new(None, Some(behavior_policy_binding()));
         let response = "I'm wasting time and should stop exploring.";
         assert!(crate::behavior::is_pathological_meta_response(response));
 
@@ -3300,6 +3324,15 @@ mod tests {
         }
         assert_eq!(adapter.meta_recovery(response, 1, 50), None);
         assert_eq!(adapter.meta_recovery(response, 50, 50), None);
+    }
+
+    #[test]
+    fn absent_behavior_policy_holds_meta_recovery_state() {
+        let mut adapter = LoopSessionCompatibilityAdapter::new(None, None);
+        let response = "I'm wasting time and should stop exploring.";
+
+        assert_eq!(adapter.meta_recovery(response, 1, 50), None);
+        assert_eq!(adapter.meta_recovery_nudges, 0);
     }
 
     #[test]

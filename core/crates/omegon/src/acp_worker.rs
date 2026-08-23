@@ -514,6 +514,7 @@ async fn worker_loop(
     }
     let mut bus = agent_setup.bus;
     let work_snapshot = agent_setup.work_snapshot;
+    let behavior_policy = agent_setup.behavior_policy;
     let mut context_manager = agent_setup.context_manager;
     let mut conversation = agent_setup.conversation;
     let secrets = agent_setup.secrets;
@@ -861,6 +862,7 @@ async fn worker_loop(
                         },
                         drain_late_requests: false,
                         work_snapshot: work_snapshot.clone(),
+                        behavior_policy: behavior_policy.clone(),
                         ..Default::default()
                     },
                     cancel_keeps_prompt: None,

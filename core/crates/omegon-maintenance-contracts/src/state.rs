@@ -1,7 +1,8 @@
+use std::{fs::File, io::Read, path::Path};
+
+#[cfg(unix)]
 use std::{
-    fs::File,
-    io::{Read, Write},
-    path::Path,
+    io::Write,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -1132,6 +1133,13 @@ pub fn file_identity(_file: &File) -> Result<FileIdentityV1> {
     ))
 }
 
+#[cfg(not(unix))]
+fn file_identity_from_metadata(_metadata: &std::fs::Metadata) -> Result<FileIdentityV1> {
+    Err(ContractError::InvalidValue(
+        "maintenance protocol v1 identity supports Unix only".into(),
+    ))
+}
+
 #[cfg(unix)]
 pub fn path_identity(file: &File) -> Result<PathIdentityV1> {
     use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
@@ -1275,6 +1283,19 @@ fn write_record_at(
         return Err(ContractError::Filesystem(error));
     }
     parent.sync_all().map_err(ContractError::Filesystem)
+}
+
+#[cfg(not(unix))]
+fn write_record_at(
+    _parent: &File,
+    _name: &[u8],
+    _bytes: &[u8],
+    _temporary_tag: &str,
+    _replace: bool,
+) -> Result<()> {
+    Err(ContractError::InvalidValue(
+        "maintenance protocol v1 state supports Unix only".into(),
+    ))
 }
 
 #[cfg(target_os = "linux")]

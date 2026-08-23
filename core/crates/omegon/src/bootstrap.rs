@@ -251,22 +251,23 @@ pub fn build_loop_config(
         retry_delay_ms: 750,
         model,
         bridge_model: overrides.bridge_model,
-        route_controller: overrides.route_controller,
         cwd: cwd.to_path_buf(),
         extended_context: false,
         settings: Some(shared_settings.clone()),
-        secrets: overrides.secrets,
         force_compact: overrides.force_compact,
         allow_commit_nudge: overrides.allow_commit_nudge,
         enforce_first_turn_execution_bias: overrides.enforce_first_turn_execution_bias,
-        ollama_manager: overrides.ollama_manager,
         skill_phases: Vec::new(), // populated by caller after skill loading
-        host_context: None,
-        permission_policy: None,
-        permission_role: None,
-        invocation_scope: crate::invocation_service::InvocationScope::default(),
+        compatibility: crate::loop_driver::LoopCompatibilityBindings {
+            route_setup: crate::provider_route_service::loop_route_setup(
+                overrides.route_controller,
+                overrides.ollama_manager,
+            ),
+            secrets: overrides.secrets,
+            drain_late_requests: false,
+            ..Default::default()
+        },
         cancel_keeps_prompt: None,
-        drain_post_loop_requests: false,
     }
 }
 

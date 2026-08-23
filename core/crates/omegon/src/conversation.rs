@@ -1257,6 +1257,15 @@ impl ConversationState {
         self.invalidate_token_cache();
     }
 
+    pub(crate) fn operator_tool_observations(
+        &self,
+    ) -> impl Iterator<Item = &OperatorToolObservation> {
+        self.canonical.iter().filter_map(|message| match message {
+            AgentMessage::OperatorToolObservation(observation, _) => Some(observation),
+            _ => None,
+        })
+    }
+
     /// Remove the most recent user message when it matches the active prompt.
     ///
     /// This is used when an upstream provider rejects a turn before producing any

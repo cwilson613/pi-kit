@@ -439,7 +439,7 @@ impl BridgeFactory {
     ) -> anyhow::Result<&dyn LlmBridge> {
         let key = format!("{provider_id}:{model_id}");
         if !self.cache.contains_key(&key) {
-            let bridge = crate::providers::resolve_provider(provider_id)
+            let bridge = crate::providers::auto_detect_bridge(&key)
                 .await
                 .ok_or_else(|| anyhow::anyhow!("No bridge for provider '{provider_id}'"))?;
             self.cache.insert(key.clone(), bridge);

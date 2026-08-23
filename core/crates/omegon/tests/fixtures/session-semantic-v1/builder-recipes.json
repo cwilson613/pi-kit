@@ -1,0 +1,18 @@
+{
+  "recipe_version": 1,
+  "vectors": [
+    {"name":"text-response","events":["step.started","model.request_prepared","route.lease_recorded","model.request_route_joined","assistant.content_appended","assistant.message_committed","model.request_closed","step.closed","turn.closed"],"expected":"exact_default_content"},
+    {"name":"denied-tool-result","events":["assistant.message_committed","tool.call_recorded","tool.result.recorded"],"disposition":"denied","expected":"no_invocation_linkage"},
+    {"name":"unknown-linkage","events":["tool.call_recorded","invocation.prepared","invocation.dispatched","invocation.classified_unknown","tool.result.recorded"],"disposition":"unknown_completion","expected":"exact_invocation_and_lease_linkage"},
+    {"name":"two-request-repair","events":["model.request_prepared","model.request_closed","model.request_prepared","route.lease_recorded","model.request_route_joined"],"expected":"same_step_contiguous_request_ordinals"},
+    {"name":"zero-content-retry-attempt","events":["model.response_attempt_failed","assistant.message_committed","tool.call_recorded"],"expected":"contiguous_attempt_one_tool_commit"},
+    {"name":"request-step-turn-crash-prefixes","prefixes":["open_request","closed_request","abandoned_step","closed_turn"],"expected":"no_synthesized_read_only_facts"},
+    {"name":"missing-blob","mutation":"remove_referenced_blob","expected_failure":"session_blob_io"},
+    {"name":"tampered-blob","mutation":"replace_referenced_blob_bytes","expected_failure":"session_blob_invalid"},
+    {"name":"default-vs-restricted-blob","mutation":"read_restricted_as_default_then_with_exact_request_serving_authorization","expected":"default_denied_restricted_allowed"},
+    {"name":"turn-compaction-success","events":["compaction.started","route.lease_recorded","compaction.request_prepared","compaction.summary_committed","compaction.request_closed","compaction.applied"],"expected":"turn_step_owner_unchanged_route_lease_exactly_once_apply"},
+    {"name":"idle-compaction-success","events":["compaction.started","compaction.request_prepared","compaction.summary_committed","compaction.request_closed","compaction.applied"],"expected":"session_idle_owner_inline_route_no_turn_identity"},
+    {"name":"compaction-committed-recovery","prefixes":["summary_committed","request_closed","applied"],"expected":"deterministic_close_then_apply_no_provider_retry"},
+    {"name":"compaction-open-recovery","prefixes":["started","request_prepared","response_attempt_failed"],"expected":"close_abandoned_then_compaction_abandoned_before_step_recovery"}
+  ]
+}

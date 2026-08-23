@@ -77,6 +77,7 @@ mod inference_inventory;
 mod inference_manifest;
 mod inference_runtime;
 mod installed_release;
+mod invocation_batch;
 mod invocation_service;
 mod ipc;
 #[cfg(feature = "local-embeddings")]
@@ -125,6 +126,11 @@ mod extension_registry;
 mod github_copilot;
 mod lifecycle;
 mod r#loop;
+mod loop_context;
+mod loop_driver;
+mod loop_lifecycle;
+mod loop_permission;
+mod loop_session;
 mod managed_agent_supervisor;
 mod model_catalog;
 mod model_preferences;
@@ -142,6 +148,8 @@ mod plugins;
 mod project_rules;
 mod prompt;
 mod prompts;
+mod provider_contributions;
+mod provider_route_service;
 mod providers;
 mod route;
 pub mod routing;
@@ -149,8 +157,23 @@ mod secret_cli;
 mod semantic_route;
 mod sentry;
 mod session;
+mod session_advisory;
 mod session_authority;
+mod session_blob_store;
+mod session_compaction;
+mod session_consumers;
+mod session_current_context;
+mod session_execution;
+mod session_host_storage;
+mod session_projection_cursor;
+mod session_projection_model;
+mod session_projection_reader;
+#[cfg(test)]
+mod session_recovery_campaign;
+mod session_replacement;
+mod session_replay;
 mod session_router;
+mod session_shadow_projection;
 pub mod settings;
 mod setup;
 mod smoke_surface;
@@ -2072,7 +2095,7 @@ struct EmbeddedStartupEvent {
 /// delegate, and all features. Web API prompts and vox events route here.
 ///
 /// Wrapped in `Option` so spawned turns can `.take()` ownership for the
-/// duration of `r#loop::run()`, releasing the Mutex while the turn executes.
+/// duration of the release-coupled loop driver, releasing the Mutex while the turn executes.
 struct DefaultSession {
     bus: bus::EventBus,
     context_manager: context::ContextManager,
@@ -2087,6 +2110,86 @@ struct DefaultSessionRuntime {
     state: SharedSession,
     supervisor: Arc<tokio::sync::Mutex<InteractiveRuntimeSupervisor>>,
     active_cancel: operator_commands::SharedCancel,
+    session_id: Arc<std::sync::Mutex<String>>,
+    resume_info: Arc<std::sync::Mutex<Option<setup::ResumeInfo>>>,
+    cwd: PathBuf,
+    workspace_identity: String,
+    composition_generation_id: String,
+}
+
+async fn replace_daemon_session(
+    runtime: &DefaultSessionRuntime,
+    request: operator_commands::InterfaceControlRequest,
+) -> omegon_traits::ControlOutputResponse {
+    let replacement = match request {
+        operator_commands::InterfaceControlRequest::ContextClear => {
+            session_replacement::fresh_request(
+                session_replacement::SessionReplacementKind::ContextClear,
+                &runtime.cwd,
+            )
+        }
+        operator_commands::InterfaceControlRequest::NewSession => {
+            session_replacement::fresh_request(
+                session_replacement::SessionReplacementKind::New,
+                &runtime.cwd,
+            )
+        }
+        operator_commands::InterfaceControlRequest::ResumeSession { id } => {
+            match session::find_session(&runtime.cwd, Some(&id)) {
+                Some(path) => session_replacement::resume_request(&runtime.cwd, &path),
+                None => Err(session_replacement::SessionReplacementError::Target(
+                    format!("no saved session matches `{id}`"),
+                )),
+            }
+        }
+        _ => unreachable!("daemon replacement dispatcher called for another request"),
+    };
+    let mut supervisor = runtime.supervisor.lock().await;
+    let mut state = runtime.state.lock().await;
+    let Some(state) = state.as_mut() else {
+        return omegon_traits::ControlOutputResponse {
+            accepted: false,
+            output: Some("Session was not replaced: an executing worker owns the host".into()),
+        };
+    };
+    let mut session_id = runtime
+        .session_id
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut resume_info = runtime
+        .resume_info
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match replacement.and_then(|request| {
+        session_replacement::replace(
+            session_replacement::HostSessionPublication {
+                supervisor: &mut supervisor,
+                conversation: &mut state.conversation,
+                displayed_session_id: &mut session_id,
+                resume_info: &mut resume_info,
+            },
+            request,
+            session_replacement::SessionReplacementEnvironment {
+                cwd: &runtime.cwd,
+                persist_current: true,
+                workspace_identity: &runtime.workspace_identity,
+                runtime_generation_id: &runtime.composition_generation_id,
+                actor: session_authority::ActorIdentity {
+                    principal: "daemon-host".into(),
+                    ingress: "daemon".into(),
+                },
+            },
+        )
+    }) {
+        Ok(outcome) => omegon_traits::ControlOutputResponse {
+            accepted: true,
+            output: Some(format!("Active session is now {}", outcome.session_id)),
+        },
+        Err(error) => omegon_traits::ControlOutputResponse {
+            accepted: false,
+            output: Some(format!("Session was not replaced: {error}")),
+        },
+    }
 }
 
 /// Run a daemon turn with the take/replace pattern. Acquires the session
@@ -2120,14 +2223,22 @@ async fn run_daemon_turn(
     let mut first_error = None;
 
     loop {
-        let (active, active_identity, invocation_authority) = {
+        let (active, active_identity, invocation_authority, execution_capture) = {
             let mut supervisor = runtime.supervisor.lock().await;
             match supervisor.start_next_turn()? {
                 Some(active) => {
                     let identity = supervisor
                         .current_identity()
                         .expect("promoted daemon turn has identity");
-                    (active, identity, supervisor.invocation_authority())
+                    let execution_capture = supervisor
+                        .active_execution_capture()
+                        .expect("promoted daemon turn has an execution capture");
+                    (
+                        active,
+                        identity,
+                        supervisor.invocation_authority(),
+                        execution_capture,
+                    )
                 }
                 None => {
                     return match first_error {
@@ -2137,12 +2248,13 @@ async fn run_daemon_turn(
                 }
             }
         };
-        config.invocation_scope.principal = active.prompt.submitted_by.display_label().to_string();
-        config.invocation_scope.session_id = invocation_authority
+        config.compatibility.invocation_scope.principal =
+            active.prompt.submitted_by.display_label().to_string();
+        config.compatibility.invocation_scope.session_id = invocation_authority
             .as_ref()
             .map(|authority| authority.session_id());
-        config.invocation_scope.turn_id = active.authority_turn_id;
-        config.invocation_scope.authority = invocation_authority;
+        config.compatibility.invocation_scope.turn_id = active.authority_turn_id;
+        config.compatibility.invocation_scope.authority = invocation_authority;
 
         // Read the current model from shared_settings so SIGHUP reloads and
         // /set_model changes are picked up. Falls back to the startup model if
@@ -2177,11 +2289,26 @@ async fn run_daemon_turn(
         };
 
         // Take ownership — Mutex held only for the .take() call.
-        let mut state = {
+        let state = {
             let mut guard = runtime.state.lock().await;
             guard
                 .take()
-                .ok_or_else(|| anyhow::anyhow!("daemon session state unavailable"))?
+                .ok_or_else(|| anyhow::anyhow!("daemon session state unavailable"))
+        };
+        let mut state = match state {
+            Ok(state) => state,
+            Err(error) => {
+                runtime
+                    .supervisor
+                    .lock()
+                    .await
+                    .submit_loop_terminal_intent(LoopTerminalIntent {
+                        identity: active_identity,
+                        outcome: RuntimeTurnOutcome::Failed,
+                        reason_code: "session_state_unavailable".into(),
+                    })?;
+                return Err(error);
+            }
         };
 
         state.conversation.push_user(active.prompt.text);
@@ -2190,16 +2317,19 @@ async fn run_daemon_turn(
         if let Ok(mut guard) = runtime.active_cancel.lock() {
             *guard = Some(turn_cancel.clone());
         }
-        let result = r#loop::run(
-            bridge.as_ref(),
-            &mut state.bus,
-            &mut state.context_manager,
-            &mut state.conversation,
-            events_tx,
-            turn_cancel.clone(),
-            &config,
-        )
-        .await;
+        let execution = execution_capture
+            .execute(
+                bridge.as_ref(),
+                &mut state.bus,
+                &mut state.context_manager,
+                &mut state.conversation,
+                events_tx,
+                turn_cancel.clone(),
+                &config,
+            )
+            .await;
+        let terminal = execution.terminal;
+        let result = execution.result;
         if let Ok(mut guard) = runtime.active_cancel.lock() {
             guard.take();
         }
@@ -2210,22 +2340,21 @@ async fn run_daemon_turn(
             *guard = Some(state);
         }
 
-        let (outcome, reason_code) = if turn_cancel.is_cancelled() {
-            (RuntimeTurnOutcome::Revoked, "loop_cancelled")
-        } else if result.is_err() {
-            (RuntimeTurnOutcome::Failed, "loop_failed")
+        let terminal_intent = if turn_cancel.is_cancelled() {
+            LoopTerminalIntent {
+                identity: active_identity,
+                outcome: RuntimeTurnOutcome::Revoked,
+                reason_code: "loop_cancelled".into(),
+            }
         } else {
-            (RuntimeTurnOutcome::Completed, "loop_completed")
+            terminal.into_intent(active_identity)
         };
+        bridge.shutdown().await;
         runtime
             .supervisor
             .lock()
             .await
-            .submit_loop_terminal_intent(LoopTerminalIntent {
-                identity: active_identity,
-                outcome,
-                reason_code: reason_code.into(),
-            })?;
+            .submit_loop_terminal_intent(terminal_intent)?;
         if let Err(error) = result
             && first_error.is_none()
         {
@@ -2592,6 +2721,7 @@ async fn run_embedded_command(
         load_web_authority_config(web_trusted_proxy_identity, require_web_proxy_identity)?;
     let state = web::WebState::new(agent.dashboard_handles.clone(), events_tx.clone())
         .with_workspace_root(cwd.clone())
+        .with_session_view_binding(agent.session_view_binding.clone())
         .with_web_role(web_role)
         .with_web_authority(web_authority);
     let vox_daemon_events = state.daemon_events.clone();
@@ -2644,8 +2774,11 @@ async fn run_embedded_command(
     let (ipc_cmd_tx, mut ipc_cmd_rx) =
         tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(32);
     {
-        let ipc_cfg =
-            ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"), &agent.session_id);
+        let ipc_cfg = ipc::IpcServerConfig::from_cwd(
+            &cwd,
+            env!("CARGO_PKG_VERSION"),
+            agent.session_view_binding.clone(),
+        );
         ipc::start_ipc_server(
             ipc_cfg,
             agent.dashboard_handles.clone(),
@@ -2676,7 +2809,7 @@ async fn run_embedded_command(
 
     let _daemon_checkpoint_task = checkpoint::spawn_checkpoint_subscriber(
         &events_tx,
-        agent.session_id.clone(),
+        agent.session_view_binding.clone(),
         agent.context_metrics.clone(),
     );
 
@@ -2729,6 +2862,11 @@ async fn run_embedded_command(
             InteractiveRuntimeSupervisor::with_authority(daemon_authority)?,
         )),
         active_cancel: Arc::new(std::sync::Mutex::new(None)),
+        session_id: Arc::new(std::sync::Mutex::new(agent_session_id.clone())),
+        resume_info: Arc::new(std::sync::Mutex::new(agent.resume_info)),
+        cwd: agent_cwd.clone(),
+        workspace_identity: agent.workspace_state.lease.workspace_id.clone(),
+        composition_generation_id: composition_generation_id.clone(),
     };
 
     let trigger_configs = triggers::load_trigger_configs(&cwd);
@@ -2987,15 +3125,24 @@ async fn run_embedded_command(
                     }
                     Some(web::WebCommand::ExecuteControl { request, respond_to }) => {
                         tracing::info!(request = ?request, "daemon: control request");
-                        let response = control_runtime::execute_daemon_control(
-                            request,
-                            &shared_settings,
-                            &agent_secrets,
-                            &agent_cwd,
-                            &agent_handles,
-                            &events_tx,
-                        )
-                        .await;
+                        let response = if matches!(
+                            &request,
+                            operator_commands::InterfaceControlRequest::ContextClear
+                                | operator_commands::InterfaceControlRequest::NewSession
+                                | operator_commands::InterfaceControlRequest::ResumeSession { .. }
+                        ) {
+                            replace_daemon_session(&default_session, request).await
+                        } else {
+                            control_runtime::execute_daemon_control(
+                                request,
+                                &shared_settings,
+                                &agent_secrets,
+                                &agent_cwd,
+                                &agent_handles,
+                                &events_tx,
+                            )
+                            .await
+                        };
                         if let Some(tx) = respond_to {
                             let _ = tx.send(response);
                         }
@@ -3416,8 +3563,12 @@ async fn run_embedded_command(
     {
         let guard = default_session.state.lock().await;
         if let Some(ref sess) = *guard {
+            let session_id = default_session
+                .session_id
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Err(e) =
-                session::save_session(&sess.conversation, &agent_cwd, Some(&agent_session_id))
+                session::save_session(&sess.conversation, &agent_cwd, Some(session_id.as_str()))
             {
                 tracing::debug!("Daemon session save failed (non-fatal): {e}");
             }
@@ -4249,7 +4400,11 @@ async fn save_shared_interactive_session_with_timeout(
     let state = tokio::time::timeout(timeout, state.lock())
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting for retained interactive state"))?;
-    session::save_session(&state.conversation, cwd, Some(session_id))
+    Ok(session::save_session(
+        &state.conversation,
+        cwd,
+        Some(session_id),
+    )?)
 }
 
 async fn save_shared_interactive_session(
@@ -4372,26 +4527,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         .ok()
         .map(|s| s.model.clone())
         .unwrap_or_else(|| cli.model.clone());
-    let resolved_cli_model = providers::resolve_execution_model_spec(&requested_start_model)
-        .await
-        .unwrap_or_else(|| requested_start_model.clone());
     let requested_provider = providers::infer_provider_id(&requested_start_model);
-    let resolved_provider = providers::infer_provider_id(&resolved_cli_model);
-    if resolved_cli_model != requested_start_model {
-        tracing::info!(
-            requested = %requested_start_model,
-            requested_provider = %requested_provider,
-            resolved = %resolved_cli_model,
-            resolved_provider = %resolved_provider,
-            "resolved startup model to executable provider without changing selected model"
-        );
-    } else {
-        tracing::info!(
-            selected = %requested_start_model,
-            selected_provider = %requested_provider,
-            "startup model provider route selected"
-        );
-    }
+    tracing::info!(
+        selected = %requested_start_model,
+        selected_provider = %requested_provider,
+        "startup model provider route selected"
+    );
 
     let imported_credentials = auth::import_discovered_provider_credentials();
     if imported_credentials > 0 {
@@ -4418,7 +4559,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         .unwrap_or_default();
     let route_ledger = route::CredentialLedger;
     let mut startup_route = route::RouteController::resolve_startup(
-        resolved_cli_model.clone(),
+        requested_start_model.clone(),
         &fallback_providers,
         &route_ledger,
     )
@@ -4445,7 +4586,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         // refreshable auth.json entry is not reported as absent/stale on relaunch.
         if crate::auth::resolve_with_refresh(provider).await.is_some() {
             startup_route = route::RouteController::resolve_startup(
-                resolved_cli_model.clone(),
+                requested_start_model.clone(),
                 &fallback_providers,
                 &route_ledger,
             )
@@ -4455,7 +4596,10 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let resolved_bridge = match &startup_route {
         route::ProviderRoute::Serving { model }
         | route::ProviderRoute::Fallback { serving: model, .. } => {
-            providers::auto_detect_bridge(model).await
+            session_execution::boot_execution_binding()
+                .resolve_exact_provider_route(model, None)
+                .await
+                .map(provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
         }
         route::ProviderRoute::Disconnected { .. } | route::ProviderRoute::LoginPending { .. } => {
             None
@@ -4463,7 +4607,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     };
     let mut startup_decision = decide_interactive_startup_model(
         &requested_start_model,
-        &resolved_cli_model,
+        &requested_start_model,
         resolved_bridge.is_some(),
     );
     let (effective_model, bridge): (String, Box<dyn LlmBridge>) = match (&startup_route, resolved_bridge) {
@@ -4665,7 +4809,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             .lock()
             .ok()
             .map(|s| s.model.clone())
-            .unwrap_or_else(|| resolved_cli_model.clone());
+            .unwrap_or_else(|| requested_start_model.clone());
         let model_id = selected_model
             .split_once(':')
             .map(|(_, model)| model)
@@ -4795,6 +4939,7 @@ fn build_tui_secret_readiness_snapshot(
             .map(|settings| settings.startup_mouse_capture)
             .unwrap_or_default(),
         resume_info: agent.resume_info.clone(),
+        session_view_binding: agent.session_view_binding.clone(),
         login_prompt_tx: login_prompt_tx.clone(),
         extension_widgets,
         widget_receivers,
@@ -4848,7 +4993,7 @@ fn build_tui_secret_readiness_snapshot(
         let ipc_cfg = ipc::IpcServerConfig::from_cwd(
             &agent.cwd,
             env!("CARGO_PKG_VERSION"),
-            &agent.session_id,
+            agent.session_view_binding.clone(),
         );
         ipc::start_ipc_server(
             ipc_cfg,
@@ -5093,6 +5238,7 @@ fn build_tui_secret_readiness_snapshot(
                     invocation_scope: operator_control_scope(
                         omegon_traits::RuntimeSurface::Tui,
                     ),
+                    supervisor: Some(&mut runtime),
                 };
                 let response = control_runtime::execute_control(&mut ctx, request).await;
                 if let Some(output) = response.output.clone() {
@@ -5125,6 +5271,7 @@ fn build_tui_secret_readiness_snapshot(
                         dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
                     },
                     invocation_scope: operator_control_scope(surface),
+                    supervisor: Some(&mut runtime),
                 };
                 let response = control_runtime::execute_control(&mut ctx, request).await;
                 if let Some(output) = response.output.clone() {
@@ -5296,6 +5443,22 @@ fn build_tui_secret_readiness_snapshot(
                 observation,
                 committed,
             } => {
+                if !cli.no_session
+                    && let Err(error) = session_host_storage::append_observation(
+                        &session_host_storage::SessionStorageBinding::from_authority(
+                            &session::sessions_dir(&agent.cwd)
+                                .expect("interactive session directory")
+                                .join(format!("{}.json", agent.session_id)),
+                            agent.session_id.as_str(),
+                            runtime.invocation_authority().as_ref(),
+                            &agent.cwd,
+                        ),
+                        &observation,
+                    )
+                {
+                    tracing::warn!(%error, "failed to durably append operator shell observation");
+                    continue;
+                }
                 runtime_state
                     .conversation
                     .push_operator_tool_observation(observation);
@@ -5604,7 +5767,8 @@ fn build_tui_secret_readiness_snapshot(
                 };
                 if let Some((payload, _evict_count)) = runtime_state.conversation.build_compaction_payload()
                 {
-                    match r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options)
+                    match session_execution::boot_execution_binding()
+                        .compact(bridge_guard.as_ref(), &payload, &stream_options)
                         .await
                     {
                         Ok(summary) => {
@@ -5624,19 +5788,13 @@ fn build_tui_secret_readiness_snapshot(
                                 }
 
                                 if ctx_window > 0 {
-                                    let system_prompt = runtime_state.context_manager.build_system_prompt(
-                                        runtime_state.conversation.last_user_prompt(),
+                                    let context_composition = loop_context::compose_with_manager(
+                                        &mut runtime_state.context_manager,
                                         &runtime_state.conversation,
-                                    );
-                                    let llm_messages = runtime_state.conversation.build_llm_view();
-                                    let prompt_telemetry = runtime_state.context_manager.last_prompt_telemetry();
-                                    let context_composition = crate::r#loop::compute_context_composition(
-                                        &system_prompt,
-                                        &llm_messages,
                                         &runtime_state.bus.tool_definitions(),
                                         ctx_window,
-                                        Some(&prompt_telemetry),
-                                    );
+                                    )
+                                    .composition;
                                     let _ = events_tx.send(AgentEvent::TurnEnd(Box::new(omegon_traits::AgentEventTurnEnd {
                                         turn: runtime_state.conversation.intent.stats.turns,
                                         turn_end_reason: omegon_traits::TurnEndReason::AssistantCompleted,
@@ -5713,6 +5871,7 @@ fn build_tui_secret_readiness_snapshot(
                     invocation_scope: operator_control_scope(
                         omegon_traits::RuntimeSurface::Tui,
                     ),
+                    supervisor: Some(&mut runtime),
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
@@ -5747,6 +5906,7 @@ fn build_tui_secret_readiness_snapshot(
                     invocation_scope: operator_control_scope(
                         omegon_traits::RuntimeSurface::Tui,
                     ),
+                    supervisor: Some(&mut runtime),
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
@@ -5789,6 +5949,7 @@ fn build_tui_secret_readiness_snapshot(
                         dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
                     },
                     &events_tx,
+                    Some(&mut runtime),
                 )
                 .await;
                 if let Some(respond_to) = respond_to {
@@ -5901,7 +6062,8 @@ fn build_tui_secret_readiness_snapshot(
                     agent.web_auth_state.clone(),
                     Some(agent.secrets.clone()),
                 )
-                .with_workspace_root(cli.cwd.clone());
+                .with_workspace_root(cli.cwd.clone())
+                .with_session_view_binding(agent.session_view_binding.clone());
                 match web::start_server(web_state, 7842).await {
                     Ok((startup, web_cmd_rx)) => {
                         if let Ok(startup_json) = serde_json::to_value(&startup) {
@@ -6061,9 +6223,10 @@ fn build_tui_secret_readiness_snapshot(
                     }
                     continue;
                 }
-                let response = execute_remote_slash_command(
+                let response = execute_remote_slash_command_with_supervisor(
                     &mut runtime_state,
                     &mut agent,
+                    Some(&mut runtime),
                     &events_tx,
                     &shared_settings,
                     &bridge,
@@ -6259,14 +6422,12 @@ fn build_tui_secret_readiness_snapshot(
                                         let login_provider_model =
                                             providers::default_model_for_provider(&provider_clone)
                                                 .unwrap_or(model_for_redetect.clone());
-                                        let effective_model =
-                                            providers::resolve_execution_model_spec(
-                                                &login_provider_model,
-                                            )
-                                            .await
-                                            .unwrap_or(login_provider_model);
+                                        let effective_model = login_provider_model;
                                         if let Some(new_bridge) =
-                                            providers::auto_detect_bridge(&effective_model).await
+                                            session_execution::boot_execution_binding()
+                                                .resolve_exact_provider_route(&effective_model, None)
+                                                .await
+                                                .map(provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
                                         {
                                             let _ = route_controller_for_login
                                                 .complete_login(
@@ -6509,6 +6670,9 @@ fn build_tui_secret_readiness_snapshot(
                         }
                     };
                     let active_identity = runtime.current_identity().expect("promoted turn identity");
+                    let execution_capture = runtime
+                        .active_execution_capture()
+                        .expect("promoted interactive turn has an execution capture");
                     *tui_interrupt_identity
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -6553,6 +6717,18 @@ fn build_tui_secret_readiness_snapshot(
                     if let Ok(mut guard) = shared_cancel.lock() {
                         *guard = Some(turn_cancel.clone());
                     }
+                    // Provider parsers and tool progress callbacks may outlive a
+                    // cancelled future. They receive only this turn-scoped sender;
+                    // the joined relay is their capability to reach session/UI state.
+                    let (turn_events_tx, turn_events_rx) = broadcast::channel(1024);
+                    let turn_events_stop = CancellationToken::new();
+                    let mut turn_events_relay = tokio::task::spawn_local(
+                        relay_interactive_turn_events(
+                            turn_events_rx,
+                            events_tx.clone(),
+                            turn_events_stop.clone(),
+                        ),
+                    );
                     let invocation_session_id = invocation_authority
                         .as_ref()
                         .map(|_| agent.session_id.clone());
@@ -6563,13 +6739,14 @@ fn build_tui_secret_readiness_snapshot(
                         shared_settings.clone(),
                         shared_cancel.clone(),
                         pending_compact.clone(),
-                        events_tx.clone(),
+                        turn_events_tx.clone(),
                         active,
                         active_identity,
                         lifecycle.clone(),
                         turn_cancel.clone(),
                         invocation_session_id,
                         invocation_authority,
+                        execution_capture,
                     ));
                     let active_wait_started_at = std::time::Instant::now();
                     let mut slow_turn_probe = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(10)));
@@ -6587,10 +6764,17 @@ fn build_tui_secret_readiness_snapshot(
                                 turn_cancel.cancel();
                                 turn_task.abort();
                                 let _ = (&mut turn_task).await;
+                                turn_events_stop.cancel();
+                                let _ = (&mut turn_events_relay).await;
                                 if let Ok(mut guard) = shared_cancel.lock() { guard.take(); }
                                 lifecycle.transition("worker_revoked_by_terminal_loss", runtime.queue_depth(), &events_tx);
                                 mark_interactive_session_busy(&agent.dashboard_handles, false);
                                 let _ = events_tx.send(AgentEvent::AgentEnd);
+                                terminal_intent = Some(LoopTerminalIntent {
+                                    identity: active_identity,
+                                    outcome: RuntimeTurnOutcome::Revoked,
+                                    reason_code: "terminal_lost".into(),
+                                });
                                 runtime_state = match Arc::try_unwrap(state_for_turn) {
                                     Ok(state) => state.into_inner(),
                                     Err(shared_state) => {
@@ -6617,12 +6801,17 @@ fn build_tui_secret_readiness_snapshot(
                                         mcp_supervisors.shutdown().await;
                                         extension_supervisors.shutdown().await;
                                         bridge.read().await.shutdown().await;
+                                        runtime.submit_loop_terminal_intent(
+                                            terminal_intent.take().expect("terminal-loss intent"),
+                                        )?;
                                         return Ok(());
                                     }
                                 };
                                 break;
                             }
                             turn_result = &mut turn_task => {
+                                turn_events_stop.cancel();
+                                let _ = (&mut turn_events_relay).await;
                                 if let Err(join_err) = turn_result {
                                     let message = format_interactive_turn_task_failure(&join_err);
                                     tracing::error!("interactive turn task failed: {join_err}");
@@ -6654,11 +6843,13 @@ fn build_tui_secret_readiness_snapshot(
                             } => {
                                 turn_task.abort();
                                 let _ = (&mut turn_task).await;
+                                turn_events_stop.cancel();
+                                let _ = (&mut turn_events_relay).await;
                                 if let Ok(mut guard) = shared_cancel.lock() { guard.take(); }
                                 lifecycle.transition("worker_aborted", runtime.queue_depth(), &events_tx);
                                 mark_interactive_session_busy(&agent.dashboard_handles, false);
                                 let _ = events_tx.send(AgentEvent::SystemNotification {
-                                    message: "The active turn ignored cancellation and was stopped after a 2s grace period. Queued prompts were preserved.".to_string(),
+                                    message: "The active turn did not settle during the 2s cancellation grace period. Omegon detached its state and event capabilities, classified the remaining work as abandoned/unverified, and preserved queued prompts. A remote provider operation may still complete externally without affecting this or a later turn.".to_string(),
                                 });
                                 let _ = events_tx.send(AgentEvent::AgentEnd);
                                 terminal_intent = Some(LoopTerminalIntent {
@@ -6759,24 +6950,13 @@ fn build_tui_secret_readiness_snapshot(
                                         ) {
                                             continue;
                                         }
-                                        // Revocation is authoritative: abort the worker now rather
-                                        // than treating cancellation as a request that may be ignored.
-                                        // Durable state is supervisor-owned behind `state_for_turn`.
-                                        turn_task.abort();
-                                        let _ = (&mut turn_task).await;
-                                        if let Ok(mut guard) = shared_cancel.lock() { guard.take(); }
-                                        lifecycle.transition("worker_revoked", runtime.queue_depth(), &events_tx);
-                                        mark_interactive_session_busy(&agent.dashboard_handles, false);
-                                        let _ = events_tx.send(AgentEvent::AgentEnd);
-                                        terminal_intent = Some(LoopTerminalIntent {
-                                            identity: active_identity,
-                                            outcome: RuntimeTurnOutcome::Revoked,
-                                            reason_code: "operator_cancelled".into(),
-                                        });
-                                        runtime_state = Arc::try_unwrap(state_for_turn)
-                                            .map_err(|_| anyhow::anyhow!("revoked worker retained durable state"))?
-                                            .into_inner();
-                                        break;
+                                        // Let the worker observe the exact cancellation token and
+                                        // finish owned provider/tool cleanup. The bounded deadline
+                                        // below remains the non-cooperative fallback.
+                                        if cancellation_deadline.is_none() {
+                                            cancellation_deadline = Some(Box::pin(tokio::time::sleep(std::time::Duration::from_secs(2))));
+                                        }
+                                        continue;
                                     }
                                     operator_commands::OperatorCommand::Quit { confirmed: false } => {
                                         let _ = events_tx.send(AgentEvent::SystemNotification {
@@ -6786,21 +6966,10 @@ fn build_tui_secret_readiness_snapshot(
                                     operator_commands::OperatorCommand::Quit { confirmed: true } => {
                                         quit_after_turn = true;
                                         turn_cancel.cancel();
-                                        turn_task.abort();
-                                        let _ = (&mut turn_task).await;
-                                        if let Ok(mut guard) = shared_cancel.lock() { guard.take(); }
-                                        lifecycle.transition("worker_revoked_for_exit", runtime.queue_depth(), &events_tx);
-                                        mark_interactive_session_busy(&agent.dashboard_handles, false);
-                                        let _ = events_tx.send(AgentEvent::AgentEnd);
-                                        terminal_intent = Some(LoopTerminalIntent {
-                                            identity: active_identity,
-                                            outcome: RuntimeTurnOutcome::Revoked,
-                                            reason_code: "session_exit".into(),
-                                        });
-                                        runtime_state = Arc::try_unwrap(state_for_turn)
-                                            .map_err(|_| anyhow::anyhow!("exit-revoked worker retained durable state"))?
-                                            .into_inner();
-                                        break;
+                                        if cancellation_deadline.is_none() {
+                                            cancellation_deadline = Some(Box::pin(tokio::time::sleep(std::time::Duration::from_secs(2))));
+                                        }
+                                        continue;
                                     }
                                     operator_commands::OperatorCommand::InstallUpdate { info, args } => {
                                         deferred_commands.push_back(
@@ -7573,7 +7742,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
 
     let _checkpoint_task = checkpoint::spawn_checkpoint_subscriber(
         &events_tx,
-        agent.session_id.clone(),
+        agent.session_view_binding.clone(),
         agent.context_metrics.clone(),
     );
 
@@ -7586,16 +7755,20 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
         cancel_clone.cancel();
     });
 
-    let result = r#loop::run(
-        bridge.as_ref(),
-        &mut agent.bus,
-        &mut agent.context_manager,
-        &mut agent.conversation,
-        &events_tx,
-        cancel,
-        &loop_config,
-    )
-    .await;
+    let execution_owner = session_execution::SessionExecutionOwner::immutable_at_boot();
+    let execution_capture = execution_owner.capture();
+    let execution = execution_capture
+        .execute(
+            bridge.as_ref(),
+            &mut agent.bus,
+            &mut agent.context_manager,
+            &mut agent.conversation,
+            &events_tx,
+            cancel,
+            &loop_config,
+        )
+        .await;
+    let result = execution.result;
 
     if !cli.no_session {
         if agent.cwd.join(".cleave-prompt.md").exists() {
@@ -7665,7 +7838,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
             }
         }
         Err(e) => {
-            if r#loop::is_upstream_exhausted(e) {
+            if provider_route_service::is_upstream_exhausted(e) {
                 // Exit 2 signals the cleave orchestrator (and any supervisor) that this
                 // child failed due to upstream provider exhaustion, not a logic error.
                 // The orchestrator may retry with a cross-provider fallback.
@@ -8381,9 +8554,10 @@ fn capacity_refresh_requested(args: &str) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_remote_slash_command(
+async fn execute_remote_slash_command_with_supervisor(
     runtime_state: &mut InteractiveAgentState,
     agent: &mut InteractiveAgentHost,
+    supervisor: Option<&mut InteractiveRuntimeSupervisor>,
     events_tx: &broadcast::Sender<AgentEvent>,
     shared_settings: &settings::SharedSettings,
     bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
@@ -8433,6 +8607,7 @@ async fn execute_remote_slash_command(
                 dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
             },
             invocation_scope: operator_control_scope(omegon_traits::RuntimeSurface::Cli),
+            supervisor,
         };
         return control_runtime::execute_control(&mut ctx, control_request).await;
     }
@@ -8469,6 +8644,34 @@ async fn execute_remote_slash_command(
             "Command /{name} is interactive-only or unavailable via remote slash execution."
         )),
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+async fn execute_remote_slash_command(
+    runtime_state: &mut InteractiveAgentState,
+    agent: &mut InteractiveAgentHost,
+    events_tx: &broadcast::Sender<AgentEvent>,
+    shared_settings: &settings::SharedSettings,
+    bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
+    login_prompt_tx: &std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
+    cli: &Cli,
+    name: &str,
+    args: &str,
+) -> omegon_traits::SlashCommandResponse {
+    execute_remote_slash_command_with_supervisor(
+        runtime_state,
+        agent,
+        None,
+        events_tx,
+        shared_settings,
+        bridge,
+        login_prompt_tx,
+        cli,
+        name,
+        args,
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9346,6 +9549,9 @@ async fn run_bounded_task(
     let active_identity = supervisor
         .current_identity()
         .expect("promoted bounded turn has identity");
+    let execution_capture = supervisor
+        .active_execution_capture()
+        .expect("promoted bounded turn has an execution capture");
     let invocation_authority = supervisor.invocation_authority();
     let invocation_principal = active.prompt.submitted_by.display_label().to_string();
     let invocation_turn_id = active.authority_turn_id;
@@ -9362,13 +9568,25 @@ async fn run_bounded_task(
             ..Default::default()
         },
     );
-    loop_config.invocation_scope.principal = invocation_principal;
-    loop_config.invocation_scope.session_id = Some(agent.session_id.clone());
-    loop_config.invocation_scope.turn_id = invocation_turn_id;
-    loop_config.invocation_scope.authority = invocation_authority;
+    loop_config.compatibility.invocation_scope.principal = invocation_principal;
+    loop_config.compatibility.invocation_scope.session_id = Some(agent.session_id.clone());
+    loop_config.compatibility.invocation_scope.turn_id = invocation_turn_id;
+    loop_config.compatibility.invocation_scope.authority = invocation_authority;
 
     let bridge =
-        bootstrap::resolve_bridge_or_bail_with_secrets(model, Some(agent.secrets.as_ref())).await?;
+        match bootstrap::resolve_bridge_or_bail_with_secrets(model, Some(agent.secrets.as_ref()))
+            .await
+        {
+            Ok(bridge) => bridge,
+            Err(error) => {
+                supervisor.submit_loop_terminal_intent(LoopTerminalIntent {
+                    identity: active_identity,
+                    outcome: RuntimeTurnOutcome::Failed,
+                    reason_code: "provider_unavailable".into(),
+                })?;
+                return Err(error);
+            }
+        };
     let (events_tx, mut events_rx) = bootstrap::wire_event_channel(&agent, 256);
 
     // Token tracking
@@ -9413,17 +9631,21 @@ async fn run_bounded_task(
         cancel_timeout.cancel();
     });
 
-    let loop_result = r#loop::run(
-        bridge.as_ref(),
-        &mut agent.bus,
-        &mut agent.context_manager,
-        &mut agent.conversation,
-        &events_tx,
-        cancel.clone(),
-        &loop_config,
-    )
-    .await;
+    let execution = execution_capture
+        .execute(
+            bridge.as_ref(),
+            &mut agent.bus,
+            &mut agent.context_manager,
+            &mut agent.conversation,
+            &events_tx,
+            cancel.clone(),
+            &loop_config,
+        )
+        .await;
+    let terminal = execution.terminal;
+    let loop_result = execution.result;
 
+    timeout_handle.abort();
     let timed_out = cancel.is_cancelled();
     if timed_out {
         supervisor.request_durable_interrupt_with_reason(
@@ -9434,30 +9656,19 @@ async fn run_bounded_task(
             "wall_clock_timeout",
         )?;
     }
-    let authority_outcome = if timed_out {
-        RuntimeTurnOutcome::TimedOut
-    } else if loop_result.is_err() {
-        RuntimeTurnOutcome::Failed
-    } else {
-        RuntimeTurnOutcome::Completed
-    };
-    supervisor.submit_loop_terminal_intent(LoopTerminalIntent {
-        identity: active_identity,
-        outcome: authority_outcome,
-        reason_code: if timed_out {
-            "wall_clock_timeout"
-        } else if loop_result.is_err() {
-            "loop_failed"
-        } else {
-            "loop_completed"
+    let terminal_intent = if timed_out {
+        LoopTerminalIntent {
+            identity: active_identity,
+            outcome: RuntimeTurnOutcome::TimedOut,
+            reason_code: "wall_clock_timeout".into(),
         }
-        .into(),
-    })?;
-
-    timeout_handle.abort();
+    } else {
+        terminal.into_intent(active_identity)
+    };
     bridge.shutdown().await;
     drop(events_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_millis(500), event_task).await;
+    supervisor.submit_loop_terminal_intent(terminal_intent)?;
 
     let elapsed = start.elapsed().as_secs_f64();
     let turns = turn_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -9492,7 +9703,7 @@ async fn run_bounded_task(
         match &loop_result {
             Ok(()) => ("completed".to_string(), None, 0),
             Err(e) => {
-                if r#loop::is_upstream_exhausted(e) {
+                if provider_route_service::is_upstream_exhausted(e) {
                     ("exhausted".to_string(), Some(e.to_string()), 2)
                 } else {
                     ("error".to_string(), Some(e.to_string()), 1)
@@ -9858,6 +10069,10 @@ mod tests {
         setup::AgentSetup {
             bus: crate::bus::EventBus::new(),
             session_id: "test-session".into(),
+            session_view_binding: crate::session_consumers::SessionViewBinding::new(
+                cwd.join("test-session.json"),
+                "test-session".into(),
+            ),
             instance_id: "test-instance".into(),
             runtime_ownership: crate::workspace::runtime::RuntimeOwnership::test_stub(),
             startup_skill_activation_events: Vec::new(),
@@ -10200,14 +10415,24 @@ mod tests {
         };
         let failed = interactive_loop_terminal_intent(
             identity,
-            &Some(Err(anyhow::anyhow!("provider failed"))),
+            Some(&loop_driver::LoopTerminalProposal {
+                outcome: RuntimeTurnOutcome::Failed,
+                reason_code: "loop_failed",
+            }),
             false,
         );
         assert_eq!(failed.identity, identity);
         assert_eq!(failed.outcome, RuntimeTurnOutcome::Failed);
         assert_eq!(failed.reason_code, "loop_failed");
 
-        let cancelled = interactive_loop_terminal_intent(identity, &Some(Ok(())), true);
+        let cancelled = interactive_loop_terminal_intent(
+            identity,
+            Some(&loop_driver::LoopTerminalProposal {
+                outcome: RuntimeTurnOutcome::Completed,
+                reason_code: "loop_completed",
+            }),
+            true,
+        );
         assert_eq!(cancelled.outcome, RuntimeTurnOutcome::Revoked);
         assert_eq!(cancelled.reason_code, "loop_cancelled");
     }
@@ -10317,6 +10542,161 @@ mod tests {
         .expect_err("held state lock must not hang terminal teardown");
 
         assert!(error.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_first_event_drains_the_same_execution() {
+        let cancel = CancellationToken::new();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let cancellation_observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = cancellation_observed.clone();
+        let execution = async move {
+            release_rx.await.expect("release execution");
+            "settled"
+        };
+        tokio::pin!(execution);
+
+        cancel.cancel();
+        let releaser = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            release_tx.send(()).expect("execution still owned");
+        });
+        let result = await_interactive_execution(execution.as_mut(), &cancel, move || {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        releaser.await.unwrap();
+
+        assert_eq!(result, "settled");
+        assert!(cancellation_observed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_partial_progress_drains_before_return() {
+        let cancel = CancellationToken::new();
+        let (partial_tx, partial_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let execution = async move {
+            partial_tx.send("partial").expect("partial observer");
+            release_rx.await.expect("release execution");
+            "settled"
+        };
+        tokio::pin!(execution);
+
+        let cancellation = async {
+            assert_eq!(partial_rx.await.unwrap(), "partial");
+            cancel.cancel();
+            tokio::task::yield_now().await;
+            release_tx.send(()).expect("execution still owned");
+        };
+        let drain = await_interactive_execution(execution.as_mut(), &cancel, || {});
+        let (result, ()) = tokio::join!(drain, cancellation);
+
+        assert_eq!(result, "settled");
+    }
+
+    #[tokio::test]
+    async fn uncooperative_execution_is_dropped_at_supervisor_deadline() {
+        struct DropProbe(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe = DropProbe(dropped.clone());
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let mut task = tokio::spawn(async move {
+            let execution = async move {
+                let _probe = probe;
+                std::future::pending::<()>().await;
+            };
+            tokio::pin!(execution);
+            await_interactive_execution(execution.as_mut(), &task_cancel, || {}).await;
+        });
+
+        cancel.cancel();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut task)
+                .await
+                .is_err(),
+            "fixture must ignore cooperative cancellation"
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn turn_event_relay_fences_late_projection_and_preserves_second_turn() {
+        let (destination, mut destination_rx) = broadcast::channel(8);
+        let (first_source, first_rx) = broadcast::channel(8);
+        let first_stop = CancellationToken::new();
+        let first_relay = tokio::spawn(relay_interactive_turn_events(
+            first_rx,
+            destination.clone(),
+            first_stop.clone(),
+        ));
+        first_source
+            .send(AgentEvent::SystemNotification {
+                message: "first-partial".into(),
+            })
+            .unwrap();
+        assert!(matches!(
+            destination_rx.recv().await.unwrap(),
+            AgentEvent::SystemNotification { message } if message == "first-partial"
+        ));
+
+        first_stop.cancel();
+        first_relay.await.unwrap();
+        assert!(
+            first_source
+                .send(AgentEvent::SystemNotification {
+                    message: "late-first-result".into(),
+                })
+                .is_err()
+        );
+
+        let (second_source, second_rx) = broadcast::channel(8);
+        let second_stop = CancellationToken::new();
+        let second_relay = tokio::spawn(relay_interactive_turn_events(
+            second_rx,
+            destination,
+            second_stop.clone(),
+        ));
+        second_source
+            .send(AgentEvent::SystemNotification {
+                message: "second-turn".into(),
+            })
+            .unwrap();
+        assert!(matches!(
+            destination_rx.recv().await.unwrap(),
+            AgentEvent::SystemNotification { message } if message == "second-turn"
+        ));
+        assert!(destination_rx.try_recv().is_err());
+
+        second_stop.cancel();
+        second_relay.await.unwrap();
+    }
+
+    #[test]
+    fn interactive_cleanup_precedes_canonical_terminal_commit() {
+        let source = include_str!("main.rs");
+        let active_worker = source
+            .split("let mut turn_task = tokio::task::spawn_local")
+            .nth(1)
+            .and_then(|tail| tail.split("if quit_after_turn").next())
+            .expect("interactive active-worker source");
+        let relay_join = active_worker
+            .find("let _ = (&mut turn_events_relay).await")
+            .expect("turn event relay join");
+        let terminal_commit = active_worker
+            .find("runtime.submit_loop_terminal_intent(intent)")
+            .expect("canonical terminal submission");
+
+        assert!(relay_join < terminal_commit);
     }
 
     #[test]
@@ -10642,6 +11022,11 @@ mod tests {
             state: Arc::new(tokio::sync::Mutex::new(None)),
             supervisor: Arc::new(tokio::sync::Mutex::new(supervisor)),
             active_cancel: Arc::new(std::sync::Mutex::new(Some(token.clone()))),
+            session_id: Arc::new(std::sync::Mutex::new("daemon-session".into())),
+            resume_info: Arc::new(std::sync::Mutex::new(None)),
+            cwd: temp.path().to_path_buf(),
+            workspace_identity: "workspace-1".into(),
+            composition_generation_id: "generation-1".into(),
         };
 
         assert!(

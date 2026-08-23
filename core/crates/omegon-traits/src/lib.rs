@@ -776,6 +776,9 @@ pub struct HelloResponse {
     pub started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Host-session publication generation. Additive in protocol v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_generation: Option<u64>,
     /// Server-advertised capabilities. Client must not assume any capability
     /// not present in this list.
     pub capabilities: Vec<String>,
@@ -1181,6 +1184,20 @@ pub struct IpcSessionSnapshot {
     pub git_detached: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_frontier: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_revision: Option<u64>,
+    #[serde(default)]
+    pub queue_depth: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_turn: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1576,6 +1593,11 @@ pub enum IpcEventPayload {
     /// top-level keys of `IpcStateSnapshot` should be re-fetched.
     #[serde(rename = "state.changed")]
     StateChanged { sections: Vec<String> },
+
+    /// Full same-connection reconciliation emitted automatically after the
+    /// server detects event-stream lag. It precedes all later deltas.
+    #[serde(rename = "state.reconciled")]
+    StateReconciled { snapshot: Box<IpcStateSnapshot> },
 
     // ── Notifications ──────────────────────────────────────────────────────
     #[serde(rename = "runtime.lifecycle.updated")]
@@ -3501,6 +3523,13 @@ mod tests {
                 git_branch: Some("main".into()),
                 git_detached: false,
                 session_id: None,
+                session_generation: None,
+                stream_id: None,
+                projection_status: None,
+                projection_frontier: None,
+                context_revision: None,
+                queue_depth: 0,
+                active_turn: None,
             },
             design_tree: IpcDesignTreeSnapshot {
                 counts: IpcDesignCounts {
@@ -3670,6 +3699,7 @@ mod tests {
             server_instance_id: "abc123".into(),
             started_at: "2026-03-29T00:00:00Z".into(),
             session_id: None,
+            session_generation: None,
             capabilities: IpcCapability::v1_server_set()
                 .into_iter()
                 .map(|s| s.to_string())
@@ -3681,6 +3711,26 @@ mod tests {
         assert_eq!(decoded.started_at, "2026-03-29T00:00:00Z");
         assert!(decoded.capabilities.contains(&"state.snapshot".to_string()));
         assert!(decoded.capabilities.contains(&"shutdown".to_string()));
+    }
+
+    #[test]
+    fn ipc_session_additions_decode_from_legacy_v1_shape() {
+        let legacy = serde_json::json!({
+            "cwd": "/project",
+            "pid": 99,
+            "started_at": "2026-03-29T00:00:00Z",
+            "turns": 1,
+            "tool_calls": 2,
+            "compactions": 0,
+            "busy": false,
+            "git_detached": false,
+            "session_id": "session-1"
+        });
+        let decoded: IpcSessionSnapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.session_id.as_deref(), Some("session-1"));
+        assert_eq!(decoded.session_generation, None);
+        assert_eq!(decoded.queue_depth, 0);
+        assert_eq!(decoded.projection_status, None);
     }
 
     #[test]

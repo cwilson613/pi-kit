@@ -46,6 +46,25 @@ jobs:
           OMEGON_NERD_FONT: "1"
         run: cargo test -p omegon --tests -- --nocapture
 
+  session-recovery-campaign:
+    name: Session recovery campaign (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run frozen recovery campaign serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: cargo test -p omegon --bin omegon session_recovery_campaign:: -- --test-threads=1 --nocapture
+
   rust-standalone-crates:
     name: Standalone crate tests
     runs-on: ubuntu-latest

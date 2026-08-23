@@ -1096,6 +1096,33 @@
       "executionClass": "api-cloud"
     },
     {
+      "id": "stealth/ox-alpha",
+      "provider": "openrouter",
+      "name": "Ox Alpha",
+      "contextInput": 1048576,
+      "contextOutput": 131072,
+      "capabilities": [
+        "reasoning",
+        "coding",
+        "vision",
+        "video",
+        "tools",
+        "json-output"
+      ],
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "description": "Stealth preview reasoning model for coding and sustained agentic work via OpenRouter; accepts text, image, and video input. Provider retention is governed by OpenRouter's Stealth Model Terms.",
+      "supportsReasoning": true,
+      "producer": "stealth",
+      "executionClass": "broker-cloud"
+    },
+    {
       "id": "qwen/qwen-qwq-32b",
       "provider": "openrouter",
       "name": "Qwen QwQ 32B",

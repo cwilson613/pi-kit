@@ -366,6 +366,10 @@ pub struct ModelEntry {
     pub context_output: usize,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default, rename = "inputModalities")]
+    pub input_modalities: Vec<String>,
+    #[serde(default, rename = "outputModalities")]
+    pub output_modalities: Vec<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default, rename = "supportsReasoning")]
@@ -722,6 +726,8 @@ impl ModelRegistry {
             context_input: d.context_input,
             context_output: d.context_output,
             capabilities: caps,
+            input_modalities: vec!["text".into()],
+            output_modalities: vec!["text".into()],
             description: format!("Dynamically discovered {provider} model"),
             supports_reasoning,
             client_requirements: None,
@@ -1020,6 +1026,22 @@ mod tests {
             reg.conceptual_model_id("openrouter:qwen/qwen-qwq-32b"),
             Some("qwen/qwen-qwq-32b")
         );
+    }
+
+    #[test]
+    fn ox_alpha_registry_line_matches_published_route_contract() {
+        let model = ModelRegistry::global()
+            .model_info("openrouter:stealth/ox-alpha")
+            .expect("Ox Alpha should be present in the embedded registry");
+        assert_eq!(model.context_input, 1_048_576);
+        assert_eq!(model.context_output, 131_072);
+        assert!(model.supports_reasoning);
+        assert_eq!(model.input_modalities, ["text", "image", "video"]);
+        assert_eq!(model.output_modalities, ["text"]);
+        for capability in ["reasoning", "coding", "vision", "video", "tools"] {
+            assert!(model.capabilities.iter().any(|value| value == capability));
+        }
+        assert_eq!(model.execution_class.as_deref(), Some("broker-cloud"));
     }
 
     #[test]

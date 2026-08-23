@@ -962,16 +962,20 @@ async fn run_agent_task(
         cancel_global.cancel();
     });
 
-    let loop_result = crate::r#loop::run(
-        bridge.as_ref(),
-        &mut agent.bus,
-        &mut agent.context_manager,
-        &mut agent.conversation,
-        &events_tx,
-        cancel.clone(),
-        &loop_config,
-    )
-    .await;
+    let execution_owner = crate::session_execution::SessionExecutionOwner::immutable_at_boot();
+    let execution_capture = execution_owner.capture();
+    let execution = execution_capture
+        .execute(
+            bridge.as_ref(),
+            &mut agent.bus,
+            &mut agent.context_manager,
+            &mut agent.conversation,
+            &events_tx,
+            cancel.clone(),
+            &loop_config,
+        )
+        .await;
+    let loop_result = execution.result;
 
     timeout_handle.abort();
     global_handle.abort();
@@ -1009,7 +1013,7 @@ async fn run_agent_task(
         }
         Ok(()) if cancel.is_cancelled() => 3,
         Ok(()) => 0,
-        Err(e) if crate::r#loop::is_upstream_exhausted(e) => 2,
+        Err(e) if crate::provider_route_service::is_upstream_exhausted(e) => 2,
         Err(_) => 1,
     };
 

@@ -386,7 +386,7 @@ fn default_live_session_summary(state: &WebState) -> Result<WebSessionSummary, S
         .observe()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(WebSessionSummary {
-        session_id: "default".to_string(),
+        session_id: state.session_id(),
         cwd: cwd.to_string_lossy().to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         turns: session.turns,
@@ -397,8 +397,8 @@ fn default_live_session_summary(state: &WebState) -> Result<WebSessionSummary, S
     })
 }
 
-fn validate_native_session_id(session_id: &str) -> Result<(), StatusCode> {
-    if session_id == "default" {
+fn validate_native_session_id(state: &WebState, session_id: &str) -> Result<(), StatusCode> {
+    if session_id == "default" || session_id == state.session_id() {
         Ok(())
     } else {
         Err(StatusCode::NOT_FOUND)
@@ -758,7 +758,7 @@ pub async fn get_native_session(
     headers: HeaderMap,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Result<Json<WebSessionShowResponse>, StatusCode> {
-    validate_native_session_id(&session_id)?;
+    validate_native_session_id(&state, &session_id)?;
     let principal =
         super::rbac::principal_from_headers(&state, &headers).map_err(|error| error.status())?;
     if let Err(error) = super::rbac::require_principal_operation(
@@ -788,7 +788,7 @@ pub async fn get_native_session_surfaces(
     headers: HeaderMap,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Result<Json<super::surfaces::WebSurfacesSnapshot>, StatusCode> {
-    validate_native_session_id(&session_id)?;
+    validate_native_session_id(&state, &session_id)?;
     let principal =
         super::rbac::principal_from_headers(&state, &headers).map_err(|error| error.status())?;
     if let Err(error) = super::rbac::require_principal_operation(
@@ -817,7 +817,7 @@ pub async fn post_native_session_action(
     Json<crate::ui_runtime::envelope::UiActionOutcomeEnvelope>,
 ) {
     let action_id = request.action_id.clone();
-    if validate_native_session_id(&session_id).is_err() {
+    if validate_native_session_id(&state, &session_id).is_err() {
         return (
             StatusCode::NOT_FOUND,
             Json(
@@ -873,16 +873,20 @@ pub async fn post_native_session_action(
 }
 
 /// GET /api/web/sessions — browser-native saved session list.
-pub async fn get_web_sessions() -> Result<Json<WebSessionListResponse>, StatusCode> {
+pub async fn get_web_sessions(
+    State(state): State<WebState>,
+) -> Result<Json<WebSessionListResponse>, StatusCode> {
     let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut sessions: Vec<WebSessionSummary> = crate::session::list_sessions(&cwd)
         .into_iter()
         .map(web_session_summary)
         .collect();
+    let current_session_id = state.session_id();
+    sessions.retain(|session| session.session_id != current_session_id);
     sessions.insert(
         0,
         WebSessionSummary {
-            session_id: "default".to_string(),
+            session_id: current_session_id,
             cwd: cwd.to_string_lossy().to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             turns: 0,
@@ -901,10 +905,11 @@ pub async fn get_web_session(
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Result<Json<WebSessionShowResponse>, StatusCode> {
     let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let session = if session_id == "default" {
+    let current_session_id = state.session_id();
+    let session = if session_id == "default" || session_id == current_session_id {
         let observed_session = state.handles.session().observe().unwrap_or_default();
         WebSessionSummary {
-            session_id: "default".to_string(),
+            session_id: current_session_id,
             cwd: cwd.to_string_lossy().to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             turns: observed_session.turns,
@@ -921,7 +926,7 @@ pub async fn get_web_session(
             .ok_or(StatusCode::NOT_FOUND)?
     };
 
-    let links = if session.session_id == "default" {
+    let links = if session.current {
         native_default_session_links()
     } else {
         historical_web_session_links(&session.session_id)
@@ -932,14 +937,62 @@ pub async fn get_web_session(
     } else {
         HISTORICAL_SESSION_ALLOCATION_MODE
     };
+    let snapshot = if session.current {
+        super::surfaces::project_web_surfaces(&state)
+    } else {
+        historical_surfaces(&state, &session.session_id)?
+    };
 
     Ok(Json(WebSessionShowResponse {
         schema_version: 1,
         session,
         allocation_mode: allocation_mode.to_string(),
         links,
-        snapshot: super::surfaces::project_web_surfaces(&state),
+        snapshot,
     }))
+}
+
+/// GET /api/web/sessions/{session_id}/surfaces — validated read-only historical projection.
+pub async fn get_web_session_surfaces(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<Json<super::surfaces::WebSurfacesSnapshot>, StatusCode> {
+    let principal =
+        super::rbac::principal_from_headers(&state, &headers).map_err(|error| error.status())?;
+    super::rbac::require_principal_operation(
+        &principal,
+        omegon_rbac::OmegonOperation::SurfaceRead,
+        &super::rbac::RbacContext {
+            route: "/api/web/sessions/{session_id}/surfaces",
+            session_id: Some(&session_id),
+            ..super::rbac::RbacContext::default()
+        },
+    )
+    .map_err(|error| error.status())?;
+    if session_id == "default" || session_id == state.session_id() {
+        return Ok(Json(super::surfaces::project_web_surfaces(&state)));
+    }
+    Ok(Json(historical_surfaces(&state, &session_id)?))
+}
+
+fn historical_surfaces(
+    state: &WebState,
+    session_id: &str,
+) -> Result<super::surfaces::WebSurfacesSnapshot, StatusCode> {
+    let entry = crate::session::list_sessions(&state.workspace_root)
+        .into_iter()
+        .find(|entry| entry.meta.session_id == session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let target = crate::session_consumers::SessionViewTarget {
+        snapshot: entry.path,
+        session_id: session_id.to_string(),
+        stream_id: None,
+        generation: 0,
+        kind: crate::session_consumers::SessionViewKind::Resume,
+    };
+    super::surfaces::project_historical_web_surfaces(state, &target)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
 /// GET /api/web/attachments/{id} — retrieve a staged browser attachment.
@@ -1044,7 +1097,7 @@ fn resolve_web_attachment_paths(ids: &[String]) -> Result<Vec<String>, String> {
 pub async fn post_web_action(
     State(state): State<WebState>,
     headers: HeaderMap,
-    Json(request): Json<WebActionRequest>,
+    Json(mut request): Json<WebActionRequest>,
 ) -> (
     StatusCode,
     Json<crate::ui_runtime::envelope::UiActionOutcomeEnvelope>,
@@ -1061,7 +1114,10 @@ pub async fn post_web_action(
             ),
         );
     }
-    if request.session_id != "default" {
+    if request.session_id == "default" {
+        request.session_id = state.session_id();
+    }
+    if request.session_id != state.session_id() {
         return (
             StatusCode::NOT_FOUND,
             Json(
@@ -2096,7 +2152,14 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
                 busy: state.handles.session().observe().unwrap_or_default().busy,
                 git_branch: harness.as_ref().and_then(|h| h.git_branch.clone()),
                 git_detached: harness.as_ref().is_some_and(|h| h.git_detached),
-                session_id: None,
+                session_id: Some(state.session_id()),
+                session_generation: None,
+                stream_id: None,
+                projection_status: None,
+                projection_frontier: None,
+                context_revision: None,
+                queue_depth: 0,
+                active_turn: None,
             };
             let harness_projection = omegon_traits::IpcHarnessSnapshot {
                 context_class: harness
@@ -2291,9 +2354,10 @@ mod tests {
             pending_operator_waits: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
-            conversation_log: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::VecDeque::new(),
+            conversation: std::sync::Arc::new(std::sync::Mutex::new(
+                super::super::WebConversationAccumulator::default(),
             )),
+            session_view_binding: None,
             plan_surface: std::sync::Arc::new(std::sync::Mutex::new(
                 omegon_traits::PlanSurfaceProjection::default(),
             )),
@@ -2901,11 +2965,67 @@ required = ["MISSING_REQUIRED_TOKEN"]
         let home = tempfile::tempdir().unwrap();
         let _cwd = crate::test_support::cwd::CurrentDirGuard::enter_async(home.path()).await;
 
-        let response = get_web_sessions().await.unwrap().0;
+        let state = test_state();
+        let response = get_web_sessions(State(state)).await.unwrap().0;
 
         assert_eq!(response.sessions.len(), 1);
         assert_eq!(response.sessions[0].session_id, "default");
         assert!(response.sessions[0].current);
+    }
+
+    #[tokio::test]
+    async fn historical_surface_endpoint_reads_requested_validated_projection() {
+        let home = tempfile::tempdir().unwrap();
+        let _cwd = crate::test_support::cwd::CurrentDirGuard::enter_async(home.path()).await;
+        let workspace_root = home.path().canonicalize().unwrap();
+        let sessions = crate::session::sessions_dir(&workspace_root).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        const SESSION_ID: &str = "2026-08-22T00-00-00_deadbeef";
+        let snapshot = sessions.join(format!("{SESSION_ID}.json"));
+        std::fs::write(&snapshot, "{}").unwrap();
+        std::fs::write(
+            sessions.join(format!("{SESSION_ID}.meta.json")),
+            serde_json::to_vec(&crate::session::SessionMeta {
+                session_id: SESSION_ID.into(),
+                cwd: workspace_root.display().to_string(),
+                created_at: "2026-08-22T00:00:00Z".into(),
+                turns: 1,
+                tool_calls: 0,
+                description: "historical fixture".into(),
+                friendly_name: String::new(),
+                last_prompt_snippet: "fixture prompt".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        crate::session_consumers::publish_test_projection(
+            &snapshot,
+            "mixed-legacy-full.authority.jsonl",
+            SESSION_ID,
+        );
+        let state = test_state().with_workspace_root(workspace_root);
+        assert!(
+            crate::session::list_sessions(&state.workspace_root)
+                .iter()
+                .any(|entry| entry.meta.session_id == SESSION_ID),
+            "historical fixture must be discoverable under {} (sessions {})",
+            state.workspace_root.display(),
+            sessions.display()
+        );
+
+        let response = get_web_session_surfaces(
+            State(state),
+            auth_headers(),
+            axum::extract::Path(SESSION_ID.into()),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(response.session_id, SESSION_ID);
+        assert_eq!(response.projection.exactness, "exact_suffix");
+        assert!(!response.surfaces.editor.accepts_prompt);
+        assert!(!response.surfaces.footer.busy);
     }
 
     #[tokio::test]

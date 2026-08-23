@@ -23,22 +23,63 @@ fn control_surface_from_via(via: &str) -> ControlSurface {
 
 fn interactive_loop_terminal_intent(
     identity: RuntimeTurnIdentity,
-    run_result: &Option<anyhow::Result<()>>,
+    proposal: Option<&crate::loop_driver::LoopTerminalProposal>,
     cancelled: bool,
 ) -> LoopTerminalIntent {
-    let (outcome, reason_code) = match run_result {
-        Some(Ok(())) if cancelled => (RuntimeTurnOutcome::Revoked, "loop_cancelled"),
-        Some(Ok(())) => (RuntimeTurnOutcome::Completed, "loop_completed"),
-        Some(Err(error)) if r#loop::is_upstream_exhausted(error) => {
-            (RuntimeTurnOutcome::Failed, "provider_exhausted")
+    if cancelled {
+        return LoopTerminalIntent {
+            identity,
+            outcome: RuntimeTurnOutcome::Revoked,
+            reason_code: "loop_cancelled".into(),
+        };
+    }
+    match proposal {
+        Some(proposal) => proposal.clone().into_intent(identity),
+        None => LoopTerminalIntent {
+            identity,
+            outcome: RuntimeTurnOutcome::Revoked,
+            reason_code: "loop_abandoned".into(),
         }
-        Some(Err(_)) => (RuntimeTurnOutcome::Failed, "loop_failed"),
-        None => (RuntimeTurnOutcome::Revoked, "loop_abandoned"),
-    };
-    LoopTerminalIntent {
-        identity,
-        outcome,
-        reason_code: reason_code.into(),
+    }
+}
+
+async fn await_interactive_execution<F, T, C>(
+    mut execution: std::pin::Pin<&mut F>,
+    cancel: &CancellationToken,
+    on_cancel: C,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+    C: FnOnce(),
+{
+    tokio::select! {
+        result = execution.as_mut() => result,
+        _ = cancel.cancelled() => {
+            on_cancel();
+            execution.await
+        }
+    }
+}
+
+async fn relay_interactive_turn_events(
+    mut source: broadcast::Receiver<AgentEvent>,
+    destination: broadcast::Sender<AgentEvent>,
+    stop: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = stop.cancelled() => break,
+            event = source.recv() => match event {
+                Ok(event) => {
+                    let _ = destination.send(event);
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "interactive turn event relay lagged");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
     }
 }
 
@@ -119,6 +160,7 @@ pub(crate) struct InteractiveAgentState {
 
 pub(crate) struct InteractiveAgentHost {
     pub(crate) session_id: String,
+    pub(crate) session_view_binding: crate::session_consumers::SessionViewBinding,
     pub(crate) instance_id: String,
     pub(crate) runtime_ownership: Option<crate::workspace::runtime::RuntimeOwnership>,
     pub(crate) context_metrics:
@@ -151,6 +193,7 @@ fn split_interactive_agent(
 ) -> (InteractiveAgentHost, InteractiveAgentState) {
     let host = InteractiveAgentHost {
         session_id: agent.session_id,
+        session_view_binding: agent.session_view_binding,
         instance_id: agent.instance_id,
         runtime_ownership: Some(agent.runtime_ownership),
         context_metrics: agent.context_metrics,
@@ -242,17 +285,19 @@ async fn run_interactive_active_turn(
     cancel: CancellationToken,
     invocation_session_id: Option<String>,
     invocation_authority: Option<crate::session_authority::SessionAuthorityHandle>,
+    execution_capture: crate::session_execution::SessionExecutionCapture,
 ) -> LoopTerminalIntent {
     let mut runtime_state = runtime_state.lock().await;
     let cancel_keeps_prompt = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut loop_config =
         build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
-    loop_config.invocation_scope.principal = active.prompt.submitted_by.display_label().to_string();
-    loop_config.invocation_scope.session_id = invocation_session_id;
-    loop_config.invocation_scope.turn_id = active.authority_turn_id;
-    loop_config.invocation_scope.authority = invocation_authority;
+    loop_config.compatibility.invocation_scope.principal =
+        active.prompt.submitted_by.display_label().to_string();
+    loop_config.compatibility.invocation_scope.session_id = invocation_session_id;
+    loop_config.compatibility.invocation_scope.turn_id = active.authority_turn_id;
+    loop_config.compatibility.invocation_scope.authority = invocation_authority;
     loop_config.cancel_keeps_prompt = Some(cancel_keeps_prompt.clone());
-    loop_config.drain_post_loop_requests = false;
+    loop_config.compatibility.drain_late_requests = false;
 
     if active.prompt.image_paths.is_empty() {
         runtime_state
@@ -295,10 +340,10 @@ async fn run_interactive_active_turn(
 
     let loop_started_at = std::time::Instant::now();
     lifecycle.emit_phase("loop_running", 0, 0, &events_tx, "worker");
-    let run_result = {
+    let execution = {
         let bridge_guard = bridge.read().await;
         let state = &mut *runtime_state;
-        let mut run = std::pin::pin!(r#loop::run(
+        let mut run = std::pin::pin!(execution_capture.execute(
             bridge_guard.as_ref(),
             &mut state.bus,
             &mut state.context_manager,
@@ -308,23 +353,22 @@ async fn run_interactive_active_turn(
             &loop_config,
         ));
 
-        tokio::select! {
-            result = &mut run => Some(result),
-            _ = cancel.cancelled() => {
+        await_interactive_execution(run.as_mut(), &cancel, || {
                 let keep_prompt = cancel_keeps_prompt.load(std::sync::atomic::Ordering::Relaxed);
                 let disposition = if keep_prompt { "interrupted · kept" } else { "aborted · forgotten" };
                 tracing::warn!(
                     runtime_turn_id = active.runtime_turn_id,
-                    "operator cancellation requested; abandoning active turn to recover operator surface"
+                    "operator cancellation requested; draining owned provider/tool execution"
                 );
                 let _ = events_tx.send(AgentEvent::SystemNotification {
-                    message: format!("Interrupt requested — recovered the operator surface ({disposition}). The abandoned provider/tool request may finish in the background."),
+                    message: format!("Interrupt requested — releasing the operator surface ({disposition}) while Omegon drains owned provider/tool work. A remote provider request already accepted may still finish externally, but its output is detached from this turn."),
                 });
                 let _ = events_tx.send(AgentEvent::AgentEnd);
-                None
-            }
-        }
+        })
+        .await
     };
+    let run_result = execution.result;
+    let terminal_proposal = execution.terminal;
     let cleanup_started_at = std::time::Instant::now();
     lifecycle.emit_phase("post_loop_cleanup", 0, 0, &events_tx, "worker");
     tracing::info!(
@@ -332,16 +376,18 @@ async fn run_interactive_active_turn(
         loop_elapsed_ms = loop_started_at.elapsed().as_millis() as u64,
         cancelled = cancel.is_cancelled(),
         result = match &run_result {
-            Some(Ok(_)) => "ok",
-            Some(Err(_)) => "error",
-            None => "abandoned",
+            Ok(_) => "ok",
+            Err(_) => "error",
         },
         "interactive active turn loop returned; starting post-turn cleanup"
     );
-    let terminal_intent =
-        interactive_loop_terminal_intent(active_identity, &run_result, cancel.is_cancelled());
+    let terminal_intent = interactive_loop_terminal_intent(
+        active_identity,
+        Some(&terminal_proposal),
+        cancel.is_cancelled(),
+    );
 
-    if (matches!(run_result, Some(Ok(_))) || run_result.is_none()) && cancel.is_cancelled() {
+    if run_result.is_ok() && cancel.is_cancelled() {
         let keep_prompt = cancel_keeps_prompt.load(std::sync::atomic::Ordering::Relaxed);
         if !keep_prompt {
             runtime_state
@@ -358,8 +404,8 @@ async fn run_interactive_active_turn(
         });
     }
 
-    if let Some(Err(e)) = run_result {
-        let terminal_reason = if r#loop::is_upstream_exhausted(&e) {
+    if let Err(e) = run_result {
+        let terminal_reason = if crate::provider_route_service::is_upstream_exhausted(&e) {
             omegon_traits::TurnEndReason::ProviderExhausted
         } else {
             omegon_traits::TurnEndReason::WorkerFailed

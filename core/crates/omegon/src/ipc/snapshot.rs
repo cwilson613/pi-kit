@@ -20,10 +20,10 @@ pub fn build_state_snapshot(
     cwd: &str,
     started_at: &str,
     server_instance_id: &str,
-    session_id: &str,
+    session_view_binding: &crate::session_consumers::SessionViewBinding,
     presentation_level: crate::surfaces::layout::UiPresentationLevel,
 ) -> IpcStateSnapshot {
-    let session = project_session(handles, cwd, started_at, session_id);
+    let session = project_session(handles, cwd, started_at, session_view_binding);
     let design_tree = project_design_tree(handles);
     let openspec = project_openspec(handles);
     let cleave = project_cleave(handles);
@@ -144,9 +144,21 @@ fn project_session(
     handles: &DashboardHandles,
     cwd: &str,
     started_at: &str,
-    session_id: &str,
+    session_view_binding: &crate::session_consumers::SessionViewBinding,
 ) -> IpcSessionSnapshot {
     let stats = handles.session().observe().unwrap_or_default();
+    let target = session_view_binding.snapshot();
+    let semantic = crate::session_consumers::SemanticSessionView::load(&target).ok();
+    let frontend = semantic.as_ref().and_then(|view| view.frontend.as_ref());
+    let runtime_queue = session_view_binding.runtime_queue_snapshot();
+    let durable_queue_depth = frontend.map_or(0, |snapshot| snapshot.queued_prompts.len());
+    let queue_depth = runtime_queue["depth"]
+        .as_u64()
+        .map_or(durable_queue_depth, |depth| depth as usize);
+    let runtime_busy = runtime_queue
+        .get("active")
+        .map(|active| !active.is_null())
+        .unwrap_or(stats.busy);
 
     let (git_branch, git_detached) = handles
         .observe_harness()
@@ -162,10 +174,38 @@ fn project_session(
         turns: stats.turns,
         tool_calls: stats.tool_calls,
         compactions: stats.compactions,
-        busy: stats.busy,
+        busy: runtime_busy,
         git_branch,
         git_detached,
-        session_id: Some(session_id.to_string()),
+        session_id: Some(target.session_id),
+        session_generation: Some(target.generation),
+        stream_id: semantic.as_ref().map(|view| view.stream_id.to_string()),
+        projection_status: Some(
+            match semantic.as_ref().map(|view| view.status) {
+                Some(crate::session_consumers::SemanticSessionStatus::ExactFull) => "exact_full",
+                Some(crate::session_consumers::SemanticSessionStatus::ExactSuffix) => {
+                    "exact_suffix"
+                }
+                Some(crate::session_consumers::SemanticSessionStatus::LegacyUnavailable) => {
+                    "legacy_unavailable"
+                }
+                None => "unavailable",
+            }
+            .into(),
+        ),
+        projection_frontier: semantic.as_ref().map(|view| view.frontier_sequence),
+        context_revision: frontend.map(|snapshot| snapshot.context.context_revision),
+        queue_depth,
+        active_turn: Some(
+            if let Some(active) = runtime_queue.get("active") {
+                if active.is_null() { "idle" } else { "active" }
+            } else {
+                frontend
+                    .map(crate::session_consumers::active_turn_label)
+                    .unwrap_or("idle")
+            }
+            .into(),
+        ),
     }
 }
 
@@ -572,6 +612,13 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    fn binding() -> crate::session_consumers::SessionViewBinding {
+        crate::session_consumers::SessionViewBinding::new(
+            std::path::PathBuf::from("/tmp/example-project/session-abc.json"),
+            "session-abc".into(),
+        )
+    }
+
     #[test]
     fn build_state_snapshot_retains_latest_runtime_lifecycle() {
         let lifecycle = omegon_traits::RuntimeLifecycleSnapshot {
@@ -594,7 +641,7 @@ mod tests {
             "/tmp/example-project",
             "2026-07-12T12:00:00Z",
             "instance-123",
-            "session-abc",
+            &binding(),
             crate::surfaces::layout::UiPresentationLevel::Om,
         );
 
@@ -640,7 +687,7 @@ mod tests {
             "/tmp/example-project",
             "2026-04-05T12:00:00Z",
             "instance-123",
-            "session-abc",
+            &binding(),
             crate::surfaces::layout::UiPresentationLevel::Active,
         );
 
@@ -678,5 +725,57 @@ mod tests {
             snap.instance.runtime.execution_substrate,
             snap.harness.execution_substrate
         );
+    }
+
+    #[test]
+    fn state_snapshot_reads_dynamic_session_binding_and_queue() {
+        let handles = DashboardHandles::default();
+        handles.session().set_busy(false);
+        let binding = binding();
+        binding.update_runtime_queue(serde_json::json!({"depth": 1, "active": {"turn_id": 2}}));
+
+        let first = build_state_snapshot(
+            &handles,
+            "0.29.0",
+            "/tmp/example-project",
+            "2026-08-22T00:00:00Z",
+            "instance-123",
+            &binding,
+            crate::surfaces::layout::UiPresentationLevel::Om,
+        );
+        assert_eq!(first.session.session_id.as_deref(), Some("session-abc"));
+        assert_eq!(first.session.queue_depth, 1);
+        assert!(first.session.busy);
+
+        handles.session().set_busy(true);
+        binding.update_runtime_queue(serde_json::json!({"depth": 0, "active": null, "items": []}));
+        let idle = build_state_snapshot(
+            &handles,
+            "0.29.0",
+            "/tmp/example-project",
+            "2026-08-22T00:00:00Z",
+            "instance-123",
+            &binding,
+            crate::surfaces::layout::UiPresentationLevel::Om,
+        );
+        assert!(!idle.session.busy);
+        assert_eq!(idle.session.active_turn.as_deref(), Some("idle"));
+
+        let mut replacement = binding.snapshot();
+        replacement.session_id = "session-next".into();
+        replacement.generation += 1;
+        binding.replace(replacement);
+        let second = build_state_snapshot(
+            &handles,
+            "0.29.0",
+            "/tmp/example-project",
+            "2026-08-22T00:00:00Z",
+            "instance-123",
+            &binding,
+            crate::surfaces::layout::UiPresentationLevel::Om,
+        );
+        assert_eq!(second.session.session_id.as_deref(), Some("session-next"));
+        assert_eq!(second.session.session_generation, Some(2));
+        assert_eq!(second.session.queue_depth, 0);
     }
 }

@@ -35,10 +35,18 @@ pub struct SessionMeta {
 }
 
 /// A listed session entry (from scanning the directory).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSource {
+    FullSpine,
+    Mixed,
+    LegacyCompatibility,
+}
+
 #[derive(Debug)]
 pub struct SessionEntry {
     pub path: PathBuf,
     pub meta: SessionMeta,
+    pub source: SessionSource,
 }
 
 pub fn load_for_resume(
@@ -98,6 +106,12 @@ fn load_for_resume_with_home(
     let _admission = state
         .admit_session_resume(session_id, workspace_key, false)
         .map_err(|error| ResumeLoadError::Authority(error.into()))?;
+
+    if let Some(loaded) = crate::session_host_storage::load_resume(path, session_id, cwd)
+        .map_err(ResumeLoadError::Authority)?
+    {
+        return Ok(loaded);
+    }
 
     let meta_path = path.with_extension("meta.json");
     let meta_bytes =
@@ -246,17 +260,19 @@ pub fn save_session(
     conversation: &ConversationState,
     cwd: &Path,
     resume_id: Option<&str>,
-) -> anyhow::Result<PathBuf> {
+) -> Result<PathBuf, SessionSaveError> {
     let dir =
         sessions_dir(cwd).ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(&dir).map_err(anyhow::Error::from)?;
 
     // When resuming, overwrite the original session file so the chain stays clean.
     // When starting fresh, generate a new timestamped ID.
     let session_id = match resume_id {
         Some(id) if is_canonical_session_id(id) => id.to_string(),
         Some(id) => {
-            anyhow::bail!("Invalid session id '{id}'; sessions must use Omegon canonical ids")
+            return Err(SessionSaveError::Semantic(anyhow::anyhow!(
+                "Invalid session id '{id}'; sessions must use Omegon canonical ids"
+            )));
         }
         None => allocate_session_id(),
     };
@@ -297,11 +313,18 @@ pub fn save_session(
         last_prompt_snippet,
     };
 
-    conversation.save_session(&path)?;
+    let semantic_durable = crate::session_host_storage::has_authority(&path)?;
+    if semantic_durable {
+        let binding =
+            crate::session_host_storage::SessionStorageBinding::discover(&path, &session_id, cwd)?;
+        crate::session_host_storage::save_full_spine(
+            &binding,
+            conversation,
+            existing_meta.as_ref(),
+        )?;
+    }
 
-    let meta_path = path.with_extension("meta.json");
-    let meta_json = serde_json::to_string_pretty(&meta)?;
-    crate::filelock::atomic_write_locked(&meta_path, meta_json.as_bytes())?;
+    publish_compatibility_mirrors(conversation, &path, &meta, semantic_durable)?;
 
     tracing::info!(
         session_id,
@@ -311,6 +334,54 @@ pub fn save_session(
     );
 
     Ok(path)
+}
+
+pub(crate) fn publish_compatibility_mirrors(
+    conversation: &ConversationState,
+    path: &Path,
+    meta: &SessionMeta,
+    semantic_durable: bool,
+) -> Result<(), SessionSaveError> {
+    // Slice 5.4-5.6 rollback mirrors retain their schema-v1 external shape.
+    if let Err(source) = conversation.save_session(path) {
+        return Err(if semantic_durable {
+            SessionSaveError::PartialPublication {
+                publication: "session_snapshot",
+                source,
+            }
+        } else {
+            SessionSaveError::Mirror(source)
+        });
+    }
+    let meta_json = serde_json::to_string_pretty(meta).map_err(anyhow::Error::from)?;
+    if let Err(source) = crate::filelock::atomic_write_locked(
+        &path.with_extension("meta.json"),
+        meta_json.as_bytes(),
+    ) {
+        return Err(if semantic_durable {
+            SessionSaveError::PartialPublication {
+                publication: "session_metadata",
+                source,
+            }
+        } else {
+            SessionSaveError::Mirror(source)
+        });
+    }
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionSaveError {
+    #[error(transparent)]
+    Semantic(#[from] anyhow::Error),
+    #[error("compatibility mirror publication failed: {0}")]
+    Mirror(anyhow::Error),
+    #[error("partial_publication: semantic save is durable but {publication} failed: {source}")]
+    PartialPublication {
+        publication: &'static str,
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 /// List saved sessions for a cwd, sorted newest first.
@@ -368,7 +439,19 @@ pub fn list_sessions(cwd: &Path) -> Vec<SessionEntry> {
         entries.push(SessionEntry {
             path: session_path,
             meta,
+            source: SessionSource::LegacyCompatibility,
         });
+    }
+
+    for catalog in crate::session_host_storage::list_catalogs(&dir, cwd) {
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|entry| entry.meta.session_id == catalog.meta.session_id)
+        {
+            *existing = catalog;
+        } else {
+            entries.push(catalog);
+        }
     }
 
     // Canonical session ids start with sortable timestamps — newest first.
@@ -650,6 +733,7 @@ mod tests {
             entries.push(SessionEntry {
                 path: session_path,
                 meta,
+                source: SessionSource::LegacyCompatibility,
             });
         }
         entries
@@ -700,6 +784,7 @@ mod tests {
                     friendly_name: String::new(),
                     last_prompt_snippet: String::new(),
                 },
+                source: SessionSource::LegacyCompatibility,
             },
             SessionEntry {
                 path: PathBuf::from("a_earlier.json"),
@@ -713,6 +798,7 @@ mod tests {
                     friendly_name: String::new(),
                     last_prompt_snippet: String::new(),
                 },
+                source: SessionSource::LegacyCompatibility,
             },
         ];
         // Newest first means b_later is first

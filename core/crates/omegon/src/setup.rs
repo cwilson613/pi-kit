@@ -52,6 +52,7 @@ pub struct AgentSetup {
     /// Stable session id for the current live conversation. Fresh sessions
     /// get a generated id at startup; resumed sessions reuse their saved id.
     pub session_id: String,
+    pub(crate) session_view_binding: crate::session_consumers::SessionViewBinding,
     /// Instance identifier for runtime state isolation (`tui-{pid}`, `acp-{pid}`, etc.).
     pub instance_id: String,
     /// Durable v1 runtime ownership and heartbeat lifecycle.
@@ -481,6 +482,7 @@ impl AgentSetup {
         tracing::debug!(diagnostics = ?session_secret_diag, "startup secret diagnostics");
 
         let mut bus = EventBus::new();
+        let deferred_session_view = crate::session_consumers::DeferredSessionViewBinding::default();
 
         let project_root = find_project_root(&cwd);
 
@@ -855,7 +857,10 @@ impl AgentSetup {
         bus.register(Box::new(delegate_feature));
 
         // ─── Session log (context injection) ────────────────────────────
-        bus.register(Box::new(features::session_log::SessionLog::new(&cwd)));
+        bus.register(Box::new(
+            features::session_log::SessionLog::new(&cwd)
+                .with_session_binding(deferred_session_view.clone()),
+        ));
 
         // ─── Audit log (structured JSONL trail for postmortem) ──────────
         let audit_session = std::env::var("OMEGON_SESSION_ID").unwrap_or_else(|_| {
@@ -867,10 +872,10 @@ impl AgentSetup {
                     .unwrap_or(0)
             )
         });
-        bus.register(Box::new(features::audit_log::AuditLog::new(
-            &cwd,
-            &audit_session,
-        )));
+        bus.register(Box::new(
+            features::audit_log::AuditLog::new(&cwd, &audit_session)
+                .with_session_binding(deferred_session_view.clone()),
+        ));
 
         // ─── Mutation (evolutionary skill/diagnostic creation) ───────────
         bus.register(Box::new(features::mutation::MutationFeature::new(
@@ -1338,28 +1343,10 @@ impl AgentSetup {
                     tracing::info!(path = %path.display(), "Resuming session");
                     match session::load_for_resume(&cwd, &path) {
                         Ok((conv, meta)) => {
-                            // ── Checkpoint consistency verification ──
-                            if let Some(latest_cp) =
-                                crate::checkpoint::read_last_checkpoint(&meta.session_id)
-                            {
-                                let cp_turns = latest_cp.intent.stats_turns;
-                                let session_turns = meta.turns;
-                                if cp_turns > session_turns {
-                                    tracing::warn!(
-                                        session_turns,
-                                        checkpoint_turns = cp_turns,
-                                        session_id = %meta.session_id,
-                                        "checkpoint is ahead of session file — \
-                                         session may be stale (crash during prior run?)"
-                                    );
-                                } else {
-                                    tracing::debug!(
-                                        session_turns,
-                                        checkpoint_turns = cp_turns,
-                                        "checkpoint consistent with session"
-                                    );
-                                }
-                            }
+                            crate::checkpoint::diagnose_startup_consistency(
+                                &path,
+                                &meta.session_id,
+                            );
 
                             let description = crate::session::session_display_description(&meta);
                             resume_info = Some(ResumeInfo {
@@ -1568,12 +1555,18 @@ impl AgentSetup {
             .as_ref()
             .map(|r| r.session_id.clone())
             .unwrap_or_else(|| startup_session_id_hint.clone());
+        let session_snapshot = crate::session_consumers::snapshot_path(&cwd, &session_id)
+            .ok_or_else(|| anyhow::anyhow!("cannot determine interactive session path"))?;
+        let session_view_binding =
+            crate::session_consumers::SessionViewBinding::new(session_snapshot, session_id.clone());
+        deferred_session_view.bind(session_view_binding.clone());
 
         let initial_harness_status = harness_status;
 
         Ok(Self {
             bus,
             session_id,
+            session_view_binding,
             instance_id,
             runtime_ownership,
             startup_skill_activation_events: Vec::new(),

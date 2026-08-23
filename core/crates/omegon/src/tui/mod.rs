@@ -49,6 +49,7 @@ pub mod segment_components;
 pub mod segment_detail;
 pub mod segments;
 pub mod selector;
+mod session_projection;
 pub(crate) mod settings_menu;
 mod settings_menu_projection;
 mod slash_commands;
@@ -615,6 +616,9 @@ struct App {
     runtime_queue_snapshot: Option<serde_json::Value>,
     /// Monotonic identity of the active interactive runtime prompt.
     runtime_turn_id: Option<u64>,
+    session_view_binding: Option<crate::session_consumers::SessionViewBinding>,
+    session_view_generation: u64,
+    session_projection_frontier: Option<u64>,
 }
 
 type LastLeftClick = (u16, u16, std::time::Instant, Option<usize>);
@@ -827,8 +831,12 @@ impl App {
 
     fn auspex_status_text(&self) -> String {
         let cwd = self.cwd().to_path_buf();
+        let binding = crate::session_consumers::SessionViewBinding::new(
+            cwd.join(".omegon/status-probe.json"),
+            "status-probe".into(),
+        );
         let ipc_cfg =
-            crate::ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"), "status-probe");
+            crate::ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"), binding);
         let socket_exists = ipc_cfg.socket_path.exists();
         let dash_status = self
             .web_startup
@@ -1007,6 +1015,9 @@ impl App {
             oauth_tos_notice_shown: false,
             runtime_queue_snapshot: None,
             runtime_turn_id: None,
+            session_view_binding: None,
+            session_view_generation: 0,
+            session_projection_frontier: None,
         }
     }
 
@@ -6568,7 +6579,10 @@ warning: {warning}"
         let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
         let path = dir.join(format!("omegon-transcript-{timestamp}.md"));
         let generated_at = chrono::Local::now().to_rfc3339();
-        let body = format!("# Omegon transcript\n\nGenerated: {generated_at}\n\n{transcript}\n");
+        let disclosure = self.session_export_disclosure();
+        let body = format!(
+            "# Omegon session presentation export\n\nGenerated: {generated_at}\n\n{disclosure}\n\n{transcript}\n"
+        );
         std::fs::write(&path, body)?;
         Ok(path)
     }
@@ -7162,6 +7176,7 @@ pub struct TuiConfig {
     pub is_oauth: bool,
     /// Present when a prior session was resumed; retained for runtime context.
     pub resume_info: Option<crate::setup::ResumeInfo>,
+    pub(crate) session_view_binding: crate::session_consumers::SessionViewBinding,
     /// Pre-populated initial state so the first frame isn't empty.
     pub initial: crate::setup::InteractiveInitialState,
     /// Skip the splash animation on startup.
@@ -7828,6 +7843,8 @@ pub async fn run_tui(
     }
     app.history = App::load_history(&config.cwd);
     app.footer_data.cwd = config.cwd.clone();
+    app.session_view_binding = Some(config.session_view_binding.clone());
+    app.refresh_semantic_session_view();
     // Load skills from ~/.omegon/skills/ (bundled) and .omegon/skills/ (project-local).
     if let Some(ref mut registry) = app.augment_registry {
         registry.load_skills(std::path::Path::new(&config.cwd));

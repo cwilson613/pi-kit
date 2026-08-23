@@ -1402,6 +1402,26 @@ Scroll transcript:
             },
 
             "transcript" => {
+                let allow_suffix = args == "suffix";
+                if !matches!(args, "" | "open" | "file" | "suffix") {
+                    self.conversation.push_system(
+                        "Usage: /transcript [file|open|suffix]\n  file/open: require an exact full-session semantic transcript\n  suffix: export the explicitly labeled exact suffix for mixed lineage",
+                    );
+                } else {
+                    match self.write_exact_semantic_transcript(allow_suffix) {
+                        Ok(path) => self.conversation.push_system(&format!(
+                            "Exact semantic transcript written:\n  {}",
+                            path.display()
+                        )),
+                        Err(error) => self.conversation.push_system(&format!(
+                            "Semantic transcript unavailable: {error}"
+                        )),
+                    }
+                }
+                SlashResult::Handled
+            }
+
+            "session-export" => {
                 match args {
                     "" | "open" | "file" | "md" | "markdown" => {
                         self.export_session_transcript_markdown();
@@ -1409,11 +1429,9 @@ Scroll transcript:
                     "scrollback" | "native" => {
                         self.print_transcript_to_native_scrollback();
                     }
-                    _ => {
-                        self.conversation.push_system(
-                            "Usage: /transcript [file|scrollback]\n  file: write a clickable Markdown transcript\n  scrollback: print transcript to native terminal scrollback",
-                        );
-                    }
+                    _ => self.conversation.push_system(
+                        "Usage: /session-export [file|open|scrollback]\n  Exports the current presentation/evidence view; it does not claim exact transcript semantics.",
+                    ),
                 }
                 SlashResult::Handled
             }

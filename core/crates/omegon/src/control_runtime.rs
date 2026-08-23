@@ -21,6 +21,7 @@ pub struct ControlContext<'a> {
     pub events_tx: &'a broadcast::Sender<AgentEvent>,
     pub cli: &'a CliRuntimeView<'a>,
     pub invocation_scope: crate::invocation_service::InvocationScope,
+    pub supervisor: Option<&'a mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
 }
 
 pub use crate::operator_commands::InterfaceControlRequest as ControlRequest;
@@ -909,11 +910,19 @@ pub async fn execute_control(
                 ctx.shared_settings,
                 ctx.bridge,
                 ctx.events_tx,
+                &ctx.invocation_scope,
             )
             .await
         }
         ControlRequest::ContextClear => {
-            context_clear_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx).await
+            context_clear_response(
+                ctx.runtime_state,
+                ctx.agent,
+                ctx.cli,
+                ctx.events_tx,
+                ctx.supervisor.as_deref_mut(),
+            )
+            .await
         }
         ControlRequest::ContextRequest { kind, query } => {
             context_request_response(ctx.runtime_state, &kind, &query).await
@@ -947,11 +956,26 @@ pub async fn execute_control(
             }
         },
         ControlRequest::NewSession => {
-            new_session_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx).await
+            new_session_response(
+                ctx.runtime_state,
+                ctx.agent,
+                ctx.cli,
+                ctx.events_tx,
+                ctx.supervisor.as_deref_mut(),
+            )
+            .await
         }
         ControlRequest::ListSessions => list_sessions_response(ctx.agent).await,
         ControlRequest::ResumeSession { id } => {
-            resume_session_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx, &id).await
+            resume_session_response(
+                ctx.runtime_state,
+                ctx.agent,
+                ctx.cli,
+                ctx.events_tx,
+                &id,
+                ctx.supervisor.as_deref_mut(),
+            )
+            .await
         }
         ControlRequest::AuthLogin { provider } => {
             auth_login_response(
@@ -1391,15 +1415,6 @@ pub async fn set_model_response(
     .map(|route| route.qualified_model)
     .ok()
     .unwrap_or_else(|| requested_model.to_string());
-    let effective_model = if crate::providers::explicit_provider_id(&effective_model).as_deref()
-        == Some("github-copilot")
-    {
-        effective_model
-    } else {
-        providers::resolve_execution_model_spec(&effective_model)
-            .await
-            .unwrap_or(effective_model)
-    };
     let (old_model, old_provider) = shared_settings
         .lock()
         .ok()
@@ -1412,7 +1427,10 @@ pub async fn set_model_response(
         .unwrap_or_else(|| (String::new(), String::new()));
     let new_provider = crate::providers::infer_provider_id(&effective_model);
     if let Some(controller) = route_controller {
-        let new_bridge = providers::auto_detect_bridge(&effective_model).await;
+        let new_bridge = crate::session_execution::boot_execution_binding()
+            .resolve_exact_provider_route(&effective_model, None)
+            .await
+            .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge);
         let snapshot = match controller
             .switch_model(
                 effective_model.clone(),
@@ -1558,9 +1576,7 @@ pub async fn switch_dispatcher_response(
             format!("{current_provider}:{tier_model}")
         }
     });
-    let effective_model = providers::resolve_execution_model_spec(&requested_model_spec)
-        .await
-        .unwrap_or_else(|| requested_model_spec.clone());
+    let effective_model = requested_model_spec.clone();
 
     if let Ok(mut s) = shared_settings.lock() {
         if !effective_model.is_empty() {
@@ -2516,6 +2532,7 @@ pub async fn context_compact_response(
     shared_settings: &settings::SharedSettings,
     bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
     events_tx: &broadcast::Sender<AgentEvent>,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
     let bridge_guard = bridge.read().await;
     let stream_options = {
@@ -2532,6 +2549,45 @@ pub async fn context_compact_response(
         .conversation
         .build_compaction_payload_keeping_recent(MANUAL_COMPACTION_KEEP_RECENT_TURNS)
     {
+        let authority_compaction = match (
+            invocation_scope.authority.clone(),
+            invocation_scope.turn_id,
+            invocation_scope.session_id.as_deref(),
+        ) {
+            (Some(authority), None, Some(session_id)) if authority.session_id() == session_id => {
+                match crate::session_compaction::SessionCompaction::begin_idle(
+                    authority,
+                    evict_count,
+                ) {
+                    Ok(Some(compaction)) => Some(compaction),
+                    Ok(None) => {
+                        return SlashCommandResponse {
+                            accepted: false,
+                            output: Some(
+                                "Compression failed: exact authority compaction input is unavailable"
+                                    .into(),
+                            ),
+                        };
+                    }
+                    Err(error) => {
+                        return SlashCommandResponse {
+                            accepted: false,
+                            output: Some(format!("Compression failed: {error}")),
+                        };
+                    }
+                }
+            }
+            (None, None, None) => None,
+            _ => {
+                return SlashCommandResponse {
+                    accepted: false,
+                    output: Some(
+                        "Compression failed: manual compaction requires an idle complete session scope"
+                            .into(),
+                    ),
+                };
+            }
+        };
         let _ = events_tx.send(AgentEvent::ContextCompaction(
             omegon_traits::ContextCompactionEvent {
                 trigger: omegon_traits::ContextCompactionTrigger::Manual,
@@ -2543,8 +2599,22 @@ pub async fn context_compact_response(
                 reason: None,
             },
         ));
-        match crate::r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options).await
-        {
+        let compact_result = if let Some(authority) = authority_compaction.as_ref() {
+            crate::session_execution::boot_execution_binding()
+                .compact_scoped(
+                    bridge_guard.as_ref(),
+                    &payload,
+                    &stream_options,
+                    invocation_scope,
+                    authority,
+                )
+                .await
+        } else {
+            crate::session_execution::boot_execution_binding()
+                .compact(bridge_guard.as_ref(), &payload, &stream_options)
+                .await
+        };
+        match compact_result {
             Ok(summary) => {
                 let summary_chars = summary.chars().count();
                 runtime_state
@@ -2621,17 +2691,21 @@ pub async fn context_clear_response(
     agent: &mut InteractiveAgentHost,
     cli: &CliRuntimeView<'_>,
     events_tx: &broadcast::Sender<AgentEvent>,
+    supervisor: Option<&mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
 ) -> SlashCommandResponse {
-    if !cli.no_session {
-        let _ = session::save_session(
-            &runtime_state.conversation,
+    let response = replace_interactive_session(
+        runtime_state,
+        agent,
+        cli,
+        supervisor,
+        crate::session_replacement::fresh_request(
+            crate::session_replacement::SessionReplacementKind::ContextClear,
             &agent.cwd,
-            Some(agent.session_id.as_str()),
-        );
+        ),
+    );
+    if let Err(error) = response {
+        return replacement_failure(error);
     }
-    runtime_state.conversation = crate::conversation::ConversationState::new();
-    agent.session_id = crate::session::allocate_session_id();
-    agent.resume_info = None;
     let context_window = if let Ok(mut metrics) = agent.context_metrics.lock() {
         let context_window = metrics.context_window;
         metrics.update(0, context_window, "Compact", "off");
@@ -2748,17 +2822,21 @@ pub async fn new_session_response(
     agent: &mut InteractiveAgentHost,
     cli: &CliRuntimeView<'_>,
     events_tx: &broadcast::Sender<AgentEvent>,
+    supervisor: Option<&mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
 ) -> SlashCommandResponse {
-    if !cli.no_session {
-        let _ = session::save_session(
-            &runtime_state.conversation,
+    let response = replace_interactive_session(
+        runtime_state,
+        agent,
+        cli,
+        supervisor,
+        crate::session_replacement::fresh_request(
+            crate::session_replacement::SessionReplacementKind::New,
             &agent.cwd,
-            Some(agent.session_id.as_str()),
-        );
+        ),
+    );
+    if let Err(error) = response {
+        return replacement_failure(error);
     }
-    runtime_state.conversation = crate::conversation::ConversationState::new();
-    agent.session_id = crate::session::allocate_session_id();
-    agent.resume_info = None;
     let _ = events_tx.send(AgentEvent::SessionReset);
     SlashCommandResponse {
         accepted: true,
@@ -2779,6 +2857,7 @@ pub async fn resume_session_response(
     cli: &CliRuntimeView<'_>,
     events_tx: &broadcast::Sender<AgentEvent>,
     id: &str,
+    supervisor: Option<&mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
 ) -> SlashCommandResponse {
     let id = id.trim();
     if id.is_empty() {
@@ -2786,13 +2865,6 @@ pub async fn resume_session_response(
             accepted: false,
             output: Some("Usage: /resume <session-id>".to_string()),
         };
-    }
-    if !cli.no_session {
-        let _ = session::save_session(
-            &runtime_state.conversation,
-            &agent.cwd,
-            Some(agent.session_id.as_str()),
-        );
     }
     let Some(path) = session::find_session(&agent.cwd, Some(id)) else {
         return SlashCommandResponse {
@@ -2802,23 +2874,23 @@ pub async fn resume_session_response(
             )),
         };
     };
-    match session::load_for_resume(&agent.cwd, &path) {
-        Ok((conversation, meta)) => {
-            let session_id = meta.session_id.clone();
-            let description = session::session_display_description(&meta);
-            agent.resume_info = Some(crate::setup::ResumeInfo {
-                session_id: meta.session_id,
-                turns: meta.turns,
-                description: description.clone(),
-                last_prompt_snippet: meta.last_prompt_snippet,
-                created_at: meta.created_at,
-            });
-            agent.session_id = session_id.clone();
-            runtime_state.conversation = conversation;
+    match crate::session_replacement::resume_request(&agent.cwd, &path).and_then(|request| {
+        let description = request
+            .resume_info
+            .as_ref()
+            .map(|info| info.description.clone())
+            .unwrap_or_default();
+        replace_interactive_session(runtime_state, agent, cli, supervisor, Ok(request))
+            .map(|outcome| (outcome, description))
+    }) {
+        Ok((outcome, description)) => {
             let _ = events_tx.send(AgentEvent::SessionReset);
             SlashCommandResponse {
                 accepted: true,
-                output: Some(format!("Resumed session {session_id}: {description}")),
+                output: Some(format!(
+                    "Resumed session {}: {description}",
+                    outcome.session_id
+                )),
             }
         }
         Err(error) => SlashCommandResponse {
@@ -2828,6 +2900,108 @@ pub async fn resume_session_response(
                 path.display()
             )),
         },
+    }
+}
+
+fn replace_interactive_session(
+    runtime_state: &mut InteractiveAgentState,
+    agent: &mut InteractiveAgentHost,
+    cli: &CliRuntimeView<'_>,
+    supervisor: Option<&mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
+    request: Result<
+        crate::session_replacement::SessionReplacementRequest,
+        crate::session_replacement::SessionReplacementError,
+    >,
+) -> Result<
+    crate::session_replacement::SessionReplacementOutcome,
+    crate::session_replacement::SessionReplacementError,
+> {
+    let request = request?;
+    if cli.no_session {
+        let outcome = crate::session_replacement::replace_sessionless(
+            &mut runtime_state.conversation,
+            &mut agent.session_id,
+            &mut agent.resume_info,
+            request,
+        );
+        publish_session_view_binding(agent, &outcome);
+        return Ok(outcome);
+    }
+    let supervisor = supervisor.ok_or_else(|| {
+        crate::session_replacement::SessionReplacementError::Target(
+            "host session owner is unavailable".into(),
+        )
+    })?;
+    let runtime_generation_id = runtime_state
+        .bus
+        .composition_generation_id()
+        .ok_or_else(|| {
+            crate::session_replacement::SessionReplacementError::Target(
+                "runtime composition has no generation".into(),
+            )
+        })?
+        .as_str()
+        .to_string();
+    let outcome = crate::session_replacement::replace(
+        crate::session_replacement::HostSessionPublication {
+            supervisor,
+            conversation: &mut runtime_state.conversation,
+            displayed_session_id: &mut agent.session_id,
+            resume_info: &mut agent.resume_info,
+        },
+        request,
+        crate::session_replacement::SessionReplacementEnvironment {
+            cwd: &agent.cwd,
+            persist_current: true,
+            workspace_identity: &agent.workspace_state.lease.workspace_id,
+            runtime_generation_id: &runtime_generation_id,
+            actor: crate::session_authority::ActorIdentity {
+                principal: "local-operator".into(),
+                ingress: "interactive".into(),
+            },
+        },
+    )?;
+    publish_session_view_binding(agent, &outcome);
+    Ok(outcome)
+}
+
+fn publish_session_view_binding(
+    agent: &InteractiveAgentHost,
+    outcome: &crate::session_replacement::SessionReplacementOutcome,
+) {
+    let Some(snapshot) = crate::session_consumers::snapshot_path(&agent.cwd, &outcome.session_id)
+    else {
+        return;
+    };
+    let kind = match outcome.kind {
+        crate::session_replacement::SessionReplacementKind::Resume => {
+            crate::session_consumers::SessionViewKind::Resume
+        }
+        crate::session_replacement::SessionReplacementKind::New => {
+            crate::session_consumers::SessionViewKind::New
+        }
+        crate::session_replacement::SessionReplacementKind::ContextClear => {
+            crate::session_consumers::SessionViewKind::ContextClear
+        }
+    };
+    agent
+        .session_view_binding
+        .replace(crate::session_consumers::SessionViewTarget {
+            snapshot,
+            session_id: outcome.session_id.clone(),
+            stream_id: (outcome.projection.stream_id != uuid::Uuid::nil())
+                .then_some(outcome.projection.stream_id),
+            generation: outcome.host_generation,
+            kind,
+        });
+}
+
+fn replacement_failure(
+    error: crate::session_replacement::SessionReplacementError,
+) -> SlashCommandResponse {
+    SlashCommandResponse {
+        accepted: false,
+        output: Some(format!("Session was not replaced: {error}")),
     }
 }
 
@@ -2974,10 +3148,12 @@ pub async fn auth_login_response(
             // model setting (which may reference a different provider entirely).
             let login_provider_model = providers::default_model_for_provider(&provider_clone)
                 .unwrap_or(model_for_redetect.clone());
-            let effective_model = providers::resolve_execution_model_spec(&login_provider_model)
+            let effective_model = login_provider_model;
+            if let Some(new_bridge) = crate::session_execution::boot_execution_binding()
+                .resolve_exact_provider_route(&effective_model, None)
                 .await
-                .unwrap_or(login_provider_model);
-            if let Some(new_bridge) = providers::auto_detect_bridge(&effective_model).await {
+                .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
+            {
                 let mut guard = bridge_clone.write().await;
                 *guard = new_bridge;
                 if let Ok(mut s) = settings_for_login.lock() {
@@ -3124,9 +3300,7 @@ pub async fn set_model_daemon_response(
     cwd: &Path,
     requested_model: &str,
 ) -> SlashCommandResponse {
-    let effective = providers::resolve_execution_model_spec(requested_model)
-        .await
-        .unwrap_or_else(|| requested_model.to_string());
+    let effective = requested_model.to_string();
     let Ok(mut s) = shared_settings.lock() else {
         return SlashCommandResponse {
             accepted: false,
@@ -6145,8 +6319,13 @@ mod context_compaction_tests {
         let cwd = tempfile::tempdir().unwrap().keep();
         let secrets =
             std::sync::Arc::new(omegon_secrets::SecretsManager::new(&cwd.join("secrets")).unwrap());
+        let session_id = crate::session::allocate_session_id();
         InteractiveAgentHost {
-            session_id: crate::session::allocate_session_id(),
+            session_view_binding: crate::session_consumers::SessionViewBinding::new(
+                cwd.join(format!("{session_id}.json")),
+                session_id.clone(),
+            ),
+            session_id,
             instance_id: "test-instance".into(),
             runtime_ownership: None,
             context_metrics: crate::features::context::SharedContextMetrics::new(),
@@ -6234,8 +6413,15 @@ mod context_compaction_tests {
         ));
         let (events_tx, mut events_rx) = broadcast::channel(8);
 
-        let response =
-            context_compact_response(&mut state, &mut agent, &settings, &bridge, &events_tx).await;
+        let response = context_compact_response(
+            &mut state,
+            &mut agent,
+            &settings,
+            &bridge,
+            &events_tx,
+            &crate::invocation_service::InvocationScope::default(),
+        )
+        .await;
 
         assert!(response.accepted);
         let event = events_rx.recv().await.unwrap();
@@ -6277,8 +6463,15 @@ mod context_compaction_tests {
         }) as Box<dyn LlmBridge>));
         let (events_tx, mut events_rx) = broadcast::channel(8);
 
-        let response =
-            context_compact_response(&mut state, &mut agent, &settings, &bridge, &events_tx).await;
+        let response = context_compact_response(
+            &mut state,
+            &mut agent,
+            &settings,
+            &bridge,
+            &events_tx,
+            &crate::invocation_service::InvocationScope::default(),
+        )
+        .await;
 
         assert!(response.accepted, "{response:?}");
         let first = events_rx.recv().await.unwrap();

@@ -2750,6 +2750,26 @@ fn authoritative_idle_queue_snapshot_recovers_missed_terminal_events() {
 }
 
 #[test]
+fn authoritative_idle_queue_snapshot_recovers_without_prompt_started_event() {
+    let mut app = active_test_app();
+    app.handle_agent_event(AgentEvent::TurnStart { turn: 1 });
+    app.handle_agent_event(AgentEvent::MessageChunk {
+        text: "finished response".into(),
+    });
+
+    app.handle_agent_event(AgentEvent::RuntimeQueueUpdated {
+        snapshot_json: serde_json::json!({
+            "depth": 0,
+            "active": null,
+            "items": [],
+        }),
+    });
+
+    assert!(!app.agent_active);
+    assert!(!app.conversation.is_streaming());
+}
+
+#[test]
 fn stream_idle_provider_failure_and_lifecycle_events_project_into_tui() {
     let mut app = active_test_app();
     app.handle_agent_event(AgentEvent::StreamIdle {

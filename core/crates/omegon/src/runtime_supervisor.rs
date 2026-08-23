@@ -32,20 +32,58 @@ pub(crate) enum RuntimePromptSubmissionOutcome {
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct InteractiveRuntimeSupervisor {
     queue: PromptQueue,
     turns: ActiveTurnState,
     authority: Option<SessionAuthorityHandle>,
+    execution_owner: crate::session_execution::SessionExecutionOwner,
+    active_execution: Option<crate::session_execution::SessionExecutionCapture>,
     last_settled_identity: Option<RuntimeTurnIdentity>,
+    host_session_generation: u64,
+    projection_binding: Option<crate::session_replacement::ProjectionBinding>,
+    projection_worker: Option<crate::session_shadow_projection::SessionProjectionWorker>,
+    retired_projection_workers: Vec<crate::session_shadow_projection::SessionProjectionWorker>,
+    projection_start_error: Option<crate::session_shadow_projection::SessionProjectionWorkerError>,
+}
+
+impl Default for InteractiveRuntimeSupervisor {
+    fn default() -> Self {
+        Self {
+            queue: PromptQueue::default(),
+            turns: ActiveTurnState::default(),
+            authority: None,
+            execution_owner: crate::session_execution::SessionExecutionOwner::immutable_at_boot(),
+            active_execution: None,
+            last_settled_identity: None,
+            host_session_generation: 1,
+            projection_binding: None,
+            projection_worker: None,
+            retired_projection_workers: Vec::new(),
+            projection_start_error: None,
+        }
+    }
 }
 
 impl InteractiveRuntimeSupervisor {
     pub(crate) fn with_authority(authority: SessionAuthority) -> Result<Self, AuthorityError> {
+        let authority = SessionAuthorityHandle::new(authority);
+        let execution_owner = crate::session_execution::SessionExecutionOwner::new(
+            crate::session_execution::boot_execution_binding().capture(),
+            Some(authority.clone()),
+        )
+        .map_err(|error| match error {
+            crate::session_execution::SessionExecutionOwnerError::BootBinding(error)
+            | crate::session_execution::SessionExecutionOwnerError::Authority(error) => error,
+        })?;
         let mut supervisor = Self {
-            authority: Some(SessionAuthorityHandle::new(authority)),
+            authority: Some(authority),
+            execution_owner,
+            active_execution: None,
             ..Self::default()
         };
+        supervisor.start_projection_worker();
+        supervisor.refresh_projection_binding();
         let queued = supervisor
             .authority
             .as_ref()
@@ -188,6 +226,174 @@ impl InteractiveRuntimeSupervisor {
         self.authority.clone()
     }
 
+    fn start_projection_worker(&mut self) {
+        let Some(authority) = &self.authority else {
+            return;
+        };
+        match crate::session_shadow_projection::SessionProjectionWorker::start(
+            authority.projection_worker_descriptor(),
+        ) {
+            Ok(worker) => {
+                authority.set_projection_wake(worker.wake_handle());
+                self.projection_worker = Some(worker);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "shadow session projection worker did not start");
+                self.projection_start_error = Some(error);
+            }
+        }
+    }
+
+    pub(crate) fn projection_worker_snapshot(
+        &self,
+    ) -> Option<crate::session_shadow_projection::SessionProjectionWorkerSnapshot> {
+        self.projection_worker
+            .as_ref()
+            .map(|worker| worker.snapshot())
+    }
+
+    pub(crate) fn projection_start_error(
+        &self,
+    ) -> Option<&crate::session_shadow_projection::SessionProjectionWorkerError> {
+        self.projection_start_error.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn projection_wake_for_test(
+        &self,
+    ) -> Option<crate::session_shadow_projection::SessionProjectionWakeHandle> {
+        self.projection_worker
+            .as_ref()
+            .map(|worker| worker.wake_handle())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn projection_snapshot_state_for_test(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            std::sync::Mutex<crate::session_shadow_projection::SessionProjectionWorkerSnapshot>,
+        >,
+    > {
+        self.projection_worker
+            .as_ref()
+            .map(|worker| worker.snapshot_state())
+    }
+
+    pub(crate) fn flush_shadow_projections(&self) {
+        if let Some(worker) = &self.projection_worker {
+            worker.flush();
+        }
+    }
+
+    pub(crate) fn shutdown_shadow_projections(&mut self) {
+        if let Some(authority) = &self.authority {
+            authority.clear_projection_wake();
+        }
+        if let Some(mut worker) = self.projection_worker.take() {
+            worker.shutdown();
+        }
+        for worker in &mut self.retired_projection_workers {
+            worker.shutdown();
+        }
+        self.retired_projection_workers.clear();
+    }
+
+    pub(crate) fn retire_shadow_projection_worker(
+        &mut self,
+    ) -> Option<crate::session_shadow_projection::SessionProjectionWorker> {
+        if let Some(authority) = &self.authority {
+            authority.clear_projection_wake();
+        }
+        self.projection_worker
+            .take()
+            .inspect(|worker| worker.request_shutdown())
+    }
+
+    pub(crate) fn own_retired_projection_worker(
+        &mut self,
+        worker: crate::session_shadow_projection::SessionProjectionWorker,
+    ) {
+        let mut index = 0;
+        while index < self.retired_projection_workers.len() {
+            if self.retired_projection_workers[index].is_finished() {
+                let mut finished = self.retired_projection_workers.swap_remove(index);
+                finished.shutdown();
+            } else {
+                index += 1;
+            }
+        }
+        self.retired_projection_workers.push(worker);
+    }
+
+    pub(crate) fn host_session_generation(&self) -> u64 {
+        self.host_session_generation
+    }
+
+    pub(crate) fn projection_binding(
+        &self,
+    ) -> Option<&crate::session_replacement::ProjectionBinding> {
+        self.projection_binding.as_ref()
+    }
+
+    pub(crate) fn publish_replacement_generation(&mut self, generation: u64) {
+        self.host_session_generation = generation;
+        self.refresh_projection_binding();
+    }
+
+    fn refresh_projection_binding(&mut self) {
+        self.projection_binding = self.authority.as_ref().and_then(|authority| {
+            crate::session_replacement::ProjectionBinding::from_authority(authority).ok()
+        });
+    }
+
+    pub(crate) fn replacement_quiescence(
+        &self,
+    ) -> Result<(), crate::session_replacement::SessionReplacementRejection> {
+        use crate::session_replacement::SessionReplacementRejection as Rejection;
+        if self.is_busy() || self.active_execution.is_some() {
+            return Err(Rejection::ActiveTurn);
+        }
+        if self.queue_depth() != 0 {
+            return Err(Rejection::QueuedPrompts);
+        }
+        if self.execution_owner.has_pending_replacement() {
+            return Err(Rejection::ExecutionBindingMigration);
+        }
+        let Some(authority) = &self.authority else {
+            return Ok(());
+        };
+        let state = authority.state();
+        if !state.queued_prompts.is_empty() {
+            return Err(Rejection::QueuedPrompts);
+        }
+        if state.active_turn.is_some() || state.active_step.is_some() {
+            return Err(Rejection::ActiveTurn);
+        }
+        if state.active_compaction.is_some() {
+            return Err(Rejection::ActiveCompaction);
+        }
+        if state
+            .invocations
+            .values()
+            .any(crate::session_authority::invocation_blocks_session_replacement)
+        {
+            return Err(Rejection::UnresolvedInvocation);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn active_execution_capture(
+        &self,
+    ) -> Option<crate::session_execution::SessionExecutionCapture> {
+        self.active_execution.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execution_owner(&self) -> crate::session_execution::SessionExecutionOwner {
+        self.execution_owner.clone()
+    }
+
     pub(crate) fn session_epoch(&self) -> u64 {
         self.turns.session_epoch()
     }
@@ -255,7 +461,12 @@ impl InteractiveRuntimeSupervisor {
         if self.turns.is_busy() {
             return None;
         }
-        self.turns.start(self.queue.pop_front()?, None)
+        if self.authority.is_some() {
+            return None;
+        }
+        let prompt = self.queue.pop_front()?;
+        self.active_execution = Some(self.execution_owner.capture());
+        self.turns.start(prompt, None)
     }
 
     pub(crate) fn start_next_turn(&mut self) -> Result<Option<ActiveTurnMeta>, AuthorityError> {
@@ -265,22 +476,36 @@ impl InteractiveRuntimeSupervisor {
         let Some(prompt) = self.queue.pop_front() else {
             return Ok(None);
         };
-        let authority_turn_id = if let Some(authority) = self.authority.as_mut() {
+        let authority_turn_id = if self.authority.is_some() {
             let prompt_id = prompt.authority_prompt_id.ok_or_else(|| {
                 AuthorityError::Invalid("durable prompt has no authority identity".into())
             })?;
             let turn_id = uuid::Uuid::new_v4();
-            if let Err(error) = authority.start_turn(
-                uuid::Uuid::new_v4(),
-                &authority_timestamp(),
-                turn_id,
-                prompt_id,
-            ) {
-                self.queue.push_front(prompt);
-                return Err(error);
-            }
+            let start = self
+                .execution_owner
+                .start_turn_and_capture(
+                    uuid::Uuid::new_v4(),
+                    &authority_timestamp(),
+                    turn_id,
+                    prompt_id,
+                )
+                .map_err(|error| match error {
+                    crate::session_execution::SessionExecutionOwnerError::BootBinding(error)
+                    | crate::session_execution::SessionExecutionOwnerError::Authority(error) => {
+                        error
+                    }
+                });
+            let start = match start {
+                Ok(start) => start,
+                Err(error) => {
+                    self.queue.push_front(prompt);
+                    return Err(error);
+                }
+            };
+            self.active_execution = Some(start.capture);
             Some(turn_id)
         } else {
+            self.active_execution = Some(self.execution_owner.capture());
             None
         };
         Ok(self.turns.start(prompt, authority_turn_id))
@@ -364,6 +589,7 @@ impl InteractiveRuntimeSupervisor {
         Ok(self.turns.admit_interrupt(identity, actor, via))
     }
 
+    #[cfg(test)]
     pub(crate) fn finish_active_turn(
         &mut self,
         runtime_turn_id: u64,
@@ -372,10 +598,12 @@ impl InteractiveRuntimeSupervisor {
         self.turns.finish(runtime_turn_id, outcome)
     }
 
+    #[cfg(test)]
     pub(crate) fn settle_active_worker(&mut self) -> Option<(ActiveTurnMeta, RuntimeTurnOutcome)> {
         self.turns.settle_worker()
     }
 
+    #[cfg(test)]
     pub(crate) fn settle_durable_worker(
         &mut self,
     ) -> Result<Option<(ActiveTurnMeta, RuntimeTurnOutcome)>, AuthorityError> {
@@ -393,6 +621,7 @@ impl InteractiveRuntimeSupervisor {
         self.close_durable_worker(outcome)
     }
 
+    #[cfg(test)]
     pub(crate) fn close_durable_worker(
         &mut self,
         outcome: RuntimeTurnOutcome,
@@ -456,6 +685,28 @@ impl InteractiveRuntimeSupervisor {
             let turn_id = active.authority_turn_id.ok_or_else(|| {
                 AuthorityError::Invalid("durable turn has no authority identity".into())
             })?;
+            if intent.outcome != RuntimeTurnOutcome::Completed {
+                authority.terminalize_active_semantic_step(
+                    &authority_timestamp(),
+                    crate::session_authority::SemanticTerminalization {
+                        turn_id,
+                        request_outcome: match intent.outcome {
+                            RuntimeTurnOutcome::TimedOut => {
+                                crate::session_authority::ModelRequestOutcome::TimedOut
+                            }
+                            RuntimeTurnOutcome::Revoked => {
+                                crate::session_authority::ModelRequestOutcome::Revoked
+                            }
+                            RuntimeTurnOutcome::Failed => {
+                                crate::session_authority::ModelRequestOutcome::Abandoned
+                            }
+                            RuntimeTurnOutcome::Completed => unreachable!(),
+                        },
+                        reason_code: intent.reason_code.clone(),
+                        rule_version: 1,
+                    },
+                )?;
+            }
             authority.close_turn(
                 uuid::Uuid::new_v4(),
                 &authority_timestamp(),
@@ -471,6 +722,7 @@ impl InteractiveRuntimeSupervisor {
             .turns
             .finish(active.runtime_turn_id, intent.outcome)
             .map(|active| (active, intent.outcome));
+        self.active_execution = None;
         self.last_settled_identity = Some(intent.identity);
         Ok((
             TerminalSubmission::Committed {
@@ -480,6 +732,7 @@ impl InteractiveRuntimeSupervisor {
         ))
     }
 
+    #[cfg(test)]
     pub(crate) fn complete_active_turn(&mut self) -> Option<ActiveTurnMeta> {
         self.turns.complete()
     }
@@ -642,6 +895,86 @@ mod tests {
         }
         assert_eq!(supervisor.queue_depth(), 0);
         assert!(!supervisor.is_busy());
+    }
+
+    #[test]
+    fn turn_close_and_next_start_do_not_auto_commit_pending_execution_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let authority = SessionAuthority::open(
+            &temp.path().join("session-owner.json"),
+            "session-owner",
+            "workspace-1",
+            "generation-1",
+            ActorIdentity {
+                principal: "operator".into(),
+                ingress: "tui".into(),
+            },
+            "2026-08-21T18:00:00Z",
+        )
+        .unwrap();
+        let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
+        for text in ["turn-a", "turn-b", "turn-c"] {
+            supervisor
+                .admit_prompt(
+                    text.into(),
+                    Vec::new(),
+                    RuntimeActor::tui(),
+                    ControlSurface::Tui,
+                    operator_commands::PromptMetadata::default(),
+                    None,
+                )
+                .unwrap();
+        }
+
+        supervisor.start_next_turn().unwrap().unwrap();
+        let active_a = supervisor.active_execution_capture().unwrap();
+        let generation_a = active_a.generation().clone();
+        let generation_b = crate::session_authority::ExecutionBindingGeneration::new(
+            "loop-driver:fixture/b",
+            "provider-route-service:fixture/b",
+        )
+        .unwrap();
+        let owner = supervisor.execution_owner();
+        assert_eq!(
+            owner
+                .request_replacement(
+                    uuid::Uuid::new_v4(),
+                    "2026-08-21T18:00:01Z",
+                    crate::session_execution::SessionExecutionBinding::release_coupled_for_test(
+                        generation_b.clone(),
+                    ),
+                )
+                .unwrap(),
+            crate::session_execution::SessionExecutionReplacementOutcome::Pending
+        );
+        assert_eq!(active_a.generation(), &generation_a);
+        assert_eq!(
+            supervisor.active_execution_capture().unwrap().generation(),
+            &generation_a
+        );
+
+        supervisor
+            .close_durable_worker(RuntimeTurnOutcome::Completed)
+            .unwrap();
+        supervisor.start_next_turn().unwrap().unwrap();
+        assert_eq!(
+            supervisor.active_execution_capture().unwrap().generation(),
+            &generation_a
+        );
+        supervisor
+            .close_durable_worker(RuntimeTurnOutcome::Completed)
+            .unwrap();
+        assert_eq!(
+            owner
+                .commit_pending_at_quiescence(uuid::Uuid::new_v4(), "2026-08-21T18:00:02Z")
+                .unwrap(),
+            crate::session_execution::SessionExecutionReplacementOutcome::Applied
+        );
+        supervisor.start_next_turn().unwrap().unwrap();
+        assert_eq!(
+            supervisor.active_execution_capture().unwrap().generation(),
+            &generation_b
+        );
     }
 
     #[test]

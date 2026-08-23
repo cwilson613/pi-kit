@@ -93,6 +93,7 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
     let mut events_rx = state.events_tx.subscribe();
     let command_tx = state.command_tx.clone();
     let state_for_cmds = state.clone();
+    let state_for_events = state.clone();
 
     // Channel for request_snapshot → send_task
     let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel::<Value>(4);
@@ -111,10 +112,21 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            // Slow client — skip missed events, send a notification
                             tracing::debug!("WebSocket client lagged by {n} events");
-                            let warning = json!({"type": "system_notification", "message": format!("Skipped {n} events (slow connection)")});
-                            let _ = ws_tx.send(Message::Text(warning.to_string().into())).await;
+                            while events_rx.try_recv().is_ok() {}
+                            state_for_events.reconcile_semantic_session();
+                            let reconciliation = snapshot_message(build_snapshot(&state_for_events));
+                            if ws_tx.send(Message::Text(reconciliation.to_string().into())).await.is_err() {
+                                break;
+                            }
+                            let surfaces = json!({
+                                "type": "surface_snapshot",
+                                "event_name": "surface.snapshot",
+                                "data": super::surfaces::project_web_surfaces(&state_for_events),
+                            });
+                            if ws_tx.send(Message::Text(surfaces.to_string().into())).await.is_err() {
+                                break;
+                            }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }

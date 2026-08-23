@@ -672,6 +672,28 @@ struct AcpTurnState {
     last_error: Option<String>,
 }
 
+const ACP_CANONICAL_NOTIFICATION_DRAIN_LIMIT: usize = 256;
+
+#[derive(Debug, Default)]
+pub(crate) struct AcpCanonicalNotificationDrain {
+    canonical_complete: bool,
+    drained: usize,
+}
+
+impl AcpCanonicalNotificationDrain {
+    pub(crate) fn mark_complete(&mut self) {
+        self.canonical_complete = true;
+    }
+
+    pub(crate) fn permit_queued_event(&mut self) -> bool {
+        if !self.canonical_complete || self.drained >= ACP_CANONICAL_NOTIFICATION_DRAIN_LIMIT {
+            return false;
+        }
+        self.drained += 1;
+        true
+    }
+}
+
 pub struct OmegonAcpAgent {
     model: String,
     transport: &'static str,
@@ -1334,20 +1356,17 @@ impl OmegonAcpAgent {
 
     async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse> {
         let cwd = args.cwd.clone();
-        *self.session_cwd.borrow_mut() = Some(cwd.clone());
-
-        // Create session ID *before* ensure_worker so the proxy pump
-        // receives the correct session ID for host RPC calls.
-        let sid = SessionId::new(format!(
-            "omegon-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ));
-        *self.session_id.borrow_mut() = Some(sid.clone());
-
         self.ensure_worker(&cwd);
+        let (ack, replaced) = tokio::sync::oneshot::channel();
+        self.send_to_worker_ack(WorkerRequest::NewSession { ack })
+            .await;
+        let session_id = replaced
+            .await
+            .map_err(|_| Error::internal_error())?
+            .map_err(|message| Error::new(i32::from(ErrorCode::InternalError), message))?;
+        let sid = SessionId::new(session_id);
+        *self.session_cwd.borrow_mut() = Some(cwd.clone());
+        *self.session_id.borrow_mut() = Some(sid.clone());
 
         // Forward client-provided MCP servers to the worker.
         if !args.mcp_servers.is_empty() {
@@ -1468,6 +1487,7 @@ impl OmegonAcpAgent {
             .map(|w| w.event_rx.resubscribe());
 
         let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let (canonical_complete_tx, mut canonical_complete_rx) = tokio::sync::watch::channel(false);
 
         if let Some(mut event_rx) = event_rx {
             let conn = self.conn.clone();
@@ -1488,8 +1508,31 @@ impl OmegonAcpAgent {
                 let mut surface_adapter =
                     AcpConversationSurfaceAdapter::with_turn_id(stream_sid.to_string());
                 let mut native_plan_tool_ids = std::collections::BTreeSet::new();
+                let mut canonical_drain = AcpCanonicalNotificationDrain::default();
                 loop {
-                    match event_rx.recv().await {
+                    let event = if *canonical_complete_rx.borrow() {
+                        canonical_drain.mark_complete();
+                        if !canonical_drain.permit_queued_event() {
+                            break;
+                        }
+                        match event_rx.try_recv() {
+                            Ok(event) => Ok(event),
+                            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                            | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                        }
+                    } else {
+                        tokio::select! {
+                            event = event_rx.recv() => event,
+                            changed = canonical_complete_rx.changed() => {
+                                if changed.is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                    };
+                    match event {
                         Ok(WorkerEvent::TextChunk(text)) => {
                             shadow_surface_update(
                                 conn.borrow().as_ref(),
@@ -1820,6 +1863,8 @@ impl OmegonAcpAgent {
         let worker_resp = match response_rx.await {
             Ok(response) => response,
             Err(_) => {
+                canonical_complete_tx.send_replace(true);
+                let _ = done_rx.await;
                 *self.turn_state.borrow_mut() = AcpTurnState {
                     phase: AcpTurnPhase::Failed,
                     last_error: Some("ACP worker dropped the prompt response".into()),
@@ -1827,6 +1872,7 @@ impl OmegonAcpAgent {
                 return Err(Error::internal_error());
             }
         };
+        canonical_complete_tx.send_replace(true);
         let _ = done_rx.await;
 
         let next_turn_state = if let Some(error) = &worker_resp.error {
@@ -2042,26 +2088,35 @@ impl OmegonAcpAgent {
             .map_err(|_| Error::internal_error())?
             .map_err(|message| Error::new(i32::from(ErrorCode::InternalError), message))?;
 
-        // ACP load-session requires the agent to replay the restored transcript
-        // through session/update notifications before returning. Historical tool
-        // activity is intentionally absent from this projection so replay cannot
-        // fabricate live execution state.
+        // Worker replacement and transport identity publish together before any
+        // best-effort historical notifications. A disconnected client cannot
+        // leave the worker on the target while transport state still names the
+        // old session.
+        *self.session_cwd.borrow_mut() = Some(args.cwd.clone());
+        *self.session_id.borrow_mut() = Some(args.session_id.clone());
+
+        // Historical tool activity is intentionally absent so replay cannot
+        // fabricate live execution state. Notification loss does not roll back
+        // or split the already-published host identity.
         if let Some(connection) = self.conn.borrow().clone() {
-            for message in replay {
+            let _ = send_session_update(
+                &connection,
+                args.session_id.clone(),
+                SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title(format!(
+                    "Session history: {} (frontier {})",
+                    replay.status, replay.frontier_sequence
+                ))),
+            )
+            .await;
+            for message in replay.messages {
                 let content = ContentChunk::new(ContentBlock::Text(TextContent::new(message.text)));
                 let update = match message.role {
                     acp_worker::AcpReplayRole::User => SessionUpdate::UserMessageChunk(content),
                     acp_worker::AcpReplayRole::Agent => SessionUpdate::AgentMessageChunk(content),
                 };
-                send_session_update(&connection, args.session_id.clone(), update).await?;
+                let _ = send_session_update(&connection, args.session_id.clone(), update).await;
             }
         }
-
-        // Publish the new active identity only after worker restoration and
-        // transcript replay both succeed. A malformed session or failed client
-        // notification must not leave transport state pointing at partial content.
-        *self.session_cwd.borrow_mut() = Some(args.cwd.clone());
-        *self.session_id.borrow_mut() = Some(args.session_id.clone());
 
         let (model, thinking, _posture, context, profile) = self.current_settings();
         let mut response = LoadSessionResponse::new();

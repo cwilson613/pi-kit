@@ -39,7 +39,7 @@ pub struct ConnectionConfig {
     pub cwd: String,
     pub started_at: String,
     pub server_instance_id: String,
-    pub session_id: String,
+    pub session_view_binding: crate::session_consumers::SessionViewBinding,
     pub handles: DashboardHandles,
     pub events_tx: broadcast::Sender<AgentEvent>,
     pub command_tx: mpsc::Sender<TuiCommand>,
@@ -117,6 +117,7 @@ impl IpcConnection {
             return Ok(());
         }
 
+        let hello_target = cfg.session_view_binding.snapshot();
         let hello_resp = HelloResponse {
             protocol_version: IPC_PROTOCOL_VERSION,
             omegon_version: cfg.omegon_version.clone(),
@@ -125,7 +126,8 @@ impl IpcConnection {
             cwd: cfg.cwd.clone(),
             server_instance_id: cfg.server_instance_id.clone(),
             started_at: cfg.started_at.clone(),
-            session_id: Some(cfg.session_id.clone()),
+            session_id: Some(hello_target.session_id),
+            session_generation: Some(hello_target.generation),
             capabilities: IpcCapability::v1_server_set()
                 .into_iter()
                 .map(|s| s.to_string())
@@ -143,6 +145,13 @@ impl IpcConnection {
         // ── Start event push task ──────────────────────────────────────
         let mut events_rx = cfg.events_tx.subscribe();
         let event_out_tx = out_tx.clone();
+        let event_session_binding = cfg.session_view_binding.clone();
+        let event_handles = cfg.handles.clone();
+        let event_version = cfg.omegon_version.clone();
+        let event_cwd = cfg.cwd.clone();
+        let event_started_at = cfg.started_at.clone();
+        let event_instance_id = cfg.server_instance_id.clone();
+        let event_settings = cfg.shared_settings.clone();
         let subscriptions: Arc<tokio::sync::Mutex<HashSet<String>>> =
             Arc::new(tokio::sync::Mutex::new(HashSet::new()));
         let sub_ref = subscriptions.clone();
@@ -151,6 +160,9 @@ impl IpcConnection {
             loop {
                 match events_rx.recv().await {
                     Ok(ev) => {
+                        if let AgentEvent::RuntimeQueueUpdated { snapshot_json } = &ev {
+                            event_session_binding.update_runtime_queue(snapshot_json.clone());
+                        }
                         if let Some(ipc_ev) = project_event(&ev) {
                             let name = event_name(&ipc_ev);
                             let subs = sub_ref.lock().await;
@@ -165,7 +177,33 @@ impl IpcConnection {
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        while let Ok(event) = events_rx.try_recv() {
+                            if let AgentEvent::RuntimeQueueUpdated { snapshot_json } = event {
+                                event_session_binding.update_runtime_queue(snapshot_json);
+                            }
+                        }
+                        let snapshot = build_state_snapshot(
+                            &event_handles,
+                            &event_version,
+                            &event_cwd,
+                            &event_started_at,
+                            &event_instance_id,
+                            &event_session_binding,
+                            event_settings
+                                .lock()
+                                .map(|settings| settings.ui_presentation)
+                                .unwrap_or_default(),
+                        );
+                        let reconciled = IpcEventPayload::StateReconciled {
+                            snapshot: Box::new(snapshot),
+                        };
+                        if let Ok(raw) = build_event_frame(&reconciled)
+                            && event_out_tx.send(raw).await.is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -220,7 +258,7 @@ impl IpcConnection {
                         &cfg.cwd,
                         &cfg.started_at,
                         &cfg.server_instance_id,
-                        &cfg.session_id,
+                        &cfg.session_view_binding,
                         cfg.shared_settings
                             .lock()
                             .map(|settings| settings.ui_presentation)
@@ -1239,6 +1277,7 @@ fn event_name(ev: &IpcEventPayload) -> &'static str {
         IpcEventPayload::StreamIdle { .. } => "stream.idle",
         IpcEventPayload::ProviderRouteChanged { .. } => "provider.route_changed",
         IpcEventPayload::RuntimeQueueUpdated { .. } => "runtime.queue_updated",
+        IpcEventPayload::StateReconciled { .. } => "state.reconciled",
         IpcEventPayload::HarnessChanged => "harness.changed",
         IpcEventPayload::StateChanged { .. } => "state.changed",
         IpcEventPayload::SystemNotification { .. } => "system.notification",

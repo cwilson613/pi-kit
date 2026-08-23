@@ -1,8 +1,7 @@
 //! Kernel-owned privileged invocation admission and ephemeral execution leases.
 //!
-//! Slice 3.1 centralizes accepted-graph resolution, RBAC, permission policy,
-//! approval, and generation binding. Durable Prepared/Dispatched state begins in
-//! Slice 3.3; these leases deliberately make no crash-consistency claim.
+//! Centralizes accepted-graph resolution, monotonic admission, generation-bound
+//! leases, crash-consistent invocation state, and mutation fencing.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};

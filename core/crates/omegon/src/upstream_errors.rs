@@ -73,6 +73,10 @@ pub(crate) struct UpstreamFailureLogEntry {
     pub(crate) internal_class: String,
     pub(crate) recovery_action: RecoveryAction,
     pub(crate) attempt: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) request_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) response_attempt_ordinal: Option<u32>,
     pub(crate) delay_ms: u64,
     pub(crate) message: String,
 }
@@ -498,29 +502,30 @@ fn upstream_failures_log_path() -> PathBuf {
     base.join("upstream-failures.jsonl")
 }
 
-pub(crate) fn append_upstream_failure_log(entry: &UpstreamFailureLogEntry) {
+pub(crate) fn append_upstream_failure_log(entry: &UpstreamFailureLogEntry) -> std::io::Result<()> {
     use std::io::Write;
 
     let path = upstream_failures_log_path();
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
     let Ok(line) = serde_json::to_string(entry) else {
-        return;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "upstream failure entry could not be serialized",
+        ));
     };
-    let Ok(mut file) = std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
-    else {
-        return;
-    };
+        .open(&path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
-    let _ = writeln!(file, "{line}");
+    writeln!(file, "{line}")?;
+    file.sync_all()
 }
 
 pub(crate) fn classify_upstream_error_for_provider(
@@ -1223,6 +1228,8 @@ mod tests {
             internal_class: "RateLimited".into(),
             recovery_action: RecoveryAction::FailoverPreferred,
             attempt: 1,
+            request_id: None,
+            response_attempt_ordinal: None,
             delay_ms: 750,
             message: "429 too many requests".into(),
         };

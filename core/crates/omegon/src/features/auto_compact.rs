@@ -4,7 +4,7 @@
 //! at two tiers:
 //!   - Tier 1 (aggressive decay): tighten decay window, strip thinking.
 //!     Pure Rust, no LLM call. Cheap and fast.
-//!   - Tier 2 (LLM summarization): full compaction via compact_via_llm().
+//!   - Tier 2 (LLM summarization): full compaction through the captured route service.
 //!     Expensive but thorough.
 //!
 //! EWMA prediction projects fill at turn+2 to avoid emergency compaction.

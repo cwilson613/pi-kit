@@ -18,6 +18,7 @@ pub struct WebSurfacesSnapshot {
     pub session_id: String,
     pub revision: u64,
     pub generated_at: String,
+    pub projection: super::WebSessionProjection,
     pub surfaces: WebSurfaceBundle,
 }
 
@@ -65,6 +66,8 @@ pub struct WebEditorSurface {
 #[derive(Debug, Clone, Serialize)]
 pub struct WebCommandSurface {
     pub pending_prompt: Option<String>,
+    pub queue_depth: usize,
+    pub active_turn: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,11 +215,32 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
         .ok()
         .and_then(|guard| guard.clone());
 
+    let queue = state.runtime_queue_snapshot();
+    let mut projection = state.session_projection();
+    projection.queue_depth = queue["depth"]
+        .as_u64()
+        .unwrap_or(projection.queue_depth as u64) as usize;
+    if queue.get("active").is_some() {
+        projection.active_turn = if queue["active"].is_null() {
+            "idle".into()
+        } else {
+            "active".into()
+        };
+    }
+    let queue_depth = queue["depth"]
+        .as_u64()
+        .map_or(projection.queue_depth, |depth| depth as usize);
+    let active_turn = queue
+        .get("active")
+        .map_or(projection.active_turn == "active", |active| {
+            !active.is_null()
+        });
     WebSurfacesSnapshot {
         schema_version: WEB_SURFACES_SCHEMA_VERSION,
-        session_id: "default".to_string(),
+        session_id: state.session_id(),
         revision: 0,
         generated_at: Utc::now().to_rfc3339(),
+        projection,
         surfaces: WebSurfaceBundle {
             conversation: WebConversationSurface {
                 segments: state.conversation_segments(),
@@ -228,7 +252,13 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                 supports_attachments: true,
             },
             command: WebCommandSurface {
-                pending_prompt: None,
+                pending_prompt: queue["previews"]
+                    .as_array()
+                    .and_then(|previews| previews.first())
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                queue_depth,
+                active_turn,
             },
             command_menu: WebCommandMenuSurface {
                 available: true,
@@ -262,6 +292,32 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
             },
         },
     }
+}
+
+pub(crate) fn project_historical_web_surfaces(
+    state: &WebState,
+    target: &crate::session_consumers::SessionViewTarget,
+) -> Result<WebSurfacesSnapshot, crate::session_consumers::SessionConsumerError> {
+    let view = crate::session_consumers::SemanticSessionView::load(target)?;
+    let projection = super::web_projection(target, &view);
+    let mut snapshot = project_web_surfaces(state);
+    snapshot.session_id = target.session_id.clone();
+    snapshot.projection = projection;
+    snapshot.surfaces.conversation.segments = super::durable_web_segments(&view);
+    snapshot.surfaces.editor.accepts_prompt = false;
+    snapshot.surfaces.command.pending_prompt = None;
+    snapshot.surfaces.command.queue_depth = view
+        .frontend
+        .as_ref()
+        .map_or(0, |frontend| frontend.queued_prompts.len());
+    snapshot.surfaces.command.active_turn = view
+        .frontend
+        .as_ref()
+        .is_some_and(|frontend| frontend.active_turn.is_some());
+    snapshot.surfaces.footer.busy = false;
+    snapshot.surfaces.instruments.active_tool = None;
+    snapshot.surfaces.instruments.tools.clear();
+    Ok(snapshot)
 }
 
 fn project_instruments(state: &WebState) -> WebInstrumentsSurface {
@@ -432,6 +488,38 @@ mod tests {
             super::super::DashboardHandles::default(),
             tokio::sync::broadcast::channel(16).0,
         )
+    }
+
+    #[test]
+    fn current_surface_uses_dynamic_identity_and_authoritative_queue_busy_state() {
+        let state = test_state();
+        let binding = crate::session_consumers::SessionViewBinding::new(
+            std::path::PathBuf::from("/missing/session.json"),
+            "live-session-2".into(),
+        );
+        binding.update_runtime_queue(serde_json::json!({
+            "depth": 1,
+            "active": {"turn_id": 3},
+            "previews": ["second prompt"]
+        }));
+        let state = state.with_session_view_binding(binding.clone());
+        state.handles.session().set_busy(false);
+
+        let active = project_web_surfaces(&state);
+        assert_eq!(active.session_id, "live-session-2");
+        assert_eq!(active.surfaces.command.queue_depth, 1);
+        assert!(active.surfaces.command.active_turn);
+        assert!(!active.surfaces.footer.busy);
+
+        binding.update_runtime_queue(serde_json::json!({
+            "depth": 0,
+            "active": null,
+            "previews": []
+        }));
+        let idle = project_web_surfaces(&state);
+        assert_eq!(idle.surfaces.command.queue_depth, 0);
+        assert!(!idle.surfaces.command.active_turn);
+        assert!(!idle.surfaces.footer.busy);
     }
 
     fn cleave_child(label: &str, status: &str) -> ChildProgress {

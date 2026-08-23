@@ -20,11 +20,12 @@
 
 use async_trait::async_trait;
 use omegon_traits::{BusEvent, BusRequest, ContentBlock, Feature};
-use serde::Serialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 fn agent_event_kind(event: &omegon_traits::AgentEvent) -> &'static str {
     match event {
@@ -90,6 +91,21 @@ pub struct AuditLog {
     size_checked: bool,
     tool_starts: HashMap<String, u64>,
     tool_updates: HashMap<String, ToolUpdateStats>,
+    session_binding: Option<crate::session_consumers::DeferredSessionViewBinding>,
+    cursor_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditConsumerCursorV2 {
+    cursor_version: u16,
+    consumer_id: String,
+    semantic_row_schema_version: u16,
+    session_id: String,
+    stream_id: Uuid,
+    host_generation: u64,
+    last_sequence: u64,
+    last_event_id: Uuid,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -107,12 +123,22 @@ impl AuditLog {
         let _ = fs::create_dir_all(&dir);
         Self {
             path: dir.join("audit-log.jsonl"),
+            cursor_path: dir.join("audit-consumer-cursor-v2.json"),
             session_id: session_id.to_string(),
             bytes_written: 0,
             size_checked: false,
             tool_starts: HashMap::new(),
             tool_updates: HashMap::new(),
+            session_binding: None,
         }
+    }
+
+    pub(crate) fn with_session_binding(
+        mut self,
+        binding: crate::session_consumers::DeferredSessionViewBinding,
+    ) -> Self {
+        self.session_binding = Some(binding);
+        self
     }
 
     fn append(&mut self, entry: &AuditEntry) {
@@ -142,6 +168,151 @@ impl AuditLog {
         if self.bytes_written >= MAX_LOG_BYTES {
             self.rotate();
         }
+    }
+
+    fn consume_semantic(&mut self) {
+        if let Err(error) = self.try_consume_semantic() {
+            tracing::warn!(error = %error, "best-effort semantic runtime audit update failed");
+        }
+    }
+
+    fn try_consume_semantic(&mut self) -> Result<(), String> {
+        let binding = self
+            .session_binding
+            .as_ref()
+            .ok_or_else(|| "sessionless runtime audit has no semantic binding".to_string())?;
+        let (target, replay) = crate::session_advisory::load(binding)?;
+        let prior = read_audit_cursor(&self.cursor_path)?;
+        let start_sequence = match prior.as_ref() {
+            Some(cursor)
+                if cursor.session_id == target.session_id
+                    && cursor.stream_id == replay.frontier().stream_id() =>
+            {
+                validate_audit_cursor(cursor, &replay)?;
+                cursor.last_sequence.saturating_add(1)
+            }
+            _ => 1,
+        };
+        let minimum = replay
+            .first_full_spine_boundary()
+            .map_or(1, |frontier| frontier.sequence());
+        let existing = semantic_source_keys(&self.path)?;
+        let mut rows = Vec::new();
+        let route_by_request = replay
+            .records()
+            .iter()
+            .filter_map(|record| match record.payload() {
+                crate::session_authority::SessionFactPayload::RouteLeaseRecorded(route) => Some((
+                    route.request_id,
+                    (
+                        route.serving_provider_id.clone(),
+                        route.serving_model_id.clone(),
+                    ),
+                )),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+        let tool_by_call = replay
+            .records()
+            .iter()
+            .filter_map(|record| match record.payload() {
+                crate::session_authority::SessionFactPayload::ToolCallRecorded(call) => {
+                    Some((call.tool_call_id, call.invocation_name.clone()))
+                }
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+        for record in replay.records().iter().filter(|record| {
+            record.frontier().sequence() >= start_sequence
+                && record.frontier().sequence() >= minimum
+        }) {
+            let (kind, data) = match record.payload() {
+                crate::session_authority::SessionFactPayload::SessionCreated(_) => {
+                    ("semantic_session_committed", serde_json::json!({}))
+                }
+                crate::session_authority::SessionFactPayload::TurnClosed(turn) => (
+                    "semantic_turn_terminal",
+                    serde_json::json!({
+                        "turn_id": turn.turn_id,
+                        "outcome": format!("{:?}", turn.outcome).to_lowercase(),
+                        "reason_code": turn.reason_code,
+                    }),
+                ),
+                crate::session_authority::SessionFactPayload::AssistantMessageCommitted(
+                    message,
+                ) => {
+                    let route = route_by_request.get(&message.request_id);
+                    (
+                        "semantic_message_committed",
+                        serde_json::json!({
+                            "message_id": message.message_id,
+                            "request_id": message.request_id,
+                            "provider": route.map(|value| value.0.as_str()),
+                            "model": route.map(|value| value.1.as_str()),
+                            "usage": message.usage,
+                            "tool_call_count": message.tool_call_count,
+                        }),
+                    )
+                }
+                crate::session_authority::SessionFactPayload::ToolResultRecorded(result) => (
+                    "semantic_tool_terminal",
+                    serde_json::json!({
+                        "tool_result_id": result.tool_result_id,
+                        "tool_call_id": result.tool_call_id,
+                        "tool": tool_by_call.get(&result.tool_call_id),
+                        "disposition": format!("{:?}", result.disposition).to_lowercase(),
+                        "is_error": result.is_error,
+                        "reason_code": result.reason_code,
+                    }),
+                ),
+                _ => continue,
+            };
+            let key = semantic_key(
+                replay.frontier().stream_id(),
+                record.frontier().event_id(),
+                kind,
+            );
+            if existing.contains(&key) {
+                continue;
+            }
+            rows.push(AuditEntry {
+                ts: Self::now_ms(),
+                session: target.session_id.clone(),
+                kind: kind.into(),
+                data: serde_json::json!({
+                    "semantic_row_schema_version": 1,
+                    "authority_role": "best_effort_diagnostic_not_authority",
+                    "source": {
+                        "stream_id": replay.frontier().stream_id(),
+                        "sequence": record.frontier().sequence(),
+                        "event_id": record.frontier().event_id(),
+                        "event_kind": record.event_type(),
+                    },
+                    "recorded_at": record.recorded_at(),
+                    "data": data,
+                }),
+            });
+        }
+        if !crate::session_advisory::generation_is_current(binding, &target) {
+            return Ok(());
+        }
+        append_audit_rows(&self.path, &rows)?;
+        self.bytes_written = fs::metadata(&self.path).map_or(0, |metadata| metadata.len());
+        self.size_checked = true;
+        if self.bytes_written >= MAX_LOG_BYTES {
+            self.rotate();
+        }
+        let cursor = AuditConsumerCursorV2 {
+            cursor_version: 2,
+            consumer_id: "runtime-audit-semantic".into(),
+            semantic_row_schema_version: 1,
+            session_id: target.session_id,
+            stream_id: replay.frontier().stream_id(),
+            host_generation: target.generation,
+            last_sequence: replay.frontier().sequence(),
+            last_event_id: replay.frontier().event_id(),
+        };
+        write_audit_cursor(&self.cursor_path, &cursor)
     }
 
     /// Rotate: audit-log.jsonl → .1.jsonl, .1 → .2, .2 → .3, delete .3.
@@ -337,6 +508,274 @@ struct AuditEntry {
     data: serde_json::Value,
 }
 
+fn semantic_key(stream_id: Uuid, event_id: Uuid, kind: &str) -> String {
+    format!("{stream_id}:{event_id}:{kind}")
+}
+
+fn semantic_source_keys(path: &Path) -> Result<HashSet<String>, String> {
+    let mut keys = HashSet::new();
+    for candidate in [
+        path.to_path_buf(),
+        path.with_extension("1.jsonl"),
+        path.with_extension("2.jsonl"),
+        path.with_extension("3.jsonl"),
+    ] {
+        let Ok(metadata) = fs::symlink_metadata(&candidate) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() || metadata.len() > MAX_LOG_BYTES.saturating_mul(2) {
+            return Err(format!(
+                "audit dedup source is unsafe: {}",
+                candidate.display()
+            ));
+        }
+        let mut text = String::new();
+        std::fs::File::open(&candidate)
+            .map_err(|error| error.to_string())?
+            .read_to_string(&mut text)
+            .map_err(|error| error.to_string())?;
+        for line in text.lines() {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let semantic = value
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|kind| kind.starts_with("semantic_"));
+            let Some(source) = value.get("source") else {
+                if semantic {
+                    return Err("existing semantic audit row has no source identity".into());
+                }
+                continue;
+            };
+            let (Some(stream), Some(event), Some(kind)) = (
+                source.get("stream_id").and_then(serde_json::Value::as_str),
+                source.get("event_id").and_then(serde_json::Value::as_str),
+                value.get("kind").and_then(serde_json::Value::as_str),
+            ) else {
+                if semantic {
+                    return Err("existing semantic audit row has malformed source identity".into());
+                }
+                continue;
+            };
+            if Uuid::parse_str(stream).is_err() || Uuid::parse_str(event).is_err() {
+                if semantic {
+                    return Err("existing semantic audit row has invalid source identity".into());
+                }
+                continue;
+            }
+            keys.insert(format!("{stream}:{event}:{kind}"));
+        }
+    }
+    Ok(keys)
+}
+
+#[cfg(test)]
+pub(crate) fn recovery_campaign_probe(root: &Path, scenario_id: &str) -> Result<(), String> {
+    let path = root.join(format!("{scenario_id}.audit.jsonl"));
+    match scenario_id {
+        "AC38" => {
+            let original = b"{\"kind\":\"agent_event\",\"event_kind\":\"runtime\"}\n{\"kind\":\"semantic_turn_terminal\",\"source\":{}}\n";
+            fs::write(&path, original).map_err(|error| error.to_string())?;
+            if semantic_source_keys(&path).is_ok()
+                || fs::read(&path).ok().as_deref() != Some(original)
+            {
+                return Err("malformed semantic audit row did not fail closed".into());
+            }
+        }
+        "AC40" => {
+            let row = "{\"kind\":\"semantic_turn_terminal\",\"source\":{\"stream_id\":\"10000000-0000-4000-8000-000000000001\",\"event_id\":\"20000000-0000-4000-8000-000000000004\"}}\n";
+            fs::write(&path, format!("{row}{row}")).map_err(|error| error.to_string())?;
+            if semantic_source_keys(&path)?.len() != 1 {
+                return Err("semantic audit delivery was not deduplicated by source".into());
+            }
+        }
+        "AC43" => {
+            let row = b"{not-json\n{\"kind\":\"agent_event\",\"source\":{}}\n";
+            fs::write(&path, row).map_err(|error| error.to_string())?;
+            if !semantic_source_keys(&path)?.is_empty()
+                || fs::read(&path).ok().as_deref() != Some(row)
+            {
+                return Err("nonsemantic audit damage affected semantic advancement".into());
+            }
+        }
+        _ => return Err(format!("unsupported audit campaign scenario {scenario_id}")),
+    }
+    Ok(())
+}
+
+fn read_audit_cursor(path: &Path) -> Result<Option<AuditConsumerCursorV2>, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > 64 * 1024 {
+        return Err("semantic audit cursor is not a bounded regular file".into());
+    }
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+    let cursor = AuditConsumerCursorV2::deserialize(&mut deserializer)
+        .map_err(|error| format!("semantic audit cursor is malformed: {error}"))?;
+    deserializer
+        .end()
+        .map_err(|error| format!("semantic audit cursor has trailing data: {error}"))?;
+    if cursor.cursor_version != 2
+        || cursor.consumer_id != "runtime-audit-semantic"
+        || cursor.semantic_row_schema_version != 1
+        || cursor.session_id.is_empty()
+        || cursor.stream_id.is_nil()
+        || cursor.last_sequence == 0
+        || cursor.last_event_id.is_nil()
+    {
+        return Err("semantic audit cursor has invalid required fields".into());
+    }
+    Ok(Some(cursor))
+}
+
+fn validate_audit_cursor(
+    cursor: &AuditConsumerCursorV2,
+    replay: &crate::session_replay::SessionReplay,
+) -> Result<(), String> {
+    if cursor.last_sequence > replay.frontier().sequence() {
+        return Err("semantic audit cursor is ahead of validated replay".into());
+    }
+    let event = replay
+        .records()
+        .get(cursor.last_sequence.saturating_sub(1) as usize)
+        .map(|record| record.frontier().event_id());
+    if event != Some(cursor.last_event_id) {
+        return Err("semantic audit cursor event does not match validated replay".into());
+    }
+    Ok(())
+}
+
+fn append_audit_rows(path: &Path, rows: &[AuditEntry]) -> Result<(), String> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    audit_lock(&file).map_err(|error| error.to_string())?;
+    let mut current = String::new();
+    file.read_to_string(&mut current)
+        .map_err(|error| error.to_string())?;
+    let current_keys = current
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|value| {
+            Some(format!(
+                "{}:{}:{}",
+                value.get("source")?.get("stream_id")?.as_str()?,
+                value.get("source")?.get("event_id")?.as_str()?,
+                value.get("kind")?.as_str()?
+            ))
+        })
+        .collect::<HashSet<_>>();
+    for row in rows {
+        let Some(source) = row.data.get("source") else {
+            continue;
+        };
+        let key = format!(
+            "{}:{}:{}",
+            source["stream_id"].as_str().unwrap_or_default(),
+            source["event_id"].as_str().unwrap_or_default(),
+            row.kind
+        );
+        if current_keys.contains(&key) {
+            continue;
+        }
+        serde_json::to_writer(&mut file, row).map_err(|error| error.to_string())?;
+        file.write_all(b"\n").map_err(|error| error.to_string())?;
+    }
+    file.flush().map_err(|error| error.to_string())?;
+    file.sync_data().map_err(|error| error.to_string())?;
+    audit_unlock(&file).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn write_audit_cursor(path: &Path, cursor: &AuditConsumerCursorV2) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "semantic audit cursor has no parent".to_string())?;
+    let temporary = parent.join(format!(".audit-cursor-{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        serde_json::to_writer(&mut file, cursor).map_err(|error| error.to_string())?;
+        file.write_all(b"\n").map_err(|error| error.to_string())?;
+        file.flush().map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        drop(file);
+        fs::rename(&temporary, path).map_err(|error| error.to_string())?;
+        sync_audit_parent(parent).map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+#[cfg(unix)]
+fn audit_lock(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn audit_lock(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn audit_unlock(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn audit_unlock(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_audit_parent(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_audit_parent(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn semantic_backed_agent_event(event: &omegon_traits::AgentEvent) -> bool {
+    matches!(
+        event,
+        omegon_traits::AgentEvent::TurnStart { .. }
+            | omegon_traits::AgentEvent::MessageStart { .. }
+            | omegon_traits::AgentEvent::MessageChunk { .. }
+            | omegon_traits::AgentEvent::ThinkingChunk { .. }
+            | omegon_traits::AgentEvent::MessageEnd
+            | omegon_traits::AgentEvent::MessageAbort { .. }
+            | omegon_traits::AgentEvent::ToolEnd { .. }
+            | omegon_traits::AgentEvent::TurnEnd(_)
+            | omegon_traits::AgentEvent::AgentEnd
+    )
+}
+
 #[async_trait]
 impl Feature for AuditLog {
     fn name(&self) -> &str {
@@ -352,65 +791,16 @@ impl Feature for AuditLog {
                 self.session_id = session_id.clone();
                 self.tool_starts.clear();
                 self.tool_updates.clear();
-                self.append(&AuditEntry {
-                    ts,
-                    session: session_id.clone(),
-                    kind: "session_start".into(),
-                    data: serde_json::json!({ "cwd": cwd.display().to_string() }),
-                });
+                let _ = cwd;
+                self.consume_semantic();
             }
 
-            BusEvent::SessionEnd {
-                turns,
-                tool_calls,
-                duration_secs,
-                initial_prompt,
-                outcome_summary,
-            } => {
-                self.append(&AuditEntry {
-                    ts,
-                    session,
-                    kind: "session_end".into(),
-                    data: serde_json::json!({
-                        "turns": turns,
-                        "tool_calls": tool_calls,
-                        "duration_secs": duration_secs,
-                        "open_tools": self.tool_starts.len(),
-                        "tools_with_updates": self.tool_updates.len(),
-                        "initial_prompt": initial_prompt.as_deref().map(|s| Self::str_preview(s, 200)),
-                        "outcome": outcome_summary.as_deref().map(|s| Self::str_preview(s, 200)),
-                    }),
-                });
+            BusEvent::SessionEnd { .. } => {
+                self.consume_semantic();
             }
 
-            BusEvent::TurnEnd(te) => {
-                self.append(&AuditEntry {
-                    ts,
-                    session,
-                    kind: "turn".into(),
-                    data: serde_json::json!({
-                        "turn": te.turn,
-                        "model": te.model,
-                        "provider": te.provider,
-                        "est_tokens": te.estimated_tokens,
-                        "ctx_window": te.context_window,
-                        "in": te.actual_input_tokens,
-                        "out": te.actual_output_tokens,
-                        "cache": te.cache_read_tokens,
-                        "phase": te.dominant_phase.map(|p| format!("{p:?}")),
-                        "drift": te.drift_kind.map(|d| format!("{d:?}")),
-                        "progress": format!("{:?}", te.progress_signal),
-                        "ctx": {
-                            "sys": te.context_composition.system_tokens,
-                            "tools": te.context_composition.tool_schema_tokens,
-                            "conv": te.context_composition.conversation_tokens,
-                            "mem": te.context_composition.memory_tokens,
-                            "think": te.context_composition.thinking_tokens,
-                            "free": te.context_composition.free_tokens,
-                        },
-                        "quota": te.provider_telemetry.as_ref().map(|t| serde_json::to_value(t).unwrap_or_default()),
-                    }),
-                });
+            BusEvent::TurnEnd(_) => {
+                self.consume_semantic();
             }
 
             BusEvent::ToolStart { id, name, args, .. } => {
@@ -439,24 +829,8 @@ impl Feature for AuditLog {
                     .remove(id)
                     .map(|started| ts.saturating_sub(started));
                 let update_stats = self.tool_updates.remove(id).unwrap_or_default();
-                self.append(&AuditEntry {
-                    ts,
-                    session,
-                    kind: "tool_end".into(),
-                    data: serde_json::json!({
-                        "id": id,
-                        "tool": name,
-                        "error": is_error,
-                        "duration_ms": duration_ms,
-                        "updates": update_stats.count,
-                        "heartbeat_updates": update_stats.heartbeat_count,
-                        "first_update_latency_ms": update_stats.first_update_ms.zip(duration_ms).map(|(first, _)| first),
-                        "last_update_age_ms": update_stats.last_update_ms.map(|last| ts.saturating_sub(last)),
-                        "max_tail_chars": update_stats.max_tail_chars,
-                        "preview": Self::text_preview(result, 200),
-                        "details": result.details,
-                    }),
-                });
+                let _ = (name, result, is_error, duration_ms, update_stats);
+                self.consume_semantic();
             }
 
             BusEvent::PermissionDecision {
@@ -525,6 +899,9 @@ impl Feature for AuditLog {
                     stats.last_update_ms = Some(ts);
                     stats.max_tail_chars = stats.max_tail_chars.max(partial.tail.chars().count());
                 }
+                if semantic_backed_agent_event(event) {
+                    return vec![];
+                }
                 self.append(&AuditEntry {
                     ts,
                     session: session.clone(),
@@ -562,6 +939,45 @@ impl Feature for AuditLog {
 mod tests {
     use super::*;
 
+    fn semantic_audit() -> (
+        tempfile::TempDir,
+        AuditLog,
+        crate::session_consumers::DeferredSessionViewBinding,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("fixture-session.json");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/session-semantic-v1/slice-1-closed.authority.jsonl"),
+            directory.path().join("fixture-session.authority.jsonl"),
+        )
+        .unwrap();
+        let live = crate::session_consumers::SessionViewBinding::new(
+            snapshot.clone(),
+            "fixture-session".into(),
+        );
+        live.replace(crate::session_consumers::SessionViewTarget {
+            snapshot,
+            session_id: "fixture-session".into(),
+            stream_id: Some(Uuid::parse_str("10000000-0000-4000-8000-000000000001").unwrap()),
+            generation: 9,
+            kind: crate::session_consumers::SessionViewKind::Resume,
+        });
+        let deferred = crate::session_consumers::DeferredSessionViewBinding::default();
+        deferred.bind(live);
+        let audit = AuditLog::new(directory.path(), "fixture-session")
+            .with_session_binding(deferred.clone());
+        (directory, audit, deferred)
+    }
+
+    fn entries(path: &Path) -> Vec<serde_json::Value> {
+        fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
     #[test]
     fn mirrored_agent_event_writes_generic_audit_entry() {
         let tmp = tempfile::tempdir().unwrap();
@@ -588,6 +1004,162 @@ mod tests {
                 .unwrap()
                 .contains("hello")
         );
+    }
+
+    #[test]
+    fn semantic_audit_is_exactly_deduplicated_across_lag_and_restart() {
+        let (directory, mut audit, deferred) = semantic_audit();
+        audit.try_consume_semantic().unwrap();
+        let first = entries(&audit.path);
+        assert_eq!(
+            first
+                .iter()
+                .filter(|entry| entry["kind"].as_str().unwrap().starts_with("semantic_"))
+                .count(),
+            2
+        );
+        assert!(audit.cursor_path.exists(), "output must precede cursor");
+
+        let lagged = AuditConsumerCursorV2 {
+            cursor_version: 2,
+            consumer_id: "runtime-audit-semantic".into(),
+            semantic_row_schema_version: 1,
+            session_id: "fixture-session".into(),
+            stream_id: Uuid::parse_str("10000000-0000-4000-8000-000000000001").unwrap(),
+            host_generation: 9,
+            last_sequence: 1,
+            last_event_id: Uuid::parse_str("20000000-0000-4000-8000-000000000001").unwrap(),
+        };
+        write_audit_cursor(&audit.cursor_path, &lagged).unwrap();
+        let mut restarted =
+            AuditLog::new(directory.path(), "fixture-session").with_session_binding(deferred);
+        restarted.try_consume_semantic().unwrap();
+        assert_eq!(entries(&restarted.path), first);
+        assert_eq!(
+            read_audit_cursor(&restarted.cursor_path)
+                .unwrap()
+                .unwrap()
+                .last_sequence,
+            4
+        );
+    }
+
+    #[test]
+    fn malformed_cursor_fails_safe_without_duplicate_rows() {
+        let (_directory, mut audit, _) = semantic_audit();
+        audit.try_consume_semantic().unwrap();
+        let before = fs::read(&audit.path).unwrap();
+        fs::write(&audit.cursor_path, b"{not-json").unwrap();
+
+        assert!(audit.try_consume_semantic().is_err());
+        assert_eq!(fs::read(&audit.path).unwrap(), before);
+    }
+
+    #[test]
+    fn malformed_existing_semantic_row_stops_cursor_without_rewriting_evidence() {
+        let (_directory, mut audit, _) = semantic_audit();
+        audit.try_consume_semantic().unwrap();
+        let cursor = fs::read(&audit.cursor_path).unwrap();
+        let mut evidence = fs::read(&audit.path).unwrap();
+        evidence.extend_from_slice(b"{\"kind\":\"semantic_turn_terminal\",\"source\":{}}\n");
+        fs::write(&audit.path, &evidence).unwrap();
+
+        assert!(audit.try_consume_semantic().is_err());
+        assert_eq!(fs::read(&audit.path).unwrap(), evidence);
+        assert_eq!(fs::read(&audit.cursor_path).unwrap(), cursor);
+    }
+
+    #[test]
+    fn malformed_nonsemantic_row_is_preserved_without_blocking_semantic_dedup() {
+        let (_directory, mut audit, _) = semantic_audit();
+        fs::write(&audit.path, b"{not-json\n").unwrap();
+        audit.try_consume_semantic().unwrap();
+        let first = fs::read(&audit.path).unwrap();
+        audit.try_consume_semantic().unwrap();
+        assert_eq!(fs::read(&audit.path).unwrap(), first);
+        assert!(first.starts_with(b"{not-json\n"));
+    }
+
+    #[test]
+    fn dynamic_replacement_rebinds_audit_identity_and_fences_the_old_cursor() {
+        let (directory, mut audit, deferred) = semantic_audit();
+        audit.try_consume_semantic().unwrap();
+        let fixture = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/session-semantic-v1/slice-1-closed.authority.jsonl"),
+        )
+        .unwrap()
+        .replace("fixture-session", "replacement-session")
+        .replace(
+            "10000000-0000-4000-8000-000000000001",
+            "10000000-0000-4000-8000-000000000099",
+        );
+        let snapshot = directory.path().join("replacement-session.json");
+        fs::write(
+            directory.path().join("replacement-session.authority.jsonl"),
+            fixture,
+        )
+        .unwrap();
+        let replacement = crate::session_consumers::SessionViewBinding::new(
+            snapshot.clone(),
+            "replacement-session".into(),
+        );
+        replacement.replace(crate::session_consumers::SessionViewTarget {
+            snapshot,
+            session_id: "replacement-session".into(),
+            stream_id: Some(Uuid::parse_str("10000000-0000-4000-8000-000000000099").unwrap()),
+            generation: 10,
+            kind: crate::session_consumers::SessionViewKind::ContextClear,
+        });
+        deferred.bind(replacement);
+
+        audit.try_consume_semantic().unwrap();
+        let cursor = read_audit_cursor(&audit.cursor_path).unwrap().unwrap();
+        assert_eq!(cursor.session_id, "replacement-session");
+        assert_eq!(cursor.host_generation, 10);
+        assert_eq!(
+            entries(&audit.path)
+                .iter()
+                .filter(|entry| entry["kind"] == "semantic_turn_terminal")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn semantic_and_nonsemantic_audit_streams_do_not_duplicate_terminals() {
+        let (_directory, mut audit, _) = semantic_audit();
+        audit.try_consume_semantic().unwrap();
+        audit.on_event(&BusEvent::AgentEventEmitted {
+            event: Box::new(omegon_traits::AgentEvent::AgentEnd),
+        });
+        audit.on_event(&BusEvent::AgentEventEmitted {
+            event: Box::new(omegon_traits::AgentEvent::SystemNotification {
+                message: "operator-visible policy observation".into(),
+            }),
+        });
+
+        let rows = entries(&audit.path);
+        assert!(
+            !rows.iter().any(|entry| {
+                entry["kind"] == "agent_event" && entry["event_kind"] == "agent_end"
+            })
+        );
+        assert!(rows.iter().any(|entry| {
+            entry["kind"] == "agent_event" && entry["event_kind"] == "system_notification"
+        }));
+        let text = fs::read_to_string(&audit.path).unwrap();
+        assert!(!text.contains("content_ref"));
+        assert!(!text.contains("restricted_continuity"));
+    }
+
+    #[test]
+    fn sessionless_semantic_audit_is_a_noop() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut audit = AuditLog::new(directory.path(), "sessionless");
+        assert!(audit.try_consume_semantic().is_err());
+        assert!(!audit.path.exists());
+        assert!(!audit.cursor_path.exists());
     }
 
     #[test]

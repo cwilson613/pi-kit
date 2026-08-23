@@ -60,9 +60,9 @@ pub fn provider_seeds(provider_id: &str) -> &'static [&'static str] {
         "ollama-cloud" => &["gpt-oss:120b", "qwen3.5:397b", "kimi-k3"],
         "moonshot" => &["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"],
         "openrouter" => &[
+            "stealth/ox-alpha",
             "anthropic/claude-sonnet-4-7",
             "deepseek/deepseek-chat",
-            "minimax/minimax-m2.7",
         ],
         "google" | "gemini-openai" => &[
             "gemini-3.1-pro-preview",
@@ -259,6 +259,11 @@ mod tests {
         assert_eq!(projection.favorite_groups[0].models.len(), 3);
         let full = project_provider_inventory(&catalog, &preferences, "", "ollama-cloud").unwrap();
         assert_eq!(full.models.len(), 4);
+    }
+
+    #[test]
+    fn openrouter_shortlist_includes_ox_alpha() {
+        assert!(provider_seeds("openrouter").contains(&"stealth/ox-alpha"));
     }
 
     #[test]

@@ -30,6 +30,7 @@ const OBSERVATION_SCHEMA_VERSION: u16 = 1;
 const CATALOG_SCHEMA_VERSION: u16 = 1;
 const MAX_HOST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CATALOG_BYTES: u64 = 1024 * 1024;
+const MAX_COMPATIBILITY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: usize = 1024 * 1024;
 const OBSERVATION_MARKER: &[u8] = b"session-observations-v1\n";
 
@@ -60,6 +61,25 @@ impl SessionStorageBinding {
                     sequence: state.last_sequence,
                     event_id: state.last_event_id?,
                 })
+            }),
+        }
+    }
+
+    pub(crate) fn from_open_authority(
+        snapshot: &Path,
+        session_id: &str,
+        authority: &crate::session_authority::SessionAuthority,
+        workspace: &Path,
+    ) -> Self {
+        let state = authority.state();
+        Self {
+            snapshot: snapshot.to_path_buf(),
+            session_id: session_id.into(),
+            workspace_identity: workspace.to_string_lossy().into_owned(),
+            stream_id: state.stream_id,
+            source_frontier: state.last_event_id.map(|event_id| SourceFrontierV1 {
+                sequence: state.last_sequence,
+                event_id,
             }),
         }
     }
@@ -274,12 +294,38 @@ pub(crate) fn save_full_spine(
     for observation in conversation.operator_tool_observations() {
         append_observation_internal(binding, observation, true)?;
     }
-    refresh_catalog(binding, conversation, legacy_meta)?;
+    refresh_catalog(binding, legacy_meta)?;
     Ok(())
 }
 
 pub(crate) fn has_authority(snapshot: &Path) -> Result<bool> {
     exists_regular(&adjacent(snapshot, "authority.jsonl"))
+}
+
+pub(crate) fn load_compatibility_pair(
+    snapshot: &Path,
+) -> Result<(crate::conversation::ConversationState, SessionMeta)> {
+    let metadata = read_strict(&snapshot.with_extension("meta.json"), MAX_CATALOG_BYTES)?;
+    let bytes = read_bounded(snapshot, MAX_COMPATIBILITY_BYTES)?;
+    let conversation =
+        crate::conversation::ConversationState::load_session_bytes(snapshot, &bytes)?;
+    Ok((conversation, metadata))
+}
+
+pub(crate) fn compatibility_pair_required(binding: &SessionStorageBinding) -> Result<bool> {
+    let replay = SessionReplay::replay_prefix(
+        &binding.snapshot,
+        &binding.session_id,
+        binding
+            .stream_id
+            .context("session has no semantic stream")?,
+        ReplayEnd::EndOfStream,
+    )?;
+    Ok(match replay.lineage_level() {
+        AuthorityLineageLevel::FullSpine => false,
+        AuthorityLineageLevel::Mixed => !has_materialized_legacy_base(&replay),
+        AuthorityLineageLevel::LegacyOnly => true,
+    })
 }
 
 pub(crate) fn append_observation(
@@ -376,6 +422,22 @@ pub(crate) fn load_resume(
     let catalog_path = catalog_path(snapshot);
     if !exists_regular(&catalog_path)? {
         if has_authority(snapshot)? {
+            if recover_pending_legacy_import(snapshot, session_id, workspace, None)? {
+                return load_resume(snapshot, session_id, workspace);
+            }
+            let replay = SessionReplay::replay_prefix(
+                snapshot,
+                session_id,
+                authority_stream_id(snapshot, session_id)?,
+                ReplayEnd::EndOfStream,
+            )?;
+            if replay.first_full_spine_boundary().is_none()
+                && !has_materialized_legacy_base(&replay)
+                && exists_regular(snapshot)?
+                && exists_regular(&snapshot.with_extension("meta.json"))?
+            {
+                return Ok(None);
+            }
             bail!("authority-backed session is missing its required catalog");
         }
         return Ok(None);
@@ -410,6 +472,14 @@ pub(crate) fn load_resume(
         frontier.sequence != replay.frontier().sequence()
             || frontier.event_id != replay.frontier().event_id()
     }) {
+        if recover_pending_legacy_import(
+            snapshot,
+            session_id,
+            workspace,
+            catalog.semantic_frontier.as_ref(),
+        )? {
+            return load_resume(snapshot, session_id, workspace);
+        }
         bail!("catalog semantic frontier is stale or does not identify authority EOF");
     }
     let replay_lineage = match replay.lineage_level() {
@@ -425,16 +495,18 @@ pub(crate) fn load_resume(
     if catalog.lineage != replay_lineage || catalog.availability != replay_availability {
         bail!("catalog lineage or availability disagrees with semantic authority");
     }
+    let has_legacy_base = has_materialized_legacy_base(&replay);
     let mut conversation = match catalog.lineage {
         CatalogLineageV1::Full => crate::conversation::ConversationState::new(),
+        CatalogLineageV1::Mixed if has_legacy_base => crate::conversation::ConversationState::new(),
         CatalogLineageV1::Mixed => {
             if !exists_regular(snapshot)? {
                 bail!("mixed resume requires its labeled legacy compatibility base");
             }
-            crate::conversation::ConversationState::load_session(snapshot)?
+            load_compatibility_pair(snapshot)?.0
         }
         CatalogLineageV1::Legacy if exists_regular(snapshot)? => {
-            crate::conversation::ConversationState::load_session(snapshot)?
+            load_compatibility_pair(snapshot)?.0
         }
         CatalogLineageV1::Legacy => crate::conversation::ConversationState::new(),
     };
@@ -448,6 +520,104 @@ pub(crate) fn load_resume(
     conversation.intent.stats.tokens_consumed = 0;
     conversation.intent.stats.compactions = 0;
     Ok(Some((conversation, meta)))
+}
+
+fn has_materialized_legacy_base(replay: &SessionReplay) -> bool {
+    replay.records().iter().any(|record| {
+        matches!(
+            record.payload(),
+            SessionFactPayload::ContextSourceMaterialized(source)
+                if crate::session_authority::is_legacy_compatibility_source(source)
+        )
+    })
+}
+
+fn recover_pending_legacy_import(
+    snapshot: &Path,
+    session_id: &str,
+    workspace: &Path,
+    catalog_frontier: Option<&ObservationSourceFrontierV1>,
+) -> Result<bool> {
+    if !exists_regular(snapshot)? || !exists_regular(&snapshot.with_extension("meta.json"))? {
+        return Ok(false);
+    }
+    let replay = SessionReplay::replay_prefix(
+        snapshot,
+        session_id,
+        authority_stream_id(snapshot, session_id)?,
+        ReplayEnd::EndOfStream,
+    )?;
+    let Some(boundary) = replay.first_full_spine_boundary() else {
+        return Ok(false);
+    };
+    let legacy_sources = replay
+        .records()
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.payload(),
+                SessionFactPayload::ContextSourceMaterialized(source)
+                    if crate::session_authority::is_legacy_compatibility_source(source)
+            )
+        })
+        .collect::<Vec<_>>();
+    let Some(import) = legacy_sources.first() else {
+        return Ok(false);
+    };
+    if legacy_sources.len() != 1
+        || replay.lineage_level() != AuthorityLineageLevel::Mixed
+        || boundary.sequence() != import.frontier().sequence()
+        || replay.frontier().sequence() != import.frontier().sequence()
+    {
+        return Ok(false);
+    }
+    if let Some(frontier) = catalog_frontier {
+        let catalog_record = replay
+            .records()
+            .iter()
+            .find(|record| record.frontier().sequence() == frontier.sequence);
+        if catalog_record.is_none_or(|record| record.frontier().event_id() != frontier.event_id)
+            || frontier.sequence >= import.frontier().sequence()
+        {
+            return Ok(false);
+        }
+    }
+    let (conversation, metadata) = load_compatibility_pair(snapshot)?;
+    let normalized_metadata =
+        omegon_maintenance_contracts::normalize_workspace_path(metadata.cwd.as_bytes())
+            .map_err(anyhow::Error::msg)?;
+    let normalized_workspace = omegon_maintenance_contracts::normalize_workspace_path(
+        workspace.as_os_str().as_encoded_bytes(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    if metadata.session_id != session_id || normalized_metadata != normalized_workspace {
+        bail!("pending legacy import metadata identity mismatch");
+    }
+    if conversation.turn_count() != metadata.turns
+        || conversation.intent.stats.tool_calls != metadata.tool_calls
+    {
+        bail!("pending legacy import compatibility pair is internally inconsistent");
+    }
+    let compatibility = conversation.build_llm_view();
+    let legacy = crate::session_authority::legacy_compatibility_prefix(&replay, &compatibility);
+    let expected = crate::session_authority::legacy_compatibility_base_bytes(legacy)?;
+    let SessionFactPayload::ContextSourceMaterialized(source) = import.payload() else {
+        unreachable!("legacy source filter selected a different event type");
+    };
+    if SessionBlobStore::at(blob_path(snapshot))
+        .read(&source.content_ref, ProjectionClass::Default)?
+        != expected
+    {
+        bail!("pending legacy import no longer matches its compatibility pair");
+    }
+    let binding = SessionStorageBinding::discover(snapshot, session_id, workspace)?;
+    let host = read_host(&binding, true)?.context("host-state publication is missing")?;
+    if host.source_frontier != binding.source_frontier {
+        bail!("pending legacy import host-state frontier is not authority EOF");
+    }
+    read_observations(&binding)?;
+    refresh_catalog(&binding, None)?;
+    Ok(true)
 }
 
 pub(crate) fn list_catalogs(dir: &Path, workspace: &Path) -> Vec<SessionEntry> {
@@ -713,11 +883,7 @@ fn read_observations(binding: &SessionStorageBinding) -> Result<Vec<ObservationR
     Ok(records)
 }
 
-fn refresh_catalog(
-    binding: &SessionStorageBinding,
-    _conversation: &crate::conversation::ConversationState,
-    legacy: Option<&SessionMeta>,
-) -> Result<()> {
+fn refresh_catalog(binding: &SessionStorageBinding, legacy: Option<&SessionMeta>) -> Result<()> {
     let existing = if exists_regular(&catalog_path(&binding.snapshot))? {
         Some(read_strict::<SessionCatalogRecordV1>(
             &catalog_path(&binding.snapshot),
@@ -939,13 +1105,20 @@ fn strict_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     Ok(value)
 }
 fn read_strict<T: DeserializeOwned>(path: &Path, max: u64) -> Result<T> {
+    strict_json(&read_bounded(path, max)?)
+}
+
+fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>> {
     let mut file = open_regular(path)?;
     if file.metadata()?.len() > max {
         bail!("session store exceeds its byte bound");
     }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    strict_json(&bytes)
+    (&mut file).take(max + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        bail!("session store exceeds its byte bound");
+    }
+    Ok(bytes)
 }
 
 fn ensure_parent(path: &Path) -> Result<()> {
@@ -984,7 +1157,10 @@ fn open_regular(path: &Path) -> Result<File> {
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o077 != 0 {
-            bail!("session store permissions are not restrictive");
+            bail!(
+                "session store permissions are not restrictive: {}",
+                path.display()
+            );
         }
     }
     let mut options = OpenOptions::new();
@@ -1196,6 +1372,180 @@ mod tests {
         assert_eq!(
             loaded.intent.current_task.as_deref(),
             Some("host-owned task")
+        );
+        assert!(!compatibility_pair_required(&binding).unwrap());
+    }
+
+    #[test]
+    fn materialized_mixed_resume_no_longer_requires_legacy_pair() {
+        let directory = tempfile::tempdir().unwrap();
+        let id = "2026-08-23T06-30-00_cafebabe";
+        let snapshot = directory.path().join(format!("{id}.json"));
+        let mut conversation = crate::conversation::ConversationState::new();
+        conversation.push_user("legacy prompt".into());
+        conversation.save_session(&snapshot).unwrap();
+        let metadata = SessionMeta {
+            session_id: id.into(),
+            cwd: directory.path().to_string_lossy().into_owned(),
+            created_at: "2026-08-23T06:30:00Z".into(),
+            turns: 1,
+            tool_calls: 0,
+            description: String::new(),
+            friendly_name: String::new(),
+            last_prompt_snippet: "legacy prompt".into(),
+        };
+        fs::write(
+            snapshot.with_extension("meta.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        let mut authority = crate::session_authority::SessionAuthority::open(
+            &snapshot,
+            id,
+            "workspace",
+            "generation",
+            crate::session_authority::ActorIdentity {
+                principal: "test".into(),
+                ingress: "test".into(),
+            },
+            "2026-08-23T06:30:00Z",
+        )
+        .unwrap();
+        assert!(
+            crate::session::import_legacy_resume(
+                &mut authority,
+                &conversation,
+                &metadata,
+                &snapshot,
+                directory.path(),
+                "2026-08-23T06:30:00Z",
+            )
+            .unwrap()
+        );
+        let authority = crate::session_authority::SessionAuthorityHandle::new(authority);
+        let binding = SessionStorageBinding::from_authority(
+            &snapshot,
+            id,
+            Some(&authority),
+            directory.path(),
+        );
+        assert!(!compatibility_pair_required(&binding).unwrap());
+
+        fs::remove_file(&snapshot).unwrap();
+        fs::remove_file(snapshot.with_extension("meta.json")).unwrap();
+        assert!(
+            load_resume(&snapshot, id, directory.path())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn pending_legacy_import_recovers_missing_catalog_from_valid_pair() {
+        let directory = tempfile::tempdir().unwrap();
+        let id = "2026-08-23T06-31-00_feedface";
+        let snapshot = directory.path().join(format!("{id}.json"));
+        let mut conversation = crate::conversation::ConversationState::new();
+        conversation.push_user("legacy prompt".into());
+        conversation.save_session(&snapshot).unwrap();
+        let metadata = SessionMeta {
+            session_id: id.into(),
+            cwd: directory.path().to_string_lossy().into_owned(),
+            created_at: "2026-08-23T06:31:00Z".into(),
+            turns: conversation.turn_count(),
+            tool_calls: conversation.intent.stats.tool_calls,
+            description: "unbound pending description".into(),
+            friendly_name: "unbound pending name".into(),
+            last_prompt_snippet: "legacy prompt".into(),
+        };
+        fs::write(
+            snapshot.with_extension("meta.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(
+                snapshot.with_extension("meta.json"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+        let authority = crate::session_authority::SessionAuthority::open(
+            &snapshot,
+            id,
+            "workspace",
+            "generation",
+            crate::session_authority::ActorIdentity {
+                principal: "test".into(),
+                ingress: "test".into(),
+            },
+            "2026-08-23T06:31:00Z",
+        )
+        .unwrap();
+        drop(authority);
+        assert!(
+            load_resume(&snapshot, id, directory.path())
+                .unwrap()
+                .is_none()
+        );
+        let mut authority = crate::session_authority::SessionAuthority::open(
+            &snapshot,
+            id,
+            "workspace",
+            "generation",
+            crate::session_authority::ActorIdentity {
+                principal: "test".into(),
+                ingress: "test".into(),
+            },
+            "2026-08-23T06:31:00Z",
+        )
+        .unwrap();
+        authority
+            .import_legacy_compatibility_base(
+                &conversation.build_llm_view(),
+                "2026-08-23T06:31:00Z",
+            )
+            .unwrap();
+        let binding =
+            SessionStorageBinding::from_open_authority(&snapshot, id, &authority, directory.path());
+        save_full_spine(&binding, &conversation, Some(&metadata)).unwrap();
+        let host_before = fs::read(host_path(&snapshot)).unwrap();
+        fs::remove_file(catalog_path(&snapshot)).unwrap();
+        drop(authority);
+
+        assert!(!catalog_path(&snapshot).exists());
+        assert!(
+            load_resume(&snapshot, id, directory.path())
+                .unwrap()
+                .is_some()
+        );
+        assert!(catalog_path(&snapshot).exists());
+        assert_eq!(fs::read(host_path(&snapshot)).unwrap(), host_before);
+        let recovered_catalog: SessionCatalogRecordV1 =
+            read_strict(&catalog_path(&snapshot), MAX_CATALOG_BYTES).unwrap();
+        assert!(recovered_catalog.friendly_name.is_none());
+        assert!(recovered_catalog.description.is_none());
+
+        fs::remove_file(catalog_path(&snapshot)).unwrap();
+        let mut replacement = crate::conversation::ConversationState::new();
+        replacement.push_user("different legacy prompt".into());
+        replacement.save_session(&snapshot).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let error = match load_resume(&snapshot, id, directory.path()) {
+            Ok(_) => panic!("changed compatibility pair unexpectedly recovered"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("no longer matches its compatibility pair")
         );
     }
 

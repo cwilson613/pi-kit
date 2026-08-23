@@ -1,5 +1,6 @@
 ---
 import Docs from "../../layouts/Docs.astro";
+import { snippet } from "../../lib/snippets";
 ---
 <Docs title="Commands" description="Complete reference for slash commands available in Omegon sessions.">
   <h1>Command Reference</h1>
@@ -45,7 +46,7 @@ import Docs from "../../layouts/Docs.astro";
       <tr><td><code>/stats</code></td><td>Session telemetry — turns, tool calls, tokens, duration.</td></tr>
       <tr><td><code>/new</code></td><td>Save the current session and start a fresh one.</td></tr>
       <tr><td><code>/memory</code></td><td>Memory statistics — facts, episodes, working memory.</td></tr>
-      <tr><td><code>/sessions</code></td><td>List saved sessions. Resume with <code>--resume</code> flag.</td></tr>
+      <tr><td><code>{snippet("slash.sessions")}</code></td><td>List saved sessions with lineage-aware resume metadata. Resume with <code>--resume</code>.</td></tr>
       <tr><td><code>/note [text]</code></td><td>Capture a note for later (persists across sessions).</td></tr>
       <tr><td><code>/notes [clear]</code></td><td>Show or clear pending notes.</td></tr>
     </tbody>
@@ -136,7 +137,10 @@ import Docs from "../../layouts/Docs.astro";
       <tr><td><code>/dash</code></td><td>Open Omegon's local browser compatibility/debug surface (real-time live state over WebSocket).</td></tr>
       <tr><td><code>/mouse [on|off]</code></td><td>Toggle pane mouse interaction. Mouse capture must be enabled for click and double-click interactions.</td></tr>
       <tr><td><code>/copy [plain|raw|answer|latest|session]</code></td><td>Copy the selected segment, latest answer, or session projection.</td></tr>
-      <tr><td><code>/transcript [file|open|scrollback]</code></td><td>Write or open a clean Markdown transcript.</td></tr>
+      <tr><td><code>{snippet("slash.transcript")}</code> / <code>/transcript file|open</code></td><td>Write or open the exact committed semantic transcript for full lineage.</td></tr>
+      <tr><td><code>{snippet("slash.transcript_suffix")}</code></td><td>Write the explicitly labeled exact semantic suffix for mixed lineage. Legacy and mixed full-session exact transcript requests are unavailable.</td></tr>
+      <tr><td><code>{snippet("slash.session_export")}</code> / <code>/session-export file|open</code></td><td>Write or open presentation/evidence output with provenance, freshness, partial/abandoned evidence, and overlay disclosure.</td></tr>
+      <tr><td><code>{snippet("slash.session_export_scrollback")}</code></td><td>Export current presentation scrollback. This is not exact transcript authority.</td></tr>
       <tr><td><code>/warp</code></td><td>Toggle live between <code>om</code> (slim) and <code>omegon</code> (full) runtime posture.</td></tr>
       <tr><td><code>/shackle</code></td><td>Force slim <code>om</code>-style posture: copy-friendly, conversation-first, lower-pressure surfaces.</td></tr>
       <tr><td><code>/unshackle</code></td><td>Force full <code>omegon</code> posture with the broader harness surfaces.</td></tr>

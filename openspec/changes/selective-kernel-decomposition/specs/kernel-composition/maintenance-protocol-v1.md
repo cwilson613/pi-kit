@@ -35,11 +35,12 @@ The complete v1 read/mutation path map is:
 | skill | project | `<workspace>/.omegon/skills/<entry>` |
 | prompt | project | `<workspace>/.omegon/prompts/<entry>.md` |
 | workflow | project | `<workspace>/.omegon/workflows/<entry>.toml` |
-| session pair | config | `<config-home>/sessions/<legacy-workspace-slug>/<session-id>{.json,.meta.json}` |
+| semantic session catalog | config | `<config-home>/sessions/<legacy-workspace-slug>/<session-id>.catalog.v1.json` |
+| legacy session pair fallback | config | `<config-home>/sessions/<legacy-workspace-slug>/<session-id>{.json,.meta.json}` |
 | ownership | project | `<workspace>/.omegon/runtime/<runtime-id>/ownership-v1.json` |
 | maintenance state | user | `<home>/maintain/v1/` as defined below |
 
-Environment-selected plugin/pack directories, executable-relative shipped data, `armory/personas`, and arbitrary catalog bundle paths are diagnostics-only and never Slice-zero mutation roots. Missing canonical roots are empty inventory, not permission to scan ancestors. Session reads preserve the legacy directory layout but require metadata equality; no slug is treated as identity. The fixed Slice-1 `<session-id>.authority.jsonl` and `<session-id>.authority.snapshot.json` sidecars are separate authority/cache framing, not legacy session snapshots; Slice-zero session inventory ignores them rather than reporting missing metadata pairs or interpreting their contents.
+Environment-selected plugin/pack directories, executable-relative shipped data, `armory/personas`, and arbitrary catalog bundle paths are diagnostics-only and never Slice-zero mutation roots. Missing canonical roots are empty inventory, not permission to scan ancestors. Session reads preserve the legacy directory layout; a valid semantic catalog is canonical framing and the snapshot/metadata pair is fallback only when that ID has no catalog. Catalog and legacy metadata workspace identities are normalized before comparison, and no slug is treated as identity. The fixed Slice-1 `<session-id>.authority.jsonl` and `<session-id>.authority.snapshot.json` sidecars remain separate authority/cache framing and are not directly interpreted as maintenance authority; session inventory ignores them rather than reporting missing metadata pairs or interpreting their contents.
 
 Contribution selectors are `<kind>:<id>` for valid IDs matching `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Invalid or colliding directory entries are listed with opaque selector `entry:sha256:<hex>`, derived from kind, scope key, and raw basename bytes; that exact selector may be inspected, denied, or quarantined without interpreting the basename. Prompt/workflow suffixes are framing and excluded from the logical ID.
 

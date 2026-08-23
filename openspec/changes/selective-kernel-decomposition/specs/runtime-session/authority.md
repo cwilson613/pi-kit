@@ -261,8 +261,9 @@ counters are derived. Audit and narrative journal remain separate records.
 
 The task-5.4 implementation applies this matrix to provider and compaction
 context, host state and observations, catalog, transcript/export, TUI, ACP, Web,
-IPC, telemetry, audit, and journal consumers. Task 5.5 retains adverse-consumer
-campaigns, and task 5.6 retains public documentation and dual-write closeout.
+IPC, telemetry, audit, and journal consumers. Task 5.5 completes adverse-consumer
+campaigns, and task 5.6 completes public documentation and compatibility-
+publication closeout.
 
 Validated projection readers must verify schema/projector identity, session and
 stream identity, output digest, cursor/output revision, and a real replay
@@ -283,11 +284,12 @@ lineage remains deferred.
 
 `/transcript` must denote the exact committed semantic transcript. The current
 presentation/evidence export must move to `/session-export` and must disclose
-lineage, source frontier, exactness, and stale/partial evidence. Compatibility
-`.json` and `.meta.json` dual-write continues through Slice 5.6 closeout. A
-rollback may select those mirrors for compatibility consumers, but it must not
-stop semantic emission, permit an old writer, downgrade a full-spine lineage, or
-make an exact claim from a mirror.
+lineage, source frontier, exactness, and stale/partial evidence. Full and
+materialized-mixed sessions do not rewrite compatibility `.json` and
+`.meta.json`; legacy and not-yet-materialized mixed sessions retain the pair only
+as a one-way importer. No rollback selector makes those files authoritative.
+Compatibility handling must not stop semantic emission, permit an old writer,
+downgrade a full-spine lineage, or make an exact claim from the pair.
 
 #### Scenario: Projection lags immediately before dispatch
 Given a valid frontend or provider-history projection trails the latest durable authority frontier

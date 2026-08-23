@@ -45,8 +45,8 @@ recovery, fixture, and atomic session-replacement contract below. Task 5.3
 derives the four frozen projections, and task 5.4 now consumes them through the
 frozen validated-reader and plural-authority contracts. Task 5.5 completes the
 frozen 54-scenario adverse-consumer campaign below with macOS, Ubuntu, and
-Windows evidence within budget. Applicable public documentation and dual-write
-closeout remain task 5.6.
+Windows evidence within budget. Task 5.6 completes applicable public
+documentation and compatibility-publication closeout.
 
 ## Implementation status
 
@@ -1805,8 +1805,8 @@ At the task-5.3 boundary, publication was shadow-only. It wrote and validated th
 goldens, but `ConversationState`, provider dispatch, transcript/export commands,
 TUI, ACP, Web, IPC, whole-file session snapshots, metadata checkpoints,
 narrative journals, audit consumers, and compaction compatibility consumers do
-not read them. Task 5.4 now migrates those consumers while retaining the
-rollback mirrors through 5.6.
+not read them. Task 5.4 migrates those consumers; task 5.6 later limits the
+legacy pair to one-way import for sessions that are not yet self-sufficient.
 
 ### Task-5.3 fixture and golden matrix
 
@@ -1854,7 +1854,7 @@ atomic-publication, and parent-sync rules above.
 | telemetry | `SessionTelemetrySnapshotV1` | diagnostics at its named sources | replay, admission, or billing authority |
 | audit | audit ledger v2 | security/diagnostic evidence under its own retention | semantic replay or transcript |
 | narrative journal | Markdown entry v2 | human continuity with machine-readable provenance | replay, exactness, or deduced completion |
-| legacy `.json`/`.meta.json` | compatibility mirror | labeled legacy/mixed resume and rollback display through 5.6 | full-spine authority, old-writer admission, exact full-session claims |
+| legacy `.json`/`.meta.json` | compatibility importer | labeled legacy resume and pre-materialization mixed import | full-spine authority, old-writer admission, exact full-session claims |
 
 No row acquires another row's authority because it contains copied fields. Every
 copy retains source kind and cursor. Sessionless semantic lineage is not defined
@@ -2051,7 +2051,8 @@ Observations are ordered only by ledger sequence. They do not create a prompt,
 turn, tool result, transcript message, semantic counter, or provider input. A
 model-visible observation must separately pass content admission and semantic
 materialization as described above. Legacy inline observations migrate once by
-deterministic identity and remain in the compatibility mirror during dual-write.
+deterministic identity into the observation ledger; retained compatibility bytes
+do not become observation authority.
 
 ### Catalog and telemetry schemas
 
@@ -2233,7 +2234,7 @@ exactness. ACP/CLI/Web command registries expose names only where the transport
 can preserve these semantics; task 5.4 updates private command help and task 5.6
 owns applicable public docs. No configuration key is added.
 
-### Legacy, mixed, full, rollback, and dual-write
+### Legacy, mixed, full, and compatibility import
 
 - Legacy resume remains a labeled compatibility load from `.json` plus host
   metadata. It makes no semantic transcript/provider-history claim.
@@ -2292,7 +2293,7 @@ Task 5.4 includes red-to-green fixtures for:
 | cutovers | provider, resume, transcript, session export, TUI, ACP, IPC, Web, compaction, catalog, telemetry, audit, and journal source guards |
 | lineage | labeled legacy; mixed base plus exact suffix; full exact; mixed full-export denial; Web suffix-only; sessionless absence |
 | audit/journal | semantic cursor and dedup across restart; distinct runtime observations; canonical journal provenance; old Markdown entry readability |
-| compatibility | post-authority mirror ordering; mirror failure isolation; `.json`/`.meta.json` old-reader shape; rollback source switch; old-writer denial; no downgrade |
+| compatibility | post-authority legacy publication ordering; failure isolation; `.json`/`.meta.json` old-reader shape; one-way import; old-writer denial; no downgrade |
 | commands/docs | `/transcript` exactness; `/session-export` presentation evidence; `/copy session` remains presentation; no config/site/snippet change in refinement |
 
 Task 5.5 runs the frozen campaign below against these implemented contracts; it
@@ -2417,27 +2418,22 @@ delivery, and a second submission succeeds. Notification ordering, projection
 damage, evidence failure, and mirror partial publication may not strand the
 operator or authorize work from stale state.
 
-The checked manifest has no expected-pending rows and every frozen ID now enters
-a consumer-specific campaign oracle. The macOS campaign is within the required
-budget, and focused tests cover corrupt derived chunk quarantine/rebuild,
-replacement with damaged projections, skipped ACP completion, automatic IPC lag
-reconciliation, observation-ledger existence proof, missing catalog fatality,
-malformed semantic audit advancement, journal semantic-source unavailability,
-and semantic/mirror partial publication. Task 5.5 is not yet complete: AC13 must
-use a chunk-bearing mixed-lineage fixture rather than the broader
-missing-derived-state fallback; several exact, adapter-specific frontend,
-legacy-host, evidence-replacement, and mirror rows still reuse shared law probes
-instead of enacting their frozen interaction; and the identical campaign still
-needs Linux and Windows evidence. Supplemental platform-specific
-crash-durability probes remain release evidence rather than weakening the
-portable deterministic gate.
+The checked manifest has no expected-pending rows and every frozen ID enters an
+exhaustive consumer-specific campaign oracle. AC13 uses a chunk-bearing
+mixed-lineage fixture. The macOS, Ubuntu, and Windows campaigns are within the
+required budget, and focused tests cover corrupt derived chunk
+quarantine/rebuild, replacement with damaged projections, skipped ACP
+completion, automatic IPC lag reconciliation, observation-ledger existence
+proof, missing catalog fatality, malformed semantic audit advancement, journal
+semantic-source unavailability, and semantic/mirror partial publication.
+Supplemental platform-specific crash-durability probes remain release evidence
+rather than weakening the portable deterministic gate.
 Task 5.5 may not rewrite accepted corpus bytes or alter event v1, reducer/cache
 v5, cursor v1, projection v1, or task-5.4 store schemas.
 
-Task 5.6 alone may remove compatibility dual-write or change developer and
-applicable public session/resume/migration/recovery docs, public site pages, or
-canonical snippets. Task 5.5 may update only private implementation-facing
-documentation needed to keep this campaign truthful.
+Task 5.6 executes the frozen compatibility-publication closeout and co-delivers
+developer and applicable public session/resume/migration/recovery docs, public
+site pages, and canonical snippets.
 
 ### Recovery and atomic replacement
 
@@ -2733,7 +2729,7 @@ with output-before-cursor publication; it does not re-emit materialized-source o
 compaction facts. Slice 5.4.0 freezes the authority-role matrix, synchronous
 exact-frontier current-context view, separate host-state and observation stores,
 catalog/telemetry/audit/journal schemas, validated readers, consumer cutovers,
-publication replacement, dual-write rollback, command names, fixtures, and
+publication replacement, compatibility publication, command names, fixtures, and
 version strategy without runtime changes. Slice 5.4 now migrates the named consumers
 under that freeze. Sessionless semantic lineage remains deferred rather than
 being implicitly approved by this slice.

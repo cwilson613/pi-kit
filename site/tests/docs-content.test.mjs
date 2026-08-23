@@ -62,23 +62,48 @@ test('recovery docs consume canonical maintenance snippets', () => {
     assert.match(content, new RegExp(`snippet\\("maintenance\\.${key}"\\)`));
   }
   assert.match(content, /snippet\("verify\.release_verify"\)/);
+  assert.match(content, /prefers semantic\s+catalog framing/);
+  assert.match(content, /Authority events and referenced content blobs are durable truth/);
+  assert.match(content, /projector-owned transcript, provider-history, frontend, and compaction outputs are derived/i);
+  assert.match(content, /partial_publication/);
   assert.doesNotMatch(content, /omegon-maintain (fix|repair|clean|update|rollback)(\s|<)/);
 
   const layout = readFileSync(resolve(here, '../src/layouts/Docs.astro'), 'utf8');
   assert.match(layout, /href: "\/docs\/recovery"/);
 });
 
-test('sessions docs distinguish durable authority from conversation snapshots', () => {
+test('sessions docs publish lineage and exactness boundaries', () => {
   const content = readDoc('sessions.astro');
   assert.match(content, /Durable Turn Authority/);
   assert.match(content, /admitted prompts, FIFO queue order/);
-  assert.match(content, /Conversation JSON remains a compatibility snapshot/);
+  assert.match(content, /Lineage and Resume/);
+  assert.match(content, /<strong>Full:<\/strong>/);
+  assert.match(content, /<strong>Mixed:<\/strong>/);
+  assert.match(content, /<strong>Legacy:<\/strong>/);
+  assert.match(content, /Migration is one-way/);
+  assert.match(content, /snippet\("slash\.transcript"\)/);
+  assert.match(content, /snippet\("slash\.transcript_suffix"\)/);
+  assert.match(content, /snippet\("slash\.session_export"\)/);
   assert.match(content, /cancellation request leaves the turn busy/);
-  assert.match(content, /Disables the conversation session snapshot and interactive authority sidecar/);
+  assert.match(content, /Disables interactive semantic session authority and compatibility persistence/);
   assert.match(content, /route\.lease_recorded/);
   assert.match(content, /runtime\/route-leases\.jsonl/);
   assert.match(content, /No current operator command lists historical route leases/);
+  assert.doesNotMatch(content, /recent canonical history and summarizes older messages/);
   assert.doesNotMatch(content, /Resume exactly where you left off|full context restored|full replay/i);
+});
+
+test('commands and migration docs preserve session compatibility semantics', () => {
+  const commands = readDoc('commands.astro');
+  const migration = readDoc('migration.astro');
+  assert.match(commands, /snippet\("slash\.transcript"\)/);
+  assert.match(commands, /snippet\("slash\.transcript_suffix"\)/);
+  assert.match(commands, /snippet\("slash\.session_export"\)/);
+  assert.match(commands, /not exact transcript authority/);
+  assert.match(migration, /explicit full, mixed, or legacy lineage/);
+  assert.match(migration, /Migration is one-way|model-facing legacy context once/);
+  assert.match(migration, /There is no rollback-to-old-writer mode/);
+  assert.doesNotMatch(migration, /recent history plus a summary of older context/);
 });
 
 test('provider routing docs preserve contribution and lease boundaries', () => {
@@ -216,6 +241,9 @@ test('site builds successfully', () => {
   const termsHtml = readFileSync(resolve(here, '../dist/terms/index.html'), 'utf8');
   const installHtml = readFileSync(resolve(here, '../dist/docs/install/index.html'), 'utf8');
   const recoveryHtml = readFileSync(resolve(here, '../dist/docs/recovery/index.html'), 'utf8');
+  const sessionsHtml = readFileSync(resolve(here, '../dist/docs/sessions/index.html'), 'utf8');
+  const commandsHtml = readFileSync(resolve(here, '../dist/docs/commands/index.html'), 'utf8');
+  const migrationHtml = readFileSync(resolve(here, '../dist/docs/migration/index.html'), 'utf8');
   const securityHtml = readFileSync(resolve(here, '../dist/docs/security/index.html'), 'utf8');
   const rootChangelog = readFileSync(resolve(here, '../../CHANGELOG.md'), 'utf8');
 
@@ -230,6 +258,11 @@ test('site builds successfully', () => {
   assert.match(installHtml, /omegon-maintain --json identity/);
   assert.match(recoveryHtml, /omegon-maintain --json composition inspect/);
   assert.match(recoveryHtml, /contribution disable plugin:formatter --scope project/);
+  assert.match(recoveryHtml, /partial_publication/);
+  assert.match(sessionsHtml, /\/transcript suffix/);
+  assert.match(sessionsHtml, /\/session-export scrollback/);
+  assert.match(commandsHtml, /exact committed semantic transcript/);
+  assert.match(migrationHtml, /mixed lineage/);
   assert.match(securityHtml, /omegon-maintain --json release verify/);
   for (const rendered of [installHtml, recoveryHtml, securityHtml]) {
     assert.doesNotMatch(rendered, /certificate-identity-regexp[^<]*\.\*/);

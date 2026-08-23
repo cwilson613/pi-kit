@@ -5032,7 +5032,8 @@ fn build_tui_secret_readiness_snapshot(
             .ok_or_else(|| anyhow::anyhow!("interactive composition was not published"))?
             .as_str()
             .to_string();
-        Some(session_authority::SessionAuthority::open(
+        let recorded_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let mut authority = session_authority::SessionAuthority::open(
             &session_snapshot,
             &agent.session_id,
             &agent.workspace_state.lease.workspace_id,
@@ -5041,8 +5042,19 @@ fn build_tui_secret_readiness_snapshot(
                 principal: "local-operator".into(),
                 ingress: "interactive".into(),
             },
-            &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        )?)
+            &recorded_at,
+        )?;
+        if let Some(metadata) = agent.resume_meta.as_ref() {
+            session::import_legacy_resume(
+                &mut authority,
+                &agent.conversation,
+                metadata,
+                &session_snapshot,
+                &agent.cwd,
+                &recorded_at,
+            )?;
+        }
+        Some(authority)
     };
 
     let (mut agent, mut runtime_state) = split_interactive_agent(agent);
@@ -10114,6 +10126,7 @@ mod tests {
             dashboard_handles: crate::runtime_state::RuntimeStateHandles::default(),
             initial_harness_status: crate::status::HarnessStatus::default(),
             resume_info: None,
+            resume_meta: None,
             workspace_state: setup::WorkspaceStartupState {
                 lease: workspace_lease,
                 admission: crate::workspace::types::AdmissionOutcome::GrantedMutable,

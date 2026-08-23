@@ -92,9 +92,26 @@ import { snippet } from "../../lib/snippets";
 
 {snippet("maintenance.session_quarantine")}</code></pre>
   <p>
-    Selection requires one exact session and workspace identity. Quarantine installs resume-deny
-    authority while preserving session and metadata bytes. It does not rewrite snapshots,
-    synthesize events, change completion state, or semantically repair a conversation.
+    Selection requires one exact session and workspace identity. Maintenance prefers semantic
+    catalog framing and falls back to a legacy pair only when no catalog exists. Quarantine
+    identity-pins the selected framing, installs resume-deny authority, and preserves all session
+    bytes. It does not rewrite stores, synthesize events, change completion state, or semantically
+    repair a conversation.
+  </p>
+
+  <h3>Semantic Store Recovery</h3>
+  <ul>
+    <li>Authority events and referenced content blobs are durable truth. Corrupt, unsupported, missing, or identity-mismatched required data fails closed.</li>
+    <li>A catalog is required when authority exists. Missing or stale catalog identity is fatal rather than a reason to load compatibility JSON.</li>
+    <li>Host-state checkpoints and observation ledgers retain their own authority. Malformed or torn required records fail closed.</li>
+    <li>Projector-owned transcript, provider-history, frontend, and compaction outputs are derived. A proven corrupt chunk may be quarantined and rebuilt from validated authority under the projector lock.</li>
+    <li>Audit, journal, telemetry, UI state, and presentation exports may report degradation but never repair or replace semantic authority.</li>
+    <li>Legacy pairs are one-way import sources. Once a mixed base is materialized, stale or missing pair bytes cannot affect semantic resume.</li>
+  </ul>
+  <p>
+    A semantic save that succeeded before a still-required legacy-pair publication failed is
+    reported as <code>partial_publication</code>; semantic durability is not rolled back. There is
+    no maintenance or runtime rollback selector that makes a compatibility file authoritative.
   </p>
 
   <h2>Invocation Mutation Fences</h2>

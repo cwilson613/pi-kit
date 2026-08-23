@@ -659,12 +659,15 @@ fn mutate_contribution(
 
 struct ResolvedSession {
     directory: File,
-    metadata_name: Vec<u8>,
-    snapshot_name: Vec<u8>,
-    metadata_identity: FileIdentityV1,
-    snapshot_identity: FileIdentityV1,
+    framing: Vec<SelectedSessionFraming>,
     workspace_key: AuthorityKey,
     session_key: AuthorityKey,
+}
+
+struct SelectedSessionFraming {
+    name: Vec<u8>,
+    identity: FileIdentityV1,
+    digest: AuthorityKey,
 }
 
 fn quarantine_session(
@@ -805,7 +808,7 @@ fn quarantine_session(
             "session_quarantine_planned",
             omegon_maintenance_contracts::Severity::Info,
             "session",
-            "session resume-deny creation is planned; legacy bytes remain unchanged",
+            "session resume-deny creation is planned; session framing bytes remain unchanged",
             Some(json!({"session_id": session_id, "session_key": target.session_key})),
         );
         return Ok(());
@@ -829,13 +832,13 @@ fn quarantine_session(
             "session_deny_already_settled",
             omegon_maintenance_contracts::Severity::Info,
             "session",
-            "session resume was already denied; legacy bytes remain unchanged",
+            "session resume was already denied; session framing bytes remain unchanged",
             Some(json!({"session_id": session_id, "session_key": target.session_key})),
         );
         return Ok(());
     }
 
-    revalidate_session(&target)?;
+    revalidate_session(context, &target)?;
     let record = SessionDenyRecordV1 {
         schema_version: SCHEMA_VERSION,
         record_kind: "session_deny".into(),
@@ -914,7 +917,7 @@ fn quarantine_session(
         retry_safe: true,
     });
 
-    revalidate_session(&target)?;
+    revalidate_session(context, &target)?;
     dispatch_step(
         &mut state,
         context,
@@ -997,7 +1000,7 @@ fn quarantine_session(
         "session_quarantine_settled",
         omegon_maintenance_contracts::Severity::Info,
         "session",
-        "session resume-deny record settled and legacy bytes were preserved; runtime enforcement lands in task 0.7",
+        "session resume-deny record settled and session framing bytes were preserved; runtime enforcement lands in task 0.7",
         Some(json!({"session_id": session_id, "session_key": target.session_key})),
     );
     Ok(())
@@ -1022,9 +1025,10 @@ fn resolve_session(context: &Context, session_id: &str) -> Result<ResolvedSessio
     let mut directories =
         read_dir_at(&sessions, context, MAX_ENTRIES).map_err(MutationError::before)?;
     directories.sort_by(|left, right| left.name.cmp(&right.name));
+    let catalog_name = format!("{session_id}.catalog.v1.json").into_bytes();
     let metadata_name = format!("{session_id}.meta.json").into_bytes();
     let snapshot_name = format!("{session_id}.json").into_bytes();
-    let mut matched = None;
+    let mut candidates = Vec::new();
     let mut examined = directories.len();
     for entry in directories {
         if entry.kind != EntryType::Directory {
@@ -1038,10 +1042,52 @@ fn resolve_session(context: &Context, session_id: &str) -> Result<ResolvedSessio
         let entries = read_dir_at(&directory, context, MAX_ENTRIES - examined)
             .map_err(MutationError::before)?;
         examined += entries.len();
-        if !entries.iter().any(|entry| entry.name == metadata_name) {
+        candidates.push((directory, entries));
+    }
+
+    let mut matched = None;
+    for (directory, entries) in &candidates {
+        if !entries.iter().any(|entry| entry.name == catalog_name) {
             continue;
         }
-        match super::inspect_session_pair(
+        if let Some(catalog) = super::inspect_session_catalog(
+            directory,
+            &catalog_name,
+            session_id,
+            Some(&normalized),
+            context,
+        )
+        .map_err(MutationError::before)?
+        {
+            if matched.is_some() {
+                return Err(MutationError::before(
+                    "session ID and workspace matched multiple catalogs",
+                ));
+            }
+            matched = Some(ResolvedSession {
+                directory: directory.try_clone().map_err(MutationError::before)?,
+                framing: vec![SelectedSessionFraming {
+                    name: catalog_name.clone(),
+                    identity: catalog.catalog_identity,
+                    digest: catalog.catalog_digest,
+                }],
+                workspace_key,
+                session_key: session_key(session_id, workspace_key),
+            });
+        }
+    }
+    if let Some(matched) = matched {
+        return Ok(matched);
+    }
+
+    let mut matched = None;
+    for (directory, entries) in candidates {
+        if entries.iter().any(|entry| entry.name == catalog_name)
+            || !entries.iter().any(|entry| entry.name == metadata_name)
+        {
+            continue;
+        }
+        if let Some(pair) = super::inspect_session_pair(
             &directory,
             &metadata_name,
             session_id,
@@ -1050,39 +1096,47 @@ fn resolve_session(context: &Context, session_id: &str) -> Result<ResolvedSessio
         )
         .map_err(MutationError::before)?
         {
-            Some(pair) => {
-                if matched.is_some() {
-                    return Err(MutationError::before(
-                        "session ID and workspace matched multiple pairs",
-                    ));
-                }
-                matched = Some(ResolvedSession {
-                    directory,
-                    metadata_name: metadata_name.clone(),
-                    snapshot_name: snapshot_name.clone(),
-                    metadata_identity: pair.metadata_identity,
-                    snapshot_identity: pair.snapshot_identity,
-                    workspace_key,
-                    session_key: session_key(session_id, workspace_key),
-                });
+            if matched.is_some() {
+                return Err(MutationError::before(
+                    "session ID and workspace matched multiple legacy pairs",
+                ));
             }
-            None => continue,
+            matched = Some(ResolvedSession {
+                directory,
+                framing: vec![
+                    SelectedSessionFraming {
+                        name: metadata_name.clone(),
+                        identity: pair.metadata_identity,
+                        digest: pair.metadata_digest,
+                    },
+                    SelectedSessionFraming {
+                        name: snapshot_name.clone(),
+                        identity: pair.snapshot_identity,
+                        digest: pair.snapshot_digest,
+                    },
+                ],
+                workspace_key,
+                session_key: session_key(session_id, workspace_key),
+            });
         }
     }
-    matched.ok_or_else(|| MutationError::before("session pair was not found"))
+    matched.ok_or_else(|| MutationError::before("session catalog or legacy pair was not found"))
 }
 
-fn revalidate_session(target: &ResolvedSession) -> Result<(), MutationError> {
-    let metadata = entry_identity_at(&target.directory, &target.metadata_name)
+fn revalidate_session(context: &Context, target: &ResolvedSession) -> Result<(), MutationError> {
+    for entry in &target.framing {
+        let current = super::read_bounded_regular_at(
+            &target.directory,
+            &entry.name,
+            super::MAX_METADATA_BYTES,
+            context,
+        )
         .map_err(MutationError::after)?;
-    let snapshot = entry_identity_at(&target.directory, &target.snapshot_name)
-        .map_err(MutationError::after)?;
-    if metadata.as_ref() != Some(&target.metadata_identity)
-        || snapshot.as_ref() != Some(&target.snapshot_identity)
-    {
-        return Err(MutationError::after(
-            "session pair identity changed before deny dispatch",
-        ));
+        if current.identity != entry.identity || current.digest != entry.digest {
+            return Err(MutationError::after(
+                "session framing identity or content changed before deny dispatch",
+            ));
+        }
     }
     Ok(())
 }

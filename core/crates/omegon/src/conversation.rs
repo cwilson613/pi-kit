@@ -1617,7 +1617,7 @@ impl ConversationState {
             compaction_summary: self.compaction_summary.clone(),
         };
         let json = serde_json::to_string_pretty(&session)?;
-        crate::filelock::atomic_write_locked(path, json.as_bytes())?;
+        crate::filelock::atomic_write_locked_private(path, json.as_bytes())?;
         tracing::info!(path = %path.display(), turns = self.intent.stats.turns, "session saved");
         Ok(())
     }
@@ -1629,10 +1629,14 @@ impl ConversationState {
     /// - keep only a recent tail of messages as canonical history
     /// - fold older messages into `compaction_summary` so they still inform the model
     pub fn load_session(path: &Path) -> anyhow::Result<Self> {
+        let bytes = std::fs::read(path)?;
+        Self::load_session_bytes(path, &bytes)
+    }
+
+    pub(crate) fn load_session_bytes(path: &Path, bytes: &[u8]) -> anyhow::Result<Self> {
         const RESUME_TAIL_MESSAGES: usize = 24;
 
-        let json = std::fs::read_to_string(path)?;
-        let snapshot: SessionSnapshot = serde_json::from_str(&json)?;
+        let snapshot: SessionSnapshot = serde_json::from_slice(bytes)?;
         tracing::info!(
             path = %path.display(),
             turns = snapshot.intent.stats.turns,

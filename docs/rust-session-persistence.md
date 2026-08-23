@@ -21,38 +21,40 @@ priority = "2"
 
 ## Overview
 
-This document records the original persistence plan. The Rust runtime now owns
-interactive session listing, orderly save, and `--resume`. Conversation JSON is
-a compatibility snapshot containing messages, operator observations, intent,
-decay window, and compaction summary. Resume restores recent canonical history
-and summarizes older messages; it is not exact model-context replay.
+The Rust runtime owns session listing, save, and `--resume` through a plural-store
+semantic protocol. Event v1 plus content blobs are semantic truth. Reducer/cache
+v5, projector cursor and projection v1, host-state checkpoint v1, observation
+ledger v1, and catalog v1 each retain distinct version and authority roles. See
+`docs/runtime-session-semantic-protocol.md` for the normative contract.
 
-Slice 1 also adds an adjacent append-only authority stream for durable prompt,
-queue, turn, interruption, minimum invocation, recovery, and closure facts. See
-`docs/runtime-session-semantic-protocol.md` for the current contract.
+Schema-v1 conversation JSON is now a bounded compatibility importer. Legacy
+resume may still summarize older messages. Opening a valid pair beside
+pre-boundary authority materializes its model-facing view exactly once and
+establishes mixed lineage. Full lineage and materialized mixed lineage neither
+require nor rewrite the pair; existing artifacts are not automatically deleted.
 
 ## Research
 
 ### Implemented boundaries
 
-- `ConversationState::save_session(path)` — serialize to JSON (messages + intent + decay_window + compaction_summary)
-- `ConversationState::load_session(path)` — deserialize and reconstruct canonical history
+- `ConversationState::save_session(path)` and `load_session(path)` retain the schema-v1 legacy codec and nonsemantic local uses
 - session directory management, listing, prefix selection, and resume
-- orderly interactive auto-save, with `--no-session` disabling that snapshot and interactive authority sidecar
-- strict authority replay and conservative active-turn recovery
+- semantic authority/blob publication plus separately versioned host, observation, catalog, projection, telemetry, audit, and journal stores
+- strict authority replay, conservative active-turn recovery, and exact full or exact-suffix context reduction
+- catalog-first maintenance inspection and quarantine, with legacy-pair fallback
 
-Complete provider/model-context replay remains deferred to Slice 5. Project
-memory, logs, and audit records are separate persistence systems.
+Project memory, logs, and audit records remain separate persistence systems.
 
 ## Decisions
 
 ### Decision: Conversation snapshots and semantic authority have separate roles
 
 **Status:** decided
-**Rationale:** Whole-file conversation snapshots support user-facing continuity and
-legacy resume. Adjacent authority JSONL records the minimum ordered facts needed
-for strict queue, interruption, recovery, and closure semantics. Neither record
-is presented as complete Slice-5 semantic replay.
+**Rationale:** Whole-file conversation snapshots support one-way legacy import.
+Authority events and blobs provide exact semantic replay; host state,
+observations, catalogs, projections, telemetry, audit, and journal records do not
+become semantic authority. Mixed history is one labeled imported base plus an
+exact suffix and never claims an exact full historical transcript.
 
 ## Open Questions
 
@@ -73,3 +75,6 @@ is presented as complete Slice-5 semantic replay.
 - `--resume <id>` accepts the supported session identifier or prefix form.
 - Maintenance resume-deny authority is checked before conversation loading.
 - Corrupt or unsupported semantic authority fails recovery rather than being reconstructed from conversation JSON.
+- Required blobs, catalogs, host stores, and observation records fail closed; only proven projector-owned derived chunks may rebuild from validated authority.
+- `/transcript` is exact committed semantic output; `/session-export` and `/copy session` are presentation/evidence output.
+- Compatibility migration is forward-only. There is no old-writer or mirror-authority rollback mode.

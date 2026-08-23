@@ -961,19 +961,17 @@ explicitly labeled immutable legacy base plus exact semantic suffix, but exact
 full-session export remains unavailable and Web historical output contains the
 suffix only. Legacy resume remains labeled compatibility behavior.
 
-Compatibility `.json` and `.meta.json` dual-write continues through Slice 5.6
-closeout. Semantic durability precedes mirror publication, mirror failure cannot
-roll authority back, and crossing the full-spine boundary permanently denies an
-old writer. Rollback may select the last valid mirror for presentation or
-labeled compatibility resume while semantic and mirror writers continue; it
-cannot truncate authority, rewrite cursors, restore an old writer, or claim
-exactness. New independent schemas start at their frozen versions without
-changing authority/event v1, reducer/cache v5, cursor v1, or task-5.3 projection
-v1. Task 5.4 now owns the implemented cutover tests; task 5.5 owns
-adverse-consumer campaigns and task 5.6 owns dual-write/applicable public
-documentation closeout. Public `/transcript`, `/session-export`, session,
-migration, and recovery pages therefore remain intentionally deferred in 5.4;
-native command help is current, and no canonical snippet changed.
+Slice 5.6 closes compatibility publication at semantic self-sufficiency. Full
+lineage and mixed lineage with one durable content-addressed legacy base stop
+rewriting `.json`/`.meta.json`; legacy and not-yet-materialized mixed sessions
+retain the pair only as a one-way importer. Existing artifacts are not deleted.
+No rollback selector makes them authoritative, and crossing the full-spine
+boundary permanently denies a reduced old writer. New independent schemas remain
+at their frozen versions without changing authority/event v1, reducer/cache v5,
+cursor v1, or task-5.3 projection v1. Task 5.4 owns consumer cutover, task 5.5
+owns adverse-consumer campaigns, and task 5.6 completes compatibility publication
+plus public `/transcript`, `/session-export`, session, migration, and recovery
+documentation and canonical snippets.
 
 Task 5.5.0 freezes the campaign before implementation. The normative private
 protocol defines a closed fault/disposition vocabulary and 54 stable pairwise
@@ -1004,8 +1002,8 @@ mixed-lineage fixture and exercises immutable chunk reconstruction. The macOS,
 Ubuntu, and Windows campaigns pass within budget; GitHub Actions run
 `32622078435` at `b788f3b8` supplies the required Ubuntu and Windows evidence.
 Task 5.5 is complete without revising accepted authority/schema vectors. Task
-5.6 alone removes dual-write or changes developer/applicable public session,
-migration, recovery, site, or snippet guidance.
+5.6 completes the frozen one-way compatibility importer and developer/applicable
+public session, migration, recovery, site, and snippet guidance.
 
 Exit gate: late or restarted consumers reconstruct honest state from snapshots
 and cursors without depending on missed broadcasts.

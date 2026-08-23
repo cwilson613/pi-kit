@@ -589,7 +589,7 @@ pub(crate) async fn run_release_coupled(
                                 Some("no compaction payload available; applied aggressive decay".to_string()),
                             ));
                         }
-                        // Rebuild compatibility mirrors, then re-derive dispatch context from authority.
+                        // Rebuild the in-memory compatibility view, then re-derive dispatch context from authority.
                         let compatibility_messages = context_contract.messages(conversation);
                         let repair_purpose = crate::loop_driver::LoopModelRequestPurpose::ContextOverflowRepair;
                         if let Some(previous) = semantic_request.as_ref() {

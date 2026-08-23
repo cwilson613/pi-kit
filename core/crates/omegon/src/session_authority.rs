@@ -282,6 +282,45 @@ pub(crate) struct ContextSourceMaterialized {
     pub(crate) content_ref: ContentRef,
 }
 
+pub(crate) fn is_legacy_compatibility_source(source: &ContextSourceMaterialized) -> bool {
+    source.source_kind == ContextSourceKind::ContributionContext
+        && source.source_identity == "legacy-compatibility-base-v1"
+        && source.owner_id == "compatibility:session-resume"
+        && source.owner_generation_id.as_str() == "session-resume:legacy-base-v1"
+}
+
+pub(crate) fn legacy_compatibility_base_bytes(
+    compatibility: &[crate::bridge::LlmMessage],
+) -> Result<Vec<u8>> {
+    let message = crate::bridge::LlmMessage::User {
+        content: format!(
+            "[Legacy compatibility context - frozen at full-spine cutover]\n{}\n[End legacy compatibility context]",
+            serde_json::to_string(compatibility)?
+        ),
+        images: Vec::new(),
+    };
+    crate::surfaces::session::canonical_json_bytes(&message)
+        .map_err(|error| AuthorityError::Invalid(error.to_string()))
+}
+
+pub(crate) fn legacy_compatibility_prefix<'a>(
+    replay: &crate::session_replay::SessionReplay,
+    compatibility: &'a [crate::bridge::LlmMessage],
+) -> &'a [crate::bridge::LlmMessage] {
+    let latest_prompt = replay.records().iter().rev().find_map(|record| {
+        let SessionFactPayload::PromptAdmitted(prompt) = record.payload() else {
+            return None;
+        };
+        Some(&prompt.content.text)
+    });
+    let semantic_start = latest_prompt.and_then(|prompt| {
+        compatibility.iter().rposition(|message| {
+            matches!(message, crate::bridge::LlmMessage::User { content, .. } if content == prompt)
+        })
+    });
+    semantic_start.map_or(compatibility, |index| &compatibility[..index])
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModelContextProvenance {
@@ -3654,7 +3693,13 @@ impl SessionAuthorityState {
         {
             return;
         }
-        let has_legacy_operation = !self.closed_turns.is_empty()
+        let imports_legacy_base = matches!(
+            &fact.payload,
+            SessionFactPayload::ContextSourceMaterialized(source)
+                if is_legacy_compatibility_source(source)
+        );
+        let has_legacy_operation = imports_legacy_base
+            || !self.closed_turns.is_empty()
             || !self.route_leases.is_empty()
             || !self.invocations.is_empty();
         self.lineage_level = if has_legacy_operation {
@@ -4641,6 +4686,15 @@ impl SessionAuthorityHandle {
         self.lock().projection_wake = None;
     }
 
+    pub(crate) fn import_legacy_compatibility_base(
+        &self,
+        compatibility: &[crate::bridge::LlmMessage],
+        recorded_at: &str,
+    ) -> Result<bool> {
+        self.lock()
+            .import_legacy_compatibility_base(compatibility, recorded_at)
+    }
+
     pub(crate) fn stage_attachment(&self, source: &Path) -> Result<AttachmentRef> {
         self.lock().stage_attachment(source)
     }
@@ -5132,6 +5186,60 @@ impl SessionAuthority {
             mutation_fence_poisoned: false,
             projection_wake: None,
         })
+    }
+
+    pub(crate) fn import_legacy_compatibility_base(
+        &mut self,
+        compatibility: &[crate::bridge::LlmMessage],
+        recorded_at: &str,
+    ) -> Result<bool> {
+        if self.state.full_spine_boundary.is_some()
+            || compatibility.is_empty()
+            || self
+                .state
+                .materialized_context_sources
+                .values()
+                .any(is_legacy_compatibility_source)
+        {
+            return Ok(false);
+        }
+        let replay = crate::session_replay::SessionReplay::replay_prefix(
+            &self.session_snapshot,
+            &self.session_id,
+            self.stream_id,
+            crate::session_replay::ReplayEnd::EndOfStream,
+        )?;
+        let legacy = legacy_compatibility_prefix(&replay, compatibility);
+        if legacy.is_empty() {
+            return Ok(false);
+        }
+        let bytes = legacy_compatibility_base_bytes(legacy)?;
+        let content_ref =
+            self.store
+                .write_content(&bytes, "application/json", ProjectionClass::Default)?;
+        let owner_generation_id =
+            RuntimeContributionGenerationId::new("session-resume:legacy-base-v1")
+                .map_err(|error| AuthorityError::Invalid(error.to_string()))?;
+        append_payload(
+            &self.store,
+            &mut self.state,
+            &self.session_id,
+            self.stream_id,
+            Uuid::new_v5(
+                &Uuid::NAMESPACE_URL,
+                format!("omegon:{}:legacy-compatibility-base-v1", self.session_id).as_bytes(),
+            ),
+            recorded_at,
+            SessionFactPayload::ContextSourceMaterialized(ContextSourceMaterialized {
+                context_source_id: Uuid::new_v4(),
+                source_kind: ContextSourceKind::ContributionContext,
+                source_identity: "legacy-compatibility-base-v1".into(),
+                owner_id: "compatibility:session-resume".into(),
+                owner_generation_id,
+                content_ref,
+            }),
+        )?;
+        Ok(true)
     }
 
     pub(crate) fn state(&self) -> &SessionAuthorityState {
@@ -6520,10 +6628,14 @@ impl SessionAuthorityStore {
             fs::create_dir_all(parent)?;
         }
         let created = !self.log_path.exists();
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)?;
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&self.log_path)?;
         file.write_all(encoded)?;
         file.flush()?;
         file.sync_all()?;
@@ -6632,11 +6744,14 @@ fn write_snapshot(path: &Path, snapshot: &SessionAuthoritySnapshot) -> Result<()
             .unwrap_or("authority"),
         std::process::id()
     ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&tmp)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
     file.write_all(&bytes)?;
     file.flush()?;
     file.sync_all()?;
@@ -11794,5 +11909,172 @@ mod tests {
             reconstruct(&facts.into_iter().chain(recovery).collect::<Vec<_>>()).unwrap();
         assert_eq!(recovered.context_revision, 1);
         assert!(recovery_facts(&recovered, NOW).unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_pair_is_materialized_once_before_full_spine_boundary() {
+        let directory = tempfile::tempdir().unwrap();
+        let session_id = "2026-08-23T06-30-00_deadbeef";
+        let snapshot = directory.path().join(format!("{session_id}.json"));
+        let mut conversation = crate::conversation::ConversationState::new();
+        conversation.push_user("legacy prompt".into());
+        conversation.save_session(&snapshot).unwrap();
+        fs::write(
+            snapshot.with_extension("meta.json"),
+            serde_json::to_vec(&crate::session::SessionMeta {
+                session_id: session_id.into(),
+                cwd: directory.path().to_string_lossy().into_owned(),
+                created_at: NOW.into(),
+                turns: 1,
+                tool_calls: 0,
+                description: String::new(),
+                friendly_name: String::new(),
+                last_prompt_snippet: "legacy prompt".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut authority = SessionAuthority::open(
+            &snapshot,
+            session_id,
+            "workspace",
+            "generation",
+            ActorIdentity {
+                principal: "test".into(),
+                ingress: "test".into(),
+            },
+            NOW,
+        )
+        .unwrap();
+        let compatibility = conversation.build_llm_view();
+        assert!(
+            authority
+                .import_legacy_compatibility_base(&compatibility, NOW)
+                .unwrap()
+        );
+        assert!(
+            !authority
+                .import_legacy_compatibility_base(&compatibility, NOW)
+                .unwrap()
+        );
+        assert_eq!(authority.state.lineage_level, AuthorityLineageLevel::Mixed);
+        let source = authority
+            .state
+            .materialized_context_sources
+            .values()
+            .next()
+            .unwrap();
+        assert!(is_legacy_compatibility_source(source));
+        let mut unrelated = source.clone();
+        unrelated.source_identity = "legacy-unrelated-context".into();
+        assert!(!is_legacy_compatibility_source(&unrelated));
+        assert_eq!(
+            authority
+                .state
+                .materialized_context_sources
+                .values()
+                .filter(|source| source.source_identity == "legacy-compatibility-base-v1")
+                .count(),
+            1
+        );
+        drop(authority);
+
+        fs::remove_file(&snapshot).unwrap();
+        fs::remove_file(snapshot.with_extension("meta.json")).unwrap();
+        let reopened = SessionAuthority::open(
+            &snapshot,
+            session_id,
+            "workspace",
+            "generation",
+            ActorIdentity {
+                principal: "test".into(),
+                ingress: "test".into(),
+            },
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(reopened.state.lineage_level, AuthorityLineageLevel::Mixed);
+        assert_eq!(
+            reopened
+                .state
+                .materialized_context_sources
+                .values()
+                .filter(|source| source.source_identity == "legacy-compatibility-base-v1")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn legacy_import_excludes_existing_semantic_suffix() {
+        let directory = tempfile::tempdir().unwrap();
+        let session_id = "2026-08-23T06-32-00_aabbccdd";
+        let snapshot = directory.path().join(format!("{session_id}.json"));
+        let mut authority = SessionAuthority::open(
+            &snapshot,
+            session_id,
+            "workspace",
+            "generation",
+            ActorIdentity {
+                principal: "test".into(),
+                ingress: "test".into(),
+            },
+            NOW,
+        )
+        .unwrap();
+        authority
+            .admit_prompt(
+                Uuid::new_v4(),
+                NOW,
+                PromptAdmitted {
+                    submission_id: Uuid::new_v4(),
+                    prompt_id: Uuid::new_v4(),
+                    principal: "operator".into(),
+                    ingress: "test".into(),
+                    queue_mode: QueueMode::UntilReady,
+                    content: PromptContent {
+                        text: "semantic prompt".into(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        let legacy = crate::bridge::LlmMessage::User {
+            content: "legacy prompt".into(),
+            images: Vec::new(),
+        };
+        let compatibility = vec![
+            legacy.clone(),
+            crate::bridge::LlmMessage::User {
+                content: "semantic prompt".into(),
+                images: Vec::new(),
+            },
+            crate::bridge::LlmMessage::Assistant {
+                text: vec!["semantic response".into()],
+                thinking: Vec::new(),
+                tool_calls: Vec::new(),
+                raw: None,
+            },
+        ];
+
+        assert!(
+            authority
+                .import_legacy_compatibility_base(&compatibility, NOW)
+                .unwrap()
+        );
+        let source = authority
+            .state
+            .materialized_context_sources
+            .values()
+            .find(|source| is_legacy_compatibility_source(source))
+            .unwrap();
+        assert_eq!(
+            authority
+                .read_content(&source.content_ref, ProjectionClass::Default)
+                .unwrap(),
+            legacy_compatibility_base_bytes(&[legacy]).unwrap()
+        );
     }
 }

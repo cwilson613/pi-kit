@@ -2,15 +2,21 @@
 import Docs from "../../layouts/Docs.astro";
 import { snippet } from "../../lib/snippets";
 ---
-<Docs title="Sessions" description="Auto-save and resume conversations across sessions.">
+<Docs title="Sessions" description="Durable semantic sessions, compatibility migration, and exact resume boundaries.">
   <h1>Sessions</h1>
 
-  <h2>Auto-Save</h2>
+  <h2>Persistence</h2>
   <p>
-    Interactive sessions save a conversation snapshot on orderly exit. Resume restores recent
-    canonical history and summarizes older messages for continuity; project memory remains a
-    separate durable subsystem. A crash may leave durable turn-authority facts newer than the
-    conversation snapshot.
+    Authority-backed sessions append semantic facts and content blobs during execution. Orderly
+    saves publish host-owned intent and plan state, operator observations, and catalog metadata
+    without turning those stores into conversation authority. Project memory remains a separate
+    durable subsystem.
+  </p>
+  <p>
+    Older Omegon sessions may also have a schema-v1 <code>.json</code>/<code>.meta.json</code>
+    pair. That pair is a compatibility import source, not an authority backup. Once its model-facing
+    context is materialized into a mixed semantic session, Omegon stops rewriting the pair. Existing
+    files are not deleted automatically.
   </p>
 
   <h2>Resume</h2>
@@ -23,16 +29,36 @@ import { snippet } from "../../lib/snippets";
 # List saved sessions
 {snippet("slash.sessions")}</code></pre>
 
-  <h2>Session Contents</h2>
-  <p>A saved session includes:</p>
+  <h2>Lineage and Resume</h2>
+  <p>Resume behavior is explicit about what can be reconstructed:</p>
   <ul>
-    <li>Conversation messages and operator observations</li>
-    <li>Intent and turn statistics</li>
-    <li>Context decay window and compaction summary</li>
+    <li><strong>Full:</strong> provider context and committed transcript derive exactly from semantic authority. Compatibility conversation bytes are ignored.</li>
+    <li><strong>Mixed:</strong> one labeled, content-addressed legacy context block is followed by an exact semantic suffix. The legacy prefix never becomes an exact historical transcript.</li>
+    <li><strong>Legacy:</strong> the schema-v1 pair provides labeled compatibility continuity only. Recent history and an older summary may be used, with no exactness claim.</li>
   </ul>
   <p>
-    The snapshot does not promise an exact replay of prior model-visible context, provider state,
-    project memory, persona, or tone.
+    Migration is one-way. After a mixed legacy base is durable, stale or missing pair files cannot
+    change semantic context, transcript, or resume. Unsupported semantic events, missing required
+    blobs, a missing catalog, or corrupt required host stores fail closed instead of falling back to
+    compatibility JSON.
+  </p>
+  <h2>Transcript and Session Export</h2>
+  <pre><code># Exact committed transcript for full lineage
+{snippet("slash.transcript")}
+
+# Exact semantic suffix for mixed lineage
+{snippet("slash.transcript_suffix")}
+
+# Presentation and evidence export
+{snippet("slash.session_export")}
+
+# Current rendered scrollback
+{snippet("slash.session_export_scrollback")}</code></pre>
+  <p>
+    <code>/transcript</code> is unavailable for legacy sessions and for a mixed full-session request.
+    <code>/session-export</code> is a presentation/evidence artifact with provenance and freshness
+    disclosure; it is not semantic transcript authority. <code>/copy session</code> has the same
+    presentation-only limitation.
   </p>
   <h2>Durable Turn Authority</h2>
   <p>
@@ -56,12 +82,12 @@ import { snippet } from "../../lib/snippets";
     a safety-eligible replay automatically.
   </p>
   <p>
-    Conversation JSON remains a compatibility snapshot. On restart, Omegon validates the
-    authority stream, closes an interrupted active turn conservatively, and restores eligible
-    queued prompts that reached durable admission. ACP withdraws orphaned queued requests when
-    their client response channel was lost. Corrupt or unsupported authority data fails recovery
-    instead of being repaired from conversation JSON. A maintenance resume deny fails before conversation
-    loading; follow the <a href="/docs/recovery">recovery guide</a> to inspect it.
+    On restart, Omegon validates authority and content blobs, closes an interrupted active turn
+    conservatively, and restores eligible queued prompts that reached durable admission. ACP
+    withdraws orphaned queued requests when their client response channel was lost. Derived
+    projections may be rebuilt from validated authority; authority is never repaired from a
+    compatibility pair, projection, journal, audit row, or UI state. A maintenance resume deny
+    fails before any session load; follow the <a href="/docs/recovery">recovery guide</a> to inspect it.
   </p>
   <p>
     Before a session-backed provider dispatch, authority appends a
@@ -71,12 +97,12 @@ import { snippet } from "../../lib/snippets";
     <code>runtime/route-leases.jsonl</code> under the Omegon home and does not fabricate session or
     turn identity. No current operator command lists historical route leases.
   </p>
-  <!-- DIAGRAM:session-lifecycle | Timeline: session start -> durable turn facts plus conversation snapshot on orderly exit -> resume validates authority -> interrupted work closes conservatively -> recent history and summarized older context load. Show project memory as separate persistence. -->
+  <!-- DIAGRAM:session-lifecycle | Timeline: legacy pair imports once into a labeled mixed base; semantic facts and blobs append during execution; host stores and catalog publish separately; resume validates authority and reconstructs full or mixed context; derived projections rebuild independently. Show project memory as separate persistence. -->
 
   <h2>Disable Auto-Save</h2>
   <pre><code>{snippet("cli.no_session")}</code></pre>
   <p>
-    Disables the conversation session snapshot and interactive authority sidecar for this run.
+    Disables interactive semantic session authority and compatibility persistence for this run.
     Other configured subsystems, including project memory, logs, and audit records, may still
     persist data.
   </p>

@@ -22,7 +22,7 @@ import stats from "../../data/stats.json";
       <tr><td>Model picker</td><td><code>/model</code> - provider-neutral intent or an exact concrete route pin, with explicit selected and serving route state</td></tr>
       <tr><td>Extended thinking toggle</td><td><code>/think off|minimal|low|medium|high</code> — five explicit levels</td></tr>
       <tr><td>Custom slash commands (.md)</td><td>{stats.skillCount} skills — specialized instruction sets loaded on demand (git, rust, python, security, OCI, etc.)</td></tr>
-      <tr><td>Conversation history</td><td>Sessions — auto-save and <code>--resume</code> with recent history plus a summary of older context</td></tr>
+      <tr><td>Conversation history</td><td>Sessions with explicit full, mixed, or legacy lineage. Full semantic history resumes exactly; imported history remains a labeled compatibility base followed by an exact suffix.</td></tr>
       <tr><td>Anthropic only</td><td>Contribution-backed provider routing with provider-specific authentication and explicit compatibility boundaries</td></tr>
       <tr><td>—</td><td>Design tree — a structured knowledge graph of architecture decisions, open questions, dependencies, and implementation status. Nodes follow the lifecycle <code>seed → exploring → resolved → decided → implementing → implemented</code> and bridge into specification and implementation work.</td></tr>
       <tr><td>Subagents (shared working directory)</td><td>Cleave — each child runs in its own git worktree on its own branch. File scope enforcement, dependency-ordered dispatch waves, per-file conflict detection (never bulk-resolved), and adversarial review. See <a href="/docs/cleave">Cleave vs Subagents</a>.</td></tr>
@@ -101,7 +101,7 @@ import stats from "../../data/stats.json";
       <tr><td>OpenAI models only</td><td>Multiple contribution-backed routes, including local and separately authenticated hosted paths when configured and executable</td></tr>
       <tr><td>Cloud-dependent orchestration</td><td>Fully local orchestration — cloud is only used for inference, and even that is optional with Ollama</td></tr>
       <tr><td>Sandbox execution</td><td>OCI-based isolation is available when the sandbox runtime is configured. Provider credentials can come from secure stores or environment variables; avoid plaintext project files.</td></tr>
-      <tr><td>Single-turn execution</td><td>Multi-turn sessions with auto-save and resume. The agent maintains context across turns and sessions.</td></tr>
+      <tr><td>Single-turn execution</td><td>Multi-turn semantic sessions with lineage-aware resume. Exactness is claimed only for authority-backed full history or the semantic suffix of mixed history.</td></tr>
       <tr><td>—</td><td>Parallel execution — cleave decomposes tasks into isolated git worktree branches with file scope enforcement, dependency waves, per-file merge, and adversarial review. Not shared-directory subagents.</td></tr>
       <tr><td>—</td><td>Design tree — structured knowledge graph tracking decisions, dependencies, open questions, and implementation status. Bridges directly into spec-driven implementation.</td></tr>
       <tr><td>—</td><td>OpenSpec lifecycle — specs define correctness before code is written, verified after implementation</td></tr>
@@ -146,7 +146,20 @@ import stats from "../../data/stats.json";
 
   <h2>From Earlier Omegon Versions</h2>
   <p>
-    If you were using an earlier version, the Rust binary is a superset of all previous
-    functionality. Project memory transfers directly — same format, same location.
+    Project memory transfers directly. Schema-v1 session pairs remain readable as a compatibility
+    import source. When Omegon opens a valid pair beside pre-boundary authority, it stores the
+    model-facing legacy context once as a content-addressed block and establishes mixed lineage
+    before new semantic work.
+  </p>
+  <ul>
+    <li>The imported base is labeled compatibility context, not reconstructed historical authority.</li>
+    <li>New committed work forms an exact semantic suffix; exact full-session transcript export remains unavailable.</li>
+    <li>After import, Omegon no longer requires or rewrites the pair. Existing files are left in place.</li>
+    <li>Old binaries must not write a reduced event set after the full-spine boundary. There is no rollback-to-old-writer mode.</li>
+    <li>Unsupported event, reducer, cursor, projection, or host-store schema versions require an explicit versioned migration rather than silent field reinterpretation.</li>
+  </ul>
+  <p>
+    See <a href="/docs/sessions">Sessions</a> for resume and export semantics and
+    <a href="/docs/recovery">Recovery</a> for fail-closed store handling.
   </p>
 </Docs>

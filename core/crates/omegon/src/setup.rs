@@ -90,6 +90,8 @@ pub struct AgentSetup {
     pub initial_harness_status: crate::status::HarnessStatus,
     /// Present when a prior session was loaded; None for fresh starts.
     pub resume_info: Option<ResumeInfo>,
+    /// Validated legacy/catalog metadata retained for one-way compatibility import.
+    pub(crate) resume_meta: Option<crate::session::SessionMeta>,
     /// Startup-local workspace ownership metadata.
     pub workspace_state: WorkspaceStartupState,
     /// Canonical owners for deterministic extension process shutdown.
@@ -1335,6 +1337,7 @@ impl AgentSetup {
 
         // ─── Conversation ───────────────────────────────────────────────
         let mut resume_info: Option<ResumeInfo> = None;
+        let mut resume_meta: Option<crate::session::SessionMeta> = None;
         let mut conversation = if let Some(resume_arg) = resume {
             let resume_id = resume_arg;
             // find_session returns the .json path; meta lives at .meta.json
@@ -1350,12 +1353,13 @@ impl AgentSetup {
 
                             let description = crate::session::session_display_description(&meta);
                             resume_info = Some(ResumeInfo {
-                                session_id: meta.session_id,
+                                session_id: meta.session_id.clone(),
                                 turns: meta.turns,
                                 description,
-                                last_prompt_snippet: meta.last_prompt_snippet,
-                                created_at: meta.created_at,
+                                last_prompt_snippet: meta.last_prompt_snippet.clone(),
+                                created_at: meta.created_at.clone(),
                             });
+                            resume_meta = Some(meta);
                             conv
                         }
                         Err(session::ResumeLoadError::Snapshot(e)) => {
@@ -1581,6 +1585,7 @@ impl AgentSetup {
             web_auth_state,
             session_secret_env,
             resume_info,
+            resume_meta,
             workspace_state,
             startup_snapshot,
             initial_harness_status: initial_harness_status.clone(),

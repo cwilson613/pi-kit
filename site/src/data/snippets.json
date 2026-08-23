@@ -303,6 +303,22 @@
     "cmd": "/sessions",
     "desc": "List saved sessions"
   },
+  "slash.transcript": {
+    "cmd": "/transcript",
+    "desc": "Write the exact committed semantic transcript"
+  },
+  "slash.transcript_suffix": {
+    "cmd": "/transcript suffix",
+    "desc": "Write the labeled exact suffix of a mixed-lineage session"
+  },
+  "slash.session_export": {
+    "cmd": "/session-export",
+    "desc": "Write the presentation and evidence export"
+  },
+  "slash.session_export_scrollback": {
+    "cmd": "/session-export scrollback",
+    "desc": "Export the current presentation scrollback"
+  },
   "slash.cleave": {
     "cmd": "/cleave",
     "desc": "Trigger parallel task decomposition"

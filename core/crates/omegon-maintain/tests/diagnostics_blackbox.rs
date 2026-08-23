@@ -324,6 +324,198 @@ fn session_inspect_validates_pair_and_workspace() {
 }
 
 #[test]
+fn session_inspect_prefers_catalog_and_ignores_stale_compatibility_files() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let config = root.path().join("config");
+    let workspace = root.path().join("workspace");
+    let sessions = config.join("sessions/legacy-slug");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&sessions).unwrap();
+    let id = "2026-08-17T00-00-00_00000000";
+    let catalog = serde_json::to_vec(&serde_json::json!({
+        "catalog_schema_version": 1,
+        "session_id": id,
+        "workspace_identity": workspace.join(".").to_str().unwrap(),
+        "metadata_revision": 1,
+        "friendly_name": null,
+        "description": null,
+        "created_at": "2026-08-17T00:00:00Z",
+        "turns": 1,
+        "tool_calls": 0,
+        "last_prompt_snippet": null,
+        "lineage": "full",
+        "availability": "exact",
+        "semantic_frontier": {
+            "stream_id": "11111111-1111-4111-8111-111111111111",
+            "sequence": 1,
+            "event_id": "22222222-2222-4222-8222-222222222222"
+        },
+        "source_selection": "semantic_authority_plus_host_stores"
+    }))
+    .unwrap();
+    fs::write(sessions.join(format!("{id}.catalog.v1.json")), &catalog).unwrap();
+    fs::write(sessions.join(format!("{id}.json")), b"stale and malformed").unwrap();
+    fs::write(
+        sessions.join(format!("{id}.meta.json")),
+        b"stale and malformed",
+    )
+    .unwrap();
+
+    let (code, output, stderr) = run_json(
+        [
+            "--json",
+            "--home",
+            home.to_str().unwrap(),
+            "--config-home",
+            config.to_str().unwrap(),
+            "--workspace",
+            workspace.to_str().unwrap(),
+            "session",
+            "inspect",
+            id,
+        ],
+        root.path(),
+    );
+    assert_eq!(code, 0, "{stderr}: {output}");
+    let diagnostics = output["diagnostics"].as_array().unwrap();
+    let valid = diagnostics
+        .iter()
+        .find(|entry| entry["code"] == "session_semantic_valid")
+        .unwrap();
+    let evidence: Value = serde_json::from_str(valid["evidence"].as_str().unwrap()).unwrap();
+    assert_eq!(evidence["catalog_schema_version"], 1);
+    assert_eq!(evidence["catalog_size"], catalog.len());
+    assert!(evidence["catalog_digest"].is_string());
+    assert_eq!(evidence["lineage"], "full");
+    assert_eq!(evidence["availability"], "exact");
+    assert!(diagnostics.iter().all(|entry| {
+        entry["code"] != "session_pair_invalid" && entry["code"] != "session_semantic_invalid"
+    }));
+}
+
+#[test]
+fn session_inspect_rejects_partial_semantic_catalog() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let config = root.path().join("config");
+    let workspace = root.path().join("workspace");
+    let sessions = config.join("sessions/legacy-slug");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&sessions).unwrap();
+    let id = "2026-08-17T00-00-00_00000000";
+    fs::write(
+        sessions.join(format!("{id}.catalog.v1.json")),
+        serde_json::to_vec(&serde_json::json!({
+            "catalog_schema_version": 1,
+            "session_id": id,
+            "workspace_identity": workspace.to_str().unwrap(),
+            "metadata_revision": 1,
+            "lineage": "full",
+            "availability": "exact",
+            "source_selection": "semantic_authority_plus_host_stores"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let (code, output, stderr) = run_json(
+        [
+            "--json",
+            "--home",
+            home.to_str().unwrap(),
+            "--config-home",
+            config.to_str().unwrap(),
+            "--workspace",
+            workspace.to_str().unwrap(),
+            "session",
+            "inspect",
+            id,
+        ],
+        root.path(),
+    );
+    assert_eq!(code, 1, "{stderr}: {output}");
+    assert!(
+        output["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["code"] == "session_semantic_invalid")
+    );
+    assert!(
+        output["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["code"] == "session_not_unique")
+    );
+}
+
+#[test]
+fn session_list_accepts_catalog_only_session() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let config = root.path().join("config");
+    let workspace = root.path().join("workspace");
+    let sessions = config.join("sessions/legacy-slug");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&sessions).unwrap();
+    let id = "2026-08-17T00-00-00_00000000";
+    fs::write(
+        sessions.join(format!("{id}.catalog.v1.json")),
+        serde_json::to_vec(&serde_json::json!({
+            "catalog_schema_version": 1,
+            "session_id": id,
+            "workspace_identity": workspace.to_str().unwrap(),
+            "metadata_revision": 1,
+            "friendly_name": null,
+            "description": null,
+            "created_at": "2026-08-17T00:00:00Z",
+            "turns": 1,
+            "tool_calls": 0,
+            "last_prompt_snippet": null,
+            "lineage": "mixed",
+            "availability": "exact_suffix",
+            "semantic_frontier": {
+                "stream_id": "11111111-1111-4111-8111-111111111111",
+                "sequence": 1,
+                "event_id": "22222222-2222-4222-8222-222222222222"
+            },
+            "source_selection": "semantic_authority_plus_host_stores"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let (code, output, stderr) = run_json(
+        [
+            "--json",
+            "--home",
+            home.to_str().unwrap(),
+            "--config-home",
+            config.to_str().unwrap(),
+            "--workspace",
+            workspace.to_str().unwrap(),
+            "session",
+            "list",
+        ],
+        root.path(),
+    );
+    assert_eq!(code, 0, "{stderr}: {output}");
+    assert_eq!(output["status"], "success");
+    assert!(
+        output["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["code"] == "session_semantic_valid")
+    );
+}
+
+#[test]
 fn session_list_ignores_semantic_authority_sidecars() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
@@ -1284,6 +1476,77 @@ fn session_quarantine_creates_resume_deny_and_preserves_pair_bytes() {
     assert_eq!(recovery_code, 0, "{stderr}: {recovery_output}");
     assert_eq!(recovery_output["mutations"][0]["state"], "settled");
     assert!(!fence_path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn session_quarantine_prefers_catalog_and_preserves_catalog_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let config = root.path().join("config");
+    let workspace = root.path().join("workspace");
+    let sessions = config.join("sessions/legacy-slug");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&sessions).unwrap();
+    let id = "2026-08-17T00-00-00_00000000";
+    let catalog = serde_json::to_vec_pretty(&serde_json::json!({
+        "catalog_schema_version": 1,
+        "session_id": id,
+        "workspace_identity": workspace.to_str().unwrap(),
+        "metadata_revision": 1,
+        "friendly_name": null,
+        "description": null,
+        "created_at": "2026-08-17T00:00:00Z",
+        "turns": 1,
+        "tool_calls": 0,
+        "last_prompt_snippet": null,
+        "lineage": "full",
+        "availability": "exact",
+        "semantic_frontier": {
+            "stream_id": "11111111-1111-4111-8111-111111111111",
+            "sequence": 1,
+            "event_id": "22222222-2222-4222-8222-222222222222"
+        },
+        "source_selection": "semantic_authority_plus_host_stores"
+    }))
+    .unwrap();
+    let catalog_path = sessions.join(format!("{id}.catalog.v1.json"));
+    fs::write(&catalog_path, &catalog).unwrap();
+    fs::write(sessions.join(format!("{id}.json")), b"stale snapshot").unwrap();
+    fs::write(sessions.join(format!("{id}.meta.json")), b"stale metadata").unwrap();
+    let args = [
+        "--json",
+        "--deadline",
+        "5s",
+        "--request-id",
+        "44444444-4444-4444-4444-444444444444",
+        "--home",
+        home.to_str().unwrap(),
+        "--config-home",
+        config.to_str().unwrap(),
+        "--workspace",
+        workspace.to_str().unwrap(),
+        "session",
+        "quarantine",
+        id,
+    ];
+
+    let (code, output, stderr) = run_json(args, root.path());
+    assert_eq!(code, 0, "{stderr}: {output}");
+    assert_eq!(output["mutations"][0]["state"], "settled");
+    assert_eq!(fs::read(&catalog_path).unwrap(), catalog);
+    assert_eq!(
+        fs::read_dir(home.join("maintain/v1/session-deny"))
+            .unwrap()
+            .count(),
+        1
+    );
+
+    let (second_code, second_output, stderr) = run_json(args, root.path());
+    assert_eq!(second_code, 0, "{stderr}: {second_output}");
+    assert_eq!(second_output["mutations"][0]["state"], "settled");
+    assert_eq!(fs::read(&catalog_path).unwrap(), catalog);
 }
 
 #[test]

@@ -190,6 +190,29 @@ pub fn atomic_write_locked(path: &Path, content: &[u8]) -> anyhow::Result<()> {
     atomic_write(path, content)
 }
 
+/// Atomic write for session compatibility data that must never be group/world-readable.
+pub fn atomic_write_locked_private(path: &Path, content: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let _guard = acquire_lock(path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -20,6 +20,7 @@ pub(crate) struct SessionReplacementRequest {
     pub(crate) target_session_id: String,
     pub(crate) target_snapshot: PathBuf,
     pub(crate) target_conversation: ConversationState,
+    pub(crate) target_meta: Option<crate::session::SessionMeta>,
     pub(crate) resume_info: Option<crate::setup::ResumeInfo>,
 }
 
@@ -120,6 +121,7 @@ pub(crate) fn fresh_request(
         target_snapshot: directory.join(format!("{target_session_id}.json")),
         target_session_id,
         target_conversation: ConversationState::new(),
+        target_meta: None,
         resume_info: None,
     })
 }
@@ -143,6 +145,7 @@ pub(crate) fn resume_request(
         target_session_id: meta.session_id.clone(),
         target_snapshot: path.to_path_buf(),
         target_conversation: conversation,
+        target_meta: Some(meta.clone()),
         resume_info: Some(crate::setup::ResumeInfo {
             session_id: meta.session_id,
             turns: meta.turns,
@@ -171,13 +174,14 @@ pub(crate) fn replace(
     // validation have all succeeded.
     let target_had_authority = crate::session_host_storage::has_authority(&request.target_snapshot)
         .map_err(|error| SessionReplacementError::Target(error.to_string()))?;
+    let recorded_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let authority = SessionAuthority::open(
         &request.target_snapshot,
         &request.target_session_id,
         environment.workspace_identity,
         environment.runtime_generation_id,
         environment.actor,
-        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        &recorded_at,
     )
     .map_err(|error| SessionReplacementError::Target(error.to_string()))?;
     let mut candidate = InteractiveRuntimeSupervisor::with_authority(authority)
@@ -186,7 +190,7 @@ pub(crate) fn replace(
     let authority = candidate
         .invocation_authority()
         .expect("authority-backed replacement candidate");
-    let projection = ProjectionBinding::from_authority(&authority)?;
+    let mut projection = ProjectionBinding::from_authority(&authority)?;
     crate::session_replay::SessionReplay::replay_prefix(
         &request.target_snapshot,
         &request.target_session_id,
@@ -202,6 +206,28 @@ pub(crate) fn replace(
             &projection,
         )
         .map_err(|error| SessionReplacementError::Target(error.to_string()))?;
+    }
+    if let Some(metadata) = request.target_meta.as_ref()
+        && authority
+            .import_legacy_compatibility_base(
+                &request.target_conversation.build_llm_view(),
+                &recorded_at,
+            )
+            .map_err(|error| SessionReplacementError::Target(error.to_string()))?
+    {
+        let binding = crate::session_host_storage::SessionStorageBinding::from_authority(
+            &request.target_snapshot,
+            &request.target_session_id,
+            Some(&authority),
+            environment.cwd,
+        );
+        crate::session_host_storage::save_full_spine(
+            &binding,
+            &request.target_conversation,
+            Some(metadata),
+        )
+        .map_err(|error| SessionReplacementError::Target(error.to_string()))?;
+        projection = ProjectionBinding::from_authority(&authority)?;
     }
 
     let previous_session_id = publication.displayed_session_id.clone();
@@ -352,6 +378,7 @@ mod tests {
             target_session_id: id.into(),
             target_snapshot: host.cwd.join(format!("{id}.json")),
             target_conversation: ConversationState::new(),
+            target_meta: None,
             resume_info: None,
         }
     }

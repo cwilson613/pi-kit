@@ -20,7 +20,7 @@ pub enum ResumeLoadError {
 }
 
 /// Metadata stored alongside each session for listing without loading the full file.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub session_id: String,
     pub cwd: String,
@@ -55,6 +55,33 @@ pub fn load_for_resume(
 ) -> Result<(ConversationState, SessionMeta), ResumeLoadError> {
     let home_path = crate::paths::omegon_home().map_err(ResumeLoadError::Authority)?;
     load_for_resume_with_home(cwd, path, &home_path)
+}
+
+pub(crate) fn import_legacy_resume(
+    authority: &mut crate::session_authority::SessionAuthority,
+    conversation: &ConversationState,
+    metadata: &SessionMeta,
+    snapshot: &Path,
+    workspace: &Path,
+    recorded_at: &str,
+) -> anyhow::Result<bool> {
+    if authority.state().session_id.as_deref() != Some(metadata.session_id.as_str())
+        || snapshot.file_stem().and_then(|value| value.to_str())
+            != Some(metadata.session_id.as_str())
+    {
+        anyhow::bail!("legacy compatibility import identity does not match semantic authority");
+    }
+    if !authority.import_legacy_compatibility_base(&conversation.build_llm_view(), recorded_at)? {
+        return Ok(false);
+    }
+    let binding = crate::session_host_storage::SessionStorageBinding::from_open_authority(
+        snapshot,
+        &metadata.session_id,
+        authority,
+        workspace,
+    );
+    crate::session_host_storage::save_full_spine(&binding, conversation, Some(metadata))?;
+    Ok(true)
 }
 
 fn load_for_resume_with_home(
@@ -113,11 +140,8 @@ fn load_for_resume_with_home(
         return Ok(loaded);
     }
 
-    let meta_path = path.with_extension("meta.json");
-    let meta_bytes =
-        std::fs::read(&meta_path).map_err(|error| ResumeLoadError::Snapshot(error.into()))?;
-    let meta: SessionMeta = serde_json::from_slice(&meta_bytes)
-        .map_err(|error| ResumeLoadError::Snapshot(error.into()))?;
+    let (conversation, meta) = crate::session_host_storage::load_compatibility_pair(path)
+        .map_err(ResumeLoadError::Snapshot)?;
     if meta.session_id != session_id {
         return Err(ResumeLoadError::Authority(anyhow::anyhow!(
             "session metadata identity does not match selected session"
@@ -131,7 +155,13 @@ fn load_for_resume_with_home(
             "session metadata belongs to a different workspace"
         )));
     }
-    let conversation = ConversationState::load_session(path).map_err(ResumeLoadError::Snapshot)?;
+    if conversation.turn_count() != meta.turns
+        || conversation.intent.stats.tool_calls != meta.tool_calls
+    {
+        return Err(ResumeLoadError::Authority(anyhow::anyhow!(
+            "compatibility snapshot does not match its session metadata"
+        )));
+    }
     Ok((conversation, meta))
 }
 
@@ -263,7 +293,16 @@ pub fn save_session(
 ) -> Result<PathBuf, SessionSaveError> {
     let dir =
         sessions_dir(cwd).ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    fs::create_dir_all(&dir).map_err(anyhow::Error::from)?;
+    save_session_in_dir(conversation, cwd, resume_id, &dir)
+}
+
+fn save_session_in_dir(
+    conversation: &ConversationState,
+    cwd: &Path,
+    resume_id: Option<&str>,
+    dir: &Path,
+) -> Result<PathBuf, SessionSaveError> {
+    fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
 
     // When resuming, overwrite the original session file so the chain stays clean.
     // When starting fresh, generate a new timestamped ID.
@@ -314,7 +353,7 @@ pub fn save_session(
     };
 
     let semantic_durable = crate::session_host_storage::has_authority(&path)?;
-    if semantic_durable {
+    let compatibility_pair_required = if semantic_durable {
         let binding =
             crate::session_host_storage::SessionStorageBinding::discover(&path, &session_id, cwd)?;
         crate::session_host_storage::save_full_spine(
@@ -322,9 +361,14 @@ pub fn save_session(
             conversation,
             existing_meta.as_ref(),
         )?;
-    }
+        crate::session_host_storage::compatibility_pair_required(&binding)?
+    } else {
+        true
+    };
 
-    publish_compatibility_mirrors(conversation, &path, &meta, semantic_durable)?;
+    if compatibility_pair_required {
+        publish_compatibility_mirrors(conversation, &path, &meta, semantic_durable)?;
+    }
 
     tracing::info!(
         session_id,
@@ -342,7 +386,7 @@ pub(crate) fn publish_compatibility_mirrors(
     meta: &SessionMeta,
     semantic_durable: bool,
 ) -> Result<(), SessionSaveError> {
-    // Slice 5.4-5.6 rollback mirrors retain their schema-v1 external shape.
+    // Legacy import files retain their schema-v1 external shape.
     if let Err(source) = conversation.save_session(path) {
         return Err(if semantic_durable {
             SessionSaveError::PartialPublication {
@@ -354,7 +398,7 @@ pub(crate) fn publish_compatibility_mirrors(
         });
     }
     let meta_json = serde_json::to_string_pretty(meta).map_err(anyhow::Error::from)?;
-    if let Err(source) = crate::filelock::atomic_write_locked(
+    if let Err(source) = crate::filelock::atomic_write_locked_private(
         &path.with_extension("meta.json"),
         meta_json.as_bytes(),
     ) {
@@ -597,7 +641,13 @@ mod tests {
             serde_json::to_vec(&meta).unwrap(),
         )
         .unwrap();
-        assert!(load_for_resume_with_home(&workspace, &path, &home_path).is_ok());
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            path.with_extension("meta.json"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        load_for_resume_with_home(&workspace, &path, &home_path).unwrap();
 
         let home = open_secure_root(&home_path).unwrap();
         let identity = path_identity(&home).unwrap();
@@ -704,6 +754,46 @@ mod tests {
         assert_eq!(loaded.turn_count(), 3);
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn full_semantic_save_does_not_publish_compatibility_pair() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let sessions = directory.path().join("sessions");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&sessions).unwrap();
+        let id = "2026-08-23T07-00-00_deadbeef";
+        let snapshot = sessions.join(format!("{id}.json"));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/session-semantic-v1/full-spine-crash-prefix.authority.jsonl");
+        fs::write(
+            snapshot.with_file_name(format!("{id}.authority.jsonl")),
+            fs::read_to_string(fixture)
+                .unwrap()
+                .replace("fixture-session", id),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                snapshot.with_file_name(format!("{id}.authority.jsonl")),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+
+        let saved = save_session_in_dir(&ConversationState::new(), &workspace, Some(id), &sessions)
+            .unwrap();
+        assert_eq!(saved, snapshot);
+        assert!(!snapshot.exists());
+        assert!(!snapshot.with_extension("meta.json").exists());
+        assert!(
+            snapshot
+                .with_file_name(format!("{id}.catalog.v1.json"))
+                .exists()
+        );
     }
 
     /// Helper: list from a specific directory (bypasses sessions_dir home detection)

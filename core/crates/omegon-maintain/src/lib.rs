@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     ffi::{OsStr, OsString},
     fs::File,
     io::Read,
@@ -1001,6 +1002,33 @@ struct SessionMeta {
     cwd: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionCatalog {
+    catalog_schema_version: u16,
+    session_id: String,
+    workspace_identity: String,
+    metadata_revision: u64,
+    friendly_name: Option<String>,
+    description: Option<String>,
+    created_at: String,
+    turns: u64,
+    tool_calls: u64,
+    last_prompt_snippet: Option<String>,
+    lineage: String,
+    availability: String,
+    semantic_frontier: Option<SessionCatalogFrontier>,
+    source_selection: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionCatalogFrontier {
+    stream_id: String,
+    sequence: u64,
+    event_id: String,
+}
+
 fn session_diagnostics(
     context: &Context,
     selected_id: Option<&str>,
@@ -1119,6 +1147,50 @@ fn session_diagnostics(
         };
         examined += entries.len();
         entries.sort_by(|left, right| left.name.cmp(&right.name));
+        let mut catalog_ids = BTreeSet::new();
+        for entry in &entries {
+            let Ok(name) = std::str::from_utf8(&entry.name) else {
+                continue;
+            };
+            let Some(id) = name.strip_suffix(".catalog.v1.json") else {
+                continue;
+            };
+            catalog_ids.insert(id.to_string());
+            if selected_id.is_some_and(|selected| selected != id) {
+                continue;
+            }
+            match inspect_session_catalog(
+                &directory,
+                &entry.name,
+                id,
+                workspace.as_deref(),
+                context,
+            ) {
+                Ok(Some(evidence)) => {
+                    matches += 1;
+                    diagnostic(
+                        result,
+                        "session_semantic_valid",
+                        Severity::Info,
+                        "session",
+                        &format!("semantic session {id} catalog framing is valid"),
+                        Some(evidence.evidence),
+                    );
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    diagnostic(
+                        result,
+                        "session_semantic_invalid",
+                        Severity::Warning,
+                        "session",
+                        &message,
+                        Some(json!({"quarantine_available": false})),
+                    );
+                    result.status = ResultStatus::Degraded;
+                }
+            }
+        }
         for entry in &entries {
             let Ok(name) = std::str::from_utf8(&entry.name) else {
                 diagnostic(
@@ -1135,7 +1207,7 @@ fn session_diagnostics(
             let Some(id) = name.strip_suffix(".meta.json") else {
                 continue;
             };
-            if selected_id.is_some_and(|selected| selected != id) {
+            if catalog_ids.contains(id) || selected_id.is_some_and(|selected| selected != id) {
                 continue;
             }
             match inspect_session_pair(&directory, &entry.name, id, workspace.as_deref(), context) {
@@ -1171,8 +1243,10 @@ fn session_diagnostics(
             let Some(id) = name.strip_suffix(".json") else {
                 continue;
             };
-            if id.ends_with(".meta")
+            if name.ends_with(".catalog.v1.json")
+                || id.ends_with(".meta")
                 || id.ends_with(".authority.snapshot")
+                || catalog_ids.contains(id)
                 || entries
                     .iter()
                     .any(|candidate| candidate.name == format!("{id}.meta.json").as_bytes())
@@ -1198,12 +1272,92 @@ fn session_diagnostics(
             "inspect",
             true,
             if matches == 0 {
-                "session pair was not found"
+                "session catalog or legacy pair was not found"
             } else {
                 "session ID matched multiple workspace records"
             },
         );
     }
+}
+
+fn inspect_session_catalog(
+    directory: &File,
+    catalog_name: &[u8],
+    filename_id: &str,
+    workspace: Option<&[u8]>,
+    context: &Context,
+) -> Result<Option<InspectedSessionCatalog>, String> {
+    if !canonical_session_id(filename_id)
+        || catalog_name != format!("{filename_id}.catalog.v1.json").as_bytes()
+    {
+        return Err("semantic session catalog filename is not canonical".into());
+    }
+    let catalog_bytes =
+        read_bounded_regular_at(directory, catalog_name, MAX_METADATA_BYTES, context)?;
+    let catalog: SessionCatalog = serde_json::from_slice(&catalog_bytes.bytes)
+        .map_err(|error| format!("semantic session catalog is malformed: {error}"))?;
+    if catalog.catalog_schema_version != 1 {
+        return Err(format!(
+            "semantic session catalog schema version {} is unsupported",
+            catalog.catalog_schema_version
+        ));
+    }
+    if catalog.session_id != filename_id {
+        return Err("semantic session catalog ID does not match filename".into());
+    }
+    if catalog.metadata_revision == 0
+        || catalog.created_at.trim().is_empty()
+        || catalog.source_selection != "semantic_authority_plus_host_stores"
+        || !matches!(
+            (catalog.lineage.as_str(), catalog.availability.as_str()),
+            ("legacy", "legacy_compatibility") | ("mixed", "exact_suffix") | ("full", "exact")
+        )
+    {
+        return Err("semantic session catalog fields are unsupported or invalid".into());
+    }
+    let frontier = catalog
+        .semantic_frontier
+        .as_ref()
+        .ok_or_else(|| "semantic session catalog has no authority frontier".to_string())?;
+    Uuid::parse_str(&frontier.stream_id)
+        .map_err(|_| "semantic session catalog stream ID is invalid".to_string())?;
+    Uuid::parse_str(&frontier.event_id)
+        .map_err(|_| "semantic session catalog event ID is invalid".to_string())?;
+    if frontier.sequence == 0 {
+        return Err("semantic session catalog frontier sequence is invalid".into());
+    }
+    let normalized_catalog = normalize_workspace_path(catalog.workspace_identity.as_bytes())
+        .map_err(|error| format!("semantic session catalog workspace is invalid: {error}"))?;
+    if workspace.is_some_and(|expected| expected != normalized_catalog) {
+        return Ok(None);
+    }
+    let mut evidence = json!({
+        "session_id": filename_id,
+        "workspace_key": workspace_key("unix", &normalized_catalog),
+        "catalog_schema_version": catalog.catalog_schema_version,
+        "catalog_size": catalog_bytes.bytes.len(),
+        "catalog_digest": catalog_bytes.digest,
+        "metadata_revision": catalog.metadata_revision,
+        "turns": catalog.turns,
+        "tool_calls": catalog.tool_calls,
+        "semantic_frontier": {
+            "stream_id": &frontier.stream_id,
+            "sequence": frontier.sequence,
+            "event_id": &frontier.event_id,
+        },
+    });
+    evidence["lineage"] = Value::String(bounded(&catalog.lineage, 256));
+    evidence["availability"] = Value::String(bounded(&catalog.availability, 256));
+    let _operator_metadata = (
+        &catalog.friendly_name,
+        &catalog.description,
+        &catalog.last_prompt_snippet,
+    );
+    Ok(Some(InspectedSessionCatalog {
+        evidence,
+        catalog_identity: catalog_bytes.identity,
+        catalog_digest: catalog_bytes.digest,
+    }))
 }
 
 fn inspect_session_pair(
@@ -1257,6 +1411,8 @@ fn inspect_session_pair(
         }),
         metadata_identity: meta_bytes.identity,
         snapshot_identity: snapshot.identity,
+        metadata_digest: meta_bytes.digest,
+        snapshot_digest: snapshot.digest,
     }))
 }
 
@@ -1477,6 +1633,14 @@ struct InspectedSessionPair {
     evidence: Value,
     metadata_identity: FileIdentityV1,
     snapshot_identity: FileIdentityV1,
+    metadata_digest: AuthorityKey,
+    snapshot_digest: AuthorityKey,
+}
+
+struct InspectedSessionCatalog {
+    evidence: Value,
+    catalog_identity: FileIdentityV1,
+    catalog_digest: AuthorityKey,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

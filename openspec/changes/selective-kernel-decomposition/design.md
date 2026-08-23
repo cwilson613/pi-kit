@@ -16,7 +16,7 @@ The constitutional kernel owns only identity, contribution lifecycle, durable se
 
 ## Lifecycle status
 
-This change remains `proposed` overall. Slices 0 through 4 and tasks 5.1-5.5 are complete; task 5.6 remains open. Slice 5.5 gives all 54 rows exhaustive scenario-specific executors, includes AC13's chunk-bearing mixed-lineage rebuild fixture, and passes the focused Ubuntu/Windows campaign matrix. The macOS, Ubuntu, and Windows campaigns are evidenced within budget; GitHub Actions run `32622078435` at `b788f3b8` supplies the required Ubuntu and Windows evidence. Public/developer documentation and dual-write closeout remain exclusively 5.6. Homebrew publication is not a Slice-zero exit gate; existing formula verification remains a best-effort packaging safeguard. Pairwise install, self-update, and version switching publish immutable complete generations and select the executable pair plus receipt through one atomic activation link. Each later slice begins with an explicit refinement gate that names concrete ownership, compatibility boundaries, red tests, and documentation impact before production mutation.
+This change remains `proposed` overall. Slices 0 through 5 are complete; optional domain extraction remains open. Slice 5.5 gives all 54 rows exhaustive scenario-specific executors, includes AC13's chunk-bearing mixed-lineage rebuild fixture, and passes the focused Ubuntu/Windows campaign matrix. The macOS, Ubuntu, and Windows campaigns are evidenced within budget; GitHub Actions run `32622078435` at `b788f3b8` supplies the required Ubuntu and Windows evidence. Slice 5.6 closes compatibility publication at the frozen semantic self-sufficiency boundary, migrates maintenance to catalog-first framing, and publishes the applicable public/developer documentation and canonical snippets. Homebrew publication is not a Slice-zero exit gate; existing formula verification remains a best-effort packaging safeguard. Pairwise install, self-update, and version switching publish immutable complete generations and select the executable pair plus receipt through one atomic activation link. Each later slice begins with an explicit refinement gate that names concrete ownership, compatibility boundaries, red tests, and documentation impact before production mutation.
 
 ## Architectural layers
 
@@ -500,7 +500,7 @@ duplicate terminal facts, EOF/cancellation outcomes, and repeated recovery.
 Tasks 5.2 through 5.5 own complete compatibility/replay matrices, reducer-backed
 provider history and transcripts, legacy consumer/storage migration, compaction
 checkpoints, and lagged/disconnected/corrupt consumer recovery. Sessionless full
-semantic streams require a separate future design. Task 5.6 owns final developer and applicable public recovery
+semantic streams require a separate future design. Task 5.6 completed final developer and applicable public recovery
 documentation. Task 5.0 itself changes no command, configuration, site page,
 canonical snippet, or runtime behavior, so it requires no Unreleased behavior
 entry.
@@ -554,8 +554,8 @@ output-before-cursor publication; it does not re-emit semantic authority. Task
 authority and exact-frontier rules; sessionless semantic lineage remains
 deferred rather than synthesizing history. Task 5.5 exercises
 the frozen canonical corpus under lag, restart, disconnect, truncation,
-corruption, and blob-loss conditions. Task 5.6 remains final developer and
-applicable public documentation closeout.
+corruption, and blob-loss conditions. Task 5.6 completes compatibility
+publication and applicable public/developer documentation closeout.
 
 Task 5.3.0 freezes the concrete derivation boundary before task 5.3 mutates
 runtime projection code. Four internal semantic projectors, all projector
@@ -637,14 +637,13 @@ presentation/evidence export name.
 
 The new host-state, observation, catalog, telemetry, audit-source, and journal-
 provenance schemas start at version 1 without changing authority event v1,
-projection schema v1, reducer/cache v5, or legacy file shapes. Existing `.json`
-and `.meta.json` outputs remain compatibility mirrors through Slice 5.6 closeout.
-Rollback changes consumer selection only: the semantic writer and forward-only
-lineage remain active, mirrors continue, and no old writer may append a reduced
-event set. Task 5.4 implements this freeze across provider/compaction, host
-stores, transcript/export, TUI, ACP, Web, IPC, telemetry, audit, and journal
-consumers. Task 5.5 supplies adverse-consumer execution and task 5.6 closes
-compatibility publication and applicable public documentation.
+projection schema v1, reducer/cache v5, or legacy file shapes. Slice 5.6 stops
+rewriting `.json`/`.meta.json` for full and materialized-mixed sessions; legacy
+and not-yet-materialized mixed sessions retain the pair only as a one-way import
+source. The semantic writer and forward-only lineage remain active, and no old
+writer may append a reduced event set. Task 5.4 implements the consumer cutover,
+task 5.5 supplies adverse-consumer execution, and task 5.6 completes
+compatibility publication plus applicable public documentation.
 
 Task 5.5.0 freezes that adverse-consumer execution without changing production.
 The private semantic protocol is the normative campaign: 54 stable scenario IDs
@@ -686,7 +685,7 @@ missing catalog identity, partial mirror publication, or platform-specific
 atomic publication. These are exact red gaps, not permission to revise accepted
 vectors. Task 5.5 may correct behavior exposed by those fixtures while retaining
 event v1, reducer/cache v5, cursor v1, projection v1, and task-5.4 store schemas.
-Task 5.6 remains the only compatibility-publication-removal and
+Task 5.6 is the only compatibility-publication-removal and
 developer/applicable-public-doc boundary. Its refinement defines semantic
 self-sufficiency narrowly: full lineage, or mixed lineage carrying exactly one
 durable content-addressed legacy compatibility base. Those sessions stop
@@ -699,6 +698,6 @@ session. Maintenance becomes catalog-first for inventory, inspection, and
 quarantine, with pair fallback only for legacy import. Closeout does not invent
 the previously described rollback consumer switch: no such runtime selector
 exists. Event v1, reducer/cache v5, cursor v1, projection v1, and task-5.4 host
-schemas remain unchanged. This refinement is planning-only and changes no Rust,
-runtime, changelog, public docs/site, command/configuration, or canonical
-snippet.
+schemas remain unchanged. The refinement itself was planning-only; task 5.6 now
+implements this boundary and its documentation without changing those frozen
+schemas.

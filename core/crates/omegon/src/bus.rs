@@ -369,6 +369,8 @@ pub struct EventBus {
     acp_invocation_owners: HashMap<String, usize>,
     /// Bindingless typed services atomically published with the accepted graph.
     in_process_services: BTreeMap<omegon_traits::RuntimeCapabilityId, PublishedInProcessService>,
+    /// Resource-bearing services with generation-owned admission and cleanup.
+    managed_services: crate::managed_service_bus::ManagedServiceBus,
     /// Structurally validated composition from which legacy caches were built.
     accepted_graph: Option<std::sync::Arc<crate::contribution_graph::RuntimeCandidateGraph>>,
     /// Identity of the atomically published composition represented by the graph and caches.
@@ -395,6 +397,7 @@ impl EventBus {
             internal_tool_owners: HashMap::new(),
             acp_invocation_owners: HashMap::new(),
             in_process_services: BTreeMap::new(),
+            managed_services: crate::managed_service_bus::ManagedServiceBus::default(),
             accepted_graph: None,
             accepted_generation_id: None,
             composition_diagnostics: Vec::new(),
@@ -447,6 +450,39 @@ impl EventBus {
             generation_id: published.generation_id.clone(),
             service,
         }))
+    }
+
+    pub(crate) async fn publish_managed_service<S>(
+        &mut self,
+        candidate: crate::managed_service_bus::ManagedServiceCandidate<S>,
+    ) -> crate::managed_service_bus::ManagedServicePublicationOutcome
+    where
+        S: omegon_traits::ManagedServiceContract + ?Sized,
+    {
+        self.managed_services.publish(candidate).await
+    }
+
+    pub(crate) fn managed_service<S>(
+        &self,
+        capability_id: &omegon_traits::RuntimeCapabilityId,
+        interface_id: &omegon_traits::RuntimeServiceInterfaceId,
+    ) -> anyhow::Result<Option<crate::service_generation::ManagedServiceHandle<S>>>
+    where
+        S: omegon_traits::ManagedServiceContract + ?Sized,
+    {
+        self.managed_services.service(capability_id, interface_id)
+    }
+
+    pub(crate) fn managed_service_metadata(
+        &self,
+    ) -> Vec<crate::managed_service_bus::ManagedPublishedServiceMetadata> {
+        self.managed_services.published_metadata()
+    }
+
+    pub(crate) async fn shutdown_managed_services(
+        &mut self,
+    ) -> crate::managed_service_bus::ManagedServiceShutdownReport {
+        self.managed_services.shutdown().await
     }
 
     pub fn apply_operator_tool_profile(

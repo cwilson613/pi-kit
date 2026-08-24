@@ -124,6 +124,27 @@ impl ManagedGenerationRuntime {
                     }))
     }
 
+    pub(crate) fn retains_resources(&self) -> bool {
+        self.resource_binding
+            .lock()
+            .expect("managed resource binding lock poisoned")
+            .resources
+            .is_some()
+    }
+
+    pub(crate) fn generation_retry_running(&self) -> bool {
+        self.generation_retry_running.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn generation_cleanup_result(
+        &self,
+    ) -> Option<Result<ManagedGenerationCleanupReport, String>> {
+        self.generation_cleanup_result
+            .lock()
+            .expect("managed generation cleanup result lock poisoned")
+            .clone()
+    }
+
     pub(crate) fn attach_resources(
         &self,
         resources: Arc<ManagedResourceOwner>,
@@ -276,6 +297,15 @@ impl ManagedGenerationRuntime {
         active_call_deadline: tokio::time::Instant,
         cleanup_budget: std::time::Duration,
     ) -> anyhow::Result<ManagedGenerationCleanupReport> {
+        self.start_generation_cleanup(active_call_deadline, cleanup_budget)?;
+        self.wait_for_generation_cleanup().await
+    }
+
+    pub(crate) fn start_generation_cleanup(
+        self: &Arc<Self>,
+        active_call_deadline: tokio::time::Instant,
+        cleanup_budget: std::time::Duration,
+    ) -> anyhow::Result<()> {
         if self
             .generation_cleanup_started
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -325,7 +355,7 @@ impl ManagedGenerationRuntime {
                 .is_some_and(|result| {
                     result
                         .as_ref()
-                        .is_ok_and(|report| report.resources.strict_resources_settled())
+                        .is_ok_and(|report| report.resources.all_resources_settled())
                 });
             if release_resources {
                 runtime
@@ -344,8 +374,7 @@ impl ManagedGenerationRuntime {
             .generation_cleanup_task
             .lock()
             .expect("managed generation cleanup task lock poisoned") = Some(task);
-
-        self.wait_for_generation_cleanup().await
+        Ok(())
     }
 
     pub(crate) async fn join_generation_cleanup(
@@ -355,6 +384,14 @@ impl ManagedGenerationRuntime {
             anyhow::bail!("managed generation cleanup has not started");
         }
         self.wait_for_generation_cleanup().await
+    }
+
+    pub(crate) fn generation_cleanup_started(&self) -> bool {
+        self.generation_cleanup_started.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn generation_cleanup_complete(&self) -> bool {
+        self.generation_cleanup_complete.load(Ordering::Acquire)
     }
 
     pub(crate) async fn retry_generation_resource_cleanup(
@@ -403,7 +440,7 @@ impl ManagedGenerationRuntime {
             };
             let release_resources = result
                 .as_ref()
-                .is_ok_and(|report| report.resources.strict_resources_settled());
+                .is_ok_and(|report| report.resources.all_resources_settled());
             *runtime
                 .generation_cleanup_result
                 .lock()
@@ -511,6 +548,12 @@ pub(crate) struct ManagedResourceCleanupReport {
 }
 
 impl ManagedResourceCleanupReport {
+    pub(crate) fn all_resources_settled(&self) -> bool {
+        self.records
+            .iter()
+            .all(|record| record.cleanup_state == RuntimeCleanupState::Settled)
+    }
+
     pub(crate) fn strict_resources_settled(&self) -> bool {
         self.records.iter().all(|record| {
             record.cleanup_assurance != RuntimeCleanupAssurance::Strict
@@ -664,6 +707,15 @@ impl ManagedResourceOwner {
         state.cleanup_order = activation_order;
         state.frozen = true;
         Ok(())
+    }
+
+    pub(crate) fn freeze_for_rejected_candidate_cleanup(&self) {
+        let mut state = self.state.lock().expect("managed resource lock poisoned");
+        if state.frozen {
+            return;
+        }
+        state.cleanup_order = state.entries.keys().rev().cloned().collect();
+        state.frozen = true;
     }
 
     async fn cleanup_until(
@@ -1007,7 +1059,10 @@ pub(crate) struct ManagedAdmissionRegistry {
 }
 
 impl ManagedAdmissionRegistry {
-    pub(crate) fn replace(&self, table: ManagedAdmissionTable) -> anyhow::Result<()> {
+    pub(crate) fn replace(
+        &self,
+        table: ManagedAdmissionTable,
+    ) -> anyhow::Result<tokio::time::Instant> {
         let mut current = self.table.write().expect("managed admission lock poisoned");
         for (key, entry) in &table.entries {
             if table.entries.iter().any(|(other_key, other)| {
@@ -1059,6 +1114,7 @@ impl ManagedAdmissionRegistry {
         for entry in table.entries.values() {
             entry.runtime.mark_published();
         }
+        let publication_point = tokio::time::Instant::now();
         *current = table;
         for entry in current.entries.values() {
             if entry.state != ManagedServiceGenerationState::Accepting {
@@ -1068,7 +1124,7 @@ impl ManagedAdmissionRegistry {
                     .store(true, Ordering::Release);
             }
         }
-        Ok(())
+        Ok(publication_point)
     }
 
     pub(crate) fn transition(

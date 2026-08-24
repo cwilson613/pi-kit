@@ -136,6 +136,7 @@ mod loop_lifecycle;
 mod loop_permission;
 mod loop_session;
 mod managed_agent_supervisor;
+mod managed_service_bus;
 mod model_catalog;
 mod model_preferences;
 mod model_registry;

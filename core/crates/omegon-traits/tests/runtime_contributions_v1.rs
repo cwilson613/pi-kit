@@ -1,5 +1,6 @@
 use omegon_traits::{
-    ManagedCallContext, ManagedServiceCallError, ManagedServiceContract, ManagedServiceFuture,
+    ManagedCallContext, ManagedResourceController, ManagedResourceSettlementFuture,
+    ManagedServiceCallError, ManagedServiceContract, ManagedServiceFuture,
     ManagedServiceGenerationState, RUNTIME_CONTRIBUTION_SCHEMA_VERSION,
     RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION, RuntimeCompositionGeneration,
     RuntimeConfinementRequest, RuntimeContributionDeclaration, RuntimeContributionId,
@@ -300,4 +301,22 @@ fn managed_service_contract_is_object_safe_and_errors_have_stable_codes() {
         ManagedServiceGenerationState::Accepting,
         ManagedServiceGenerationState::Draining
     );
+}
+
+#[test]
+fn managed_resource_controller_is_object_safe() {
+    struct FixtureController;
+
+    impl ManagedResourceController for FixtureController {
+        fn request_stop(&self) {}
+
+        fn force_stop(&self) {}
+
+        fn await_settled(&self) -> ManagedResourceSettlementFuture<'_> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn accepts_trait_object(_controller: &dyn ManagedResourceController) {}
+    accepts_trait_object(&FixtureController);
 }

@@ -619,6 +619,24 @@ pub trait ManagedServiceContract: Any + Send + Sync + 'static {
     ) -> ManagedServiceFuture<'a, Self::Response, Self::Error>;
 }
 
+pub type ManagedResourceSettlementFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+
+/// Controls one generation-owned resource during bounded cleanup.
+///
+/// All methods must be nonblocking. Stop operations must be idempotent, and
+/// `await_settled` must remain safe to call again after cancellation or timeout.
+pub trait ManagedResourceController: Send + Sync + 'static {
+    /// Requests cooperative shutdown without waiting for it to finish.
+    fn request_stop(&self);
+
+    /// Requests immediate shutdown without waiting for it to finish.
+    fn force_stop(&self);
+
+    /// Observes positive settlement and may be called repeatedly.
+    fn await_settled(&self) -> ManagedResourceSettlementFuture<'_>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagedServiceGenerationState {
     Accepting,

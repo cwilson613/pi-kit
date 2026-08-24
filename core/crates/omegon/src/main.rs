@@ -7,7 +7,7 @@
 //! Phase 3: Native LLM provider clients.
 
 use crate::conversation::PlanAction;
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", test))]
 use crate::runtime_composition::{decide_interactive_startup_model, restart_args_for_session};
 use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "tui")]
@@ -20,6 +20,7 @@ use crossterm::event::EnableMouseCapture;
 use crossterm::terminal::disable_raw_mode;
 #[cfg(all(feature = "tui", unix))]
 use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
+#[cfg(feature = "tui")]
 use std::collections::VecDeque;
 #[cfg(feature = "tui")]
 use std::io;
@@ -204,9 +205,10 @@ use bridge::LlmBridge;
 use omegon_traits::AgentEvent;
 use runtime_prompt::{ControlSurface, PromptEnvelope, QueueMode, RuntimeActor, RuntimeActorKind};
 use runtime_supervisor::InteractiveRuntimeSupervisor;
+#[cfg(feature = "tui")]
+use runtime_turn::{ActiveTurnMeta, RuntimeTurnLifecycle, TerminalSubmission};
 use runtime_turn::{
-    ActiveTurnMeta, InterruptAdmission, LoopTerminalIntent, RuntimeTurnIdentity,
-    RuntimeTurnLifecycle, RuntimeTurnOutcome, TerminalSubmission,
+    InterruptAdmission, LoopTerminalIntent, RuntimeTurnIdentity, RuntimeTurnOutcome,
 };
 use tokio::sync::oneshot;
 
@@ -4357,7 +4359,7 @@ fn cli_prefers_slim_mode(cli: &Cli) -> bool {
     cli.slim
 }
 
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", test))]
 fn secret_readiness_inputs(
     secrets: &omegon_secrets::SecretsManager,
 ) -> crate::capabilities::secrets::SecretReadinessInputs {
@@ -4474,6 +4476,7 @@ fn signal_tui_boundary_exit(exit: &CancellationToken) {
     exit.cancel();
 }
 
+#[cfg(feature = "tui")]
 async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     let local = tokio::task::LocalSet::new();
     local

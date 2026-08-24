@@ -141,6 +141,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Restored the no-default-features headless/daemon composition by excluding the native interactive coordinator when TUI support is absent. Headless builds now retain the explicit interactive-mode error path without linking terminal presentation dependencies.
 - Added protocol-v1 runtime ownership records for normal agent, ACP, daemon, Sentry, headless, cleave, and TUI lifecycles. Runtime startup now publishes unique workspace-bound process evidence with atomic dual-clock heartbeats, colocates legacy leases under the same final mode-specific directory, preserves ownership across interactive state splitting, and removes its generation on orderly shutdown or restart.
 - Enforced maintenance contribution exclusion for canonical catalog agents across startup, CLI, ACP, Web capability inventory, and Armory status. Catalog bundles and Pkl inheritance now resolve from one immutable admitted generation with the shared lock retained through runtime publication; install/update and removal use bounded preparation plus exclusive-lock atomic bundle replacement.
 - Guarded git and tarball extension installation and git-backed updates with complete candidate preparation outside the canonical root followed by exclusive-lock atomic publication. Published git extensions retain bounded source metadata instead of live VCS trees, and updates reject identity changes before replacing the active generation.

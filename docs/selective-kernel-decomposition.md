@@ -759,6 +759,19 @@ remain declared with typed unavailability, durable memory context is omitted,
 and unrelated context and host-owned compaction continue without a direct store,
 JSONL, or vault fallback.
 
+Task 6.1.9.1 establishes the durable prerequisite. Schema v8 adds compact
+payload-bound operation receipts and complete episode metadata. A stable
+operation identity replays its recorded effect only when the payload hash
+matches; conflicting reuse fails without mutation. Targeted operations use fact
+version preconditions, while independent writes and JSONL imports do not share a
+global revision. SQLite transactions now cover mind-plus-record creation, batch
+status changes, supersession, vector-plus-model metadata, episodes, and JSONL
+imports. The in-memory backend stages the same compound effects before
+publication. Both backends preserve Lamport high-water marks, deterministic FTS
+tie ordering, JSONL rollback/idempotency, and episode metadata. Migration accepts
+schemas v5-v7: v5/v6 `default` records remain quarantined in `legacy`, and v7
+`default` records reconcile to `primensus`.
+
 ## Selective decomposition map
 
 | Current subsystem | Target tier | First boundary to establish |
@@ -1230,6 +1243,9 @@ and cursors without depending on missed broadcasts.
   owns project/global stores and JSONL/vault persistence. Session context and
   provider computation remain host-owned, deterministic FTS remains available
   without embeddings, and optional absence has no direct storage fallback.
+  Its first implementation checkpoint establishes transactional schema-v8
+  persistence, payload-bound operation replay, backend parity, governed v5-v7
+  migration, deterministic fallback, and reopen/rollback evidence.
 - Convert memory, context/compaction, and Git integration to declared
   in-process services.
 - Remove concrete feature imports from semantic surfaces.

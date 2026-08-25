@@ -11,8 +11,8 @@ visibility = "private"
 
 [data]
 design_docs = ["design/memory-lifecycle-integration.md", "design/memory-mind-audit.md", "design/cheap-gpt-memory-models.md", "memory-system-overhaul.md", "memory-session-continuity.md", "memory-episode-reliability.md", "memory-task-completion-facts.md", "memory-pruning-ceiling.md"]
-last_updated = "2026-03-17"
-last_reviewed = "2026-05-11"
+last_updated = "2026-08-25"
+last_reviewed = "2026-08-25"
 openspec_baselines = ["memory.md", "memory/lifecycle.md", "memory/models.md", "project-memory/compaction.md"]
 subsystem = "project-memory"
 +++
@@ -25,7 +25,7 @@ subsystem = "project-memory"
 
 Project memory gives agents persistent knowledge across sessions. It operates at multiple levels:
 
-- **Fact store**: SQLite+WAL database (`ai/memory/facts.db`) with atomic facts organized by section (Architecture, Decisions, Constraints, Known Issues, Patterns & Conventions, Specs, Recent Work). Facts are stored, superseded, archived, and connected in a knowledge graph.
+- **Fact store**: Schema-v8 SQLite+WAL database (`ai/memory/facts.db`, or the existing `.omegon/memory/facts.db` legacy root) with atomic facts organized by section (Architecture, Decisions, Constraints, Known Issues, Patterns & Conventions, Specs, Recent Work). Facts are stored, superseded, archived, and connected in a knowledge graph.
 - **Semantic retrieval**: Facts embedded for `memory_recall(query)` similarity search. Omegon first probes the configured Ollama embedding endpoint, then falls back to a local ONNX embedding service when the binary is built with `local-embeddings` and model files are present. If no embedding backend is available, recall falls back to FTS5 keyword search.
 - **Working memory**: 25-slot buffer of pinned facts that survive context compaction and get priority injection.
 - **Episodic memory**: Session narratives generated at shutdown via fallback chain (cloud → local → template floor), capturing goals, decisions, sequences, and outcomes.
@@ -49,6 +49,8 @@ Project memory gives agents persistent knowledge across sessions. It operates at
 ## Design Decisions
 
 - **SQLite+WAL for storage, JSONL for git sync**: Database handles concurrent reads during extraction; JSONL enables cross-branch merging via git union strategy.
+- **Payload-bound operation replay**: Durable mutations can carry a stable operation identity. Exact replay returns the original compact effect; reuse with a different payload fails before mutation. Targeted changes use fact-version preconditions instead of one global store revision.
+- **Governed schema v8 migration**: Startup migrates schemas v5-v7 before opening the store. Historical v5/v6 `default` records move to `legacy`; post-v7 `default` records move to `primensus`. Schema v8 persists operation receipts and complete episode metadata.
 - **Semantic search primary, FTS5 fallback**: Embeddings give better retrieval; FTS5 always works as a fallback. The current selection order is configured Ollama embedding service, optional local ONNX service, then FTS5-only recall.
 - **Pointer facts over inline details**: Facts reference files (`"X does Y. See path/to/file.ts"`) instead of inlining implementation details — keeps facts atomic and maintainable.
 - **Store conclusions, not investigation steps**: Facts capture final state, not debugging journey.

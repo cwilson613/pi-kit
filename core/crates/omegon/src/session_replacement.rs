@@ -614,16 +614,16 @@ mod tests {
         let old_sequence = old_authority.state().last_sequence;
         wait_for_projection(&host.supervisor, old_sequence);
         let old_root = host.cwd.join(format!("{old_id}.projections"));
+
+        let target_id = "2026-08-21T12-00-17_00000018";
+        let target = request(&host, target_id);
+        replace_host(&mut host, target).unwrap();
         let old_cursor = std::fs::read(
             old_root
                 .join("session.frontend-snapshot")
                 .join("cursor.json"),
         )
         .unwrap();
-
-        let target_id = "2026-08-21T12-00-17_00000018";
-        let target = request(&host, target_id);
-        replace_host(&mut host, target).unwrap();
         old_authority
             .admit_prompt(
                 Uuid::new_v4(),

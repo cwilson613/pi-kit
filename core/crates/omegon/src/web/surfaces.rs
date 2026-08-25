@@ -270,7 +270,7 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                     tool_calls: session.as_ref().map(|s| s.tool_calls).unwrap_or(0),
                     compactions: session.as_ref().map(|s| s.compactions).unwrap_or(0),
                 },
-                lifecycle_available: state.handles.lifecycle.is_some(),
+                lifecycle_available: state.handles.lifecycle_service.binding().available(),
                 cleave_available: state.handles.cleave_available(),
                 delegate_available: state.handles.delegate_available(),
                 harness_available: state.handles.harness_available(),

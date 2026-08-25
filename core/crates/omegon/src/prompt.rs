@@ -201,8 +201,7 @@ pub fn build_base_prompt_for_mode_with_subagent_policy(
 }
 
 /// Rich tool guidelines — how to use each tool well, not just what it does.
-fn detect_lifecycle_context(cwd: &Path, tools: &[ToolDefinition]) -> String {
-    let repo_root = find_repo_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+fn detect_lifecycle_context(_cwd: &Path, tools: &[ToolDefinition]) -> String {
     let tool_names: std::collections::HashSet<&str> =
         tools.iter().map(|t| t.name.as_str()).collect();
 
@@ -212,24 +211,7 @@ fn detect_lifecycle_context(cwd: &Path, tools: &[ToolDefinition]) -> String {
     let has_cleave_tools =
         tool_names.contains("cleave_assess") || tool_names.contains("cleave_run");
 
-    let docs_dir = repo_root.join("docs");
-    let openspec_dir = repo_root.join("openspec");
-    // Count design docs in a single pass
-    let design_doc_count = if docs_dir.is_dir() {
-        std::fs::read_dir(&docs_dir)
-            .map(|rd| {
-                rd.filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
-                    .count()
-            })
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    let has_design_docs = design_doc_count > 0;
-    let has_openspec = openspec_dir.is_dir();
-
-    if !has_design_docs && !has_openspec && !has_design_tools {
+    if !has_design_tools && !has_openspec_tools {
         return String::new();
     }
 
@@ -241,11 +223,9 @@ fn detect_lifecycle_context(cwd: &Path, tools: &[ToolDefinition]) -> String {
             .into(),
     );
 
-    if has_design_docs && has_design_tools {
-        let doc_count = design_doc_count;
-
-        sections.push(format!(
-            "design-tree: {doc_count} design doc(s) in docs/. Use design_tree to query nodes, \
+    if has_design_tools {
+        sections.push(
+            "design-tree: Use design_tree to query managed nodes, \
              track decisions, and manage open questions. Use design_tree_update to \
              record decisions, add research, and transition node status \
              (seed → exploring → resolved → decided). \
@@ -257,10 +237,11 @@ fn detect_lifecycle_context(cwd: &Path, tools: &[ToolDefinition]) -> String {
              When assessing or reviewing a design node, explicitly ask: \
              'What assumptions is this design making that haven't been stated?' \
              and record the answers as [assumption]-tagged questions."
-        ));
+                .into(),
+        );
     }
 
-    if has_openspec && has_openspec_tools {
+    if has_openspec_tools {
         sections.push(
             "openspec: Spec-driven implementation lifecycle. Use lifecycle tools only when they are exposed in the current tool surface; otherwise enable the lifecycle group with manage_tools or work from the files directly. The full cycle is: design_tree_update(implement) when a decided node exists → add_spec → write tasks.md → openspec_manage(register_tasks) → openspec_manage(register_test_file) → cleave or implement → assess spec → archive. Specs define what must be true BEFORE code is written; editing tasks.md alone does not advance FSM state."
                 .into(),
@@ -932,14 +913,9 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_context_detected_when_docs_exist() {
+    fn lifecycle_context_follows_the_managed_tool_surface() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path();
-
-        // Create a git repo with docs/
-        std::fs::create_dir_all(cwd.join(".git")).unwrap();
-        std::fs::create_dir_all(cwd.join("docs")).unwrap();
-        std::fs::write(cwd.join("docs/some-design.md"), "# Design").unwrap();
 
         // With design_tree tools registered
         let tools = vec![
@@ -965,16 +941,13 @@ mod tests {
             "should detect lifecycle, got: {ctx}"
         );
         assert!(ctx.contains("design-tree"), "should mention design-tree");
-        assert!(ctx.contains("1 design doc"), "should count docs");
+        assert!(ctx.contains("managed nodes"));
     }
 
     #[test]
     fn lifecycle_context_openspec_only() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path();
-        std::fs::create_dir_all(cwd.join(".git")).unwrap();
-        std::fs::create_dir_all(cwd.join("openspec")).unwrap();
-
         let tools = vec![ToolDefinition {
             name: "openspec_manage".into(),
             label: "os".into(),

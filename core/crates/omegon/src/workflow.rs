@@ -182,32 +182,28 @@ pub struct ReadyNode {
     pub priority: Option<u8>,
 }
 
-/// Query the design tree for nodes that are ready to implement:
-/// status == Decided, all dependencies Implemented, not archived.
-/// Reads directly from filesystem — no bus or Feature access required.
-pub fn query_ready_nodes(cwd: &Path) -> Vec<ReadyNode> {
-    use crate::lifecycle::{design, types::NodeStatus};
-
-    let docs_dir = cwd.join("docs");
-    if !docs_dir.is_dir() {
-        return Vec::new();
-    }
-    let nodes = design::scan_design_docs(&docs_dir);
-    nodes
-        .values()
-        .filter(|n| !matches!(n.status, NodeStatus::Archived))
-        .filter(|n| matches!(n.status, NodeStatus::Decided))
-        .filter(|n| {
-            n.dependencies.iter().all(|dep_id| {
-                nodes
-                    .get(dep_id)
-                    .is_some_and(|d| matches!(d.status, NodeStatus::Implemented))
-            })
+/// Query the managed design repository for nodes ready for autonomous dispatch.
+pub async fn query_ready_nodes(
+    lifecycle: &crate::lifecycle_service::LifecycleBinding,
+) -> Vec<ReadyNode> {
+    let Ok(response) = lifecycle
+        .invoke(crate::lifecycle_service::LifecycleRequestV1::QueryDesign {
+            query: crate::lifecycle_service::LifecycleReadQueryV1::Ready,
+            cancellation: tokio_util::sync::CancellationToken::new(),
         })
-        .map(|n| ReadyNode {
-            id: n.id.clone(),
-            title: n.title.clone(),
-            priority: n.priority,
+        .await
+    else {
+        return Vec::new();
+    };
+    let crate::lifecycle_service::LifecyclePayloadV1::Ready(nodes) = response.payload else {
+        return Vec::new();
+    };
+    nodes
+        .into_iter()
+        .map(|node| ReadyNode {
+            id: node.id,
+            title: node.title,
+            priority: node.priority,
         })
         .collect()
 }

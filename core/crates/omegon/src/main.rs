@@ -122,6 +122,7 @@ pub mod capabilities;
 mod catalog;
 mod checkpoint;
 mod child_agent;
+mod codescan_service;
 mod contribution_loading;
 mod conversation;
 mod eval;
@@ -130,6 +131,11 @@ mod extension_cli;
 mod extension_registry;
 mod github_copilot;
 mod lifecycle;
+#[cfg(test)]
+mod lifecycle_campaign;
+mod lifecycle_openspec_transaction;
+mod lifecycle_service;
+mod lifecycle_transaction;
 mod r#loop;
 mod loop_context;
 mod loop_driver;
@@ -1582,7 +1588,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Auth { ref action }) => run_auth_command(action).await,
         Some(Commands::Tdd { ref action }) => run_tdd_command(action).await,
-        Some(Commands::ProjectRules { ref action }) => run_project_rules_command(&cli, action),
+        Some(Commands::ProjectRules { ref action }) => {
+            run_project_rules_command(&cli, action).await
+        }
         Some(Commands::Cleave {
             ref plan,
             ref directive,
@@ -2125,6 +2133,17 @@ struct DefaultSessionRuntime {
     cwd: PathBuf,
     workspace_identity: String,
     composition_generation_id: String,
+    shutdown: CancellationToken,
+}
+
+fn spawn_tracked_daemon_turn<Fut>(
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+    name: &'static str,
+    future: Fut,
+) where
+    Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    tasks.push(task_spawn::spawn_best_effort_result(name, future));
 }
 
 async fn replace_daemon_session(
@@ -2213,6 +2232,9 @@ async fn run_daemon_turn(
     mut config: r#loop::LoopConfig,
     submission: operator_commands::PromptSubmission,
 ) -> anyhow::Result<()> {
+    if runtime.shutdown.is_cancelled() {
+        return Ok(());
+    }
     {
         let actor = RuntimeActor::from_submission(submission.submitted_by, submission.via);
         let via = ControlSurface::from_via(submission.via);
@@ -2371,6 +2393,12 @@ async fn run_daemon_turn(
             && first_error.is_none()
         {
             first_error = Some(error);
+        }
+        if runtime.shutdown.is_cancelled() {
+            return match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            };
         }
     }
 }
@@ -2881,6 +2909,7 @@ async fn run_embedded_command(
         cwd: agent_cwd.clone(),
         workspace_identity: agent.workspace_state.lease.workspace_id.clone(),
         composition_generation_id: composition_generation_id.clone(),
+        shutdown: CancellationToken::new(),
     };
 
     let trigger_configs = triggers::load_trigger_configs(&cwd);
@@ -2912,6 +2941,7 @@ async fn run_embedded_command(
     let mut sighup = std::future::pending::<()>();
 
     tracing::info!("daemon dispatch loop started");
+    let mut daemon_turn_tasks = Vec::new();
     loop {
         tokio::select! {
             _ = global_cancel.cancelled() => {
@@ -3036,7 +3066,8 @@ async fn run_embedded_command(
                     let semaphore = router.semaphore().clone();
                     let _daemon_workflow = daemon_workflow.clone();
 
-                    task_spawn::spawn_best_effort_result(
+                    spawn_tracked_daemon_turn(
+                        &mut daemon_turn_tasks,
                         "daemon-turn-vox",
                         async move {
                             let _permit = semaphore.acquire().await
@@ -3084,7 +3115,8 @@ async fn run_embedded_command(
                         let semaphore = router.semaphore().clone();
                         let _daemon_workflow = daemon_workflow.clone();
 
-                        task_spawn::spawn_best_effort_result(
+                        spawn_tracked_daemon_turn(
+                            &mut daemon_turn_tasks,
                             "daemon-turn-prompt",
                             async move {
                                 let _permit = semaphore.acquire().await
@@ -3188,7 +3220,8 @@ async fn run_embedded_command(
                         let secrets = agent_secrets.clone();
                         let semaphore = router.semaphore().clone();
 
-                        task_spawn::spawn_best_effort_result(
+                        spawn_tracked_daemon_turn(
+                            &mut daemon_turn_tasks,
                             "daemon-turn-slash",
                             async move {
                                 let _permit = semaphore.acquire().await
@@ -3266,7 +3299,8 @@ async fn run_embedded_command(
                         let semaphore = router.semaphore().clone();
 
                         let text = submission.text;
-                        task_spawn::spawn_best_effort_result(
+                        spawn_tracked_daemon_turn(
+                            &mut daemon_turn_tasks,
                             "daemon-turn-ipc",
                             async move {
                                 let _permit = semaphore.acquire().await
@@ -3343,7 +3377,8 @@ async fn run_embedded_command(
                         let secrets = agent_secrets.clone();
                         let semaphore = router.semaphore().clone();
 
-                        task_spawn::spawn_best_effort_result(
+                        spawn_tracked_daemon_turn(
+                            &mut daemon_turn_tasks,
                             "daemon-turn-ipc-slash",
                             async move {
                                 let _permit = semaphore.acquire().await
@@ -3460,7 +3495,8 @@ async fn run_embedded_command(
                 let in_flight = triggers_in_flight.clone();
                 let trigger_name_for_cleanup = trigger_name.clone();
 
-                task_spawn::spawn_best_effort_result(
+                spawn_tracked_daemon_turn(
+                    &mut daemon_turn_tasks,
                     "daemon-turn-trigger",
                     async move {
                         let _permit = semaphore.acquire().await
@@ -3504,7 +3540,7 @@ async fn run_embedded_command(
                     tracing::info!(caller = %key, "daemon: parked idle session");
                 }
 
-                let ready = workflow::query_ready_nodes(&cwd);
+                let ready = workflow::query_ready_nodes(&agent.lifecycle_binding).await;
                 if ready.is_empty() {
                     continue;
                 }
@@ -3535,7 +3571,8 @@ async fn run_embedded_command(
                 let semaphore = router.semaphore().clone();
                 let _daemon_workflow = daemon_workflow.clone();
 
-                task_spawn::spawn_best_effort_result(
+                spawn_tracked_daemon_turn(
+                    &mut daemon_turn_tasks,
                     "daemon-turn-auto-dispatch",
                     async move {
                         let _permit = semaphore.acquire().await
@@ -3576,28 +3613,50 @@ async fn run_embedded_command(
     }
 
     ipc_cancel.cancel();
-
-    // Give in-flight turns a grace period to complete before saving state.
-    tracing::info!("daemon: draining in-flight turns (5s grace period)");
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    default_session.shutdown.cancel();
+    if let Some(cancel) = default_session
+        .active_cancel
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    {
+        cancel.cancel();
+    }
+    tracing::info!(
+        turns = daemon_turn_tasks.len(),
+        "daemon: joining in-flight turns"
+    );
+    let turn_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    for mut task in daemon_turn_tasks {
+        if tokio::time::timeout_at(turn_deadline, &mut task)
+            .await
+            .is_err()
+        {
+            tracing::error!("daemon turn exceeded shutdown deadline; aborting retained state");
+            task.abort();
+            let _ = task.await;
+            agent.runtime_ownership.retain_for_stale_pruning();
+        }
+    }
 
     // Save the default session (if not currently in a turn).
     {
-        let guard = default_session.state.lock().await;
-        if let Some(ref sess) = *guard {
+        let mut guard = default_session.state.lock().await;
+        if let Some(ref mut sess) = *guard {
             let session_id = default_session
                 .session_id
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             if let Err(e) =
                 session::save_session(&sess.conversation, &agent_cwd, Some(session_id.as_str()))
             {
                 tracing::debug!("Daemon session save failed (non-fatal): {e}");
             }
+            let _ = sess.bus.shutdown_managed_services().await;
         } else {
-            tracing::warn!(
-                "session still in-flight at shutdown — state will be saved by completing turn"
-            );
+            tracing::warn!("daemon session state was lost while joining in-flight turns");
+            agent.runtime_ownership.retain_for_stale_pruning();
         }
     }
     mcp_supervisors.shutdown().await;
@@ -3742,7 +3801,7 @@ async fn run_cleave_command(
 
     // Resolve self binary path for spawning children
     let agent_binary = std::env::current_exe()?;
-    let agent_setup = setup::AgentSetup::new_with_safety_and_mode(
+    let mut agent_setup = setup::AgentSetup::new_with_safety_and_mode(
         &repo_path,
         None,
         None,
@@ -3781,10 +3840,17 @@ async fn run_cleave_command(
         cancel_clone.cancel();
     });
 
-    let result = cleave::run_cleave(
+    let result = match cleave::run_cleave(
         &plan, directive, &repo_path, workspace, &config, cancel, None,
     )
-    .await?;
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = agent_setup.bus.shutdown_managed_services().await;
+            return Err(error);
+        }
+    };
 
     // Print report
     eprintln!("\n## Cleave Report: {}", result.state.run_id);
@@ -3842,6 +3908,8 @@ async fn run_cleave_command(
             eprintln!("\n### Post-Merge Guardrails\n{report}");
         }
     }
+
+    let _ = agent_setup.bus.shutdown_managed_services().await;
 
     // Exit with error if any children did not complete successfully.
     if failed > 0 || upstream_exhausted > 0 || unfinished > 0 {
@@ -4183,17 +4251,26 @@ async fn run_embedding_command(action: &EmbeddingAction) -> anyhow::Result<()> {
 async fn run_doctor_command(cli: &Cli) -> anyhow::Result<()> {
     let cwd = std::fs::canonicalize(&cli.cwd)?;
     let repo_root = setup::find_project_root(&cwd);
-    let findings = lifecycle::doctor::audit_repo(&repo_root);
+    let response = lifecycle_service::invoke_repository_once(
+        repo_root,
+        lifecycle_service::LifecycleRequestV1::Doctor {
+            cancellation: tokio_util::sync::CancellationToken::new(),
+        },
+    )
+    .await?;
+    let lifecycle_service::LifecyclePayloadV1::Doctor(report) = response.payload else {
+        anyhow::bail!("managed lifecycle returned an unexpected doctor payload");
+    };
 
     println!("═══ Lifecycle Audit ═══");
-    if findings.is_empty() {
+    if report.findings.is_empty() {
         println!("✓ No suspicious lifecycle drift found.");
     } else {
-        println!("{} finding(s)\n", findings.len());
-        for f in findings {
-            println!("- {} [{}]", f.node_id, f.kind.as_str());
-            println!("  {}", f.title);
-            println!("  {}", f.detail);
+        println!("{} finding(s)\n", report.findings.len());
+        for finding in report.findings {
+            println!("- {} [{}]", finding.node_id, finding.kind);
+            println!("  {}", finding.title);
+            println!("  {}", finding.detail);
         }
     }
 
@@ -6831,6 +6908,19 @@ fn build_tui_secret_readiness_snapshot(
                                                 ),
                                             }
                                         }
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(2),
+                                            shared_state.lock(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(mut state) => {
+                                                let _ = state.bus.shutdown_managed_services().await;
+                                            }
+                                            Err(_) => tracing::error!(
+                                                "managed interactive shutdown could not recover retained state"
+                                            ),
+                                        }
                                         mcp_supervisors.shutdown().await;
                                         extension_supervisors.shutdown().await;
                                         bridge.read().await.shutdown().await;
@@ -7187,6 +7277,7 @@ fn build_tui_secret_readiness_snapshot(
         }
     }
 
+    let _ = runtime_state.bus.shutdown_managed_services().await;
     bridge.read().await.shutdown().await;
     mcp_supervisors.shutdown().await;
     extension_supervisors.shutdown().await;
@@ -7839,6 +7930,8 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
         }
     }
 
+    let _ = agent.bus.shutdown_managed_services().await;
+
     // Graceful bridge shutdown.
     //
     // In headless benchmark mode the agent task may finish while other
@@ -7932,7 +8025,7 @@ async fn maybe_run_injected_cleave_smoke_child(
                     s.set_requested_context_class(class);
                 }
             }
-            let agent = setup::AgentSetup::new_with_safety_and_mode(
+            let mut agent = setup::AgentSetup::new_with_safety_and_mode(
                 cwd,
                 None,
                 Some(shared_settings.clone()),
@@ -7986,7 +8079,10 @@ async fn maybe_run_injected_cleave_smoke_child(
                     .map(|s| s.thinking.as_str().to_string())
                     .unwrap_or_else(|| status.thinking_level.clone()),
             });
-            println!("{}", serde_json::to_string(&report)?);
+            let report = serde_json::to_string(&report)?;
+            drop(settings_guard);
+            let _ = agent.bus.shutdown_managed_services().await;
+            println!("{report}");
             Ok(true)
         }
         "fail" => {
@@ -8063,11 +8159,18 @@ async fn call_tdd_savepoint_extension(
     Ok(result.details)
 }
 
-fn run_project_rules_command(cli: &Cli, action: &ProjectRulesAction) -> anyhow::Result<()> {
+async fn run_project_rules_command(cli: &Cli, action: &ProjectRulesAction) -> anyhow::Result<()> {
     match action {
         ProjectRulesAction::Check { context, json } => {
             let cwd = std::fs::canonicalize(&cli.cwd)?;
-            let report = project_rules::check(&cwd, context);
+            let lifecycle = lifecycle_service::observe_repository_once(cwd.clone()).await?;
+            let report = project_rules::check(
+                &cwd,
+                context,
+                lifecycle
+                    .as_deref()
+                    .map(|observation| &observation.lifecycle.openspec),
+            );
             if *json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -9697,6 +9800,7 @@ async fn run_bounded_task(
     } else {
         terminal.into_intent(active_identity)
     };
+    let _ = agent.bus.shutdown_managed_services().await;
     bridge.shutdown().await;
     drop(events_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_millis(500), event_task).await;
@@ -10102,6 +10206,7 @@ mod tests {
             bus: crate::bus::EventBus::new(),
             work_snapshot: None,
             behavior_policy: None,
+            lifecycle_binding: crate::lifecycle_service::LifecycleBinding::default(),
             session_id: "test-session".into(),
             session_view_binding: crate::session_consumers::SessionViewBinding::new(
                 cwd.join("test-session.json"),
@@ -10759,6 +10864,99 @@ mod tests {
         assert!(bridge_shutdown < return_position);
     }
 
+    #[test]
+    fn rg11_normal_event_bus_hosts_retain_explicit_managed_shutdown() {
+        fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+            source
+                .split(start)
+                .nth(1)
+                .and_then(|tail| tail.split(end).next())
+                .unwrap_or_else(|| panic!("missing source section {start}"))
+        }
+
+        let main = include_str!("main.rs");
+        let hosts = [
+            (
+                "daemon",
+                "async fn run_embedded_command(",
+                "fn anthropic_subscription_automation_warning",
+            ),
+            (
+                "cleave",
+                "async fn run_cleave_command(",
+                "async fn run_ollama_command",
+            ),
+            (
+                "headless",
+                "async fn run_agent_command(",
+                "async fn maybe_run_injected_cleave_smoke_child",
+            ),
+            (
+                "cleave smoke",
+                "async fn maybe_run_injected_cleave_smoke_child(",
+                "async fn call_tdd_savepoint_extension",
+            ),
+            (
+                "bounded",
+                "async fn run_bounded_task(",
+                "async fn run_sandboxed",
+            ),
+        ];
+        for (host, start, end) in hosts {
+            assert!(
+                section(main, start, end).contains("shutdown_managed_services().await"),
+                "{host} must explicitly shut down its EventBus"
+            );
+        }
+        let daemon = section(
+            main,
+            "async fn run_embedded_command(",
+            "fn anthropic_subscription_automation_warning",
+        );
+        let turn_join = daemon
+            .find("for mut task in daemon_turn_tasks")
+            .expect("daemon turn join");
+        let managed_shutdown = daemon
+            .find("sess.bus.shutdown_managed_services().await")
+            .expect("daemon managed shutdown");
+        assert!(
+            daemon.contains("spawn_tracked_daemon_turn("),
+            "daemon turns must be retained for authoritative joining"
+        );
+        assert!(turn_join < managed_shutdown);
+        assert!(
+            section(
+                main,
+                "async fn run_interactive_command(",
+                "fn mark_interactive_session_busy"
+            )
+            .matches("shutdown_managed_services().await")
+            .count()
+                >= 2,
+            "interactive normal and retained-state exits must shut down managed services"
+        );
+
+        let acp = include_str!("acp_worker.rs");
+        assert!(
+            section(
+                acp,
+                "async fn worker_loop(",
+                "async fn handle_control_request("
+            )
+            .contains("bus.shutdown_managed_services().await"),
+            "ACP worker tail must shut down its EventBus"
+        );
+        let sentry = include_str!("sentry/executor.rs");
+        assert!(
+            sentry
+                .split("async fn run_agent_task(")
+                .nth(1)
+                .expect("Sentry agent task source")
+                .contains("shutdown_managed_services().await"),
+            "Sentry task host must shut down its EventBus"
+        );
+    }
+
     #[tokio::test]
     async fn cooperative_background_task_finishes_without_abort() {
         let task = tokio::spawn(async {});
@@ -11066,6 +11264,7 @@ mod tests {
             cwd: temp.path().to_path_buf(),
             workspace_identity: "workspace-1".into(),
             composition_generation_id: "generation-1".into(),
+            shutdown: CancellationToken::new(),
         };
 
         assert!(

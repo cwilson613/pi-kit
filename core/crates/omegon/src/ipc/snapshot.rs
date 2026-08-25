@@ -209,8 +209,8 @@ fn project_session(
     }
 }
 
-fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
-    let Some(ref lifecycle) = handles.lifecycle else {
+pub(crate) fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
+    let Ok(observation) = handles.lifecycle_service.observe() else {
         return IpcDesignTreeSnapshot {
             counts: IpcDesignCounts::default(),
             focused: None,
@@ -219,7 +219,7 @@ fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
             nodes: vec![],
         };
     };
-    let Ok(snapshot) = lifecycle.design_tree_snapshot(false) else {
+    let Some(repository) = observation.repository else {
         return IpcDesignTreeSnapshot {
             counts: IpcDesignCounts::default(),
             focused: None,
@@ -231,7 +231,7 @@ fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
 
     use crate::lifecycle::types::NodeStatus;
 
-    let all = &snapshot.nodes;
+    let all = &repository.design.nodes;
     let mut counts = IpcDesignCounts {
         total: all.len(),
         ..IpcDesignCounts::default()
@@ -274,8 +274,9 @@ fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
         nodes.push(brief);
     }
 
-    let focused = snapshot
-        .focused_node_id
+    let focused = observation
+        .focus
+        .node_id
         .as_deref()
         .and_then(|id| all.get(id))
         .map(|n| IpcFocusedNode {
@@ -283,7 +284,11 @@ fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
             title: n.title.clone(),
             status: n.status.as_str().to_string(),
             open_questions: n.open_questions.clone(),
-            decisions: 0,
+            decisions: repository
+                .sections
+                .get(&n.id)
+                .map(|sections| sections.decisions.len())
+                .unwrap_or(0),
             children: all
                 .values()
                 .filter(|c| c.parent.as_deref() == Some(&n.id))
@@ -299,28 +304,29 @@ fn project_design_tree(handles: &DashboardHandles) -> IpcDesignTreeSnapshot {
     }
 }
 
-fn project_openspec(handles: &DashboardHandles) -> IpcOpenSpecSnapshot {
-    let Some(ref lifecycle) = handles.lifecycle else {
+pub(crate) fn project_openspec(handles: &DashboardHandles) -> IpcOpenSpecSnapshot {
+    let Ok(observation) = handles.lifecycle_service.observe() else {
         return IpcOpenSpecSnapshot {
             changes: vec![],
             total_tasks: 0,
             done_tasks: 0,
         };
     };
-    let Ok(openspec) = lifecycle.openspec_snapshot(Default::default()) else {
+    let Some(repository) = observation.repository else {
         return IpcOpenSpecSnapshot {
             changes: vec![],
             total_tasks: 0,
             done_tasks: 0,
         };
     };
+    let openspec = &repository.lifecycle.openspec;
 
     let changes: Vec<IpcChangeSnapshot> = openspec
         .changes
-        .into_iter()
+        .iter()
         .map(|c| IpcChangeSnapshot {
-            name: c.name,
-            stage: c.lifecycle_state,
+            name: c.name.clone(),
+            stage: c.lifecycle_state.clone(),
             total_tasks: c.total_tasks,
             done_tasks: c.done_tasks,
         })

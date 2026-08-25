@@ -286,6 +286,8 @@ pub struct WorkerHandle {
     pub secrets_rx: tokio::sync::oneshot::Receiver<std::sync::Arc<omegon_secrets::SecretsManager>>,
     pub work_snapshot_rx:
         tokio::sync::oneshot::Receiver<Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>>,
+    pub lifecycle_binding_rx:
+        tokio::sync::oneshot::Receiver<crate::lifecycle_service::LifecycleBinding>,
 }
 
 /// Spawn the worker thread. Returns a handle for communication.
@@ -299,6 +301,7 @@ pub fn spawn_worker(
     let (event_tx, event_rx) = tokio::sync::broadcast::channel::<WorkerEvent>(256);
     let (secrets_tx, secrets_rx) = tokio::sync::oneshot::channel();
     let (work_snapshot_tx, work_snapshot_rx) = tokio::sync::oneshot::channel();
+    let (lifecycle_binding_tx, lifecycle_binding_rx) = tokio::sync::oneshot::channel();
 
     let shared_settings = crate::settings::shared(&model);
     let worker_settings = shared_settings.clone();
@@ -322,6 +325,7 @@ pub fn spawn_worker(
                     event_tx,
                     secrets_tx,
                     work_snapshot_tx,
+                    lifecycle_binding_tx,
                     host_ctx,
                     dangerously_bypass_permissions,
                 ),
@@ -335,6 +339,7 @@ pub fn spawn_worker(
         settings: shared_settings,
         secrets_rx,
         work_snapshot_rx,
+        lifecycle_binding_rx,
     }
 }
 
@@ -416,6 +421,7 @@ async fn worker_loop(
     work_snapshot_tx: tokio::sync::oneshot::Sender<
         Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
     >,
+    lifecycle_binding_tx: tokio::sync::oneshot::Sender<crate::lifecycle_service::LifecycleBinding>,
     host_ctx: Option<crate::host_context::HostContext>,
     dangerously_bypass_permissions: bool,
 ) {
@@ -435,7 +441,7 @@ async fn worker_loop(
         }
     }
 
-    let agent_setup = match crate::setup::AgentSetup::new_with_safety_and_mode(
+    let mut agent_setup = match crate::setup::AgentSetup::new_with_safety_and_mode(
         &cwd,
         None,
         Some(shared_settings.clone()),
@@ -465,6 +471,7 @@ async fn worker_loop(
         Some(generation_id) => generation_id.as_str().to_string(),
         None => {
             tracing::error!("ACP composition was not published");
+            let _ = agent_setup.bus.shutdown_managed_services().await;
             return;
         }
     };
@@ -473,6 +480,7 @@ async fn worker_loop(
         Some(directory) => directory.join(format!("{session_id}.json")),
         None => {
             tracing::error!("cannot determine ACP session directory");
+            let _ = agent_setup.bus.shutdown_managed_services().await;
             return;
         }
     };
@@ -490,6 +498,7 @@ async fn worker_loop(
         Ok(authority) => authority,
         Err(error) => {
             tracing::error!(%error, "failed to open ACP session authority");
+            let _ = agent_setup.bus.shutdown_managed_services().await;
             return;
         }
     };
@@ -498,6 +507,7 @@ async fn worker_loop(
             Ok(supervisor) => supervisor,
             Err(error) => {
                 tracing::error!(%error, "failed to restore ACP session supervisor");
+                let _ = agent_setup.bus.shutdown_managed_services().await;
                 return;
             }
         };
@@ -509,11 +519,13 @@ async fn worker_loop(
         ),
         Err(error) => {
             tracing::error!(%error, "failed to withdraw orphaned recovered ACP prompts");
+            let _ = agent_setup.bus.shutdown_managed_services().await;
             return;
         }
     }
     let mut bus = agent_setup.bus;
     let work_snapshot = agent_setup.work_snapshot;
+    let lifecycle_binding = agent_setup.lifecycle_binding.clone();
     let behavior_policy = agent_setup.behavior_policy;
     let mut context_manager = agent_setup.context_manager;
     let mut conversation = agent_setup.conversation;
@@ -525,6 +537,7 @@ async fn worker_loop(
 
     let _ = secrets_tx.send(secrets.clone());
     let _ = work_snapshot_tx.send(work_snapshot.clone());
+    let _ = lifecycle_binding_tx.send(lifecycle_binding);
     if !extension_metadata.is_empty() {
         let _ = event_tx.send(WorkerEvent::ExtensionMetadata(extension_metadata));
     }
@@ -1342,6 +1355,7 @@ async fn worker_loop(
         }
     }
 
+    let _ = bus.shutdown_managed_services().await;
     tracing::info!("ACP worker shutting down");
 }
 

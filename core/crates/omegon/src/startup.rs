@@ -57,7 +57,6 @@ pub async fn run_probes(tx: mpsc::Sender<ProbeResult>, cwd: String) {
     let tx7 = tx.clone();
     let tx8 = tx.clone();
     let tx9 = tx;
-    let cwd2 = cwd.clone();
     let cwd3 = cwd.clone();
 
     // Fire all probes concurrently. Each sends its result as it completes.
@@ -82,7 +81,7 @@ pub async fn run_probes(tx: mpsc::Sender<ProbeResult>, cwd: String) {
                 let _ = tx5.send(probe_tools());
             },
             async {
-                let _ = tx6.send(probe_design(&cwd2));
+                let _ = tx6.send(probe_design());
             },
             async {
                 let _ = tx7.send(probe_secrets());
@@ -379,38 +378,11 @@ fn probe_tools() -> ProbeResult {
     }
 }
 
-fn probe_design(cwd: &str) -> ProbeResult {
-    let docs_dir = Path::new(cwd).join("docs");
-    if !docs_dir.is_dir() {
-        return ProbeResult {
-            label: "design",
-            state: ProbeState::Done,
-            summary: "empty".into(),
-        };
-    }
-
-    // Count .md files that have design-node frontmatter (id: field)
-    let count = std::fs::read_dir(&docs_dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().extension().is_some_and(|ext| ext == "md")
-                        && std::fs::read_to_string(e.path())
-                            .is_ok_and(|c| c.starts_with("---") && c.contains("\nid:"))
-                })
-                .count()
-        })
-        .unwrap_or(0);
-
+fn probe_design() -> ProbeResult {
     ProbeResult {
         label: "design",
         state: ProbeState::Done,
-        summary: if count > 0 {
-            format!("{count} nodes")
-        } else {
-            "empty".into()
-        },
+        summary: "managed after composition".into(),
     }
 }
 
@@ -567,33 +539,9 @@ mod tests {
     }
 
     #[test]
-    fn probe_design_empty() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let result = probe_design(tmp.path().to_str().unwrap());
-        assert_eq!(result.summary, "empty");
-    }
-
-    #[test]
-    fn probe_design_with_nodes() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        // Real design nodes have frontmatter with id:
-        std::fs::write(
-            docs.join("node-a.md"),
-            "---\nid: node-a\ntitle: A\n---\n# A",
-        )
-        .unwrap();
-        std::fs::write(
-            docs.join("node-b.md"),
-            "---\nid: node-b\ntitle: B\n---\n# B",
-        )
-        .unwrap();
-        // These should NOT count
-        std::fs::write(docs.join("readme.md"), "# Just a readme").unwrap();
-        std::fs::write(docs.join("readme.txt"), "not md").unwrap();
-        let result = probe_design(tmp.path().to_str().unwrap());
-        assert_eq!(result.summary, "2 nodes");
+    fn probe_design_defers_to_managed_composition() {
+        let result = probe_design();
+        assert_eq!(result.summary, "managed after composition");
     }
 
     #[test]

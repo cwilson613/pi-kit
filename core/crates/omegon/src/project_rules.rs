@@ -13,7 +13,8 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::evidence::{ClaimSupportStatus, EvidenceStore};
-use crate::lifecycle::spec::{self, EvidenceGateDecision};
+use crate::lifecycle::read_model::OpenSpecProjection;
+use crate::lifecycle::spec::EvidenceGateDecision;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -123,7 +124,11 @@ impl ProjectRulesConfig {
     }
 }
 
-pub fn check(repo_path: &Path, context: &str) -> ProjectRulesReport {
+pub fn check(
+    repo_path: &Path,
+    context: &str,
+    openspec: Option<&OpenSpecProjection>,
+) -> ProjectRulesReport {
     let config = match ProjectRulesConfig::load(repo_path) {
         Ok(config) => config,
         Err(err) => {
@@ -148,7 +153,7 @@ pub fn check(repo_path: &Path, context: &str) -> ProjectRulesReport {
         .iter()
         .filter(|rule| rule_applies(rule, context))
     {
-        evaluate_rule(repo_path, rule, mode, &mut findings);
+        evaluate_rule(repo_path, openspec, rule, mode, &mut findings);
     }
     let passed = !findings
         .iter()
@@ -173,13 +178,14 @@ fn enforced(mode: RuleMode, severity: RuleSeverity) -> bool {
 
 fn evaluate_rule(
     repo_path: &Path,
+    openspec: Option<&OpenSpecProjection>,
     rule: &ProjectRule,
     mode: RuleMode,
     findings: &mut Vec<ProjectRuleFinding>,
 ) {
     match rule.kind.as_str() {
         "evidence-map-parses" => evaluate_evidence_map_parses(repo_path, rule, mode, findings),
-        "no-refuted-evidence-claims" => evaluate_no_refuted_claims(repo_path, rule, mode, findings),
+        "no-refuted-evidence-claims" => evaluate_no_refuted_claims(openspec, rule, mode, findings),
         "claim-supported" => evaluate_claim_supported(repo_path, rule, mode, findings),
         _ => findings.push(ProjectRuleFinding {
             rule_id: rule.id.clone(),
@@ -240,14 +246,18 @@ fn evaluate_evidence_map_parses(
 }
 
 fn evaluate_no_refuted_claims(
-    repo_path: &Path,
+    openspec: Option<&OpenSpecProjection>,
     rule: &ProjectRule,
     mode: RuleMode,
     findings: &mut Vec<ProjectRuleFinding>,
 ) {
     let severity = rule.severity.unwrap_or(RuleSeverity::Block);
-    for change in spec::list_changes(repo_path) {
-        for finding in spec::evaluate_evidence_gates(&change) {
+    let Some(openspec) = openspec else {
+        return;
+    };
+    for change in &openspec.changes {
+        for finding in crate::lifecycle::spec::evaluate_spec_evidence_gates(&change.spec_documents)
+        {
             if matches!(finding.decision, EvidenceGateDecision::Block) {
                 findings.push(ProjectRuleFinding {
                     rule_id: rule.id.clone(),
@@ -308,7 +318,7 @@ mod tests {
     #[test]
     fn default_warn_mode_does_not_enforce_block_findings() {
         let dir = tempfile::tempdir().unwrap();
-        let report = check(dir.path(), "default");
+        let report = check(dir.path(), "default", None);
         assert!(report.passed);
         assert_eq!(report.mode, RuleMode::Warn);
     }
@@ -334,7 +344,7 @@ contexts = ["ci"]
 "#,
         )
         .unwrap();
-        let report = check(dir.path(), "ci");
+        let report = check(dir.path(), "ci", None);
         assert!(!report.passed);
         assert!(report.findings.iter().any(|f| f.enforced));
     }

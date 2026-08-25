@@ -170,6 +170,8 @@ pub struct RuntimeOwnership {
     runtime_id: String,
     runtime_directory: PathBuf,
     heartbeat: Option<tokio::task::JoinHandle<()>>,
+    retain_evidence: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    managed_retention: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RuntimeOwnership {
@@ -235,11 +237,22 @@ impl RuntimeOwnership {
             runtime_id,
             runtime_directory,
             heartbeat,
+            retain_evidence: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            managed_retention: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
     pub fn runtime_id(&self) -> &str {
         &self.runtime_id
+    }
+
+    pub(crate) fn retention_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.managed_retention)
+    }
+
+    pub(crate) fn retain_for_stale_pruning(&self) {
+        self.retain_evidence
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     #[cfg(test)]
@@ -249,6 +262,8 @@ impl RuntimeOwnership {
             runtime_directory: std::env::temp_dir()
                 .join(format!("omegon-runtime-test-stub-{}", uuid::Uuid::new_v4())),
             heartbeat: None,
+            retain_evidence: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            managed_retention: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -257,6 +272,19 @@ impl Drop for RuntimeOwnership {
     fn drop(&mut self) {
         if let Some(heartbeat) = self.heartbeat.take() {
             heartbeat.abort();
+        }
+        if self
+            .retain_evidence
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .managed_retention
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            tracing::warn!(
+                path = %self.runtime_directory.display(),
+                "retaining degraded runtime ownership evidence for stale pruning"
+            );
+            return;
         }
         if let Err(error) = std::fs::remove_dir_all(&self.runtime_directory)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -575,6 +603,20 @@ mod tests {
         assert!(second_dir.exists());
         drop(second);
         assert!(!second_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn degraded_runtime_ownership_is_retained_for_stale_pruning() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".git")).unwrap();
+        let ownership = RuntimeOwnership::start(project.path(), "test-degraded").unwrap();
+        let directory = runtime_dir(project.path()).join(ownership.runtime_id());
+        ownership.retain_for_stale_pruning();
+
+        drop(ownership);
+
+        assert!(directory.join("ownership-v1.json").exists());
     }
 
     #[test]

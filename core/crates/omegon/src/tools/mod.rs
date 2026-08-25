@@ -47,8 +47,10 @@ pub const PLAN_LIST_VISIBLE_ITEM_LIMIT: usize = 5;
 pub const PLAN_LIST_CHANGE_LIMIT: usize = 12;
 pub const PLAN_LIST_GROUP_LIMIT: usize = 4;
 
+#[cfg(test)]
 pub use crate::surfaces::plans::LifecyclePlanProjection;
 
+#[cfg(test)]
 pub fn lifecycle_plan_projection(repo_root: &Path) -> LifecyclePlanProjection {
     use crate::conversation::{
         PlanBinding, PlanItemProjection, PlanRegistryEntry, PlanScope, PlanSource, PlanStatus,
@@ -279,6 +281,7 @@ pub(crate) fn lenient_usize_arg(args: &serde_json::Value, key: &str) -> Option<u
     }
 }
 
+#[cfg(test)]
 fn stable_hash(input: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -286,6 +289,7 @@ fn stable_hash(input: &str) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
+#[cfg(test)]
 fn repo_relative_path(repo_root: &Path, path: &Path) -> String {
     path.strip_prefix(repo_root)
         .unwrap_or(path)
@@ -293,6 +297,7 @@ fn repo_relative_path(repo_root: &Path, path: &Path) -> String {
         .to_string()
 }
 
+#[cfg(test)]
 pub fn render_lifecycle_plan_list(repo_root: &Path) -> String {
     let changes = crate::lifecycle::spec::list_changes(repo_root);
     let mut lines = vec!["OpenSpec".to_string()];

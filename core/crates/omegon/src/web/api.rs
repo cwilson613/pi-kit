@@ -1474,6 +1474,7 @@ pub async fn get_workspace_leases_status() -> Result<Json<WorkspaceLeasesRespons
 pub async fn get_lifecycle_snapshot(
     State(state): State<WebState>,
 ) -> Json<LifecycleSnapshotResponse> {
+    refresh_lifecycle(&state.handles).await;
     let snapshot = build_snapshot(&state);
     Json(LifecycleSnapshotResponse {
         schema_version: 1,
@@ -1484,6 +1485,7 @@ pub async fn get_lifecycle_snapshot(
 
 /// GET /api/lifecycle/design — design tree read model.
 pub async fn get_lifecycle_design(State(state): State<WebState>) -> Json<LifecycleDesignResponse> {
+    refresh_lifecycle(&state.handles).await;
     let snapshot = build_snapshot(&state);
     Json(LifecycleDesignResponse {
         schema_version: 1,
@@ -1496,12 +1498,14 @@ pub async fn get_lifecycle_design_node(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<WebState>,
 ) -> Result<Json<LifecycleDesignNodeResponse>, StatusCode> {
-    let Some(lifecycle) = state.handles.lifecycle.as_ref() else {
-        return Err(StatusCode::NOT_FOUND);
-    };
-    let node = lifecycle
-        .design_node(&id)
+    refresh_lifecycle(&state.handles).await;
+    let node = state
+        .handles
+        .lifecycle_service
+        .observe()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .repository
+        .and_then(|repository| repository.design.nodes.get(&id).cloned())
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(LifecycleDesignNodeResponse {
         schema_version: 1,
@@ -1512,19 +1516,21 @@ pub async fn get_lifecycle_design_node(
 fn lifecycle_nodes(
     state: &WebState,
 ) -> Result<std::collections::HashMap<String, crate::lifecycle::types::DesignNode>, StatusCode> {
-    let Some(lifecycle) = state.handles.lifecycle.as_ref() else {
-        return Ok(std::collections::HashMap::new());
-    };
-    lifecycle
-        .design_tree_snapshot(false)
-        .map(|snapshot| snapshot.nodes)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    Ok(state
+        .handles
+        .lifecycle_service
+        .observe()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .repository
+        .map(|repository| repository.design.nodes.clone())
+        .unwrap_or_default())
 }
 
 /// GET /api/lifecycle/design/ready — decided nodes whose dependencies are implemented.
 pub async fn get_lifecycle_design_ready(
     State(state): State<WebState>,
 ) -> Result<Json<LifecycleDesignReadyResponse>, StatusCode> {
+    refresh_lifecycle(&state.handles).await;
     let nodes = lifecycle_nodes(&state)?;
     Ok(Json(LifecycleDesignReadyResponse {
         schema_version: 1,
@@ -1536,6 +1542,7 @@ pub async fn get_lifecycle_design_ready(
 pub async fn get_lifecycle_design_blocked(
     State(state): State<WebState>,
 ) -> Result<Json<LifecycleDesignBlockedResponse>, StatusCode> {
+    refresh_lifecycle(&state.handles).await;
     let nodes = lifecycle_nodes(&state)?;
     Ok(Json(LifecycleDesignBlockedResponse {
         schema_version: 1,
@@ -1547,6 +1554,7 @@ pub async fn get_lifecycle_design_blocked(
 pub async fn get_lifecycle_design_frontier(
     State(state): State<WebState>,
 ) -> Result<Json<LifecycleDesignFrontierResponse>, StatusCode> {
+    refresh_lifecycle(&state.handles).await;
     let nodes = lifecycle_nodes(&state)?;
     Ok(Json(LifecycleDesignFrontierResponse {
         schema_version: 1,
@@ -1911,17 +1919,32 @@ pub async fn post_event(
 
 /// GET /api/graph — graph data for force-directed layout.
 pub async fn get_graph(State(state): State<WebState>) -> Json<GraphData> {
+    refresh_lifecycle(&state.handles).await;
     Json(build_graph_data(&state.handles))
+}
+
+pub(crate) async fn refresh_lifecycle(handles: &crate::runtime_state::RuntimeStateHandles) {
+    if handles.lifecycle_service.binding().available()
+        && let Err(error) = handles
+            .lifecycle_service
+            .refresh(
+                crate::lifecycle::read_model::SnapshotOptions::default(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+    {
+        tracing::debug!(error = %error, "managed lifecycle projection refresh failed");
+    }
 }
 
 pub fn build_graph_data(handles: &crate::runtime_state::RuntimeStateHandles) -> GraphData {
     let mut nodes = Vec::new();
     let mut links = Vec::new();
 
-    if let Some(ref lifecycle) = handles.lifecycle
-        && let Ok(snapshot) = lifecycle.design_tree_snapshot(false)
+    if let Ok(observation) = handles.lifecycle_service.observe()
+        && let Some(repository) = observation.repository
     {
-        let all = &snapshot.nodes;
+        let all = &repository.design.nodes;
         for node in all.values() {
             let group = match node.status {
                 NodeStatus::Seed => 0,
@@ -1977,6 +2000,7 @@ fn node_brief(node: &crate::lifecycle::types::DesignNode) -> NodeBrief {
 
 /// GET /api/state — build a full snapshot from the shared handles.
 pub async fn get_state(State(state): State<WebState>) -> Json<StateSnapshot> {
+    refresh_lifecycle(&state.handles).await;
     let snapshot = build_snapshot(&state);
     Json(snapshot)
 }
@@ -2010,10 +2034,10 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
     };
 
     // Read lifecycle state
-    if let Some(ref lifecycle) = state.handles.lifecycle
-        && let Ok(snapshot) = lifecycle.design_tree_snapshot(false)
+    if let Ok(observation) = state.handles.lifecycle_service.observe()
+        && let Some(repository) = observation.repository
     {
-        let nodes = &snapshot.nodes;
+        let nodes = &repository.design.nodes;
         design.counts.total = nodes.len();
 
         for node in nodes.values() {
@@ -2043,33 +2067,37 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
         }
 
         // Focused node
-        if let Some(id) = snapshot.focused_node_id.as_deref()
+        if let Some(id) = observation.focus.node_id.as_deref()
             && let Some(node) = nodes.get(id)
         {
-            let sections = crate::lifecycle::design::read_node_sections(node);
             let children = crate::lifecycle::design::get_children(nodes, id);
             design.focused = Some(FocusedNode {
                 id: node.id.clone(),
                 title: node.title.clone(),
                 status: node.status.as_str().to_string(),
                 open_questions: node.open_questions.clone(),
-                decisions: sections.map(|s| s.decisions.len()).unwrap_or(0),
+                decisions: repository
+                    .sections
+                    .get(id)
+                    .map(|sections| sections.decisions.len())
+                    .unwrap_or(0),
                 children: children.len(),
             });
         }
     }
 
-    if let Some(ref lifecycle) = state.handles.lifecycle
-        && let Ok(snapshot) = lifecycle.openspec_snapshot(Default::default())
+    if let Ok(observation) = state.handles.lifecycle_service.observe()
+        && let Some(repository) = observation.repository
     {
+        let snapshot = &repository.lifecycle.openspec;
         openspec.total_tasks = snapshot.total_tasks;
         openspec.done_tasks = snapshot.done_tasks;
         openspec.changes = snapshot
             .changes
-            .into_iter()
+            .iter()
             .map(|change| ChangeSnapshot {
-                name: change.name,
-                stage: change.lifecycle_state,
+                name: change.name.clone(),
+                stage: change.lifecycle_state.clone(),
                 has_specs: change.has_specs,
                 has_tasks: change.has_tasks,
                 total_tasks: change.total_tasks,
@@ -3560,6 +3588,31 @@ required = ["BRAVE_API_KEY"]
         assert!(!snap.cleave.active);
         assert!(snap.harness.is_none());
         assert_eq!(snap.instance.identity.instance_id, "web-compat");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_surfaces_project_managed_host_observation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::write(
+            dir.path().join("docs/managed.md"),
+            "---\nid: managed\ntitle: Managed Node\nstatus: decided\ndependencies: []\nopen_questions: []\n---\n\n## Overview\nManaged.\n",
+        )
+        .unwrap();
+        let (_bus, binding) = crate::lifecycle_service::test_binding(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        let mut state = test_state();
+        state.handles.lifecycle_service = crate::runtime_state::LifecycleHostHandle::new(binding);
+
+        refresh_lifecycle(&state.handles).await;
+        let snapshot = build_snapshot(&state);
+        assert_eq!(snapshot.design.counts.total, 1);
+        assert_eq!(snapshot.design.all_nodes[0].id, "managed");
+
+        let graph = build_graph_data(&state.handles);
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(graph.nodes[0].title, "Managed Node");
     }
 
     #[test]

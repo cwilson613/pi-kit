@@ -75,6 +75,7 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Send initial state snapshot
+    super::api::refresh_lifecycle(&state.handles).await;
     let snapshot = build_snapshot(&state);
     let init_msg = snapshot_message(snapshot);
     let snapshot_json = init_msg.to_string();
@@ -115,6 +116,7 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
                             tracing::debug!("WebSocket client lagged by {n} events");
                             while events_rx.try_recv().is_ok() {}
                             state_for_events.reconcile_semantic_session();
+                            super::api::refresh_lifecycle(&state_for_events.handles).await;
                             let reconciliation = snapshot_message(build_snapshot(&state_for_events));
                             if ws_tx.send(Message::Text(reconciliation.to_string().into())).await.is_err() {
                                 break;
@@ -2181,6 +2183,7 @@ async fn handle_client_command(
             }
         }
         "request_snapshot" => {
+            super::api::refresh_lifecycle(&state.handles).await;
             let snapshot = build_snapshot(state);
             let _ = snapshot_tx.send(snapshot_message(snapshot)).await;
         }

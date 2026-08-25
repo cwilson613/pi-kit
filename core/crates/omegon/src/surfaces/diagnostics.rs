@@ -10,7 +10,8 @@ use crate::status::HarnessStatus;
 use omegon_traits::{
     RuntimeCleanupAssurance, RuntimeCleanupState, RuntimeCompositionGenerationId,
     RuntimeContributionDeclaration, RuntimeContributionDiagnostic, RuntimeContributionId,
-    RuntimeContributionLifecycleState,
+    RuntimeContributionLifecycleRecord, RuntimeContributionLifecycleState,
+    RuntimeOwnedResourceRecord,
 };
 
 pub const DIAGNOSTIC_PROJECTION_VERSION: u16 = 1;
@@ -43,6 +44,30 @@ pub struct CompositionReplacementProjection {
     pub replacement: RuntimeContributionId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedOwnerDisposition {
+    Published,
+    RejectedCandidate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedResourceDiagnosticProjection {
+    pub record: RuntimeOwnedResourceRecord,
+    pub stop_attempted: bool,
+    pub force_attempted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedOwnerDiagnosticProjection {
+    pub attempt_id: u64,
+    pub disposition: ManagedOwnerDisposition,
+    pub lifecycle: RuntimeContributionLifecycleRecord,
+    pub resources: Vec<ManagedResourceDiagnosticProjection>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompositionDiagnosticProjection {
     pub version: u16,
@@ -52,6 +77,8 @@ pub struct CompositionDiagnosticProjection {
     pub activation_waves: Vec<Vec<RuntimeContributionId>>,
     pub diagnostics: Vec<RuntimeContributionDiagnostic>,
     pub compatibility_dispatch: CompatibilityDispatchProjection,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub managed_owners: Vec<ManagedOwnerDiagnosticProjection>,
 }
 
 impl CompositionDiagnosticProjection {
@@ -86,6 +113,39 @@ impl CompositionDiagnosticProjection {
                     diagnostic.code.as_str(),
                     diagnostic.message
                 ));
+            }
+        }
+        if !self.managed_owners.is_empty() {
+            output.push_str("\n  Managed owners:");
+            for owner in &self.managed_owners {
+                output.push_str(&format!(
+                    "\n  - attempt={} disposition={} owner={} generation={} state={} boundary={} cleanup={}/{}",
+                    owner.attempt_id,
+                    serialized_label(&owner.disposition),
+                    owner.lifecycle.contribution_id.as_str(),
+                    owner.lifecycle.generation_id.as_str(),
+                    serialized_label(&owner.lifecycle.state),
+                    serialized_label(&owner.lifecycle.last_completed_boundary),
+                    serialized_label(&owner.lifecycle.cleanup_assurance),
+                    serialized_label(&owner.lifecycle.cleanup_state),
+                ));
+                if let Some(reason_code) = &owner.lifecycle.reason_code {
+                    output.push_str(&format!(" reason_code={}", reason_code.as_str()));
+                }
+                if let Some(reason) = &owner.lifecycle.reason {
+                    output.push_str(&format!(" reason={reason}"));
+                }
+                for resource in &owner.resources {
+                    output.push_str(&format!(
+                        "\n    - resource={} kind={} state={} stop={} force={} reason={}",
+                        resource.record.id.as_str(),
+                        serialized_label(&resource.record.kind),
+                        serialized_label(&resource.record.cleanup_state),
+                        resource.stop_attempted,
+                        resource.force_attempted,
+                        resource.reason.as_deref().unwrap_or("none"),
+                    ));
+                }
             }
         }
         output

@@ -1,7 +1,10 @@
 //! Read-only repository work aggregation published as an in-process service.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
+
+#[cfg(test)]
+use std::path::Path;
 
 use async_trait::async_trait;
 use omegon_traits::{
@@ -38,24 +41,64 @@ pub(crate) fn capture_work_snapshot(
     bus: &crate::bus::EventBus,
 ) -> anyhow::Result<Option<Arc<WorkSnapshot>>> {
     Ok(bus
-        .in_process_service::<WorkSnapshot>(
+        .in_process_service::<WorkSnapshotPublication>(
             &work_snapshot_capability_id(),
             &work_snapshot_interface_id(),
         )?
-        .map(|handle| handle.service))
+        .and_then(|handle| handle.service.snapshot.get().cloned()))
+}
+
+struct WorkSnapshotPublication {
+    snapshot: OnceLock<Arc<WorkSnapshot>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct WorkSnapshotPublisher(Arc<WorkSnapshotPublication>);
+
+impl WorkSnapshotPublisher {
+    pub(crate) fn publish(&self, snapshot: Arc<WorkSnapshot>) -> anyhow::Result<()> {
+        self.0
+            .snapshot
+            .set(snapshot)
+            .map_err(|_| anyhow::anyhow!("work snapshot was already published"))
+    }
 }
 
 pub(crate) struct WorkAggregationFeature {
-    snapshot: Arc<WorkSnapshot>,
+    publication: Arc<WorkSnapshotPublication>,
 }
 
 impl WorkAggregationFeature {
-    pub(crate) async fn from_repository(repo_root: &Path) -> Self {
+    pub(crate) fn pending() -> (Self, WorkSnapshotPublisher) {
+        let publication = Arc::new(WorkSnapshotPublication {
+            snapshot: OnceLock::new(),
+        });
+        (
+            Self {
+                publication: Arc::clone(&publication),
+            },
+            WorkSnapshotPublisher(publication),
+        )
+    }
+
+    pub(crate) async fn from_observation(
+        observation: Arc<crate::runtime_state::LifecycleRepositoryObservation>,
+    ) -> Self {
+        let (feature, publisher) = Self::pending();
+        publisher
+            .publish(Self::snapshot_from_observation(observation).await)
+            .expect("new work snapshot publication is empty");
+        feature
+    }
+
+    pub(crate) async fn snapshot_from_observation(
+        observation: Arc<crate::runtime_state::LifecycleRepositoryObservation>,
+    ) -> Arc<WorkSnapshot> {
         let sources: Vec<Arc<dyn WorkSource>> = vec![
-            Arc::new(OpenSpecWorkSource::new(repo_root)),
-            Arc::new(OpenSpecDiagnosticsSource::new(repo_root)),
-            Arc::new(DesignWorkSource::new(repo_root)),
-            Arc::new(DesignDiagnosticsSource::new(repo_root)),
+            Arc::new(OpenSpecWorkSource(Arc::clone(&observation))),
+            Arc::new(OpenSpecDiagnosticsSource(Arc::clone(&observation))),
+            Arc::new(DesignWorkSource(Arc::clone(&observation))),
+            Arc::new(DesignDiagnosticsSource(observation)),
         ];
         let mut runtime = WorkRuntime::new(sources);
         let snapshot = match runtime.refresh().await {
@@ -65,13 +108,33 @@ impl WorkAggregationFeature {
                 runtime.snapshot().clone()
             }
         };
-        Self {
-            snapshot: Arc::new(snapshot),
-        }
+        Arc::new(snapshot)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn from_repository(repo_root: &Path) -> Self {
+        let (_bus, binding) = crate::lifecycle_service::test_binding(repo_root.to_path_buf())
+            .await
+            .expect("test lifecycle service");
+        let host = crate::runtime_state::LifecycleHostHandle::new(binding);
+        let observation = host
+            .refresh(
+                crate::lifecycle::read_model::SnapshotOptions::default(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("test lifecycle observation")
+            .repository
+            .expect("repository observation");
+        Self::from_observation(observation).await
     }
 
     pub(crate) fn snapshot(&self) -> Arc<WorkSnapshot> {
-        Arc::clone(&self.snapshot)
+        self.publication
+            .snapshot
+            .get()
+            .cloned()
+            .expect("work snapshot is published")
     }
 }
 
@@ -92,7 +155,7 @@ impl Feature for WorkAggregationFeature {
         vec![RuntimeInProcessService::no_resource_read_service(
             work_snapshot_capability_id(),
             work_snapshot_interface_id(),
-            Arc::clone(&self.snapshot),
+            Arc::clone(&self.publication),
         )]
     }
 
@@ -115,17 +178,7 @@ impl Feature for WorkAggregationFeature {
     }
 }
 
-struct OpenSpecWorkSource {
-    repo_root: PathBuf,
-}
-
-impl OpenSpecWorkSource {
-    fn new(repo_root: &Path) -> Self {
-        Self {
-            repo_root: repo_root.to_path_buf(),
-        }
-    }
-}
+struct OpenSpecWorkSource(Arc<crate::runtime_state::LifecycleRepositoryObservation>);
 
 #[async_trait]
 impl WorkSource for OpenSpecWorkSource {
@@ -145,27 +198,17 @@ impl WorkSource for OpenSpecWorkSource {
         context: &RefreshContext,
     ) -> styrene_work_model::Result<SourceRefresh> {
         let descriptor = self.descriptor();
-        let changes_dir = self.repo_root.join("openspec/changes");
-        if !changes_dir.is_dir() {
+        if !self.0.lifecycle.openspec.available {
             return Ok(SourceRefresh::Unavailable {
                 descriptor,
                 reason: "openspec/changes is absent".into(),
             });
         }
-        std::fs::read_dir(&changes_dir)?;
 
         let mut items = Vec::new();
-        for change in crate::lifecycle::spec::list_changes(&self.repo_root) {
+        for change in &self.0.lifecycle.openspec.changes {
             let change_id = WorkId::new("openspec", &change.name)?;
-            let change_state = openspec_state(change.state);
-            let identity_findings = if change.has_tasks {
-                omegon_opsx::OpenSpecRepository::new(&self.repo_root)
-                    .validate_task_stable_ids(&change.name)
-                    .map(|report| report.findings)
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+            let change_state = openspec_state(&change.lifecycle_state);
             items.push(WorkItem {
                 id: change_id.clone(),
                 kind: WorkKind::Change,
@@ -173,7 +216,7 @@ impl WorkSource for OpenSpecWorkSource {
                 title: change.name.clone(),
                 lifecycle: WorkLifecycle {
                     category: change_state,
-                    native_state: change.state.as_str().into(),
+                    native_state: change.lifecycle_state.clone(),
                     workflow: Some("openspec".into()),
                     terminal: matches!(change_state, WorkState::Completed | WorkState::Archived),
                     inferred: false,
@@ -185,7 +228,7 @@ impl WorkSource for OpenSpecWorkSource {
                 relations: Vec::new(),
                 refs: vec![ExternalRef::new(
                     "repository_path",
-                    format!("openspec/changes/{}", change.name),
+                    change.repository_path.clone(),
                 )],
                 capabilities: WorkCapabilities::default(),
                 provenance: provenance(&descriptor, context),
@@ -194,7 +237,7 @@ impl WorkSource for OpenSpecWorkSource {
                         "change_name": change.name,
                         "done_tasks": change.done_tasks,
                         "has_tasks": change.has_tasks,
-                        "identity_findings": identity_findings,
+                        "identity_findings": change.task_identity_findings,
                         "total_tasks": change.total_tasks,
                     })),
                     ..WorkFacets::default()
@@ -202,8 +245,8 @@ impl WorkSource for OpenSpecWorkSource {
             });
 
             let mut used_item_ids = std::collections::HashSet::<WorkId>::new();
-            for (group_index, group) in change.task_groups.into_iter().enumerate() {
-                for (task_index, task) in group.tasks.into_iter().enumerate() {
+            for (group_index, group) in change.task_groups.iter().enumerate() {
+                for (task_index, task) in group.tasks.iter().enumerate() {
                     let stable_id = task
                         .stable_id
                         .clone()
@@ -263,7 +306,7 @@ impl WorkSource for OpenSpecWorkSource {
                         }],
                         refs: vec![ExternalRef::new(
                             "repository_path",
-                            format!("openspec/changes/{}/tasks.md#{}", change.name, task.id),
+                            format!("{}/tasks.md#{}", change.repository_path, task.id),
                         )],
                         capabilities: WorkCapabilities::default(),
                         provenance: provenance(&descriptor, context),
@@ -294,17 +337,7 @@ impl WorkSource for OpenSpecWorkSource {
     }
 }
 
-struct OpenSpecDiagnosticsSource {
-    repo_root: PathBuf,
-}
-
-impl OpenSpecDiagnosticsSource {
-    fn new(repo_root: &Path) -> Self {
-        Self {
-            repo_root: repo_root.to_path_buf(),
-        }
-    }
-}
+struct OpenSpecDiagnosticsSource(Arc<crate::runtime_state::LifecycleRepositoryObservation>);
 
 #[async_trait]
 impl WorkSource for OpenSpecDiagnosticsSource {
@@ -318,81 +351,38 @@ impl WorkSource for OpenSpecDiagnosticsSource {
         context: &RefreshContext,
     ) -> styrene_work_model::Result<SourceRefresh> {
         let descriptor = self.descriptor();
-        let changes_dir = self.repo_root.join("openspec/changes");
-        if !changes_dir.is_dir() {
+        if !self.0.lifecycle.openspec.available {
             return Ok(empty_diagnostic_snapshot(descriptor, context));
         }
 
         let mut findings = Vec::new();
-        let entries = std::fs::read_dir(&changes_dir)?;
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    findings.push(format!("cannot inspect change entry: {error}"));
-                    continue;
-                }
-            };
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                findings.push("change directory name is not UTF-8".into());
-                continue;
-            };
-            let Some(change) = crate::lifecycle::spec::get_change(&self.repo_root, &name) else {
-                findings.push(format!("openspec/changes/{name}: cannot parse change"));
-                continue;
-            };
+        for change in &self.0.lifecycle.openspec.changes {
+            let path = &change.repository_path;
             match &change.artifact_health {
                 omegon_opsx::ArtifactHealth::Healthy => {}
-                omegon_opsx::ArtifactHealth::Incomplete { missing } => findings.push(format!(
-                    "openspec/changes/{name}: incomplete ({})",
-                    missing.join(", ")
-                )),
+                omegon_opsx::ArtifactHealth::Incomplete { missing } => {
+                    findings.push(format!("{path}: incomplete ({})", missing.join(", ")))
+                }
                 omegon_opsx::ArtifactHealth::Malformed { detail } => {
-                    findings.push(format!("openspec/changes/{name}: malformed ({detail})"))
+                    findings.push(format!("{path}: malformed ({detail})"))
                 }
             }
-            if change.has_tasks {
-                let tasks_path = entry.path().join("tasks.md");
-                if let Err(error) = std::fs::read_to_string(&tasks_path) {
-                    findings.push(format!(
-                        "openspec/changes/{name}/tasks.md: unreadable ({error})"
-                    ));
-                    continue;
-                }
-                match omegon_opsx::OpenSpecRepository::new(&self.repo_root)
-                    .validate_task_stable_ids(&name)
-                {
-                    Ok(report) => findings.extend(report.findings.into_iter().map(|finding| {
-                        format!(
-                            "openspec/changes/{name}/tasks.md:{}: {}",
-                            finding.line, finding.message
-                        )
-                    })),
-                    Err(error) => findings.push(format!(
-                        "openspec/changes/{name}/tasks.md: cannot validate identities ({error})"
-                    )),
-                }
+            findings.extend(
+                change.task_identity_findings.iter().map(|finding| {
+                    format!("{path}/tasks.md:{}: {}", finding.line, finding.message)
+                }),
+            );
+            if let Some(error) = &change.task_identity_error {
+                findings.push(format!(
+                    "{path}/tasks.md: cannot validate identities ({error})"
+                ));
             }
         }
-
         diagnostic_refresh(descriptor, context, findings)
     }
 }
 
-struct DesignWorkSource {
-    repo_root: PathBuf,
-}
-
-impl DesignWorkSource {
-    fn new(repo_root: &Path) -> Self {
-        Self {
-            repo_root: repo_root.to_path_buf(),
-        }
-    }
-}
+struct DesignWorkSource(Arc<crate::runtime_state::LifecycleRepositoryObservation>);
 
 #[async_trait]
 impl WorkSource for DesignWorkSource {
@@ -412,18 +402,15 @@ impl WorkSource for DesignWorkSource {
         context: &RefreshContext,
     ) -> styrene_work_model::Result<SourceRefresh> {
         let descriptor = self.descriptor();
-        let docs_dir = self.repo_root.join("docs");
-        if !docs_dir.is_dir() {
+        if !self.0.design.available {
             return Ok(SourceRefresh::Unavailable {
                 descriptor,
                 reason: "docs is absent".into(),
             });
         }
-        std::fs::read_dir(&docs_dir)?;
 
-        let scan = crate::lifecycle::design::scan_design_docs_with_findings(&docs_dir);
         let mut items = Vec::new();
-        for node in scan.nodes.values() {
+        for node in self.0.design.nodes.values() {
             let node_id = WorkId::new("design", &node.id)?;
             let node_state = design_state(node.status);
             let mut relations = Vec::new();
@@ -445,13 +432,7 @@ impl WorkSource for DesignWorkSource {
                     target: WorkId::new("openspec", change)?,
                 });
             }
-            let native_relative_path = node
-                .file_path
-                .strip_prefix(&self.repo_root)
-                .unwrap_or(&node.file_path)
-                .to_string_lossy()
-                .to_string();
-            let relative_path = native_relative_path.replace('\\', "/");
+            let relative_path = design_repository_path(&self.0, node);
             items.push(WorkItem {
                 id: node_id.clone(),
                 kind: design_kind(node.issue_type),
@@ -477,7 +458,7 @@ impl WorkSource for DesignWorkSource {
                         "design_node_id": node.id,
                         "openspec_change": node.openspec_change,
                         "open_question_count": node.open_questions.len(),
-                        "source_path": native_relative_path,
+                        "source_path": relative_path.clone(),
                     })),
                     ..WorkFacets::default()
                 },
@@ -542,17 +523,7 @@ impl WorkSource for DesignWorkSource {
     }
 }
 
-struct DesignDiagnosticsSource {
-    repo_root: PathBuf,
-}
-
-impl DesignDiagnosticsSource {
-    fn new(repo_root: &Path) -> Self {
-        Self {
-            repo_root: repo_root.to_path_buf(),
-        }
-    }
-}
+struct DesignDiagnosticsSource(Arc<crate::runtime_state::LifecycleRepositoryObservation>);
 
 #[async_trait]
 impl WorkSource for DesignDiagnosticsSource {
@@ -566,21 +537,19 @@ impl WorkSource for DesignDiagnosticsSource {
         context: &RefreshContext,
     ) -> styrene_work_model::Result<SourceRefresh> {
         let descriptor = self.descriptor();
-        let docs_dir = self.repo_root.join("docs");
-        if !docs_dir.is_dir() {
+        if !self.0.design.available {
             return Ok(empty_diagnostic_snapshot(descriptor, context));
         }
-        std::fs::read_dir(&docs_dir)?;
-        let findings = crate::lifecycle::design::scan_design_docs_with_findings(&docs_dir)
+        let findings = self
+            .0
+            .design
             .findings
-            .into_iter()
+            .iter()
             .map(|finding| {
-                let path = finding
-                    .path
-                    .strip_prefix(&self.repo_root)
-                    .unwrap_or(&finding.path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let path = observation_relative_path(
+                    &self.0.revision.design_root,
+                    &finding.path.to_string_lossy(),
+                );
                 format!("{path}: {}", finding.message)
             })
             .collect();
@@ -703,15 +672,32 @@ fn openspec_task_identity_value(change_name: &str, stable_id: &str) -> String {
     )
 }
 
-fn openspec_state(state: omegon_opsx::ChangeState) -> WorkState {
+fn design_repository_path(
+    observation: &crate::runtime_state::LifecycleRepositoryObservation,
+    node: &crate::lifecycle::types::DesignNode,
+) -> String {
+    observation_relative_path(
+        &observation.revision.design_root,
+        &node.file_path.to_string_lossy(),
+    )
+}
+
+fn observation_relative_path(root: &str, path: &str) -> String {
+    let root = root.replace('\\', "/");
+    let path = path.replace('\\', "/");
+    path.rfind(&root)
+        .map(|offset| path[offset..].to_string())
+        .unwrap_or(path)
+}
+
+fn openspec_state(state: &str) -> WorkState {
     match state {
-        omegon_opsx::ChangeState::Proposed => WorkState::Draft,
-        omegon_opsx::ChangeState::Specced | omegon_opsx::ChangeState::Planned => WorkState::Planned,
-        omegon_opsx::ChangeState::Implementing
-        | omegon_opsx::ChangeState::Testing
-        | omegon_opsx::ChangeState::Verifying => WorkState::Active,
-        omegon_opsx::ChangeState::Archived => WorkState::Archived,
-        omegon_opsx::ChangeState::Abandoned => WorkState::Cancelled,
+        "proposed" => WorkState::Draft,
+        "specced" | "planned" => WorkState::Planned,
+        "implementing" | "testing" | "verifying" => WorkState::Active,
+        "archived" => WorkState::Archived,
+        "abandoned" => WorkState::Cancelled,
+        _ => WorkState::Draft,
     }
 }
 
@@ -775,18 +761,18 @@ mod tests {
         .unwrap();
 
         let mut bus = crate::bus::EventBus::new();
-        crate::setup::register_work_aggregation(&mut bus, repo.path()).await;
+        bus.register(Box::new(
+            WorkAggregationFeature::from_repository(repo.path()).await,
+        ));
         bus.try_finalize().unwrap();
         let handle = bus
-            .in_process_service::<WorkSnapshot>(
+            .in_process_service::<WorkSnapshotPublication>(
                 &work_snapshot_capability_id(),
                 &work_snapshot_interface_id(),
             )
             .unwrap()
             .expect("work snapshot service");
-        let snapshot = Arc::clone(&handle.service);
-        let captured = capture_work_snapshot(&bus).unwrap().unwrap();
-        assert!(Arc::ptr_eq(&captured, &snapshot));
+        let snapshot = capture_work_snapshot(&bus).unwrap().unwrap();
         assert_eq!(snapshot.sources.len(), 4);
         assert!(snapshot.warnings.is_empty());
         for id in [
@@ -808,7 +794,7 @@ mod tests {
 
         assert_eq!(handle.owner.as_str(), "feature:work-aggregation");
         assert_eq!(handle.generation_id.as_str(), WORK_AGGREGATION_GENERATION);
-        assert_eq!(handle.service.generation, 1);
+        assert_eq!(snapshot.generation, 1);
     }
 
     #[tokio::test]
@@ -849,6 +835,43 @@ mod tests {
         assert!(!design_warning.message.contains('\\'));
         assert!(snapshot.warnings.iter().any(|warning| {
             warning.source_id.as_str() == "omegon.openspec" && warning.code == "source_unavailable"
+        }));
+    }
+
+    #[tokio::test]
+    async fn aggregation_projects_the_captured_observation_after_artifacts_change() {
+        let repo = tempfile::tempdir().unwrap();
+        let docs = repo.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("captured.md"),
+            "---\nid: captured\ntitle: Captured Node\nstatus: exploring\n---\n",
+        )
+        .unwrap();
+        let (_bus, binding) = crate::lifecycle_service::test_binding(repo.path().to_path_buf())
+            .await
+            .unwrap();
+        let host = crate::runtime_state::LifecycleHostHandle::new(binding);
+        let observation = host
+            .refresh(
+                crate::lifecycle::read_model::SnapshotOptions::default(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .repository
+            .unwrap();
+
+        std::fs::remove_dir_all(&docs).unwrap();
+        let snapshot = WorkAggregationFeature::from_observation(observation)
+            .await
+            .snapshot();
+
+        assert!(snapshot.items.iter().any(|item| {
+            item.id.as_str() == "design:captured" && item.title == "Captured Node"
+        }));
+        assert!(!snapshot.warnings.iter().any(|warning| {
+            warning.source_id.as_str() == "omegon.design" && warning.code == "source_unavailable"
         }));
     }
 
@@ -962,7 +985,7 @@ mod tests {
         let mut bus = crate::bus::EventBus::new();
         bus.try_finalize().unwrap();
         assert!(
-            bus.in_process_service::<WorkSnapshot>(
+            bus.in_process_service::<WorkSnapshotPublication>(
                 &work_snapshot_capability_id(),
                 &work_snapshot_interface_id(),
             )

@@ -468,7 +468,7 @@ async fn execute_task_with_retry(
                     );
                 }
                 if result.exit_code == 0 {
-                    apply_lifecycle_hooks(effective_cwd, &spec, task_id);
+                    apply_lifecycle_hooks(effective_cwd, &spec, task_id).await;
                     let _ = board.complete(task_id, &result);
                 } else {
                     let _ = board.release(task_id);
@@ -524,44 +524,16 @@ async fn execute_task_with_retry(
     }
 }
 
-fn apply_lifecycle_hooks(cwd: &Path, spec: &super::types::TaskSpec, task_id: &str) {
-    if let Some(ref node_id) = spec.design_node_id {
-        let docs_dir = cwd.join("docs");
-        if docs_dir.is_dir() {
-            let nodes = crate::lifecycle::design::scan_design_docs(&docs_dir);
-            if let Some(mut node) = nodes.into_values().find(|n| n.id == *node_id) {
-                use crate::lifecycle::types::NodeStatus;
-                let target = match node.status {
-                    NodeStatus::Decided => Some(NodeStatus::Implementing),
-                    NodeStatus::Implementing => Some(NodeStatus::Implemented),
-                    _ => None,
-                };
-                if let Some(new_status) = target {
-                    match crate::lifecycle::design::update_node(&mut node, |n| {
-                        n.status = new_status;
-                    }) {
-                        Ok(()) => {
-                            tracing::info!(
-                                task = %task_id,
-                                node = %node_id,
-                                status = %new_status.as_str(),
-                                "advanced design node status"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                task = %task_id,
-                                node = %node_id,
-                                error = %e,
-                                "failed to advance design node"
-                            );
-                        }
-                    }
-                }
-            } else {
-                tracing::debug!(task = %task_id, node = %node_id, "design node not found in docs/");
-            }
-        }
+async fn apply_lifecycle_hooks(cwd: &Path, spec: &super::types::TaskSpec, task_id: &str) {
+    if let Some(ref node_id) = spec.design_node_id
+        && let Err(error) = advance_design_node(cwd, node_id, task_id).await
+    {
+        tracing::warn!(
+            task = %task_id,
+            node = %node_id,
+            %error,
+            "failed to advance design node through managed lifecycle service"
+        );
     }
 
     if let Some(ref change) = spec.openspec_change {
@@ -571,6 +543,100 @@ fn apply_lifecycle_hooks(cwd: &Path, spec: &super::types::TaskSpec, task_id: &st
             "openspec change linked — update tasks.md, then call openspec_manage(register_tasks) to advance FSM state"
         );
     }
+}
+
+async fn advance_design_node(cwd: &Path, node_id: &str, task_id: &str) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+
+    let repo_root = crate::setup::find_project_root(cwd);
+    crate::lifecycle_service::validate_repository_roots(&repo_root)?;
+
+    let mut bus = crate::bus::EventBus::new();
+    let binding = crate::lifecycle_service::LifecycleBinding::default();
+    let host = crate::runtime_state::LifecycleHostHandle::new(binding.clone());
+    bus.register(Box::new(
+        crate::features::lifecycle::LifecycleFeature::managed(
+            &repo_root,
+            binding.clone(),
+            host.clone(),
+        ),
+    ));
+    let candidate = crate::lifecycle_service::start_candidate(repo_root).await?;
+    bus.stage_managed_generation("lifecycle", candidate)?;
+    if let Err(error) = bus.try_finalize_managed().await {
+        let _ = bus.shutdown_managed_services().await;
+        return Err(error);
+    }
+
+    let result = async {
+        binding.capture(&bus)?;
+        let observation = host
+            .refresh(
+                crate::lifecycle::read_model::SnapshotOptions::default(),
+                CancellationToken::new(),
+            )
+            .await?;
+        let repository = observation
+            .repository
+            .ok_or_else(|| anyhow::anyhow!("managed lifecycle observation is unavailable"))?;
+        let node = repository
+            .design
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| anyhow::anyhow!("design node '{node_id}' was not found"))?;
+        use crate::lifecycle::types::NodeStatus;
+        let target = match node.status {
+            NodeStatus::Decided => Some(NodeStatus::Implementing),
+            NodeStatus::Implementing => Some(NodeStatus::Implemented),
+            _ => None,
+        };
+        let Some(target) = target else {
+            return Ok(());
+        };
+        let operation_id = format!(
+            "sentry-hook-sha256-{:x}",
+            Sha256::digest(
+                format!(
+                    "{task_id}\0{node_id}\0{}\0{}\0{}",
+                    target.as_str(),
+                    repository.revision.artifact_digest,
+                    repository.revision.transaction_digest
+                )
+                .as_bytes()
+            )
+        );
+        binding
+            .invoke(crate::lifecycle_service::LifecycleRequestV1::MutateDesign {
+                operation_id,
+                expected_revision: repository.revision.clone(),
+                mutation: Box::new(crate::lifecycle_service::DesignMutationV1::SetState {
+                    id: node_id.to_string(),
+                    state: target.into(),
+                    archive_reason: None,
+                    superseded_by: None,
+                    archived_at: None,
+                }),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("managed lifecycle mutation failed: {error:?}"))?;
+        tracing::info!(
+            task = %task_id,
+            node = %node_id,
+            status = %target.as_str(),
+            "advanced design node status through managed lifecycle service"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let shutdown = bus.shutdown_managed_services().await;
+    if !shutdown.all_resources_settled() {
+        return Err(anyhow::anyhow!(
+            "managed lifecycle hook cleanup did not settle: {shutdown:?}"
+        ));
+    }
+    result
 }
 
 fn record_budget_usage(state_db: &StateDb, task_id: &str, tokens: u64) {
@@ -981,6 +1047,7 @@ async fn run_agent_task(
 
     timeout_handle.abort();
     global_handle.abort();
+    let _ = agent.bus.shutdown_managed_services().await;
     bridge.shutdown().await;
     drop(events_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_millis(500), event_task).await;
@@ -1032,4 +1099,43 @@ async fn run_agent_task(
         duration_secs: elapsed.as_secs(),
         session_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lifecycle_hook_advances_design_through_the_managed_service() {
+        let repo = tempfile::tempdir().unwrap();
+        let docs = repo.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("managed-hook.md"),
+            "---\nid: managed-hook\ntitle: Managed Hook\nstatus: decided\n---\n",
+        )
+        .unwrap();
+
+        advance_design_node(repo.path(), "managed-hook", "sentry-task")
+            .await
+            .unwrap();
+
+        let nodes = crate::lifecycle::design::scan_design_docs(&docs);
+        assert_eq!(
+            nodes["managed-hook"].status,
+            crate::lifecycle::types::NodeStatus::Implementing
+        );
+    }
+
+    #[test]
+    fn production_lifecycle_hook_has_no_direct_design_repository_fallback() {
+        let source = include_str!("executor.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        for forbidden in ["scan_design_docs", "update_node("] {
+            assert!(
+                !production.contains(forbidden),
+                "Sentry production hook must not contain {forbidden}"
+            );
+        }
+    }
 }

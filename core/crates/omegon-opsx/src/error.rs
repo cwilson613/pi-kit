@@ -24,6 +24,9 @@ pub enum OpsxError {
     #[error("store error: {0}")]
     StoreError(String),
 
+    #[error("store revision conflict: expected {expected}, found {actual}")]
+    RevisionConflict { expected: u64, actual: u64 },
+
     #[error("schema version mismatch: expected {expected}, got {got}")]
     SchemaMismatch { expected: u32, got: u32 },
 }

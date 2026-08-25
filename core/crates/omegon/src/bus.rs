@@ -153,6 +153,14 @@ fn stable_feature_component(name: &str) -> String {
     }
 }
 
+fn new_composition_generation_id() -> omegon_traits::RuntimeCompositionGenerationId {
+    omegon_traits::RuntimeCompositionGenerationId::new(format!(
+        "composition:{}",
+        uuid::Uuid::new_v4()
+    ))
+    .expect("UUID composition generation is valid")
+}
+
 fn conservative_mutation_fence(name: &str) -> omegon_traits::RuntimeMutationFence {
     omegon_traits::RuntimeMutationFence {
         domain: omegon_traits::RuntimeMutationDomainId::new("workspace:runtime")
@@ -338,6 +346,38 @@ struct PublishedInProcessService {
     implementation_type_id: std::any::TypeId,
 }
 
+struct FrozenFeature {
+    contribution_id: omegon_traits::RuntimeContributionId,
+    feature_index: usize,
+    name: String,
+    provenance: omegon_traits::ToolProvenance,
+    tools: Vec<ToolDefinition>,
+    commands: Vec<CommandDefinition>,
+    acp_invocations: Vec<omegon_traits::RuntimeAcpInvocationDefinition>,
+    command_aliases: Vec<omegon_traits::CommandAlias>,
+    internal_tools: Vec<String>,
+    tool_policies: BTreeMap<String, omegon_traits::RuntimeToolPolicy>,
+    tool_surfaces: BTreeMap<String, Vec<omegon_traits::RuntimeSurface>>,
+    tool_principals: BTreeMap<String, Vec<omegon_traits::RuntimePrincipalClass>>,
+    command_surfaces: BTreeMap<String, Vec<omegon_traits::RuntimeSurface>>,
+    lifecycle: Option<omegon_traits::RuntimeLifecyclePolicy>,
+    composition_transition: Option<omegon_traits::RuntimeCompositionTransitionPolicy>,
+    services: Vec<omegon_traits::RuntimeInProcessService>,
+    dependencies: Vec<omegon_traits::RuntimeContributionDependency>,
+    generation_id: omegon_traits::RuntimeContributionGenerationId,
+}
+
+struct PreparedComposition {
+    tool_defs: Vec<(usize, ToolDefinition)>,
+    command_defs: Vec<(usize, CommandDefinition)>,
+    internal_tool_owners: HashMap<String, usize>,
+    acp_invocation_owners: HashMap<String, usize>,
+    in_process_services: BTreeMap<omegon_traits::RuntimeCapabilityId, PublishedInProcessService>,
+    diagnostics: Vec<omegon_traits::RuntimeContributionDiagnostic>,
+    graph: crate::contribution_graph::RuntimeCandidateGraph,
+    generation_id: omegon_traits::RuntimeCompositionGenerationId,
+}
+
 #[derive(Clone)]
 pub(crate) struct InProcessServiceHandle<T: ?Sized> {
     pub(crate) capability_id: omegon_traits::RuntimeCapabilityId,
@@ -371,6 +411,7 @@ pub struct EventBus {
     in_process_services: BTreeMap<omegon_traits::RuntimeCapabilityId, PublishedInProcessService>,
     /// Resource-bearing services with generation-owned admission and cleanup.
     managed_services: crate::managed_service_bus::ManagedServiceBus,
+    runtime_ownership_retention: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Structurally validated composition from which legacy caches were built.
     accepted_graph: Option<std::sync::Arc<crate::contribution_graph::RuntimeCandidateGraph>>,
     /// Identity of the atomically published composition represented by the graph and caches.
@@ -384,6 +425,9 @@ pub struct EventBus {
     /// Internal binding declarations retained without last-writer arbitration.
     declared_internal_tools: Vec<(String, String)>,
     pending_internal_tools: Vec<(String, String)>,
+    /// Synthetic resource-bearing generations staged by owning feature name.
+    pending_managed_generations:
+        BTreeMap<String, Vec<crate::managed_service_bus::ManagedGenerationCandidate>>,
 }
 
 impl EventBus {
@@ -398,6 +442,7 @@ impl EventBus {
             acp_invocation_owners: HashMap::new(),
             in_process_services: BTreeMap::new(),
             managed_services: crate::managed_service_bus::ManagedServiceBus::default(),
+            runtime_ownership_retention: None,
             accepted_graph: None,
             accepted_generation_id: None,
             composition_diagnostics: Vec::new(),
@@ -405,6 +450,7 @@ impl EventBus {
             pending_features: Vec::new(),
             declared_internal_tools: Vec::new(),
             pending_internal_tools: Vec::new(),
+            pending_managed_generations: BTreeMap::new(),
             tool_inventory: None,
             tool_timeouts: HashMap::from([
                 ("bash".into(), Duration::from_secs(600)),
@@ -459,7 +505,39 @@ impl EventBus {
     where
         S: omegon_traits::ManagedServiceContract + ?Sized,
     {
+        if self.accepted_graph.as_ref().is_some_and(|graph| {
+            graph
+                .capability_owners
+                .contains_key(candidate.capability_id())
+        }) {
+            let capability_id = candidate.capability_id().clone();
+            let reason = format!(
+                "direct managed service {} collides with the accepted contribution graph",
+                capability_id.as_str()
+            );
+            let candidates = vec![candidate.into()];
+            let mut cleanup = self
+                .managed_services
+                .reject_composition_candidates(&candidates, &reason)
+                .await;
+            return crate::managed_service_bus::ManagedServicePublicationOutcome::Rejected {
+                reason,
+                cleanup: cleanup.pop(),
+            };
+        }
         self.managed_services.publish(candidate).await
+    }
+
+    pub(crate) fn stage_managed_generation(
+        &mut self,
+        feature_name: impl Into<String>,
+        candidate: crate::managed_service_bus::ManagedGenerationCandidate,
+    ) -> anyhow::Result<()> {
+        self.pending_managed_generations
+            .entry(feature_name.into())
+            .or_default()
+            .push(candidate);
+        Ok(())
     }
 
     pub(crate) fn managed_service<S>(
@@ -482,7 +560,46 @@ impl EventBus {
     pub(crate) async fn shutdown_managed_services(
         &mut self,
     ) -> crate::managed_service_bus::ManagedServiceShutdownReport {
-        self.managed_services.shutdown().await
+        let report = self.managed_services.shutdown().await;
+        for generation in &report.generations {
+            match &generation.result {
+                Ok(cleanup) if cleanup.resources.all_resources_settled() => {}
+                Ok(cleanup) => tracing::warn!(
+                    owner = generation.owner.as_str(),
+                    generation = generation.generation_id.as_str(),
+                    resources = cleanup.resources.records.len(),
+                    "managed generation shutdown remains unsettled"
+                ),
+                Err(error) => tracing::warn!(
+                    owner = generation.owner.as_str(),
+                    generation = generation.generation_id.as_str(),
+                    %error,
+                    "managed generation shutdown failed"
+                ),
+            }
+        }
+        for cleanup in &report.rejected_candidates {
+            if !cleanup.all_resources_settled() {
+                tracing::warn!(
+                    resources = cleanup.records.len(),
+                    "rejected managed candidate shutdown remains unsettled"
+                );
+            }
+        }
+        if let Some(retention) = &self.runtime_ownership_retention {
+            retention.store(
+                !report.all_resources_settled(),
+                std::sync::atomic::Ordering::Release,
+            );
+        }
+        report
+    }
+
+    pub(crate) fn bind_runtime_ownership_retention(
+        &mut self,
+        retention: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.runtime_ownership_retention = Some(retention);
     }
 
     pub fn apply_operator_tool_profile(
@@ -652,7 +769,7 @@ impl EventBus {
     }
 
     pub(crate) fn composition_diagnostic_projection(
-        &self,
+        &mut self,
     ) -> Option<crate::surfaces::diagnostics::CompositionDiagnosticProjection> {
         use crate::surfaces::diagnostics::{
             CompatibilityDispatchMode, CompatibilityDispatchProjection,
@@ -664,6 +781,18 @@ impl EventBus {
             RuntimeContributionLifecycleState,
         };
 
+        let managed_owners = match self.managed_services.managed_diagnostic_records() {
+            Ok(records) => records,
+            Err(error) => {
+                tracing::warn!(%error, "managed diagnostic reconciliation failed");
+                Vec::new()
+            }
+        };
+        let graph_managed = self
+            .managed_services
+            .graph_managed_identities()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         let graph = self.accepted_graph.as_ref()?;
         let generation_id = self.accepted_generation_id.clone()?;
         let contributions = graph
@@ -680,12 +809,30 @@ impl EventBus {
                     RuntimeCleanupRequirement::Strict => RuntimeCleanupAssurance::Strict,
                     RuntimeCleanupRequirement::BestEffort => RuntimeCleanupAssurance::BestEffort,
                 };
+                let managed_lifecycle = graph_managed
+                    .contains(&(declaration.id.clone(), declaration.generation_id.clone()))
+                    .then(|| {
+                        managed_owners.iter().rev().find(|owner| {
+                            owner.disposition
+                                == crate::surfaces::diagnostics::ManagedOwnerDisposition::Published
+                                && owner.lifecycle.contribution_id == declaration.id
+                                && owner.lifecycle.generation_id == declaration.generation_id
+                        })
+                    })
+                    .flatten();
                 CompositionContributionProjection {
                     declaration,
                     negotiated_protocol,
-                    health: RuntimeContributionLifecycleState::Active,
-                    cleanup_assurance,
-                    cleanup_state: RuntimeCleanupState::NotRequired,
+                    health: managed_lifecycle
+                        .map_or(RuntimeContributionLifecycleState::Active, |owner| {
+                            owner.lifecycle.state
+                        }),
+                    cleanup_assurance: managed_lifecycle
+                        .map_or(cleanup_assurance, |owner| owner.lifecycle.cleanup_assurance),
+                    cleanup_state: managed_lifecycle
+                        .map_or(RuntimeCleanupState::NotRequired, |owner| {
+                            owner.lifecycle.cleanup_state
+                        }),
                 }
             })
             .collect();
@@ -712,11 +859,112 @@ impl EventBus {
                 parity_verified: true,
                 published_bindings: graph.invocation_owners.len(),
             },
+            managed_owners,
         })
     }
 
     /// Fallible publication boundary used by production setup.
     pub(crate) fn try_finalize(&mut self) -> anyhow::Result<()> {
+        if !self.pending_managed_generations.is_empty()
+            || self.managed_services.has_graph_managed_generations()
+        {
+            anyhow::bail!(
+                "managed generations are staged or active; use EventBus::try_finalize_managed().await"
+            );
+        }
+        let generation_id = new_composition_generation_id();
+        let prepared = self.prepare_finalization(&BTreeMap::new(), generation_id);
+        match prepared {
+            Ok(prepared) => {
+                self.commit_finalization(prepared);
+                Ok(())
+            }
+            Err(error) => {
+                self.clear_pending_ordinary();
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) async fn try_finalize_managed(&mut self) -> anyhow::Result<()> {
+        let mut candidates = std::mem::take(&mut self.pending_managed_generations);
+        let generation_id = new_composition_generation_id();
+        let prepared = match self.prepare_finalization(&candidates, generation_id.clone()) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.clear_pending_ordinary();
+                let rejection_reason = error.to_string();
+                let cleanup = self
+                    .managed_services
+                    .reject_composition_candidates(
+                        &candidates.into_values().flatten().collect::<Vec<_>>(),
+                        &rejection_reason,
+                    )
+                    .await;
+                return Err(anyhow::anyhow!(
+                    "{error}; managed candidate rollback cleanup reports: {cleanup:?}"
+                ));
+            }
+        };
+
+        let should_publish =
+            !candidates.is_empty() || self.managed_services.has_graph_managed_generations();
+        let publication = if should_publish {
+            for (feature_name, feature_candidates) in &mut candidates {
+                let candidate = feature_candidates
+                    .first_mut()
+                    .expect("prepared managed owner has one candidate");
+                let contribution_id = omegon_traits::RuntimeContributionId::new(format!(
+                    "feature:{}",
+                    stable_feature_component(feature_name)
+                ))
+                .expect("encoded feature identity is valid");
+                let generation_id = prepared
+                    .graph
+                    .declarations
+                    .get(&contribution_id)
+                    .expect("prepared managed owner exists")
+                    .generation_id
+                    .clone();
+                candidate.rebind(
+                    prepared.generation_id.clone(),
+                    contribution_id,
+                    generation_id,
+                );
+            }
+            Some(
+                self.managed_services
+                    .publish_composition(candidates.into_values().flatten().collect())
+                    .await,
+            )
+        } else {
+            None
+        };
+        if let Some(crate::managed_service_bus::ManagedServiceBatchPublicationOutcome::Rejected {
+            reason,
+            cleanup,
+        }) = publication
+        {
+            self.clear_pending_ordinary();
+            anyhow::bail!(
+                "managed composition publication rejected: {reason}; rollback cleanup reports: {cleanup:?}"
+            );
+        }
+
+        // The managed admission replacement is the linearization point. Keep this
+        // commit assignment-only and do not introduce suspension between the two.
+        self.commit_finalization(prepared);
+        Ok(())
+    }
+
+    fn prepare_finalization(
+        &mut self,
+        managed_candidates: &BTreeMap<
+            String,
+            Vec<crate::managed_service_bus::ManagedGenerationCandidate>,
+        >,
+        generation_id: omegon_traits::RuntimeCompositionGenerationId,
+    ) -> anyhow::Result<PreparedComposition> {
         use omegon_traits::{
             RuntimeActivationBoundary, RuntimeAuthorityNarrowing, RuntimeCapabilityGroupId,
             RuntimeCapabilityId, RuntimeCapabilityKind, RuntimeCapabilityTransitionPolicy,
@@ -731,27 +979,6 @@ impl EventBus {
             RuntimeProtocolRange, RuntimeRetryClass, RuntimeSurface, RuntimeTimeoutClass,
             RuntimeTransactionBehavior, RuntimeTrustRequest,
         };
-
-        struct FrozenFeature {
-            contribution_id: omegon_traits::RuntimeContributionId,
-            feature_index: usize,
-            name: String,
-            provenance: omegon_traits::ToolProvenance,
-            tools: Vec<ToolDefinition>,
-            commands: Vec<CommandDefinition>,
-            acp_invocations: Vec<omegon_traits::RuntimeAcpInvocationDefinition>,
-            command_aliases: Vec<omegon_traits::CommandAlias>,
-            internal_tools: Vec<String>,
-            tool_policies: BTreeMap<String, omegon_traits::RuntimeToolPolicy>,
-            tool_surfaces: BTreeMap<String, Vec<RuntimeSurface>>,
-            tool_principals: BTreeMap<String, Vec<RuntimePrincipalClass>>,
-            command_surfaces: BTreeMap<String, Vec<RuntimeSurface>>,
-            lifecycle: Option<RuntimeLifecyclePolicy>,
-            composition_transition: Option<RuntimeCompositionTransitionPolicy>,
-            services: Vec<omegon_traits::RuntimeInProcessService>,
-            dependencies: Vec<omegon_traits::RuntimeContributionDependency>,
-            generation_id: RuntimeContributionGenerationId,
-        }
 
         let replaced_names = self
             .pending_features
@@ -873,6 +1100,85 @@ impl EventBus {
             });
         }
         frozen.sort_by_key(|feature| feature.feature_index);
+
+        let mut staged_managed_identities = BTreeSet::new();
+        for (feature_name, feature_candidates) in managed_candidates {
+            if feature_candidates.len() != 1 {
+                anyhow::bail!("feature {feature_name} has duplicate managed generation candidates");
+            }
+            let candidate = &feature_candidates[0];
+            let Some(feature) = frozen.iter().find(|feature| &feature.name == feature_name) else {
+                anyhow::bail!("managed generation owner feature {feature_name} does not exist");
+            };
+            let active_call_timeout_ms = u64::try_from(candidate.active_call_duration().as_millis())
+                .ok()
+                .filter(|timeout| *timeout != 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "managed generation for {feature_name} requires a representable nonzero active-call timeout"
+                    )
+                })?;
+            let cleanup_timeout_ms = u64::try_from(candidate.cleanup_duration().as_millis())
+                .ok()
+                .filter(|timeout| *timeout != 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "managed generation for {feature_name} requires a representable nonzero cleanup timeout"
+                    )
+                })?;
+            let transition = feature.composition_transition.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "managed generation owner {feature_name} requires a runtime composition transition policy"
+                )
+            })?;
+            if transition.cleanup_timeout_ms != cleanup_timeout_ms {
+                anyhow::bail!(
+                    "managed generation owner {feature_name} requires cleanup timeout {cleanup_timeout_ms}ms"
+                );
+            }
+            if transition.cleanup != candidate.cleanup_requirement() {
+                anyhow::bail!(
+                    "managed generation owner {feature_name} cleanup assurance does not match its resource controllers"
+                );
+            }
+            staged_managed_identities.insert((
+                feature.contribution_id.clone(),
+                feature.generation_id.clone(),
+            ));
+            let exact = self.managed_services.is_exact_generation(
+                candidate,
+                &feature.contribution_id,
+                &feature.generation_id,
+            );
+            match transition.activation_boundary {
+                RuntimeActivationBoundary::ProjectionBoundary => anyhow::bail!(
+                    "managed generation owner {feature_name} cannot activate at ProjectionBoundary"
+                ),
+                RuntimeActivationBoundary::Boot if self.accepted_graph.is_some() && !exact => {
+                    anyhow::bail!(
+                        "new or changed Boot managed generation for {feature_name} is rejected after composition publication"
+                    )
+                }
+                RuntimeActivationBoundary::QuiescentSession
+                    if self.accepted_graph.is_some() && !exact =>
+                {
+                    anyhow::bail!(
+                        "new or changed QuiescentSession managed generation for {feature_name} requires a production quiescence proof issuer"
+                    )
+                }
+                RuntimeActivationBoundary::Boot | RuntimeActivationBoundary::QuiescentSession => {}
+            }
+            debug_assert_ne!(active_call_timeout_ms, 0);
+        }
+        for active_identity in self.managed_services.graph_managed_identities() {
+            if !staged_managed_identities.contains(&active_identity) {
+                anyhow::bail!(
+                    "removing active managed generation {} {} requires an authorized quiescent replacement",
+                    active_identity.0.as_str(),
+                    active_identity.1.as_str()
+                );
+            }
+        }
 
         let identity_check = frozen.iter().try_for_each(|feature| {
             for tool in &feature.tools {
@@ -1202,6 +1508,41 @@ impl EventBus {
                         .iter()
                         .map(|service| service.capability.clone()),
                 );
+                if let Some(candidate) = managed_candidates
+                    .get(&feature.name)
+                    .and_then(|candidates| candidates.first())
+                {
+                    capabilities.extend(candidate.services().map(
+                        |(capability_id, interface_id)| {
+                            RuntimeContributionCapabilityDeclaration {
+                                id: capability_id.clone(),
+                                kind: RuntimeCapabilityKind::InProcessService,
+                                service_interface: Some(interface_id.clone()),
+                                bindings: Vec::new(),
+                                effects: Vec::new(),
+                                execution: RuntimeExecutionPolicy {
+                                    principals: vec![RuntimePrincipalClass::Service],
+                                    timeout_class: RuntimeTimeoutClass::Immediate,
+                                    retry_class: RuntimeRetryClass::Never,
+                                    idempotency: RuntimeIdempotency::NonIdempotent,
+                                    deduplication: RuntimeDeduplication::Unsupported,
+                                    parallelism: RuntimeParallelism::ParallelSafe,
+                                    transaction: RuntimeTransactionBehavior::None,
+                                    mutation_fence: None,
+                                    max_attempts: Some(1),
+                                },
+                                transition: RuntimeCapabilityTransitionPolicy {
+                                    authority_narrowing: RuntimeAuthorityNarrowing::DrainExisting,
+                                    active_call_timeout_ms: u64::try_from(
+                                        candidate.active_call_duration().as_millis(),
+                                    )
+                                    .expect("validated managed active-call timeout fits u64"),
+                                },
+                                surfaces: vec![RuntimeSurface::Internal],
+                            }
+                        },
+                    ));
+                }
                 RuntimeContributionDeclaration {
                     schema_version: RuntimeContributionSchemaVersion::V1,
                     id: feature.contribution_id.clone(),
@@ -1310,6 +1651,26 @@ impl EventBus {
             }
         };
 
+        let staged_managed_capabilities = managed_candidates
+            .values()
+            .flatten()
+            .flat_map(|candidate| {
+                candidate
+                    .services()
+                    .map(|(capability_id, _)| capability_id.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        for service in self.managed_services.direct_managed_metadata() {
+            if graph.capability_owners.contains_key(&service.capability_id)
+                && !staged_managed_capabilities.contains(&service.capability_id)
+            {
+                anyhow::bail!(
+                    "candidate contribution graph collides with direct managed service {}",
+                    service.capability_id.as_str()
+                );
+            }
+        }
+
         let frozen_by_id = frozen
             .iter()
             .map(|feature| (feature.contribution_id.clone(), feature))
@@ -1319,6 +1680,7 @@ impl EventBus {
         let mut internal_tool_owners = HashMap::new();
         let mut acp_invocation_owners = HashMap::new();
         let mut in_process_services = BTreeMap::new();
+        let mut managed_service_implementations = 0usize;
         for wave in &graph.activation_waves {
             for contribution_id in wave {
                 if contribution_id.as_str() != "system:tool-groups"
@@ -1477,6 +1839,38 @@ impl EventBus {
                     );
                 }
             }
+            if let Some(candidate) = managed_candidates
+                .get(&feature.name)
+                .and_then(|candidates| candidates.first())
+            {
+                for (capability_id, interface_id) in candidate.services() {
+                    let declaration = graph
+                        .declarations
+                        .get(&feature.contribution_id)
+                        .expect("accepted managed owner declaration exists");
+                    let graph_capability = declaration
+                        .capabilities
+                        .iter()
+                        .find(|capability| &capability.id == capability_id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "staged managed service is absent from the accepted graph: {}",
+                                capability_id.as_str()
+                            )
+                        })?;
+                    if graph.capability_owners.get(capability_id) != Some(&feature.contribution_id)
+                        || graph_capability.kind != RuntimeCapabilityKind::InProcessService
+                        || !graph_capability.bindings.is_empty()
+                        || graph_capability.service_interface.as_ref() != Some(interface_id)
+                    {
+                        anyhow::bail!(
+                            "managed service graph owner/interface parity mismatch: {}",
+                            capability_id.as_str()
+                        );
+                    }
+                    managed_service_implementations += 1;
+                }
+            }
         }
         let accepted_bindings = graph
             .invocation_owners
@@ -1508,12 +1902,13 @@ impl EventBus {
             .flat_map(|declaration| &declaration.capabilities)
             .filter(|capability| capability.kind == RuntimeCapabilityKind::InProcessService)
             .count();
-        if in_process_services.len() != accepted_services {
+        let implemented_services = in_process_services.len() + managed_service_implementations;
+        if implemented_services != accepted_services {
             self.pending_features.clear();
             self.pending_internal_tools.clear();
             anyhow::bail!(
                 "accepted graph/service implementation parity mismatch: {accepted_services} services, {} implementations",
-                in_process_services.len()
+                implemented_services
             );
         }
         for feature in &frozen {
@@ -1554,6 +1949,19 @@ impl EventBus {
             }
         }
 
+        Ok(PreparedComposition {
+            tool_defs,
+            command_defs,
+            internal_tool_owners,
+            acp_invocation_owners,
+            in_process_services,
+            diagnostics: build.diagnostics,
+            graph,
+            generation_id,
+        })
+    }
+
+    fn commit_finalization(&mut self, prepared: PreparedComposition) {
         for mutation in self.pending_features.drain(..) {
             match mutation {
                 PendingFeatureMutation::Register(feature) => self.features.push(feature),
@@ -1572,20 +1980,14 @@ impl EventBus {
         }
         self.declared_internal_tools
             .append(&mut self.pending_internal_tools);
-        self.tool_defs = tool_defs;
-        self.command_defs = command_defs;
-        self.internal_tool_owners = internal_tool_owners;
-        self.acp_invocation_owners = acp_invocation_owners;
-        self.in_process_services = in_process_services;
-        self.composition_diagnostics = build.diagnostics;
-        self.accepted_graph = Some(std::sync::Arc::new(graph));
-        self.accepted_generation_id = Some(
-            omegon_traits::RuntimeCompositionGenerationId::new(format!(
-                "composition:{}",
-                uuid::Uuid::new_v4()
-            ))
-            .expect("UUID composition generation is valid"),
-        );
+        self.tool_defs = prepared.tool_defs;
+        self.command_defs = prepared.command_defs;
+        self.internal_tool_owners = prepared.internal_tool_owners;
+        self.acp_invocation_owners = prepared.acp_invocation_owners;
+        self.in_process_services = prepared.in_process_services;
+        self.composition_diagnostics = prepared.diagnostics;
+        self.accepted_graph = Some(std::sync::Arc::new(prepared.graph));
+        self.accepted_generation_id = Some(prepared.generation_id);
         self.published_feature_count = self.features.len();
         self.refresh_tool_inventory();
         tracing::info!(
@@ -1594,7 +1996,11 @@ impl EventBus {
             commands = self.command_defs.len(),
             "event bus published from accepted contribution graph"
         );
-        Ok(())
+    }
+
+    fn clear_pending_ordinary(&mut self) {
+        self.pending_features.clear();
+        self.pending_internal_tools.clear();
     }
 
     /// Build the authority-neutral runtime capability inventory for the
@@ -1625,6 +2031,19 @@ impl EventBus {
                 invocations: Vec::new(),
             }
         }));
+        declarations.extend(
+            self.managed_services
+                .graph_managed_metadata()
+                .into_iter()
+                .map(|service| omegon_traits::RuntimeCapabilityDeclaration {
+                    id: service.capability_id,
+                    kind: omegon_traits::RuntimeCapabilityKind::InProcessService,
+                    owner: omegon_traits::RuntimeCapabilityOwner::feature(
+                        service.owner.as_str().to_string(),
+                    ),
+                    invocations: Vec::new(),
+                }),
+        );
         let groups = crate::features::manage_tools::TOOL_GROUPS
             .iter()
             .map(|(name, members)| omegon_traits::RuntimeCapabilityGroup {
@@ -2567,6 +2986,16 @@ impl EventBus {
     }
 }
 
+impl Drop for EventBus {
+    fn drop(&mut self) {
+        if self.managed_services.requires_ownership_retention()
+            && let Some(retention) = &self.runtime_ownership_retention
+        {
+            retention.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
 impl Default for EventBus {
     fn default() -> Self {
         Self::new()
@@ -2575,13 +3004,17 @@ impl Default for EventBus {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
     use super::*;
     use async_trait::async_trait;
     use omegon_traits::{
-        ContentBlock, Feature, RuntimeActivationBoundary, RuntimeCleanupAssurance,
-        RuntimeCleanupRequirement, RuntimeCleanupState, RuntimeCompositionTransitionPolicy,
-        RuntimeContributionLifecycleState, RuntimeFailureDisposition, RuntimeLifecyclePolicy,
-        RuntimeLifecycleRequirement, ToolDefinition, ToolResult,
+        ContentBlock, Feature, ManagedCallContext, ManagedResourceController,
+        ManagedResourceSettlementFuture, ManagedServiceContract, ManagedServiceFuture,
+        RuntimeActivationBoundary, RuntimeCleanupAssurance, RuntimeCleanupRequirement,
+        RuntimeCleanupState, RuntimeCompositionTransitionPolicy, RuntimeContributionLifecycleState,
+        RuntimeFailureDisposition, RuntimeLifecyclePolicy, RuntimeLifecycleRequirement,
+        ToolDefinition, ToolResult,
     };
     use serde_json::json;
 
@@ -2798,6 +3231,172 @@ mod tests {
     }
 
     struct MalformedInProcessServiceFeature;
+
+    struct SyntheticManagedFeature {
+        generation: &'static str,
+        boundary: RuntimeActivationBoundary,
+        cleanup_timeout_ms: u64,
+    }
+
+    struct SyntheticBestEffortManagedFeature;
+
+    #[async_trait]
+    impl Feature for SyntheticManagedFeature {
+        fn name(&self) -> &str {
+            "synthetic-managed"
+        }
+
+        fn runtime_contribution_generation_id(
+            &self,
+        ) -> Option<omegon_traits::RuntimeContributionGenerationId> {
+            Some(
+                omegon_traits::RuntimeContributionGenerationId::new(self.generation)
+                    .expect("synthetic generation is valid"),
+            )
+        }
+
+        fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
+            Some(RuntimeCompositionTransitionPolicy {
+                activation_boundary: self.boundary,
+                cleanup: RuntimeCleanupRequirement::Strict,
+                cleanup_timeout_ms: self.cleanup_timeout_ms,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Feature for SyntheticBestEffortManagedFeature {
+        fn name(&self) -> &str {
+            "synthetic-managed"
+        }
+
+        fn runtime_contribution_generation_id(
+            &self,
+        ) -> Option<omegon_traits::RuntimeContributionGenerationId> {
+            Some(
+                omegon_traits::RuntimeContributionGenerationId::new(
+                    "contribution:synthetic-managed-v1",
+                )
+                .unwrap(),
+            )
+        }
+
+        fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
+            Some(RuntimeCompositionTransitionPolicy {
+                activation_boundary: RuntimeActivationBoundary::Boot,
+                cleanup: RuntimeCleanupRequirement::BestEffort,
+                cleanup_timeout_ms: 10,
+            })
+        }
+    }
+
+    struct SyntheticManagedService(usize);
+
+    impl ManagedServiceContract for SyntheticManagedService {
+        type Request = ();
+        type Response = usize;
+        type Error = String;
+
+        fn execute<'a>(
+            &'a self,
+            (): Self::Request,
+            _context: ManagedCallContext,
+        ) -> ManagedServiceFuture<'a, Self::Response, Self::Error> {
+            Box::pin(async move { Ok(self.0) })
+        }
+    }
+
+    struct SyntheticManagedResource {
+        stops: AtomicUsize,
+        settled: AtomicBool,
+        changed: tokio::sync::Notify,
+    }
+
+    impl SyntheticManagedResource {
+        fn new() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                stops: AtomicUsize::new(0),
+                settled: AtomicBool::new(false),
+                changed: tokio::sync::Notify::new(),
+            })
+        }
+    }
+
+    impl ManagedResourceController for SyntheticManagedResource {
+        fn request_stop(&self) {
+            self.stops.fetch_add(1, Ordering::AcqRel);
+            self.settled.store(true, Ordering::Release);
+            self.changed.notify_waiters();
+        }
+
+        fn force_stop(&self) {}
+
+        fn await_settled(&self) -> ManagedResourceSettlementFuture<'_> {
+            Box::pin(async move {
+                while !self.settled.load(Ordering::Acquire) {
+                    let changed = self.changed.notified();
+                    if self.settled.load(Ordering::Acquire) {
+                        break;
+                    }
+                    changed.await;
+                }
+                Ok(())
+            })
+        }
+    }
+
+    fn synthetic_managed_candidate(
+        generation: &str,
+        service: std::sync::Arc<SyntheticManagedService>,
+        resource: std::sync::Arc<SyntheticManagedResource>,
+        second_service: bool,
+    ) -> crate::managed_service_bus::ManagedGenerationCandidate {
+        let controller: std::sync::Arc<dyn ManagedResourceController> = resource;
+        let mut candidate = crate::managed_service_bus::ManagedGenerationCandidate::new(
+            omegon_traits::RuntimeCompositionGenerationId::new("composition:caller-supplied")
+                .unwrap(),
+            omegon_traits::RuntimeContributionId::new("feature:caller-supplied").unwrap(),
+            omegon_traits::RuntimeContributionGenerationId::new(format!("caller:{generation}"))
+                .unwrap(),
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            vec![
+                crate::managed_service_bus::ManagedResourceRegistration::new(
+                    omegon_traits::RuntimeContributionResourceId::new(format!(
+                        "resource:{generation}"
+                    ))
+                    .unwrap(),
+                    omegon_traits::RuntimeOwnedResourceKind::Task,
+                    RuntimeCleanupAssurance::Strict,
+                    Vec::new(),
+                    controller,
+                ),
+            ],
+        )
+        .unwrap();
+        candidate
+            .add_service(
+                omegon_traits::RuntimeCapabilityId::new("service:synthetic-managed").unwrap(),
+                omegon_traits::RuntimeServiceInterfaceId::new("interface:synthetic-managed-v1")
+                    .unwrap(),
+                service,
+            )
+            .unwrap();
+        if second_service {
+            candidate
+                .add_service(
+                    omegon_traits::RuntimeCapabilityId::new("service:synthetic-managed-second")
+                        .unwrap(),
+                    omegon_traits::RuntimeServiceInterfaceId::new(
+                        "interface:synthetic-managed-second-v1",
+                    )
+                    .unwrap(),
+                    std::sync::Arc::new(SyntheticManagedService(2)),
+                )
+                .unwrap();
+        }
+        candidate
+    }
 
     #[async_trait]
     impl Feature for InProcessServiceFeature {
@@ -3781,6 +4380,531 @@ mod tests {
                 .diagnostics
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn managed_diagnostic_no_resource_contribution_remains_not_required() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(CounterFeature { event_count: 0 }));
+        bus.finalize();
+
+        let projection = bus.composition_diagnostic_projection().unwrap();
+        assert!(projection.managed_owners.is_empty());
+        assert!(projection.contributions.iter().all(|contribution| {
+            contribution.health == RuntimeContributionLifecycleState::Active
+                && contribution.cleanup_state == RuntimeCleanupState::NotRequired
+        }));
+        let json = serde_json::to_value(&projection).unwrap();
+        assert!(json.get("managed_owners").is_none());
+    }
+
+    #[tokio::test]
+    async fn managed_diagnostic_graph_projection_uses_owner_lifecycle_without_pointer_leaks() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-diagnostic-v1",
+            boundary: RuntimeActivationBoundary::Boot,
+            cleanup_timeout_ms: 10,
+        }));
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "caller-diagnostic-v1",
+                std::sync::Arc::new(SyntheticManagedService(1)),
+                SyntheticManagedResource::new(),
+                false,
+            ),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        let projection = bus.composition_diagnostic_projection().unwrap();
+        assert_eq!(projection.managed_owners.len(), 1);
+        let owner = &projection.managed_owners[0];
+        assert_eq!(
+            owner.disposition,
+            crate::surfaces::diagnostics::ManagedOwnerDisposition::Published
+        );
+        assert_eq!(
+            owner.lifecycle.state,
+            RuntimeContributionLifecycleState::Active
+        );
+        assert_eq!(owner.lifecycle.cleanup_state, RuntimeCleanupState::Pending);
+        let contribution = projection
+            .contributions
+            .iter()
+            .find(|contribution| contribution.declaration.id == owner.lifecycle.contribution_id)
+            .unwrap();
+        assert_eq!(contribution.cleanup_state, RuntimeCleanupState::Pending);
+        let output = format!(
+            "{}\n{}",
+            serde_json::to_string(&projection).unwrap(),
+            projection.render_markdown()
+        );
+        assert!(output.contains("disposition=published"));
+        assert!(output.contains("kind=task"));
+        assert!(!output.contains("controller_identity"));
+        assert!(!output.contains("implementation_identity"));
+        assert!(!output.contains("0x"));
+
+        let shutdown = bus.shutdown_managed_services().await;
+        assert!(shutdown.generations[0].result.is_ok());
+        let projection = bus.composition_diagnostic_projection().unwrap();
+        let owner = projection.managed_owners.last().unwrap();
+        assert_eq!(
+            owner.lifecycle.state,
+            RuntimeContributionLifecycleState::Retired
+        );
+        assert_eq!(owner.lifecycle.cleanup_state, RuntimeCleanupState::Settled);
+        let contribution = projection
+            .contributions
+            .iter()
+            .find(|contribution| contribution.declaration.id == owner.lifecycle.contribution_id)
+            .unwrap();
+        assert_eq!(
+            contribution.health,
+            RuntimeContributionLifecycleState::Retired
+        );
+        assert_eq!(contribution.cleanup_state, RuntimeCleanupState::Settled);
+    }
+
+    #[tokio::test]
+    async fn managed_graph_initial_publication_supports_typed_lookup() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v1",
+            boundary: RuntimeActivationBoundary::Boot,
+            cleanup_timeout_ms: 10,
+        }));
+        let resource = SyntheticManagedResource::new();
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "caller-generation-v1",
+                std::sync::Arc::new(SyntheticManagedService(1)),
+                std::sync::Arc::clone(&resource),
+                false,
+            ),
+        )
+        .unwrap();
+
+        bus.try_finalize_managed().await.unwrap();
+
+        let capability =
+            omegon_traits::RuntimeCapabilityId::new("service:synthetic-managed").unwrap();
+        let interface =
+            omegon_traits::RuntimeServiceInterfaceId::new("interface:synthetic-managed-v1")
+                .unwrap();
+        let handle = bus
+            .managed_service::<SyntheticManagedService>(&capability, &interface)
+            .unwrap()
+            .unwrap();
+        assert_eq!(handle.invoke(()).await.unwrap(), 1);
+        assert_eq!(handle.owner.as_str(), "feature:synthetic-managed");
+        assert_eq!(
+            handle.generation_id.as_str(),
+            "contribution:synthetic-managed-v1"
+        );
+        assert_eq!(
+            bus.accepted_graph
+                .as_ref()
+                .unwrap()
+                .capability_owners
+                .get(&capability)
+                .unwrap()
+                .as_str(),
+            "feature:synthetic-managed"
+        );
+        assert!(
+            bus.runtime_capability_registry()
+                .declarations
+                .iter()
+                .any(|declaration| declaration.id == capability
+                    && declaration.kind == omegon_traits::RuntimeCapabilityKind::InProcessService)
+        );
+        assert_eq!(resource.stops.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn managed_graph_two_services_share_one_contribution_generation() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v1",
+            boundary: RuntimeActivationBoundary::Boot,
+            cleanup_timeout_ms: 10,
+        }));
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "ignored-generation",
+                std::sync::Arc::new(SyntheticManagedService(1)),
+                SyntheticManagedResource::new(),
+                true,
+            ),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        let metadata = bus.managed_service_metadata();
+        assert_eq!(metadata.len(), 2);
+        assert!(metadata.iter().all(|service| {
+            service.owner.as_str() == "feature:synthetic-managed"
+                && service.generation_id.as_str() == "contribution:synthetic-managed-v1"
+        }));
+        let second = bus
+            .managed_service::<SyntheticManagedService>(
+                &omegon_traits::RuntimeCapabilityId::new("service:synthetic-managed-second")
+                    .unwrap(),
+                &omegon_traits::RuntimeServiceInterfaceId::new(
+                    "interface:synthetic-managed-second-v1",
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.invoke(()).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn managed_graph_policy_rejection_preserves_graph_and_cleans_candidate() {
+        let mut bus = EventBus::new();
+        let old_service = std::sync::Arc::new(SyntheticManagedService(1));
+        let old_resource = SyntheticManagedResource::new();
+        bus.register(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v1",
+            boundary: RuntimeActivationBoundary::QuiescentSession,
+            cleanup_timeout_ms: 10,
+        }));
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "ignored-v1",
+                std::sync::Arc::clone(&old_service),
+                std::sync::Arc::clone(&old_resource),
+                false,
+            ),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+        let accepted_generation = bus.composition_generation_id().unwrap().clone();
+
+        let rejected_resource = SyntheticManagedResource::new();
+        bus.replace_feature(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v2",
+            boundary: RuntimeActivationBoundary::QuiescentSession,
+            cleanup_timeout_ms: 10,
+        }));
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "ignored-v2",
+                std::sync::Arc::new(SyntheticManagedService(2)),
+                std::sync::Arc::clone(&rejected_resource),
+                false,
+            ),
+        )
+        .unwrap();
+
+        let error = bus.try_finalize_managed().await.unwrap_err().to_string();
+        assert!(error.contains("quiescence proof issuer"), "{error}");
+        assert!(error.contains("rollback cleanup reports"), "{error}");
+        assert_eq!(bus.composition_generation_id(), Some(&accepted_generation));
+        assert_eq!(old_resource.stops.load(Ordering::Acquire), 0);
+        assert_eq!(rejected_resource.stops.load(Ordering::Acquire), 1);
+        let retained = bus
+            .managed_service::<SyntheticManagedService>(
+                &omegon_traits::RuntimeCapabilityId::new("service:synthetic-managed").unwrap(),
+                &omegon_traits::RuntimeServiceInterfaceId::new("interface:synthetic-managed-v1")
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.invoke(()).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_graph_sync_finalize_fails_closed_without_touching_resources() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v1",
+            boundary: RuntimeActivationBoundary::Boot,
+            cleanup_timeout_ms: 10,
+        }));
+        let resource = SyntheticManagedResource::new();
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "ignored-v1",
+                std::sync::Arc::new(SyntheticManagedService(1)),
+                std::sync::Arc::clone(&resource),
+                false,
+            ),
+        )
+        .unwrap();
+
+        let error = bus.try_finalize().unwrap_err().to_string();
+        assert!(error.contains("try_finalize_managed"), "{error}");
+        assert!(bus.accepted_graph.is_none());
+        assert_eq!(resource.stops.load(Ordering::Acquire), 0);
+
+        bus.try_finalize_managed().await.unwrap();
+        assert_eq!(resource.stops.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn managed_graph_active_generation_cannot_be_implicitly_removed() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v1",
+            boundary: RuntimeActivationBoundary::Boot,
+            cleanup_timeout_ms: 10,
+        }));
+        let resource = SyntheticManagedResource::new();
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "ignored-v1",
+                std::sync::Arc::new(SyntheticManagedService(1)),
+                std::sync::Arc::clone(&resource),
+                false,
+            ),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        let sync_error = bus.try_finalize().unwrap_err().to_string();
+        assert!(sync_error.contains("try_finalize_managed"), "{sync_error}");
+        let async_error = bus.try_finalize_managed().await.unwrap_err().to_string();
+        assert!(
+            async_error.contains("removing active managed generation"),
+            "{async_error}"
+        );
+        assert_eq!(resource.stops.load(Ordering::Acquire), 0);
+        let retained = bus
+            .managed_service::<SyntheticManagedService>(
+                &omegon_traits::RuntimeCapabilityId::new("service:synthetic-managed").unwrap(),
+                &omegon_traits::RuntimeServiceInterfaceId::new("interface:synthetic-managed-v1")
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.invoke(()).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_graph_cleanup_assurance_must_match_resource_controllers() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(SyntheticBestEffortManagedFeature));
+        let resource = SyntheticManagedResource::new();
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "ignored-v1",
+                std::sync::Arc::new(SyntheticManagedService(1)),
+                std::sync::Arc::clone(&resource),
+                false,
+            ),
+        )
+        .unwrap();
+
+        let error = bus.try_finalize_managed().await.unwrap_err().to_string();
+        assert!(error.contains("cleanup assurance"), "{error}");
+        assert!(bus.accepted_graph.is_none());
+        assert_eq!(resource.stops.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_graph_and_direct_sidecar_cannot_claim_the_same_capability() {
+        let capability = omegon_traits::RuntimeCapabilityId::new("service:test-read").unwrap();
+        let managed_interface =
+            omegon_traits::RuntimeServiceInterfaceId::new("interface:synthetic-managed-v1")
+                .unwrap();
+        let direct_candidate = |resource: std::sync::Arc<SyntheticManagedResource>| {
+            let controller: std::sync::Arc<dyn ManagedResourceController> = resource;
+            crate::managed_service_bus::ManagedServiceCandidate::new(
+                omegon_traits::RuntimeCompositionGenerationId::new("composition:direct").unwrap(),
+                capability.clone(),
+                managed_interface.clone(),
+                omegon_traits::RuntimeContributionId::new("feature:direct").unwrap(),
+                omegon_traits::RuntimeContributionGenerationId::new("contribution:direct-v1")
+                    .unwrap(),
+                Duration::from_millis(10),
+                Duration::from_millis(10),
+                vec![
+                    crate::managed_service_bus::ManagedResourceRegistration::new(
+                        omegon_traits::RuntimeContributionResourceId::new("resource:direct")
+                            .unwrap(),
+                        omegon_traits::RuntimeOwnedResourceKind::Task,
+                        RuntimeCleanupAssurance::Strict,
+                        Vec::new(),
+                        controller,
+                    ),
+                ],
+                std::sync::Arc::new(SyntheticManagedService(1)),
+            )
+            .unwrap()
+        };
+
+        let mut graph_first = EventBus::new();
+        graph_first.register(Box::new(InProcessServiceFeature {
+            generation: "service:test-v1",
+            interface: "interface:test-read-v1",
+            service: std::sync::Arc::new(ReadOnlyTestService { value: 7 })
+                as std::sync::Arc<dyn ReadOnlyTestServiceContract>,
+            publish: true,
+            publish_additional: false,
+        }));
+        graph_first.try_finalize().unwrap();
+        let rejected_resource = SyntheticManagedResource::new();
+        assert!(matches!(
+            graph_first
+                .publish_managed_service(direct_candidate(std::sync::Arc::clone(
+                    &rejected_resource
+                )))
+                .await,
+            crate::managed_service_bus::ManagedServicePublicationOutcome::Rejected { .. }
+        ));
+        assert_eq!(rejected_resource.stops.load(Ordering::Acquire), 1);
+        assert_eq!(
+            graph_first
+                .in_process_service::<dyn ReadOnlyTestServiceContract>(
+                    &capability,
+                    &omegon_traits::RuntimeServiceInterfaceId::new("interface:test-read-v1")
+                        .unwrap(),
+                )
+                .unwrap()
+                .unwrap()
+                .service
+                .value(),
+            7
+        );
+
+        let mut direct_first = EventBus::new();
+        let retained_resource = SyntheticManagedResource::new();
+        assert!(matches!(
+            direct_first
+                .publish_managed_service(direct_candidate(std::sync::Arc::clone(
+                    &retained_resource
+                )))
+                .await,
+            crate::managed_service_bus::ManagedServicePublicationOutcome::Published { .. }
+        ));
+        direct_first.register(Box::new(InProcessServiceFeature {
+            generation: "service:test-v1",
+            interface: "interface:test-read-v1",
+            service: std::sync::Arc::new(ReadOnlyTestService { value: 9 })
+                as std::sync::Arc<dyn ReadOnlyTestServiceContract>,
+            publish: true,
+            publish_additional: false,
+        }));
+        let error = direct_first.try_finalize().unwrap_err().to_string();
+        assert!(
+            error.contains("collides with direct managed service"),
+            "{error}"
+        );
+        assert_eq!(retained_resource.stops.load(Ordering::Acquire), 0);
+        assert_eq!(
+            direct_first
+                .managed_service::<SyntheticManagedService>(&capability, &managed_interface)
+                .unwrap()
+                .unwrap()
+                .invoke(())
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_graph_boot_change_rejects_before_old_admission_closes() {
+        let mut bus = EventBus::new();
+        let old_resource = SyntheticManagedResource::new();
+        bus.register(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v1",
+            boundary: RuntimeActivationBoundary::Boot,
+            cleanup_timeout_ms: 10,
+        }));
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "ignored-v1",
+                std::sync::Arc::new(SyntheticManagedService(1)),
+                std::sync::Arc::clone(&old_resource),
+                false,
+            ),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        let rejected_resource = SyntheticManagedResource::new();
+        bus.replace_feature(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v2",
+            boundary: RuntimeActivationBoundary::Boot,
+            cleanup_timeout_ms: 10,
+        }));
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "ignored-v2",
+                std::sync::Arc::new(SyntheticManagedService(2)),
+                std::sync::Arc::clone(&rejected_resource),
+                false,
+            ),
+        )
+        .unwrap();
+
+        let error = bus.try_finalize_managed().await.unwrap_err().to_string();
+        assert!(error.contains("Boot managed generation"), "{error}");
+        let retained = bus
+            .managed_service::<SyntheticManagedService>(
+                &omegon_traits::RuntimeCapabilityId::new("service:synthetic-managed").unwrap(),
+                &omegon_traits::RuntimeServiceInterfaceId::new("interface:synthetic-managed-v1")
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.invoke(()).await.unwrap(), 1);
+        assert_eq!(old_resource.stops.load(Ordering::Acquire), 0);
+        assert_eq!(rejected_resource.stops.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_graph_exact_transfer_has_no_cleanup() {
+        let mut bus = EventBus::new();
+        let service = std::sync::Arc::new(SyntheticManagedService(1));
+        let resource = SyntheticManagedResource::new();
+        bus.register(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v1",
+            boundary: RuntimeActivationBoundary::Boot,
+            cleanup_timeout_ms: 10,
+        }));
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "same-resource-generation",
+                std::sync::Arc::clone(&service),
+                std::sync::Arc::clone(&resource),
+                false,
+            ),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+        let first_generation = bus.composition_generation_id().unwrap().clone();
+
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "same-resource-generation",
+                service,
+                std::sync::Arc::clone(&resource),
+                false,
+            ),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        assert_ne!(bus.composition_generation_id(), Some(&first_generation));
+        assert_eq!(resource.stops.load(Ordering::Acquire), 0);
     }
 
     #[test]

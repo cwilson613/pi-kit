@@ -245,7 +245,10 @@ pub fn audit_openspec_archives(
     repo_root: &Path,
     opsx_states: &HashMap<String, ChangeState>,
 ) -> Vec<AuditFinding> {
-    let archive_dir = repo_root.join("openspec/archive");
+    let Some(openspec_dir) = crate::paths::openspec_dir(repo_root) else {
+        return vec![];
+    };
+    let archive_dir = openspec_dir.join("archive");
     let entries = match fs::read_dir(&archive_dir) {
         Ok(entries) => entries,
         Err(_) => return vec![],

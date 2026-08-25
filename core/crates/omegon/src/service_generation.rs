@@ -120,7 +120,7 @@ impl ManagedGenerationRuntime {
                     .is_some_and(|result| {
                         result
                             .as_ref()
-                            .is_ok_and(|report| report.resources.strict_resources_settled())
+                            .is_ok_and(|report| report.resources.all_resources_settled())
                     }))
     }
 
@@ -143,6 +143,23 @@ impl ManagedGenerationRuntime {
             .lock()
             .expect("managed generation cleanup result lock poisoned")
             .clone()
+    }
+
+    /// Returns one coherent resource snapshot whether the live owner is still
+    /// retained or has been released after successful cleanup.
+    pub(crate) fn resource_report(&self) -> Option<ManagedResourceCleanupReport> {
+        let resources = self
+            .resource_binding
+            .lock()
+            .expect("managed resource binding lock poisoned")
+            .resources
+            .clone();
+        if let Some(resources) = resources {
+            return Some(resources.report());
+        }
+        self.generation_cleanup_result()
+            .and_then(Result::ok)
+            .map(|report| report.resources)
     }
 
     pub(crate) fn attach_resources(
@@ -324,19 +341,26 @@ impl ManagedGenerationRuntime {
         let runtime = Arc::clone(self);
         let task = tokio::spawn(async move {
             let operation = async {
-                match runtime
+                let call_drain = runtime
                     .drain_and_join_calls_until(active_call_deadline)
-                    .await
-                {
-                    Ok(call_drain) => resources
-                        .cleanup_until(tokio::time::Instant::now() + cleanup_budget)
-                        .await
-                        .map(|resources| ManagedGenerationCleanupReport {
-                            call_drain,
-                            resources,
-                        })
-                        .map_err(|error| error.to_string()),
-                    Err(error) => Err(error.to_string()),
+                    .await;
+                let resource_cleanup = resources
+                    .cleanup_until(
+                        tokio::time::Instant::now()
+                            .checked_add(cleanup_budget)
+                            .unwrap_or_else(tokio::time::Instant::now),
+                    )
+                    .await;
+                match (call_drain, resource_cleanup) {
+                    (Ok(call_drain), Ok(resources)) => Ok(ManagedGenerationCleanupReport {
+                        call_drain,
+                        resources,
+                    }),
+                    (Err(call_error), Ok(_)) => Err(call_error.to_string()),
+                    (Ok(_), Err(resource_error)) => Err(resource_error.to_string()),
+                    (Err(call_error), Err(resource_error)) => Err(format!(
+                        "{call_error}; resource cleanup failed: {resource_error}"
+                    )),
                 }
             };
             let result = match std::panic::AssertUnwindSafe(operation).catch_unwind().await {
@@ -428,7 +452,7 @@ impl ManagedGenerationRuntime {
                     .call_drain_outcome
                     .lock()
                     .expect("managed call drain outcome lock poisoned")
-                    .expect("managed call drain outcome must exist");
+                    .unwrap_or(ManagedCallDrainOutcome::DeadlineForced);
                 Ok(ManagedGenerationCleanupReport {
                     call_drain,
                     resources: resource_report,
@@ -722,6 +746,15 @@ impl ManagedResourceOwner {
         self: &Arc<Self>,
         deadline: tokio::time::Instant,
     ) -> anyhow::Result<ManagedResourceCleanupReport> {
+        let attempt = self.start_cleanup_until(deadline)?;
+        self.wait_for_attempt(attempt).await;
+        Ok(self.report())
+    }
+
+    fn start_cleanup_until(
+        self: &Arc<Self>,
+        deadline: tokio::time::Instant,
+    ) -> anyhow::Result<u64> {
         let attempt = {
             let mut state = self.state.lock().expect("managed resource lock poisoned");
             if !state.frozen {
@@ -755,9 +788,7 @@ impl ManagedResourceOwner {
             .cleanup_task
             .lock()
             .expect("managed resource cleanup task lock poisoned") = Some(task);
-
-        self.wait_for_attempt(attempt).await;
-        Ok(self.report())
+        Ok(attempt)
     }
 
     pub(crate) async fn cleanup_candidate_until(
@@ -765,6 +796,13 @@ impl ManagedResourceOwner {
         deadline: tokio::time::Instant,
     ) -> anyhow::Result<ManagedResourceCleanupReport> {
         self.cleanup_until(deadline).await
+    }
+
+    pub(crate) fn start_candidate_cleanup_until(
+        self: &Arc<Self>,
+        deadline: tokio::time::Instant,
+    ) -> anyhow::Result<()> {
+        self.start_cleanup_until(deadline).map(|_| ())
     }
 
     pub(crate) async fn retry_cleanup_until(
@@ -954,6 +992,14 @@ impl ManagedResourceOwner {
                 })
                 .collect(),
         }
+    }
+
+    pub(crate) fn cleanup_running(&self) -> bool {
+        self.state
+            .lock()
+            .expect("managed resource lock poisoned")
+            .running_attempt
+            .is_some()
     }
 }
 

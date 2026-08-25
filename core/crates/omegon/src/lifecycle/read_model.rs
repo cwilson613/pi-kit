@@ -28,6 +28,7 @@ pub struct LifecycleSnapshot {
 
 #[derive(Debug, Clone, Default)]
 pub struct OpenSpecProjection {
+    pub available: bool,
     pub changes: Vec<OpenSpecChangeProjection>,
     pub total_tasks: usize,
     pub done_tasks: usize,
@@ -36,6 +37,7 @@ pub struct OpenSpecProjection {
 #[derive(Debug, Clone)]
 pub struct OpenSpecChangeProjection {
     pub name: String,
+    pub repository_path: String,
     pub lifecycle_state: String,
     pub file_stage: String,
     pub has_proposal: bool,
@@ -44,7 +46,12 @@ pub struct OpenSpecChangeProjection {
     pub has_tasks: bool,
     pub total_tasks: usize,
     pub done_tasks: usize,
+    pub artifact_health: omegon_opsx::ArtifactHealth,
+    pub task_groups: Vec<crate::lifecycle::types::TaskGroup>,
+    pub task_identity_findings: Vec<crate::lifecycle::spec::TaskStableIdFinding>,
+    pub task_identity_error: Option<String>,
     pub specs: Vec<SpecSummary>,
+    pub spec_documents: Vec<crate::lifecycle::types::SpecFileProjection>,
     pub archived_on_disk: bool,
     pub sentry_task_refs: Vec<String>,
     pub execution_summary: Option<ExecutionSummary>,
@@ -79,9 +86,11 @@ pub struct LifecycleDriftFinding {
 
 #[derive(Debug, Clone, Default)]
 pub struct DesignTreeSnapshot {
+    pub available: bool,
     pub nodes: std::collections::HashMap<String, DesignNode>,
     pub focused_node_id: Option<String>,
     pub degraded_nodes: Vec<DegradedNode>,
+    pub findings: Vec<omegon_opsx::DesignRepositoryFinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +98,7 @@ pub struct DesignNodeObservation {
     pub node: DesignNode,
     pub sections: Option<crate::lifecycle::types::DocumentSections>,
     pub child_count: Option<usize>,
+    pub children: Option<Vec<DesignNode>>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -135,9 +145,11 @@ impl LifecycleReadHandle {
             provider.refresh();
         }
         Ok(DesignTreeSnapshot {
+            available: crate::paths::design_docs_dir(&self.repo_path).is_dir(),
             nodes: provider.all_nodes().clone(),
             focused_node_id: provider.focused_node_id().map(str::to_string),
             degraded_nodes: provider.degraded_nodes().to_vec(),
+            findings: provider.design_findings().to_vec(),
         })
     }
 
@@ -177,13 +189,18 @@ impl LifecycleReadHandle {
         let sections = include_sections
             .then(|| super::design::read_node_sections(&node))
             .flatten();
-        let child_count = nodes
-            .as_ref()
-            .map(|nodes| super::design::get_children(nodes, id).len());
+        let children = nodes.as_ref().map(|nodes| {
+            super::design::get_children(nodes, id)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        let child_count = children.as_ref().map(Vec::len);
         Ok(Some(DesignNodeObservation {
             node,
             sections,
             child_count,
+            children,
         }))
     }
 
@@ -230,12 +247,20 @@ impl LifecycleReadHandle {
             if !opts.include_archived && (state == "archived" || archived_on_disk) {
                 continue;
             }
-            projected.push(project_change(change, &state, archived_on_disk, &opts));
+            projected.push(project_change(
+                change,
+                &state,
+                archived_on_disk,
+                &opts,
+                &self.repo_path,
+            ));
         }
 
         let total_tasks = projected.iter().map(|c| c.total_tasks).sum();
         let done_tasks = projected.iter().map(|c| c.done_tasks).sum();
         Ok(OpenSpecProjection {
+            available: crate::paths::openspec_dir(&self.repo_path)
+                .is_some_and(|path| path.join("changes").is_dir()),
             changes: projected,
             total_tasks,
             done_tasks,
@@ -281,6 +306,7 @@ fn project_change(
     lifecycle_state: &str,
     archived_on_disk: bool,
     opts: &SnapshotOptions,
+    repo_path: &std::path::Path,
 ) -> OpenSpecChangeProjection {
     let specs = if opts.include_specs {
         change
@@ -302,6 +328,12 @@ fn project_change(
 
     OpenSpecChangeProjection {
         name: change.name.clone(),
+        repository_path: change
+            .path
+            .strip_prefix(repo_path)
+            .unwrap_or(&change.path)
+            .to_string_lossy()
+            .replace('\\', "/"),
         lifecycle_state: lifecycle_state.to_string(),
         file_stage: change.state.as_str().to_string(),
         has_proposal: change.has_proposal,
@@ -310,7 +342,16 @@ fn project_change(
         has_tasks: change.has_tasks,
         total_tasks: change.total_tasks,
         done_tasks: change.done_tasks,
+        artifact_health: change.artifact_health.clone(),
+        task_groups: change.task_groups.clone(),
+        task_identity_findings: Vec::new(),
+        task_identity_error: None,
         specs,
+        spec_documents: if opts.include_specs {
+            change.specs.clone()
+        } else {
+            Vec::new()
+        },
         archived_on_disk,
         sentry_task_refs: vec![],
         execution_summary: None,

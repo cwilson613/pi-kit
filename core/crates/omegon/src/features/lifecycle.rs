@@ -8,30 +8,39 @@
 //! - Event handling: refresh on TurnEnd
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use omegon_traits::ContextProvider;
 use omegon_traits::{
     BusEvent, BusRequest, CommandDefinition, CommandResult, ContentBlock, ContextInjection,
-    ContextProvider, ContextSignals, Feature, ToolDefinition, ToolResult,
+    ContextSignals, Feature, RuntimeActivationBoundary, RuntimeCleanupRequirement,
+    RuntimeCompositionTransitionPolicy, RuntimeContributionGenerationId, RuntimeFailureDisposition,
+    RuntimeLifecyclePolicy, RuntimeLifecycleRequirement, ToolDefinition, ToolResult,
 };
 
+#[cfg(test)]
 use crate::lifecycle::context::LifecycleContextProvider;
+#[cfg(test)]
 use crate::lifecycle::mutation::{
     AddDesignNodeDecisionRequest, AddDesignNodeImplNotesRequest, AddDesignNodeLinkRequest,
     AddDesignNodeResearchRequest, BranchDesignNodeQuestionRequest, CreateDesignNodeRequest,
     ImplementDesignNodeRequest, LifecycleMutationService, SetDesignNodeIssueTypeRequest,
     SetDesignNodePriorityRequest, SetDesignNodeStatusRequest, UpdateDesignNodeQuestionRequest,
 };
-use crate::lifecycle::read_model::LifecycleReadHandle;
-use crate::lifecycle::{archive, design, doctor, query, spec, sync, types::*};
+#[cfg(test)]
+use crate::lifecycle::{archive, doctor, spec, sync};
+use crate::lifecycle::{design, query, types::*};
 
-use omegon_opsx::{
-    ChangeState as OpsxChangeState, JsonFileStore, Lifecycle as OpsxLifecycle,
-    NodeState as OpsxNodeState,
-};
+use omegon_opsx::NodeState as OpsxNodeState;
+#[cfg(test)]
+use omegon_opsx::{ChangeState as OpsxChangeState, JsonFileStore, Lifecycle as OpsxLifecycle};
 
 /// The lifecycle Feature — wraps the LifecycleContextProvider and adds
 /// tools + commands for design-tree and openspec operations.
@@ -40,27 +49,33 @@ use omegon_opsx::{
 /// but mutations need `&mut`. The bus guarantees sequential delivery so
 /// this is safe in practice.
 pub struct LifecycleFeature {
-    provider: Arc<Mutex<LifecycleContextProvider>>,
+    #[cfg(test)]
+    provider: Option<Arc<Mutex<LifecycleContextProvider>>>,
     repo_path: PathBuf,
     /// Counter for refresh throttling — only refresh every N turns.
     turn_counter: u32,
     /// omegon-opsx lifecycle engine — validates state transitions before
     /// markdown is written. The FSM is the authority for what transitions
     /// are legal; markdown is the content store.
-    opsx: Arc<Mutex<OpsxLifecycle<JsonFileStore>>>,
+    #[cfg(test)]
+    opsx: Option<Arc<Mutex<OpsxLifecycle<JsonFileStore>>>>,
     /// Memory facts queued from execute() to be returned from on_event(TurnEnd).
     /// execute() takes &self so can't return BusRequests directly — this bridges the gap.
     pending_memory: Mutex<Vec<BusRequest>>,
     /// Lifecycle-domain mutation service. Tool adapters keep JSON parsing and
     /// response rendering; the service owns store coordination.
-    mutation_service: LifecycleMutationService,
+    #[cfg(test)]
+    mutation_service: Option<LifecycleMutationService>,
+    lifecycle_binding: Option<crate::lifecycle_service::LifecycleBinding>,
+    lifecycle_host: Option<crate::runtime_state::LifecycleHostHandle>,
     /// Optional Codex vault path — exports design tree on session end.
     codex_vault_path: Option<PathBuf>,
 }
 
 impl LifecycleFeature {
+    #[cfg(test)]
     fn opsx_change_states(&self) -> std::collections::HashMap<String, String> {
-        self.opsx
+        self.compatibility_opsx()
             .lock()
             .unwrap()
             .state()
@@ -91,13 +106,12 @@ impl LifecycleFeature {
         secs.to_string()
     }
 
-    pub fn new(repo_path: &std::path::Path) -> Self {
+    #[cfg(test)]
+    pub fn try_new(repo_path: &std::path::Path) -> anyhow::Result<Self> {
         let provider = Arc::new(Mutex::new(LifecycleContextProvider::new(repo_path)));
         let store = JsonFileStore::new(repo_path);
-        let opsx = OpsxLifecycle::load(store).unwrap_or_else(|e| {
-            tracing::warn!("omegon-opsx load failed, starting fresh: {e}");
-            OpsxLifecycle::load(JsonFileStore::new(repo_path)).unwrap()
-        });
+        let opsx = OpsxLifecycle::load(store)
+            .map_err(|error| anyhow::anyhow!("lifecycle state unavailable: {error}"))?;
         let opsx = Arc::new(Mutex::new(opsx));
         let repo_path = repo_path.to_path_buf();
         let mutation_service = LifecycleMutationService::new(
@@ -105,15 +119,64 @@ impl LifecycleFeature {
             Arc::clone(&provider),
             Arc::clone(&opsx),
         );
-        Self {
-            provider,
+        Ok(Self {
+            provider: Some(provider),
             repo_path,
             turn_counter: 0,
-            opsx,
+            opsx: Some(opsx),
             pending_memory: Mutex::new(vec![]),
-            mutation_service,
+            mutation_service: Some(mutation_service),
+            lifecycle_binding: None,
+            lifecycle_host: None,
+            codex_vault_path: None,
+        })
+    }
+
+    pub(crate) fn managed(
+        repo_path: &std::path::Path,
+        lifecycle_binding: crate::lifecycle_service::LifecycleBinding,
+        lifecycle_host: crate::runtime_state::LifecycleHostHandle,
+    ) -> Self {
+        Self {
+            #[cfg(test)]
+            provider: None,
+            repo_path: repo_path.to_path_buf(),
+            turn_counter: 0,
+            #[cfg(test)]
+            opsx: None,
+            pending_memory: Mutex::new(vec![]),
+            #[cfg(test)]
+            mutation_service: None,
+            lifecycle_binding: Some(lifecycle_binding),
+            lifecycle_host: Some(lifecycle_host),
             codex_vault_path: None,
         }
+    }
+
+    #[cfg(test)]
+    fn compatibility_provider(&self) -> &Arc<Mutex<LifecycleContextProvider>> {
+        self.provider
+            .as_ref()
+            .expect("compatibility lifecycle provider is unavailable in managed mode")
+    }
+
+    #[cfg(test)]
+    fn compatibility_opsx(&self) -> &Arc<Mutex<OpsxLifecycle<JsonFileStore>>> {
+        self.opsx
+            .as_ref()
+            .expect("compatibility lifecycle ledger is unavailable in managed mode")
+    }
+
+    #[cfg(test)]
+    fn compatibility_mutation_service(&self) -> &LifecycleMutationService {
+        self.mutation_service
+            .as_ref()
+            .expect("compatibility lifecycle mutation service is unavailable in managed mode")
+    }
+
+    #[cfg(test)]
+    fn new(repo_path: &std::path::Path) -> Self {
+        Self::try_new(repo_path).expect("lifecycle test fixture should load")
     }
 
     /// Set the Codex vault path for automatic design tree export on session end.
@@ -122,27 +185,1060 @@ impl LifecycleFeature {
         self
     }
 
-    /// Lock the provider for dashboard state extraction.
-    pub fn provider(&self) -> std::sync::MutexGuard<'_, LifecycleContextProvider> {
-        self.provider.lock().unwrap()
+    pub(crate) fn with_lifecycle_host(
+        mut self,
+        lifecycle_host: crate::runtime_state::LifecycleHostHandle,
+    ) -> Self {
+        self.lifecycle_host = Some(lifecycle_host);
+        self
     }
 
-    /// Get a shared handle to the provider for live dashboard updates.
-    pub fn shared_provider(&self) -> Arc<Mutex<LifecycleContextProvider>> {
-        Arc::clone(&self.provider)
+    fn focused_node_id(&self) -> Option<String> {
+        let managed = self
+            .lifecycle_host
+            .as_ref()
+            .and_then(|host| host.observe().ok()?.focus.node_id);
+        if managed.is_some() {
+            return managed;
+        }
+        #[cfg(test)]
+        {
+            return self
+                .compatibility_provider()
+                .lock()
+                .ok()?
+                .focused_node_id()
+                .map(str::to_string);
+        }
+        #[cfg(not(test))]
+        None
     }
 
-    /// Get a shared lifecycle read-model handle for dashboards, IPC, and APIs.
-    pub fn read_handle(&self) -> LifecycleReadHandle {
-        LifecycleReadHandle::new(
-            Arc::clone(&self.provider),
-            Arc::clone(&self.opsx),
-            self.repo_path.clone(),
-        )
+    fn set_focus(&self, node_id: Option<String>) -> anyhow::Result<()> {
+        if let Some(host) = &self.lifecycle_host {
+            host.set_focus(node_id.clone())?;
+        }
+        #[cfg(test)]
+        if let Some(provider) = &self.provider {
+            provider
+                .lock()
+                .map_err(|_| anyhow::anyhow!("lifecycle provider lock poisoned"))?
+                .set_focus(node_id);
+        }
+        Ok(())
+    }
+
+    fn observed_design_nodes(&self) -> std::collections::HashMap<String, DesignNode> {
+        let managed = self
+            .lifecycle_host
+            .as_ref()
+            .and_then(|host| host.observe().ok()?.repository)
+            .map(|repository| repository.design.nodes.clone());
+        if let Some(nodes) = managed {
+            return nodes;
+        }
+        #[cfg(test)]
+        {
+            self.provider
+                .as_ref()
+                .and_then(|provider| {
+                    provider
+                        .lock()
+                        .ok()
+                        .map(|provider| provider.all_nodes().clone())
+                })
+                .unwrap_or_default()
+        }
+        #[cfg(not(test))]
+        std::collections::HashMap::new()
+    }
+
+    fn managed_context(&self) -> Option<ContextInjection> {
+        let observation = self.lifecycle_host.as_ref()?.observe().ok()?;
+        let repository = observation.repository?;
+        let mut parts = Vec::new();
+
+        if let Some(node_id) = observation.focus.node_id.as_deref()
+            && let Some(node) = repository.design.nodes.get(node_id)
+            && let Some(sections) = repository.sections.get(node_id)
+        {
+            let injection = design::build_context_injection(node, sections);
+            if !injection.is_empty() {
+                parts.push(injection);
+            }
+        }
+
+        let active = repository
+            .lifecycle
+            .openspec
+            .changes
+            .iter()
+            .filter(|change| {
+                matches!(
+                    change.lifecycle_state.as_str(),
+                    "implementing" | "verifying"
+                )
+            })
+            .collect::<Vec<_>>();
+        if !active.is_empty() {
+            let mut lines = vec!["[OpenSpec — active changes]".to_string()];
+            for change in active {
+                let icon = if change.lifecycle_state == "implementing" {
+                    "⟳"
+                } else {
+                    "◉"
+                };
+                let progress = if change.total_tasks > 0 {
+                    format!(" ({}/{})", change.done_tasks, change.total_tasks)
+                } else {
+                    String::new()
+                };
+                lines.push(format!(
+                    "  {icon} {} — {}{progress}",
+                    change.name, change.lifecycle_state
+                ));
+                for spec in &change.spec_documents {
+                    let scenario_count = spec
+                        .requirements
+                        .iter()
+                        .map(|requirement| requirement.scenarios.len())
+                        .sum::<usize>();
+                    if scenario_count > 0 {
+                        lines.push(format!(
+                            "    specs/{}: {scenario_count} scenarios",
+                            spec.domain
+                        ));
+                    }
+                }
+            }
+            parts.push(lines.join("\n"));
+        }
+
+        (!parts.is_empty()).then(|| ContextInjection {
+            source: "lifecycle".into(),
+            content: parts.join("\n\n"),
+            priority: 150,
+            ttl_turns: 3,
+        })
+    }
+
+    fn managed_binding(&self) -> anyhow::Result<&crate::lifecycle_service::LifecycleBinding> {
+        self.lifecycle_binding
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("managed lifecycle service is unavailable"))
+    }
+
+    fn operation_id(tool_name: &str, call_id: &str) -> String {
+        let digest = Sha256::digest(format!("{tool_name}\0{call_id}").as_bytes());
+        let digest = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("tool-{digest}")
+    }
+
+    async fn refresh_managed(
+        &self,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::runtime_state::LifecycleHostObservation> {
+        self.lifecycle_host
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("managed lifecycle host is unavailable"))?
+            .refresh(
+                crate::lifecycle::read_model::SnapshotOptions::default(),
+                cancellation,
+            )
+            .await
+    }
+
+    async fn managed_design_tree(
+        &self,
+        args: &Value,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let action = args["action"].as_str().unwrap_or("");
+        let node_id = args["node_id"].as_str();
+        let observation = self.refresh_managed(cancellation).await?;
+        let repository = observation
+            .repository
+            .ok_or_else(|| anyhow::anyhow!("managed lifecycle service is unavailable"))?;
+        let nodes = &repository.design.nodes;
+        let result = match action {
+            "list" => nodes
+                .values()
+                .filter(|node| !query::is_archived(node))
+                .map(|node| {
+                    json!({
+                        "id": node.id,
+                        "title": node.title,
+                        "status": node.status.as_str(),
+                        "parent": node.parent,
+                        "tags": node.tags,
+                        "open_questions": node.open_questions.len(),
+                        "dependencies": node.dependencies,
+                        "branches": node.branches,
+                        "openspec_change": node.openspec_change,
+                        "priority": node.priority,
+                        "issue_type": node.issue_type.map(|kind| match kind {
+                            IssueType::Epic => "epic",
+                            IssueType::Feature => "feature",
+                            IssueType::Task => "task",
+                            IssueType::Bug => "bug",
+                            IssueType::Chore => "chore",
+                        }),
+                        "children": design::get_children(nodes, &node.id).len(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "node" => {
+                let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+                let node = nodes
+                    .get(id)
+                    .ok_or_else(|| anyhow::anyhow!("Node '{id}' not found"))?;
+                let mut value = json!({
+                    "id": node.id,
+                    "title": node.title,
+                    "status": node.status.as_str(),
+                    "parent": node.parent,
+                    "tags": node.tags,
+                    "open_questions": node.open_questions,
+                    "dependencies": node.dependencies,
+                    "related": node.related,
+                    "branches": node.branches,
+                    "openspec_change": node.openspec_change,
+                    "priority": node.priority,
+                    "archive_reason": node.archive_reason,
+                    "superseded_by": node.superseded_by,
+                    "archived_at": node.archived_at,
+                    "children": design::get_children(nodes, id).into_iter().map(|child| json!({
+                        "id": child.id,
+                        "title": child.title,
+                        "status": child.status.as_str(),
+                    })).collect::<Vec<_>>(),
+                });
+                if let Some(sections) = repository.sections.get(id) {
+                    value["overview"] = json!(sections.overview);
+                    value["research"] = json!(
+                        sections
+                            .research
+                            .iter()
+                            .map(|item| json!({
+                                "heading": item.heading,
+                                "content": item.content,
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                    value["decisions"] = json!(
+                        sections
+                            .decisions
+                            .iter()
+                            .map(|item| json!({
+                                "title": item.title,
+                                "status": item.status,
+                                "rationale": item.rationale,
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                    value["impl_file_scope"] = json!(
+                        sections
+                            .impl_file_scope
+                            .iter()
+                            .map(|item| json!({
+                                "path": item.path,
+                                "description": item.description,
+                                "action": item.action,
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                    value["impl_constraints"] = json!(sections.impl_constraints);
+                    value["readiness"] = json!({
+                        "score": sections.readiness_score(),
+                        "decisions": sections.decisions.iter().filter(|item| item.status == "decided").count(),
+                        "questions": sections.question_count(),
+                        "assumptions": sections.assumption_count(),
+                    });
+                }
+                return Ok(text_result(&serde_json::to_string_pretty(&value)?));
+            }
+            "frontier" => query::frontier(nodes)
+                .into_iter()
+                .map(|node| {
+                    json!({
+                        "id": node.id,
+                        "title": node.title,
+                        "status": node.status,
+                        "open_questions": node.open_questions,
+                    })
+                })
+                .collect(),
+            "children" => {
+                let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+                query::children(nodes, id)
+                    .into_iter()
+                    .map(
+                        |node| json!({ "id": node.id, "title": node.title, "status": node.status }),
+                    )
+                    .collect()
+            }
+            "dependencies" => {
+                let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+                let node = nodes
+                    .get(id)
+                    .ok_or_else(|| anyhow::anyhow!("Node '{id}' not found"))?;
+                query::dependencies(nodes, node)
+                    .into_iter()
+                    .map(
+                        |node| json!({ "id": node.id, "title": node.title, "status": node.status }),
+                    )
+                    .collect()
+            }
+            "ready" => query::ready(nodes)
+                .into_iter()
+                .map(
+                    |node| json!({ "id": node.id, "title": node.title, "priority": node.priority }),
+                )
+                .collect(),
+            "blocked" => query::blocked(nodes)
+                .into_iter()
+                .map(|node| {
+                    json!({
+                        "id": node.id,
+                        "title": node.title,
+                        "status": node.status,
+                        "blocked_by": node.blocked_by,
+                    })
+                })
+                .collect(),
+            _ => anyhow::bail!(
+                "Unknown action: {action}. Valid: list, node, frontier, children, dependencies, ready, blocked"
+            ),
+        };
+        Ok(text_result(&serde_json::to_string_pretty(&result)?))
+    }
+
+    async fn invoke_design_mutation(
+        &self,
+        call_id: &str,
+        expected_revision: crate::lifecycle_service::LifecycleRepositoryRevisionV1,
+        mutation: crate::lifecycle_service::DesignMutationV1,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::lifecycle_service::LifecycleMutationReceiptV1> {
+        let response = self
+            .managed_binding()?
+            .invoke(crate::lifecycle_service::LifecycleRequestV1::MutateDesign {
+                operation_id: Self::operation_id(
+                    crate::tool_registry::lifecycle::DESIGN_TREE_UPDATE,
+                    call_id,
+                ),
+                expected_revision,
+                mutation: Box::new(mutation),
+                cancellation: cancellation.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("managed lifecycle mutation failed: {error:?}"))?;
+        let crate::lifecycle_service::LifecyclePayloadV1::DesignMutation(receipt) =
+            response.payload
+        else {
+            anyhow::bail!("managed lifecycle returned an unexpected design mutation response");
+        };
+        if let Err(error) = self.refresh_managed(cancellation).await {
+            tracing::warn!(%error, "managed lifecycle cache refresh failed after design mutation");
+        }
+        Ok(receipt)
+    }
+
+    async fn managed_design_tree_update(
+        &self,
+        call_id: &str,
+        args: &Value,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        use crate::lifecycle_service::{
+            DesignFileScopeV1, DesignIssueTypeV1, DesignMutationV1, LifecycleMutationOutcomeV1,
+        };
+
+        let action = args["action"].as_str().unwrap_or("");
+        let node_id = args["node_id"].as_str();
+        if action == "focus" {
+            let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+            self.refresh_managed(cancellation).await?;
+            self.set_focus(Some(id.to_string()))?;
+            return Ok(text_result(&format!("Focused on design node '{id}'")));
+        }
+        if action == "unfocus" {
+            self.set_focus(None)?;
+            return Ok(text_result("Cleared design focus"));
+        }
+
+        let observation = self.refresh_managed(cancellation.child_token()).await?;
+        let repository = observation
+            .repository
+            .ok_or_else(|| anyhow::anyhow!("managed lifecycle service is unavailable"))?;
+        let nodes = &repository.design.nodes;
+        let expected_revision = repository.revision.clone();
+        let mut memory_fact = None;
+        let mutation = match action {
+            "create" => {
+                let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+                let title = args["title"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("title required"))?;
+                let status = args["status"]
+                    .as_str()
+                    .map(|status| {
+                        OpsxNodeState::parse(status)
+                            .ok_or_else(|| anyhow::anyhow!("Invalid status: {status}"))
+                    })
+                    .transpose()?;
+                DesignMutationV1::Create {
+                    id: id.into(),
+                    title: title.into(),
+                    parent: args["parent"].as_str().map(str::to_string),
+                    status,
+                    tags: args["tags"]
+                        .as_array()
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    overview: args["overview"].as_str().unwrap_or("").into(),
+                }
+            }
+            "archive" | "set_status" => {
+                let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+                let status_text = if action == "archive" {
+                    "archived"
+                } else {
+                    args["status"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("status required"))?
+                };
+                let status = OpsxNodeState::parse(status_text)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid status: {status_text}"))?;
+                if status == OpsxNodeState::Archived
+                    && Self::has_non_archived_descendants(nodes, id)
+                {
+                    anyhow::bail!("cannot archive '{id}' while non-archived descendants remain");
+                }
+                if matches!(status_text, "resolved" | "decided" | "implementing") {
+                    let title = nodes.get(id).map(|node| node.title.as_str()).unwrap_or(id);
+                    memory_fact = Some(format!(
+                        "Design node '{id}' ({title}) status → {status_text}"
+                    ));
+                }
+                DesignMutationV1::SetState {
+                    id: id.into(),
+                    state: status,
+                    archive_reason: args["archive_reason"].as_str().map(str::to_string),
+                    superseded_by: args["superseded_by"].as_str().map(str::to_string),
+                    archived_at: (status == OpsxNodeState::Archived).then(Self::archive_timestamp),
+                }
+            }
+            "add_question" | "remove_question" => {
+                let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+                let question = args["question"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("question required"))?;
+                if action == "add_question" {
+                    DesignMutationV1::AddQuestion {
+                        id: id.into(),
+                        question: question.into(),
+                    }
+                } else {
+                    DesignMutationV1::RemoveQuestion {
+                        id: id.into(),
+                        question: question.into(),
+                    }
+                }
+            }
+            "add_research" => DesignMutationV1::AddResearch {
+                id: node_id
+                    .ok_or_else(|| anyhow::anyhow!("node_id required"))?
+                    .into(),
+                heading: args["heading"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("heading required"))?
+                    .into(),
+                content: args["content"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("content required"))?
+                    .into(),
+            },
+            "add_decision" => {
+                let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+                let title = args["decision_title"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("decision_title required"))?;
+                let status = args["decision_status"].as_str().unwrap_or("exploring");
+                let rationale = args["rationale"].as_str().unwrap_or("");
+                memory_fact = Some(if rationale.is_empty() {
+                    format!("Decision on '{id}': {title} [{status}]")
+                } else {
+                    format!("Decision on '{id}': {title} [{status}]. {rationale}")
+                });
+                DesignMutationV1::AddDecision {
+                    id: id.into(),
+                    title: title.into(),
+                    status: status.into(),
+                    rationale: rationale.into(),
+                }
+            }
+            "add_dependency" | "add_related" => {
+                let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
+                let target_id = args["target_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("target_id required"))?;
+                if action == "add_dependency" {
+                    DesignMutationV1::AddDependency {
+                        id: id.into(),
+                        target_id: target_id.into(),
+                    }
+                } else {
+                    DesignMutationV1::AddRelated {
+                        id: id.into(),
+                        target_id: target_id.into(),
+                    }
+                }
+            }
+            "add_impl_notes" => DesignMutationV1::AddImplementationNotes {
+                id: node_id
+                    .ok_or_else(|| anyhow::anyhow!("node_id required"))?
+                    .into(),
+                file_scope: args["file_scope"]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| {
+                                Some(DesignFileScopeV1 {
+                                    path: value["path"].as_str()?.into(),
+                                    description: value["description"].as_str().unwrap_or("").into(),
+                                    action: value["action"].as_str().map(str::to_string),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                constraints: args["constraints"]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            },
+            "branch" => DesignMutationV1::BranchQuestion {
+                parent_id: node_id
+                    .ok_or_else(|| anyhow::anyhow!("node_id required"))?
+                    .into(),
+                question: args["question"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("question required"))?
+                    .into(),
+                child_id: args["child_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("child_id required"))?
+                    .into(),
+                child_title: args["child_title"]
+                    .as_str()
+                    .or_else(|| args["question"].as_str())
+                    .ok_or_else(|| anyhow::anyhow!("child_title required"))?
+                    .into(),
+            },
+            "implement" => DesignMutationV1::ImplementOpenSpec {
+                id: node_id
+                    .ok_or_else(|| anyhow::anyhow!("node_id required"))?
+                    .into(),
+            },
+            "set_priority" => {
+                let priority = args["priority"]
+                    .as_u64()
+                    .ok_or_else(|| anyhow::anyhow!("priority required (1-5)"))?;
+                if !(1..=5).contains(&priority) {
+                    anyhow::bail!("Priority must be 1-5, got {priority}");
+                }
+                DesignMutationV1::SetPriority {
+                    id: node_id
+                        .ok_or_else(|| anyhow::anyhow!("node_id required"))?
+                        .into(),
+                    priority: priority as u8,
+                }
+            }
+            "set_issue_type" => {
+                let issue_type = match args["issue_type"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("issue_type required"))?
+                {
+                    "epic" => DesignIssueTypeV1::Epic,
+                    "feature" => DesignIssueTypeV1::Feature,
+                    "task" => DesignIssueTypeV1::Task,
+                    "bug" => DesignIssueTypeV1::Bug,
+                    "chore" => DesignIssueTypeV1::Chore,
+                    other => anyhow::bail!("Invalid issue_type: {other}"),
+                };
+                DesignMutationV1::SetIssueType {
+                    id: node_id
+                        .ok_or_else(|| anyhow::anyhow!("node_id required"))?
+                        .into(),
+                    issue_type,
+                }
+            }
+            _ => anyhow::bail!("Unknown action: {action}"),
+        };
+
+        let receipt = self
+            .invoke_design_mutation(call_id, expected_revision, mutation, cancellation)
+            .await?;
+        if let Some(content) = memory_fact
+            && let Ok(mut pending) = self.pending_memory.lock()
+        {
+            pending.push(BusRequest::AutoStoreFact {
+                section: "Decisions".into(),
+                content,
+                source: if action == "add_decision" {
+                    "lifecycle:add-decision".into()
+                } else {
+                    "lifecycle:node-transition".into()
+                },
+            });
+        }
+
+        let text = match action {
+            "create" => match receipt.outcome {
+                LifecycleMutationOutcomeV1::DesignCreated { path } => format!(
+                    "Created design node '{}' at {path}",
+                    node_id.unwrap_or_default()
+                ),
+                _ => format!("Created design node '{}'", node_id.unwrap_or_default()),
+            },
+            "archive" => format!("Archived '{}'", node_id.unwrap_or_default()),
+            "set_status" => format!(
+                "Set '{}' status to {}",
+                node_id.unwrap_or_default(),
+                args["status"].as_str().unwrap_or_default()
+            ),
+            "add_question" => format!("Added question to '{}'", node_id.unwrap_or_default()),
+            "remove_question" => {
+                format!("Removed question from '{}'", node_id.unwrap_or_default())
+            }
+            "add_research" => format!(
+                "Added research '{}' to '{}'",
+                args["heading"].as_str().unwrap_or_default(),
+                node_id.unwrap_or_default()
+            ),
+            "add_decision" => format!(
+                "Added decision '{}' to '{}'",
+                args["decision_title"].as_str().unwrap_or_default(),
+                node_id.unwrap_or_default()
+            ),
+            "add_dependency" => format!(
+                "Added dependency '{}' → '{}'",
+                node_id.unwrap_or_default(),
+                args["target_id"].as_str().unwrap_or_default()
+            ),
+            "add_related" => format!(
+                "Added related '{}' ↔ '{}'",
+                node_id.unwrap_or_default(),
+                args["target_id"].as_str().unwrap_or_default()
+            ),
+            "add_impl_notes" => {
+                format!(
+                    "Added implementation notes to '{}'",
+                    node_id.unwrap_or_default()
+                )
+            }
+            "branch" => format!(
+                "Branched '{}' from '{}', removed question",
+                args["child_id"].as_str().unwrap_or_default(),
+                node_id.unwrap_or_default()
+            ),
+            "implement" => match receipt.outcome {
+                LifecycleMutationOutcomeV1::DesignImplemented {
+                    node_id,
+                    change,
+                    path,
+                } => format!(
+                    "Scaffolded OpenSpec change '{change}' at {path}\nNode '{node_id}' → implementing"
+                ),
+                _ => format!(
+                    "Scaffolded OpenSpec change '{}'\nNode '{}' → implementing",
+                    node_id.unwrap_or_default(),
+                    node_id.unwrap_or_default()
+                ),
+            },
+            "set_priority" => format!(
+                "Set '{}' priority to {}",
+                node_id.unwrap_or_default(),
+                args["priority"].as_u64().unwrap_or_default()
+            ),
+            "set_issue_type" => format!(
+                "Set '{}' issue_type to {}",
+                node_id.unwrap_or_default(),
+                args["issue_type"].as_str().unwrap_or_default()
+            ),
+            _ => unreachable!(),
+        };
+        Ok(text_result(&text))
+    }
+
+    async fn invoke_openspec_mutation(
+        &self,
+        call_id: &str,
+        expected_revision: crate::lifecycle_service::LifecycleRepositoryRevisionV1,
+        mutation: crate::lifecycle_service::OpenSpecMutationV1,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::lifecycle_service::LifecycleMutationReceiptV1> {
+        let response = self
+            .managed_binding()?
+            .invoke(
+                crate::lifecycle_service::LifecycleRequestV1::MutateOpenSpec {
+                    operation_id: Self::operation_id(
+                        crate::tool_registry::lifecycle::OPENSPEC_MANAGE,
+                        call_id,
+                    ),
+                    expected_revision,
+                    mutation: Box::new(mutation),
+                    cancellation: cancellation.clone(),
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("managed lifecycle mutation failed: {error:?}"))?;
+        let crate::lifecycle_service::LifecyclePayloadV1::OpenSpecMutation(receipt) =
+            response.payload
+        else {
+            anyhow::bail!("managed lifecycle returned an unexpected OpenSpec mutation response");
+        };
+        if let Err(error) = self.refresh_managed(cancellation).await {
+            tracing::warn!(%error, "managed lifecycle cache refresh failed after OpenSpec mutation");
+        }
+        Ok(receipt)
+    }
+
+    async fn managed_openspec(
+        &self,
+        call_id: &str,
+        args: &Value,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        use crate::lifecycle_service::{LifecycleMutationOutcomeV1, OpenSpecMutationV1};
+
+        let action = args["action"].as_str().unwrap_or("");
+        let observation = self.refresh_managed(cancellation.child_token()).await?;
+        let repository = observation
+            .repository
+            .ok_or_else(|| anyhow::anyhow!("managed lifecycle service is unavailable"))?;
+        if action == "status" {
+            if repository.lifecycle.openspec.changes.is_empty() {
+                return Ok(text_result("No active OpenSpec changes."));
+            }
+            let list = repository
+                .lifecycle
+                .openspec
+                .changes
+                .iter()
+                .map(|change| {
+                    json!({
+                        "name": change.name,
+                        "state": change.lifecycle_state,
+                        "stage": change.lifecycle_state,
+                        "file_stage": change.file_stage,
+                        "has_proposal": change.has_proposal,
+                        "has_specs": change.has_specs,
+                        "has_tasks": change.has_tasks,
+                        "total_tasks": change.total_tasks,
+                        "done_tasks": change.done_tasks,
+                    })
+                })
+                .collect::<Vec<_>>();
+            return Ok(text_result(&serde_json::to_string_pretty(&list)?));
+        }
+        if action == "get" {
+            let name = args["change_name"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("change_name required"))?;
+            let change = repository
+                .lifecycle
+                .openspec
+                .changes
+                .iter()
+                .find(|change| change.name == name)
+                .ok_or_else(|| anyhow::anyhow!("Change '{name}' not found"))?;
+            let result = json!({
+                "name": change.name,
+                "state": change.lifecycle_state,
+                "stage": change.lifecycle_state,
+                "file_stage": change.file_stage,
+                "has_proposal": change.has_proposal,
+                "has_design": change.has_design,
+                "has_specs": change.has_specs,
+                "has_tasks": change.has_tasks,
+                "total_tasks": change.total_tasks,
+                "done_tasks": change.done_tasks,
+                "specs": change.spec_documents.iter().map(|spec| json!({
+                    "domain": spec.domain,
+                    "requirements": spec.requirements.iter().map(|requirement| json!({
+                        "title": requirement.title,
+                        "scenarios": requirement.scenarios.len(),
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            });
+            return Ok(text_result(&serde_json::to_string_pretty(&result)?));
+        }
+
+        let expected_revision = repository.revision.clone();
+        let mutation = match action {
+            "propose" => OpenSpecMutationV1::Propose {
+                name: args["name"]
+                    .as_str()
+                    .or_else(|| args["change_name"].as_str())
+                    .ok_or_else(|| anyhow::anyhow!("name required"))?
+                    .into(),
+                title: args["title"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("title required"))?
+                    .into(),
+                intent: args["intent"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("intent required"))?
+                    .into(),
+                bound_node: None,
+            },
+            "add_spec" => OpenSpecMutationV1::AddSpec {
+                change: args["change_name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("change_name required"))?
+                    .into(),
+                domain: args["domain"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("domain required"))?
+                    .into(),
+                content: args["spec_content"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("spec_content required"))?
+                    .into(),
+            },
+            "register_tasks" => {
+                if args.get("total_tasks").is_some() || args.get("done_tasks").is_some() {
+                    anyhow::bail!(
+                        "register_tasks reads task counts from tasks.md; update OpenSpec tasks first"
+                    );
+                }
+                OpenSpecMutationV1::ReconcileTasks {
+                    change: args["change_name"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("change_name required"))?
+                        .into(),
+                }
+            }
+            "set_task_status" => {
+                let status = args["status"].as_str().unwrap_or("done");
+                let done = match status {
+                    "done" | "complete" | "completed" => true,
+                    "pending" | "open" | "reopen" => false,
+                    other => {
+                        anyhow::bail!("unsupported task status '{other}'; expected done or pending")
+                    }
+                };
+                OpenSpecMutationV1::SetTaskStatus {
+                    change: args["change_name"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("change_name required"))?
+                        .into(),
+                    group: args["group"]
+                        .as_str()
+                        .or_else(|| args["group_title"].as_str())
+                        .ok_or_else(|| anyhow::anyhow!("group required"))?
+                        .into(),
+                    task_id: args["task_id"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("task_id required"))?
+                        .into(),
+                    done,
+                }
+            }
+            "register_test_file" => {
+                let path = args["path"]
+                    .as_str()
+                    .or_else(|| args["test_file"].as_str())
+                    .ok_or_else(|| anyhow::anyhow!("path required"))?;
+                if path.trim().is_empty() {
+                    anyhow::bail!("path required");
+                }
+                OpenSpecMutationV1::RegisterTestFile {
+                    change: args["change_name"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("change_name required"))?
+                        .into(),
+                    path: path.into(),
+                }
+            }
+            "archive" => OpenSpecMutationV1::Archive {
+                change: args["change_name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("change_name required"))?
+                    .into(),
+            },
+            _ => anyhow::bail!(
+                "Unknown action: {action}. Valid: status, get, propose, add_spec, register_tasks, set_task_status, register_test_file, archive"
+            ),
+        };
+        let receipt = self
+            .invoke_openspec_mutation(call_id, expected_revision, mutation, cancellation)
+            .await?;
+        let text = match action {
+            "propose" => match receipt.outcome {
+                LifecycleMutationOutcomeV1::OpenSpecProposed { path } => format!(
+                    "Proposed change '{}' at {path}",
+                    args["name"]
+                        .as_str()
+                        .or_else(|| args["change_name"].as_str())
+                        .unwrap_or_default()
+                ),
+                _ => format!(
+                    "Proposed change '{}'",
+                    args["name"]
+                        .as_str()
+                        .or_else(|| args["change_name"].as_str())
+                        .unwrap_or_default()
+                ),
+            },
+            "add_spec" => match receipt.outcome {
+                LifecycleMutationOutcomeV1::OpenSpecSpecAdded { path } => format!(
+                    "Added spec '{}' to '{}' at {path}",
+                    args["domain"].as_str().unwrap_or_default(),
+                    args["change_name"].as_str().unwrap_or_default()
+                ),
+                _ => format!(
+                    "Added spec '{}' to '{}'",
+                    args["domain"].as_str().unwrap_or_default(),
+                    args["change_name"].as_str().unwrap_or_default()
+                ),
+            },
+            "register_tasks" => match receipt.outcome {
+                LifecycleMutationOutcomeV1::OpenSpecTasksReconciled {
+                    total_tasks,
+                    done_tasks,
+                } => format!(
+                    "Registered tasks for '{}': {done_tasks}/{total_tasks}",
+                    args["change_name"].as_str().unwrap_or_default()
+                ),
+                _ => format!(
+                    "Registered tasks for '{}'",
+                    args["change_name"].as_str().unwrap_or_default()
+                ),
+            },
+            "set_task_status" => match receipt.outcome {
+                LifecycleMutationOutcomeV1::OpenSpecTaskStatusChanged {
+                    change,
+                    group,
+                    task_id,
+                    path,
+                    line,
+                    previous_done,
+                    new_done,
+                    description,
+                } => format!(
+                    "Updated OpenSpec task:\n- change: {change}\n- group: {group}\n- task: {task_id}\n- file: {path}:{line}\n- status: {} -> {}\n- description: {description}",
+                    if previous_done { "done" } else { "pending" },
+                    if new_done { "done" } else { "pending" }
+                ),
+                _ => "Updated OpenSpec task".into(),
+            },
+            "register_test_file" => format!(
+                "Registered test file '{}' for '{}'",
+                args["path"]
+                    .as_str()
+                    .or_else(|| args["test_file"].as_str())
+                    .unwrap_or_default(),
+                args["change_name"].as_str().unwrap_or_default()
+            ),
+            "archive" => format!(
+                "Archived change '{}'",
+                args["change_name"].as_str().unwrap_or_default()
+            ),
+            _ => unreachable!(),
+        };
+        Ok(text_result(&text))
+    }
+
+    async fn managed_doctor(
+        &self,
+        args: &Value,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let response = self
+            .managed_binding()?
+            .invoke(crate::lifecycle_service::LifecycleRequestV1::Doctor { cancellation })
+            .await
+            .map_err(|error| anyhow::anyhow!("managed lifecycle doctor failed: {error:?}"))?;
+        let crate::lifecycle_service::LifecyclePayloadV1::Doctor(report) = response.payload else {
+            anyhow::bail!("managed lifecycle returned an unexpected doctor response");
+        };
+        let kinds = args["kinds"].as_array().map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .collect::<std::collections::HashSet<_>>()
+        });
+        let node_id = args["node_id"].as_str();
+        let findings = report
+            .findings
+            .iter()
+            .filter(|finding| {
+                node_id.is_none_or(|id| finding.node_id == id)
+                    && kinds
+                        .as_ref()
+                        .is_none_or(|values| values.contains(finding.kind.as_str()))
+            })
+            .collect::<Vec<_>>();
+        let counts = findings
+            .iter()
+            .fold(serde_json::Map::new(), |mut counts, finding| {
+                let next = counts
+                    .get(&finding.kind)
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    + 1;
+                counts.insert(finding.kind.clone(), json!(next));
+                counts
+            });
+        let details = json!({
+            "findings": findings.iter().map(|finding| json!({
+                "node_id": finding.node_id,
+                "title": finding.title,
+                "kind": finding.kind,
+                "detail": finding.detail,
+            })).collect::<Vec<_>>(),
+            "counts": counts,
+            "total": findings.len(),
+            "recovered": report.recovered,
+        });
+        let text = if findings.is_empty() {
+            "✓ No suspicious lifecycle drift found.".into()
+        } else {
+            let mut text = format!("Lifecycle doctor: {} finding(s)\n\n", findings.len());
+            for finding in findings {
+                text.push_str(&format!(
+                    "- {} [{}]\n  {}\n  {}\n",
+                    finding.node_id, finding.kind, finding.title, finding.detail
+                ));
+            }
+            text.trim_end().into()
+        };
+        Ok(ToolResult {
+            content: vec![ContentBlock::Text { text }],
+            details,
+        })
     }
 
     /// Bootstrap a markdown design node into omegon-opsx.
     /// Creates the node and syncs state + open questions from the markdown source.
+    #[cfg(test)]
     fn bootstrap_node_to_opsx(&self, opsx: &mut OpsxLifecycle<JsonFileStore>, node: &DesignNode) {
         let current_opsx =
             OpsxNodeState::parse(node.status.as_str()).unwrap_or(OpsxNodeState::Seed);
@@ -160,10 +1256,11 @@ impl LifecycleFeature {
 
     // ── Tool dispatch ───────────────────────────────────────────────────
 
+    #[cfg(test)]
     fn execute_design_tree(&self, args: &Value) -> anyhow::Result<ToolResult> {
         let action = args["action"].as_str().unwrap_or("");
         let node_id = args["node_id"].as_str();
-        let p = self.provider.lock().unwrap();
+        let p = self.compatibility_provider().lock().unwrap();
 
         match action {
             "list" => {
@@ -356,6 +1453,7 @@ impl LifecycleFeature {
         }
     }
 
+    #[cfg(test)]
     fn execute_design_tree_update(&self, args: &Value) -> anyhow::Result<ToolResult> {
         let action = args["action"].as_str().unwrap_or("");
         let node_id = args["node_id"].as_str();
@@ -373,16 +1471,16 @@ impl LifecycleFeature {
                             .collect()
                     })
                     .unwrap_or_default();
-                let node = self
-                    .mutation_service
-                    .create_design_node(CreateDesignNodeRequest {
+                let node = self.compatibility_mutation_service().create_design_node(
+                    CreateDesignNodeRequest {
                         id: id.to_string(),
                         title: title.to_string(),
                         parent: args["parent"].as_str().map(str::to_string),
                         status: args["status"].as_str().map(str::to_string),
                         tags,
                         overview: args["overview"].as_str().unwrap_or("").to_string(),
-                    })?;
+                    },
+                )?;
                 Ok(text_result(&format!(
                     "Created design node '{id}' at {}",
                     node.file_path.display()
@@ -391,12 +1489,17 @@ impl LifecycleFeature {
 
             "archive" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                let nodes = self.provider.lock().unwrap().all_nodes().clone();
+                let nodes = self
+                    .compatibility_provider()
+                    .lock()
+                    .unwrap()
+                    .all_nodes()
+                    .clone();
                 if Self::has_non_archived_descendants(&nodes, id) {
                     anyhow::bail!("cannot archive '{id}' while non-archived descendants remain");
                 }
 
-                self.mutation_service
+                self.compatibility_mutation_service()
                     .set_design_node_status(SetDesignNodeStatusRequest {
                         id: id.to_string(),
                         status: NodeStatus::Archived,
@@ -416,7 +1519,12 @@ impl LifecycleFeature {
                     .ok_or_else(|| anyhow::anyhow!("Invalid status: {status_str}"))?;
 
                 if matches!(status, NodeStatus::Archived) {
-                    let nodes = self.provider.lock().unwrap().all_nodes().clone();
+                    let nodes = self
+                        .compatibility_provider()
+                        .lock()
+                        .unwrap()
+                        .all_nodes()
+                        .clone();
                     if Self::has_non_archived_descendants(&nodes, id) {
                         anyhow::bail!(
                             "cannot archive '{id}' while non-archived descendants remain"
@@ -424,19 +1532,19 @@ impl LifecycleFeature {
                     }
                 }
 
-                let result =
-                    self.mutation_service
-                        .set_design_node_status(SetDesignNodeStatusRequest {
-                            id: id.to_string(),
-                            status,
-                            archive_reason: args["archive_reason"].as_str().map(str::to_string),
-                            superseded_by: args["superseded_by"].as_str().map(str::to_string),
-                            archived_at: if matches!(status, NodeStatus::Archived) {
-                                Some(Self::archive_timestamp())
-                            } else {
-                                None
-                            },
-                        })?;
+                let result = self
+                    .compatibility_mutation_service()
+                    .set_design_node_status(SetDesignNodeStatusRequest {
+                        id: id.to_string(),
+                        status,
+                        archive_reason: args["archive_reason"].as_str().map(str::to_string),
+                        superseded_by: args["superseded_by"].as_str().map(str::to_string),
+                        archived_at: if matches!(status, NodeStatus::Archived) {
+                            Some(Self::archive_timestamp())
+                        } else {
+                            None
+                        },
+                    })?;
 
                 if matches!(status_str, "resolved" | "decided" | "implementing") {
                     let content = format!(
@@ -461,12 +1569,11 @@ impl LifecycleFeature {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("question required"))?;
 
-                self.mutation_service.add_design_node_question(
-                    UpdateDesignNodeQuestionRequest {
+                self.compatibility_mutation_service()
+                    .add_design_node_question(UpdateDesignNodeQuestionRequest {
                         id: id.to_string(),
                         question: question.to_string(),
-                    },
-                )?;
+                    })?;
                 Ok(text_result(&format!("Added question to '{id}'")))
             }
 
@@ -476,12 +1583,11 @@ impl LifecycleFeature {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("question required"))?;
 
-                self.mutation_service.remove_design_node_question(
-                    UpdateDesignNodeQuestionRequest {
+                self.compatibility_mutation_service()
+                    .remove_design_node_question(UpdateDesignNodeQuestionRequest {
                         id: id.to_string(),
                         question: question.to_string(),
-                    },
-                )?;
+                    })?;
                 Ok(text_result(&format!("Removed question from '{id}'")))
             }
 
@@ -494,7 +1600,7 @@ impl LifecycleFeature {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("content required"))?;
 
-                self.mutation_service
+                self.compatibility_mutation_service()
                     .add_design_node_research(AddDesignNodeResearchRequest {
                         id: id.to_string(),
                         heading: heading.to_string(),
@@ -513,7 +1619,7 @@ impl LifecycleFeature {
                 let status = args["decision_status"].as_str().unwrap_or("exploring");
                 let rationale = args["rationale"].as_str().unwrap_or("");
 
-                self.mutation_service
+                self.compatibility_mutation_service()
                     .add_design_node_decision(AddDesignNodeDecisionRequest {
                         id: id.to_string(),
                         title: title.to_string(),
@@ -544,7 +1650,7 @@ impl LifecycleFeature {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("target_id required"))?;
 
-                self.mutation_service
+                self.compatibility_mutation_service()
                     .add_design_node_dependency(AddDesignNodeLinkRequest {
                         id: id.to_string(),
                         target_id: target.to_string(),
@@ -560,7 +1666,7 @@ impl LifecycleFeature {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("target_id required"))?;
 
-                self.mutation_service
+                self.compatibility_mutation_service()
                     .add_design_node_related(AddDesignNodeLinkRequest {
                         id: id.to_string(),
                         target_id: target.to_string(),
@@ -597,13 +1703,12 @@ impl LifecycleFeature {
                     })
                     .unwrap_or_default();
 
-                self.mutation_service.add_design_node_impl_notes(
-                    AddDesignNodeImplNotesRequest {
+                self.compatibility_mutation_service()
+                    .add_design_node_impl_notes(AddDesignNodeImplNotesRequest {
                         id: id.to_string(),
                         file_scope,
                         constraints,
-                    },
-                )?;
+                    })?;
                 Ok(text_result(&format!(
                     "Added implementation notes to '{id}'"
                 )))
@@ -619,14 +1724,13 @@ impl LifecycleFeature {
                     .ok_or_else(|| anyhow::anyhow!("child_id required"))?;
                 let child_title = args["child_title"].as_str().unwrap_or(question);
 
-                self.mutation_service.branch_design_node_question(
-                    BranchDesignNodeQuestionRequest {
+                self.compatibility_mutation_service()
+                    .branch_design_node_question(BranchDesignNodeQuestionRequest {
                         parent_id: id.to_string(),
                         question: question.to_string(),
                         child_id: child_id.to_string(),
                         child_title: child_title.to_string(),
-                    },
-                )?;
+                    })?;
                 Ok(text_result(&format!(
                     "Branched '{child_id}' from '{id}', removed question"
                 )))
@@ -634,25 +1738,28 @@ impl LifecycleFeature {
 
             "focus" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-                if self.provider.lock().unwrap().get_node(id).is_none() {
-                    anyhow::bail!("Node '{id}' not found");
-                }
-                self.provider
+                if self
+                    .compatibility_provider()
                     .lock()
                     .unwrap()
-                    .set_focus(Some(id.to_string()));
+                    .get_node(id)
+                    .is_none()
+                {
+                    anyhow::bail!("Node '{id}' not found");
+                }
+                self.set_focus(Some(id.to_string()))?;
                 Ok(text_result(&format!("Focused on design node '{id}'")))
             }
 
             "unfocus" => {
-                self.provider.lock().unwrap().set_focus(None);
+                self.set_focus(None)?;
                 Ok(text_result("Cleared design focus"))
             }
 
             "implement" => {
                 let id = node_id.ok_or_else(|| anyhow::anyhow!("node_id required"))?;
                 let result = self
-                    .mutation_service
+                    .compatibility_mutation_service()
                     .implement_design_node(ImplementDesignNodeRequest { id: id.to_string() })?;
                 Ok(text_result(&format!(
                     "Scaffolded OpenSpec change '{}' at {}\nNode '{}' → implementing",
@@ -671,7 +1778,7 @@ impl LifecycleFeature {
                     anyhow::bail!("Priority must be 1-5, got {priority}");
                 }
 
-                self.mutation_service
+                self.compatibility_mutation_service()
                     .set_design_node_priority(SetDesignNodePriorityRequest {
                         id: id.to_string(),
                         priority: priority as u8,
@@ -687,12 +1794,11 @@ impl LifecycleFeature {
                 let issue_type = IssueType::parse(type_str)
                     .ok_or_else(|| anyhow::anyhow!("Invalid issue_type: {type_str}"))?;
 
-                self.mutation_service.set_design_node_issue_type(
-                    SetDesignNodeIssueTypeRequest {
+                self.compatibility_mutation_service()
+                    .set_design_node_issue_type(SetDesignNodeIssueTypeRequest {
                         id: id.to_string(),
                         issue_type,
-                    },
-                )?;
+                    })?;
                 Ok(text_result(&format!("Set '{id}' issue_type to {type_str}")))
             }
 
@@ -700,18 +1806,20 @@ impl LifecycleFeature {
         }
     }
 
+    #[cfg(test)]
     fn execute_lifecycle_doctor(&self, args: &Value) -> anyhow::Result<ToolResult> {
         let kinds_filter: Option<std::collections::HashSet<&str>> = args["kinds"]
             .as_array()
             .map(|values| values.iter().filter_map(|v| v.as_str()).collect());
         let node_filter = args["node_id"].as_str();
 
-        let recovered = archive::recover_archive_transactions(&self.repo_path, &self.opsx)?;
+        let recovered =
+            archive::recover_archive_transactions(&self.repo_path, self.compatibility_opsx())?;
 
         let mut findings = doctor::audit_repo(&self.repo_path);
         let changes = spec::list_changes(&self.repo_path);
         let opsx_states = self
-            .opsx
+            .compatibility_opsx()
             .lock()
             .unwrap()
             .state()
@@ -778,13 +1886,14 @@ impl LifecycleFeature {
         })
     }
 
+    #[cfg(test)]
     fn execute_openspec_manage(&self, args: &Value) -> anyhow::Result<ToolResult> {
         let action = args["action"].as_str().unwrap_or("");
 
         match action {
             "status" => {
-                self.provider.lock().unwrap().refresh();
-                let p = self.provider.lock().unwrap();
+                self.compatibility_provider().lock().unwrap().refresh();
+                let p = self.compatibility_provider().lock().unwrap();
                 let changes = p.changes();
                 if changes.is_empty() {
                     return Ok(text_result("No active OpenSpec changes."));
@@ -860,7 +1969,7 @@ impl LifecycleFeature {
                     .ok_or_else(|| anyhow::anyhow!("intent required"))?;
 
                 if self
-                    .opsx
+                    .compatibility_opsx()
                     .lock()
                     .unwrap()
                     .state()
@@ -871,11 +1980,16 @@ impl LifecycleFeature {
                     anyhow::bail!("Change '{name}' already exists");
                 }
                 let change = spec::propose_change(&self.repo_path, name, title, intent)?;
-                if let Err(err) = self.opsx.lock().unwrap().create_change(name, title, None) {
+                if let Err(err) = self
+                    .compatibility_opsx()
+                    .lock()
+                    .unwrap()
+                    .create_change(name, title, None)
+                {
                     let _ = std::fs::remove_dir_all(&change.path);
                     return Err(err.into());
                 }
-                self.provider.lock().unwrap().refresh();
+                self.compatibility_provider().lock().unwrap().refresh();
                 Ok(text_result(&format!(
                     "Proposed change '{name}' at {}",
                     change.path.display()
@@ -896,10 +2010,10 @@ impl LifecycleFeature {
                 let path = omegon_opsx::OpenSpecRepository::new(&self.repo_path)
                     .add_spec(name, domain, content)?;
                 {
-                    let mut opsx = self.opsx.lock().unwrap();
+                    let mut opsx = self.compatibility_opsx().lock().unwrap();
                     sync::sync_change_by_name(&mut opsx, &self.repo_path, name)?;
                 }
-                self.provider.lock().unwrap().refresh();
+                self.compatibility_provider().lock().unwrap().refresh();
                 Ok(text_result(&format!(
                     "Added spec '{domain}' to '{name}' at {}",
                     path.display()
@@ -911,7 +2025,7 @@ impl LifecycleFeature {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("change_name required"))?;
 
-                let mut opsx = self.opsx.lock().unwrap();
+                let mut opsx = self.compatibility_opsx().lock().unwrap();
                 let (change, _) = sync::sync_change_by_name(&mut opsx, &self.repo_path, name)?;
                 if args.get("total_tasks").is_some() || args.get("done_tasks").is_some() {
                     anyhow::bail!(
@@ -963,11 +2077,11 @@ impl LifecycleFeature {
                 let report =
                     spec::set_task_checkbox_status(&self.repo_path, name, group, task_id, status)?;
                 {
-                    let mut opsx = self.opsx.lock().unwrap();
+                    let mut opsx = self.compatibility_opsx().lock().unwrap();
                     let (change, _) = sync::sync_change_by_name(&mut opsx, &self.repo_path, name)?;
                     opsx.update_change_progress(name, change.total_tasks, change.done_tasks)?;
                 }
-                self.provider.lock().unwrap().refresh();
+                self.compatibility_provider().lock().unwrap().refresh();
                 Ok(text_result(&format!(
                     "Updated OpenSpec task:
 - change: {}
@@ -1003,7 +2117,7 @@ impl LifecycleFeature {
                     anyhow::bail!("path required");
                 }
 
-                let mut opsx = self.opsx.lock().unwrap();
+                let mut opsx = self.compatibility_opsx().lock().unwrap();
                 sync::sync_change_by_name(&mut opsx, &self.repo_path, name)?;
                 let state = sync::change_state(&opsx, name);
                 if !matches!(
@@ -1040,7 +2154,7 @@ impl LifecycleFeature {
                 let name = args["change_name"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("change_name required"))?;
-                archive::recover_archive_transactions(&self.repo_path, &self.opsx)?;
+                archive::recover_archive_transactions(&self.repo_path, self.compatibility_opsx())?;
                 let change_dir = self.repo_path.join("openspec/changes").join(name);
                 if !change_dir.exists() {
                     anyhow::bail!("Change '{name}' does not exist");
@@ -1050,7 +2164,7 @@ impl LifecycleFeature {
                     anyhow::bail!("Archived change '{name}' already exists");
                 }
                 {
-                    let mut opsx = self.opsx.lock().unwrap();
+                    let mut opsx = self.compatibility_opsx().lock().unwrap();
                     sync::sync_change_by_name(&mut opsx, &self.repo_path, name)?;
                     if sync::change_state(&opsx, name) != Some(OpsxChangeState::Verifying) {
                         anyhow::bail!(
@@ -1076,7 +2190,7 @@ impl LifecycleFeature {
                     )?;
                     archive::remove_archive_tx(&self.repo_path, name)?;
                 }
-                self.provider.lock().unwrap().refresh();
+                self.compatibility_provider().lock().unwrap().refresh();
                 Ok(text_result(&format!("Archived change '{name}'")))
             }
 
@@ -1091,6 +2205,31 @@ impl LifecycleFeature {
 impl Feature for LifecycleFeature {
     fn name(&self) -> &str {
         "lifecycle"
+    }
+
+    fn runtime_contribution_generation_id(&self) -> Option<RuntimeContributionGenerationId> {
+        Some(
+            RuntimeContributionGenerationId::new(crate::lifecycle_service::LIFECYCLE_GENERATION)
+                .expect("static generation id is valid"),
+        )
+    }
+
+    fn runtime_lifecycle_policy(&self) -> Option<RuntimeLifecyclePolicy> {
+        Some(RuntimeLifecyclePolicy {
+            requirement: RuntimeLifecycleRequirement::Optional,
+            failure_disposition: RuntimeFailureDisposition::DegradeLocally,
+            readiness_timeout_ms: 0,
+            heartbeat_timeout_ms: None,
+            restart_limit: 0,
+        })
+    }
+
+    fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
+        Some(RuntimeCompositionTransitionPolicy {
+            activation_boundary: RuntimeActivationBoundary::Boot,
+            cleanup: RuntimeCleanupRequirement::Strict,
+            cleanup_timeout_ms: 5_000,
+        })
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
@@ -1222,20 +2361,48 @@ impl Feature for LifecycleFeature {
     async fn execute(
         &self,
         tool_name: &str,
-        _call_id: &str,
+        call_id: &str,
         args: Value,
-        _cancel: tokio_util::sync::CancellationToken,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        match tool_name {
-            crate::tool_registry::lifecycle::DESIGN_TREE => self.execute_design_tree(&args),
-            crate::tool_registry::lifecycle::DESIGN_TREE_UPDATE => {
-                self.execute_design_tree_update(&args)
-            }
-            crate::tool_registry::lifecycle::OPENSPEC_MANAGE => self.execute_openspec_manage(&args),
-            crate::tool_registry::lifecycle::LIFECYCLE_DOCTOR => {
-                self.execute_lifecycle_doctor(&args)
-            }
-            _ => anyhow::bail!("Unknown tool: {tool_name}"),
+        if self.lifecycle_binding.is_some() {
+            return match tool_name {
+                crate::tool_registry::lifecycle::DESIGN_TREE => {
+                    self.managed_design_tree(&args, cancel).await
+                }
+                crate::tool_registry::lifecycle::DESIGN_TREE_UPDATE => {
+                    self.managed_design_tree_update(call_id, &args, cancel)
+                        .await
+                }
+                crate::tool_registry::lifecycle::OPENSPEC_MANAGE => {
+                    self.managed_openspec(call_id, &args, cancel).await
+                }
+                crate::tool_registry::lifecycle::LIFECYCLE_DOCTOR => {
+                    self.managed_doctor(&args, cancel).await
+                }
+                _ => anyhow::bail!("Unknown tool: {tool_name}"),
+            };
+        }
+        #[cfg(test)]
+        {
+            return match tool_name {
+                crate::tool_registry::lifecycle::DESIGN_TREE => self.execute_design_tree(&args),
+                crate::tool_registry::lifecycle::DESIGN_TREE_UPDATE => {
+                    self.execute_design_tree_update(&args)
+                }
+                crate::tool_registry::lifecycle::OPENSPEC_MANAGE => {
+                    self.execute_openspec_manage(&args)
+                }
+                crate::tool_registry::lifecycle::LIFECYCLE_DOCTOR => {
+                    self.execute_lifecycle_doctor(&args)
+                }
+                _ => anyhow::bail!("Unknown tool: {tool_name}"),
+            };
+        }
+        #[cfg(not(test))]
+        {
+            let _ = (call_id, args, cancel);
+            anyhow::bail!("managed lifecycle service is unavailable")
         }
     }
 
@@ -1244,7 +2411,7 @@ impl Feature for LifecycleFeature {
             CommandDefinition {
                 name: "design-focus".into(),
                 description: "Pin a design node (inject its context) — use via agent tool, not operator command".into(),
-                subcommands: self.provider.lock().unwrap().all_nodes().keys().cloned().collect(),
+                subcommands: self.observed_design_nodes().keys().cloned().collect(),
             availability: omegon_traits::CommandAvailability::ALL,
             safety: omegon_traits::CommandSafety::STATE_CHANGING,
                 surface: Default::default(),
@@ -1288,42 +2455,40 @@ impl Feature for LifecycleFeature {
             "design-focus" => {
                 let id = args.trim();
                 if id.is_empty() {
-                    let p = self.provider.lock().unwrap();
-                    if let Some(focused) = p.focused_node_id() {
+                    if let Some(focused) = self.focused_node_id() {
                         return CommandResult::Display(format!("Currently focused on: {focused}"));
                     }
                     return CommandResult::Display(
                         "No node focused. Usage: design-focus <node-id>".into(),
                     );
                 }
-                let display = {
-                    let p = self.provider.lock().unwrap();
-                    let Some(node) = p.get_node(id) else {
-                        return CommandResult::Display(format!("Node '{id}' not found"));
-                    };
-                    format!(
-                        "Focused → {} {} — {}",
-                        node.status.icon(),
-                        node.id,
-                        node.title
-                    )
+                let nodes = self.observed_design_nodes();
+                let Some(node) = nodes.get(id) else {
+                    return CommandResult::Display(format!("Node '{id}' not found"));
                 };
-                self.provider
-                    .lock()
-                    .unwrap()
-                    .set_focus(Some(id.to_string()));
+                let display = format!(
+                    "Focused → {} {} — {}",
+                    node.status.icon(),
+                    node.id,
+                    node.title
+                );
+                if let Err(error) = self.set_focus(Some(id.to_string())) {
+                    return CommandResult::Display(error.to_string());
+                }
                 CommandResult::Display(display)
             }
 
             "design-unfocus" => {
-                self.provider.lock().unwrap().set_focus(None);
+                if let Err(error) = self.set_focus(None) {
+                    return CommandResult::Display(error.to_string());
+                }
                 CommandResult::Display("Design focus cleared".into())
             }
 
             "design" => {
                 let sub = args.trim();
-                let p = self.provider.lock().unwrap();
-                let nodes = p.all_nodes();
+                let focused_node_id = self.focused_node_id();
+                let nodes = self.observed_design_nodes();
                 if sub == "frontier" || sub.is_empty() && nodes.is_empty() {
                     return CommandResult::Display(format!("{} design nodes", nodes.len()));
                 }
@@ -1340,7 +2505,7 @@ impl Feature for LifecycleFeature {
                 }
 
                 // Show focused
-                if let Some(focused) = p.focused_node_id() {
+                if let Some(focused) = focused_node_id {
                     lines.push(format!("  Focused: {focused}"));
                 }
 
@@ -1352,7 +2517,22 @@ impl Feature for LifecycleFeature {
     }
 
     fn provide_context(&self, signals: &ContextSignals<'_>) -> Option<ContextInjection> {
-        self.provider.lock().unwrap().provide_context(signals)
+        if self.lifecycle_host.is_some() {
+            return self.managed_context();
+        }
+        #[cfg(test)]
+        {
+            return self
+                .compatibility_provider()
+                .lock()
+                .unwrap()
+                .provide_context(signals);
+        }
+        #[cfg(not(test))]
+        {
+            let _ = signals;
+            None
+        }
     }
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
@@ -1396,7 +2576,25 @@ impl Feature for LifecycleFeature {
                 self.turn_counter += 1;
                 // Refresh every 5 turns to pick up external changes
                 if self.turn_counter.is_multiple_of(5) {
-                    self.provider.lock().unwrap().refresh();
+                    #[cfg(test)]
+                    if let Some(provider) = &self.provider {
+                        provider.lock().unwrap().refresh();
+                    }
+                    if let Some(host) = self.lifecycle_host.clone()
+                        && let Ok(runtime) = tokio::runtime::Handle::try_current()
+                    {
+                        runtime.spawn(async move {
+                            if let Err(error) = host
+                                .refresh(
+                                    crate::lifecycle::read_model::SnapshotOptions::default(),
+                                    tokio_util::sync::CancellationToken::new(),
+                                )
+                                .await
+                            {
+                                tracing::debug!(%error, "managed lifecycle periodic refresh failed");
+                            }
+                        });
+                    }
                 }
                 // Drain auto-store facts queued by execute() handlers
                 self.pending_memory
@@ -1407,16 +2605,38 @@ impl Feature for LifecycleFeature {
             BusEvent::SessionEnd { turns, .. } if *turns > 0 => {
                 // Export design tree to Codex vault if configured
                 if let Some(ref vault_path) = self.codex_vault_path {
-                    let provider = self.provider.lock().unwrap();
-                    let nodes = provider.all_nodes();
-                    let sections_cache = provider.sections_cache();
-                    let node_list: Vec<&DesignNode> = nodes.values().collect();
-                    if !node_list.is_empty() {
-                        let owned_nodes: Vec<DesignNode> = node_list.into_iter().cloned().collect();
+                    let export = self
+                        .lifecycle_host
+                        .as_ref()
+                        .and_then(|host| host.observe().ok()?.repository)
+                        .map(|repository| {
+                            (
+                                repository
+                                    .design
+                                    .nodes
+                                    .values()
+                                    .cloned()
+                                    .collect::<Vec<_>>(),
+                                repository.sections.clone(),
+                            )
+                        });
+                    #[cfg(test)]
+                    let export = export.or_else(|| {
+                        self.provider.as_ref().and_then(|provider| {
+                            let provider = provider.lock().ok()?;
+                            Some((
+                                provider.all_nodes().values().cloned().collect::<Vec<_>>(),
+                                provider.sections_cache().clone(),
+                            ))
+                        })
+                    });
+                    if let Some((owned_nodes, sections)) = export
+                        && !owned_nodes.is_empty()
+                    {
                         match crate::lifecycle::codex_export::export_design_tree_to_vault(
                             vault_path,
                             &owned_nodes,
-                            sections_cache,
+                            &sections,
                         ) {
                             Ok(count) => {
                                 tracing::info!(
@@ -1470,6 +2690,131 @@ mod tests {
         (dir, repo)
     }
 
+    async fn managed_feature(repo: &std::path::Path) -> (crate::bus::EventBus, LifecycleFeature) {
+        let (bus, binding) = crate::lifecycle_service::test_binding(repo.to_path_buf())
+            .await
+            .unwrap();
+        let host = crate::runtime_state::LifecycleHostHandle::new(binding.clone());
+        host.refresh(
+            crate::lifecycle::read_model::SnapshotOptions::default(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        (bus, LifecycleFeature::managed(repo, binding, host))
+    }
+
+    #[test]
+    fn production_setup_does_not_construct_the_compatibility_lifecycle_owner() {
+        let setup = include_str!("../setup.rs");
+        assert!(!setup.contains("LifecycleFeature::try_new"));
+        assert!(setup.contains("LifecycleFeature::managed"));
+    }
+
+    #[test]
+    fn production_consumers_do_not_reconstruct_lifecycle_authority() {
+        let sources = [
+            ("setup", include_str!("../setup.rs")),
+            ("context", include_str!("context.rs")),
+            ("acp", include_str!("../acp.rs")),
+            ("tui", include_str!("../tui/mod.rs")),
+            ("web", include_str!("../web/api.rs")),
+            ("ipc", include_str!("../ipc/snapshot.rs")),
+            ("workflow", include_str!("../workflow.rs")),
+            ("work aggregation", include_str!("work_aggregation.rs")),
+            ("project rules", include_str!("../project_rules.rs")),
+            ("session log", include_str!("session_log.rs")),
+            ("check-in", include_str!("../control_runtime.rs")),
+            ("prompt", include_str!("../prompt.rs")),
+            ("startup", include_str!("../startup.rs")),
+        ];
+        for (name, source) in sources {
+            for forbidden in [
+                "LifecycleContextProvider",
+                "OpenSpecRepository",
+                "JsonFileStore",
+                "scan_design_docs",
+                "lifecycle::spec::list_changes",
+                "doctor::audit_repo",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{name} must not reconstruct lifecycle authority through {forbidden}"
+                );
+            }
+        }
+
+        let tools = include_str!("../tools/mod.rs");
+        assert!(tools.contains("#[cfg(test)]\npub fn lifecycle_plan_projection"));
+        assert!(tools.contains("#[cfg(test)]\npub fn render_lifecycle_plan_list"));
+    }
+
+    #[tokio::test]
+    async fn managed_feature_reads_and_mutates_only_through_the_service() {
+        let (_dir, repo) = setup_test_repo();
+        let (_bus, feature) = managed_feature(&repo).await;
+
+        let list = feature
+            .execute(
+                crate::tool_registry::lifecycle::DESIGN_TREE,
+                "managed-list",
+                json!({"action": "list"}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            &list.content[0],
+            ContentBlock::Text { text } if text.contains("test-node")
+        ));
+
+        let created = feature
+            .execute(
+                crate::tool_registry::lifecycle::DESIGN_TREE_UPDATE,
+                "managed-create",
+                json!({
+                    "action": "create",
+                    "node_id": "managed-node",
+                    "title": "Managed Node",
+                    "overview": "Managed repository mutation."
+                }),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            &created.content[0],
+            ContentBlock::Text { text } if text.contains("Created design node 'managed-node'")
+        ));
+        assert!(repo.join("docs/managed-node.md").is_file());
+
+        let proposed = feature
+            .execute(
+                crate::tool_registry::lifecycle::OPENSPEC_MANAGE,
+                "managed-propose",
+                json!({
+                    "action": "propose",
+                    "name": "managed-change",
+                    "title": "Managed Change",
+                    "intent": "Prove managed ownership."
+                }),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            &proposed.content[0],
+            ContentBlock::Text { text } if text.contains("Proposed change 'managed-change'")
+        ));
+        assert!(
+            repo.join("openspec/changes/managed-change/proposal.md")
+                .is_file()
+                || repo
+                    .join("ai/openspec/changes/managed-change/proposal.md")
+                    .is_file()
+        );
+    }
+
     #[test]
     fn feature_provides_tools() {
         let dir = tempfile::tempdir().unwrap();
@@ -1489,6 +2834,34 @@ mod tests {
         let commands = feature.commands();
         assert!(commands.iter().any(|c| c.name == "design-focus"));
         assert!(commands.iter().any(|c| c.name == "design"));
+    }
+
+    #[test]
+    fn fallible_construction_rejects_corrupt_and_future_state_without_retry() {
+        for content in [
+            "{not-json}".to_string(),
+            serde_json::json!({
+                "version": 999,
+                "revision": 0,
+                "nodes": [],
+                "changes": [],
+                "milestones": [],
+                "audit_log": []
+            })
+            .to_string(),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let state_dir = dir.path().join("ai/lifecycle");
+            fs::create_dir_all(&state_dir).unwrap();
+            fs::write(state_dir.join("state.json"), content).unwrap();
+
+            let error = match LifecycleFeature::try_new(dir.path()) {
+                Ok(_) => panic!("invalid lifecycle state must fail closed"),
+                Err(error) => error,
+            };
+
+            assert!(error.to_string().contains("lifecycle state unavailable"));
+        }
     }
 
     #[test]
@@ -1725,7 +3098,7 @@ mod tests {
         assert!(matches!(result, CommandResult::Display(ref s) if s.contains("Focused")));
         assert_eq!(
             feature
-                .provider
+                .compatibility_provider()
                 .lock()
                 .unwrap()
                 .focused_node_id()
@@ -1735,7 +3108,14 @@ mod tests {
 
         let result = feature.handle_command("design-unfocus", "");
         assert!(matches!(result, CommandResult::Display(ref s) if s.contains("cleared")));
-        assert!(feature.provider.lock().unwrap().focused_node_id().is_none());
+        assert!(
+            feature
+                .compatibility_provider()
+                .lock()
+                .unwrap()
+                .focused_node_id()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1995,7 +3375,8 @@ mod tests {
         write_archive_tx_for_test(&repo, "pending-archive", "intent_written");
 
         let feature = LifecycleFeature::new(&repo);
-        let recovered = archive::recover_archive_transactions(&repo, &feature.opsx).unwrap();
+        let recovered =
+            archive::recover_archive_transactions(&repo, feature.compatibility_opsx()).unwrap();
 
         assert!(recovered[0].contains("removed stale"));
         assert!(change_dir.exists());
@@ -2012,18 +3393,22 @@ mod tests {
 
         let feature = LifecycleFeature::new(&repo);
         feature
-            .opsx
+            .compatibility_opsx()
             .lock()
             .unwrap()
             .create_change("crash-window", "Crash Window", None)
             .unwrap();
 
-        let recovered = archive::recover_archive_transactions(&repo, &feature.opsx).unwrap();
+        let recovered =
+            archive::recover_archive_transactions(&repo, feature.compatibility_opsx()).unwrap();
 
         assert!(recovered[0].contains("completed interrupted archive"));
         assert!(!archive::archive_tx_path(&repo, "crash-window").exists());
         assert_eq!(
-            sync::change_state(&feature.opsx.lock().unwrap(), "crash-window"),
+            sync::change_state(
+                &feature.compatibility_opsx().lock().unwrap(),
+                "crash-window"
+            ),
             Some(OpsxChangeState::Archived)
         );
     }
@@ -2038,7 +3423,7 @@ mod tests {
 
         let feature = LifecycleFeature::new(&repo);
         feature
-            .opsx
+            .compatibility_opsx()
             .lock()
             .unwrap()
             .create_change("crash-window", "Crash Window", None)
@@ -2065,25 +3450,38 @@ mod tests {
 
         let feature = LifecycleFeature::new(&repo);
         feature
-            .opsx
+            .compatibility_opsx()
             .lock()
             .unwrap()
             .create_change("state-saved", "State Saved", None)
             .unwrap();
         feature
-            .opsx
+            .compatibility_opsx()
             .lock()
             .unwrap()
             .force_transition_change("state-saved", OpsxChangeState::Archived, "test setup")
             .unwrap();
-        let audit_len_before = feature.opsx.lock().unwrap().state().audit_log.len();
+        let audit_len_before = feature
+            .compatibility_opsx()
+            .lock()
+            .unwrap()
+            .state()
+            .audit_log
+            .len();
 
-        let recovered = archive::recover_archive_transactions(&repo, &feature.opsx).unwrap();
+        let recovered =
+            archive::recover_archive_transactions(&repo, feature.compatibility_opsx()).unwrap();
 
         assert!(recovered[0].contains("completed interrupted archive"));
         assert!(!archive::archive_tx_path(&repo, "state-saved").exists());
         assert_eq!(
-            feature.opsx.lock().unwrap().state().audit_log.len(),
+            feature
+                .compatibility_opsx()
+                .lock()
+                .unwrap()
+                .state()
+                .audit_log
+                .len(),
             audit_len_before
         );
     }
@@ -2096,7 +3494,7 @@ mod tests {
         write_archive_tx_for_test(&repo, "conflict", "content_moved");
 
         let feature = LifecycleFeature::new(&repo);
-        let err = archive::recover_archive_transactions(&repo, &feature.opsx)
+        let err = archive::recover_archive_transactions(&repo, feature.compatibility_opsx())
             .unwrap_err()
             .to_string();
 
@@ -2109,7 +3507,7 @@ mod tests {
         write_archive_tx_for_test(&repo, "missing", "content_moved");
 
         let feature = LifecycleFeature::new(&repo);
-        let err = archive::recover_archive_transactions(&repo, &feature.opsx)
+        let err = archive::recover_archive_transactions(&repo, feature.compatibility_opsx())
             .unwrap_err()
             .to_string();
 
@@ -2125,7 +3523,7 @@ mod tests {
 
         let feature = LifecycleFeature::new(&repo);
         feature
-            .opsx
+            .compatibility_opsx()
             .lock()
             .unwrap()
             .create_change("crash-window", "Crash Window", None)

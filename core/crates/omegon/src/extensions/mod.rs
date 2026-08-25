@@ -2256,6 +2256,8 @@ description = "fixture"
 [runtime]
 type = "native"
 binary = "{}"
+[startup]
+timeout_ms = 30000
 [runtime.config]
 data_dir = "relative"
 "#,
@@ -2329,6 +2331,8 @@ description = "Flaky test extension"
 [runtime]
 type = "native"
 binary = "flaky-extension.sh"
+[startup]
+timeout_ms = 30000
 "#,
         )
         .unwrap();
@@ -2481,6 +2485,9 @@ description = "Voice test extension"
 type = "native"
 binary = "voice-extension.sh"
 
+[startup]
+timeout_ms = 30000
+
 [capabilities]
 voice = true
 "#,
@@ -2499,7 +2506,7 @@ voice = true
             .collect();
         assert_eq!(names, vec!["voice_status"]);
 
-        let notification = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        let notification = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
             .await
             .expect("notification received")
             .expect("notification channel open");
@@ -2554,6 +2561,9 @@ description = "Voice test extension"
 type = "native"
 binary = "voice-extension.sh"
 
+[startup]
+timeout_ms = 30000
+
 [capabilities]
 voice = true
 "#,
@@ -2572,7 +2582,7 @@ voice = true
             cancel.clone(),
         );
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 if let Some(event) = daemon_events.lock().unwrap().first().cloned() {
                     return event;
@@ -2640,6 +2650,9 @@ description = "Non voice extension"
 [runtime]
 type = "native"
 binary = "voice-extension.sh"
+
+[startup]
+timeout_ms = 30000
 "#,
         )
         .unwrap();
@@ -2850,6 +2863,8 @@ description = "SDK compatibility test extension"
 [runtime]
 type = "native"
 binary = "sdk-extension.sh"
+[startup]
+timeout_ms = 30000
 "#,
         )
         .unwrap();

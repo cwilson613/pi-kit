@@ -5739,19 +5739,10 @@ warning: {warning}"
                 SlashResult::Display(out.trim_end().to_string())
             }
             // /milestone doctor — lifecycle drift audit
-            ["doctor"] => {
-                let repo_root = crate::setup::find_project_root(self.cwd());
-                let findings = crate::lifecycle::doctor::audit_repo(&repo_root);
-                if findings.is_empty() {
-                    SlashResult::Display("✓ No suspicious lifecycle drift found.".into())
-                } else {
-                    let mut out = format!("Lifecycle doctor: {} finding(s)\n\n", findings.len());
-                    for f in findings {
-                        out.push_str(&format!("• {} [{}]\n  {}\n  {}\n\n", f.node_id, f.kind.as_str(), f.title, f.detail));
-                    }
-                    SlashResult::Display(out.trim_end().to_string())
-                }
-            }
+            ["doctor"] => SlashResult::Display(
+                "Lifecycle audit is managed by the `lifecycle_doctor` tool; ask the agent to run it."
+                    .into(),
+            ),
             // /milestone <version> — show specific milestone
             [version] => {
                 let milestones = load_milestones(&milestone_file);

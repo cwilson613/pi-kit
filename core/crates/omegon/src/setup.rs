@@ -13,15 +13,16 @@ use crate::bus::EventBus;
 use crate::context::ContextManager;
 use crate::conversation::ConversationState;
 use crate::features;
-use crate::lifecycle;
 use crate::prompt;
 use crate::session;
 use crate::tools;
 
-pub(crate) async fn register_work_aggregation(bus: &mut EventBus, project_root: &Path) {
-    let feature =
-        features::work_aggregation::WorkAggregationFeature::from_repository(project_root).await;
+pub(crate) fn register_work_aggregation(
+    bus: &mut EventBus,
+) -> features::work_aggregation::WorkSnapshotPublisher {
+    let (feature, publisher) = features::work_aggregation::WorkAggregationFeature::pending();
     bus.register(Box::new(feature));
+    publisher
 }
 
 /// Summary of a resumed session, surfaced to the TUI for the welcome brief.
@@ -59,6 +60,8 @@ pub struct AgentSetup {
     pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
     /// Stateless behavior policy captured with its accepted service identity.
     pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
+    /// Boot-captured exact-generation lifecycle service binding.
+    pub(crate) lifecycle_binding: crate::lifecycle_service::LifecycleBinding,
     /// Stable session id for the current live conversation. Fresh sessions
     /// get a generated id at startup; resumed sessions reuse their saved id.
     pub session_id: String,
@@ -253,59 +256,60 @@ pub(crate) struct StartupSnapshot {
 }
 
 /// Snapshot of design-tree + openspec state, extracted before boxing the provider.
+#[derive(Default)]
 pub(crate) struct LifecycleSnapshot {
     pub focused_node: Option<crate::runtime_state::FocusedNodeSummary>,
     pub active_changes: Vec<crate::runtime_state::ChangeSummary>,
 }
 
 impl LifecycleSnapshot {
-    fn from_lifecycle_feature(lf: &features::lifecycle::LifecycleFeature) -> Self {
-        let read_handle = lf.read_handle();
-        let focused_node = read_handle
-            .design_tree_snapshot(false)
-            .ok()
-            .and_then(|snapshot| {
-                snapshot.focused_node_id.and_then(|id| {
-                    snapshot.nodes.get(&id).map(|n| {
-                        let sections = lifecycle::design::read_node_sections(n);
-                        let assumptions = n.assumption_count();
-                        let decisions_count = sections
-                            .as_ref()
-                            .map(|s| s.decisions.iter().filter(|d| d.status == "decided").count())
-                            .unwrap_or(0);
-                        let readiness = sections
-                            .as_ref()
-                            .map(|s| s.readiness_score())
-                            .unwrap_or(0.0);
-                        crate::runtime_state::FocusedNodeSummary {
-                            id: n.id.clone(),
-                            title: n.title.clone(),
-                            status: n.status,
-                            open_questions: n.open_questions.len() - assumptions,
-                            assumptions,
-                            decisions: decisions_count,
-                            readiness,
-                            openspec_change: n.openspec_change.clone(),
-                        }
+    fn from_managed(host: &crate::runtime_state::LifecycleHostHandle) -> Self {
+        let Ok(observation) = host.observe() else {
+            return Self::default();
+        };
+        let Some(repository) = observation.repository else {
+            return Self::default();
+        };
+        let focused_node = observation.focus.node_id.as_ref().and_then(|id| {
+            repository.design.nodes.get(id).map(|node| {
+                let sections = repository.sections.get(id);
+                let assumptions = node.assumption_count();
+                let decisions = sections
+                    .map(|sections| {
+                        sections
+                            .decisions
+                            .iter()
+                            .filter(|decision| decision.status == "decided")
+                            .count()
                     })
-                })
-            });
-
-        let active_changes: Vec<_> = read_handle
-            .openspec_snapshot(Default::default())
-            .map(|snapshot| {
-                snapshot
-                    .changes
-                    .into_iter()
-                    .map(|c| crate::runtime_state::ChangeSummary {
-                        name: c.name,
-                        stage: c.lifecycle_state,
-                        done_tasks: c.done_tasks,
-                        total_tasks: c.total_tasks,
-                    })
-                    .collect()
+                    .unwrap_or(0);
+                let readiness = sections
+                    .map(|sections| sections.readiness_score())
+                    .unwrap_or(0.0);
+                crate::runtime_state::FocusedNodeSummary {
+                    id: node.id.clone(),
+                    title: node.title.clone(),
+                    status: node.status,
+                    open_questions: node.open_questions.len().saturating_sub(assumptions),
+                    assumptions,
+                    decisions,
+                    readiness,
+                    openspec_change: node.openspec_change.clone(),
+                }
             })
-            .unwrap_or_default();
+        });
+        let active_changes = repository
+            .lifecycle
+            .openspec
+            .changes
+            .iter()
+            .map(|change| crate::runtime_state::ChangeSummary {
+                name: change.name.clone(),
+                stage: change.lifecycle_state.clone(),
+                done_tasks: change.done_tasks,
+                total_tasks: change.total_tasks,
+            })
+            .collect();
 
         Self {
             focused_node,
@@ -358,6 +362,17 @@ pub(crate) fn ensure_project_memory_store_ready(
             db_path.display(),
             db_path.display()
         ),
+    }
+}
+
+async fn managed_setup_error(bus: &mut EventBus, error: anyhow::Error) -> anyhow::Error {
+    let report = bus.shutdown_managed_services().await;
+    if report.all_resources_settled() {
+        error
+    } else {
+        error.context(format!(
+            "published managed-service cleanup did not settle: {report:?}"
+        ))
     }
 }
 
@@ -771,7 +786,14 @@ impl AgentSetup {
         // Use project root (git repo root), not cwd — docs/ and openspec/
         // live at the repo root, which may differ from cwd when running
         // from a subdirectory like core/.
-        let mut lifecycle_feature = features::lifecycle::LifecycleFeature::new(&project_root);
+        let lifecycle_binding = crate::lifecycle_service::LifecycleBinding::default();
+        let lifecycle_host =
+            crate::runtime_state::LifecycleHostHandle::new(lifecycle_binding.clone());
+        let mut lifecycle_feature = features::lifecycle::LifecycleFeature::managed(
+            &project_root,
+            lifecycle_binding.clone(),
+            lifecycle_host.clone(),
+        );
         if let Some(ref vp) = codex_vault_path
             && codex_integration
                 .as_ref()
@@ -780,13 +802,13 @@ impl AgentSetup {
             lifecycle_feature = lifecycle_feature.with_codex_vault(vp.clone());
             tracing::info!(vault = %vp.display(), "Codex vault sync enabled for design tree");
         }
-        let lifecycle_snapshot = LifecycleSnapshot::from_lifecycle_feature(&lifecycle_feature);
-        let lifecycle_handle = lifecycle_feature.read_handle();
         bus.register(Box::new(lifecycle_feature));
 
-        // Publish one immutable repository-work snapshot with the same atomic
-        // composition boundary as the other statically linked contributions.
-        register_work_aggregation(&mut bus, &project_root).await;
+        // Declare the immutable work service in the initial boot graph. Its
+        // snapshot is populated from the managed lifecycle observation before
+        // setup publishes any consumer handles.
+        let work_snapshot_publisher = register_work_aggregation(&mut bus);
+
         bus.register(Box::new(
             features::behavior_policy::BehaviorPolicyHostFeature,
         ));
@@ -842,13 +864,11 @@ impl AgentSetup {
         bus.register(Box::new(cleave_feature));
 
         // ─── Codescan (codebase_search / codebase_index) ──────────────
-        bus.register(Box::new(features::adapter::ToolAdapter::new(
-            "codescan",
-            Box::new(tools::codebase_search::CodescanProvider::new(
-                project_root.clone(),
-            )),
+        let codescan_binding = crate::codescan_service::CodescanBinding::default();
+        bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
+            project_root.clone(),
+            codescan_binding.clone(),
         )));
-
         // ─── Delegate (subagent system) ─────────────────────────────────
         let agents = crate::features::delegate::scan_agents(&cwd);
         let mut delegate_feature = features::delegate::DelegateFeature::new_with_safety(
@@ -881,7 +901,8 @@ impl AgentSetup {
         // ─── Session log (context injection) ────────────────────────────
         bus.register(Box::new(
             features::session_log::SessionLog::new(&cwd)
-                .with_session_binding(deferred_session_view.clone()),
+                .with_session_binding(deferred_session_view.clone())
+                .with_lifecycle(lifecycle_host.clone()),
         ));
 
         // ─── Audit log (structured JSONL trail for postmortem) ──────────
@@ -1051,10 +1072,10 @@ impl AgentSetup {
                 context_metrics.clone(),
                 command_tx.clone(),
                 settings.clone(),
-                Some(lifecycle_handle.provider()),
+                Some(lifecycle_host.clone()),
                 context_memory_backend.clone(),
                 context_memory_mind.clone(),
-                Some(project_root.clone()),
+                Some(codescan_binding.clone()),
             ));
         bus.register(Box::new(context_service.as_ref().clone()));
 
@@ -1110,7 +1131,21 @@ impl AgentSetup {
         let plugins =
             crate::plugins::discover_plugins_filtered(&cwd, Some(secrets.as_ref()), &plugin_filter)
                 .await;
-        let (publication_result, mcp_supervisors, plugin_admissions) =
+        match crate::codescan_service::start_candidate(project_root.clone()).await {
+            Ok(candidate) => bus.stage_managed_generation("codescan", candidate)?,
+            Err(error) => tracing::warn!(
+                %error,
+                "codescan startup failed; code search and code context are unavailable"
+            ),
+        }
+        match crate::lifecycle_service::start_candidate(project_root.clone()).await {
+            Ok(candidate) => bus.stage_managed_generation("lifecycle", candidate)?,
+            Err(error) => tracing::warn!(
+                %error,
+                "managed lifecycle startup failed; lifecycle tools remain declared but unavailable"
+            ),
+        }
+        let (publication, mcp_supervisors, plugin_admissions) =
             plugins.publish_candidate(|plugins| {
                 for plugin in plugins {
                     bus.register(plugin);
@@ -1119,8 +1154,9 @@ impl AgentSetup {
                 // Freeze declarations, validate and plan the candidate graph, then
                 // publish legacy caches only from the accepted graph while plugin
                 // admission locks remain held.
-                bus.try_finalize()
+                bus.try_finalize_managed()
             });
+        let publication_result = publication.await;
         if let Err(error) = publication_result {
             let cleanup_failures = crate::extensions::shutdown_supervisors(
                 &extension_supervisors,
@@ -1149,14 +1185,59 @@ impl AgentSetup {
                     .join("; ")
             )));
         }
+        if let Err(error) = codescan_binding.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        if let Err(error) = lifecycle_binding.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        if lifecycle_binding.available()
+            && let Err(error) = lifecycle_host
+                .refresh(
+                    crate::lifecycle::read_model::SnapshotOptions::default(),
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+        {
+            tracing::warn!(error = %error, "managed lifecycle startup observation unavailable");
+        }
+        let lifecycle_observation = match lifecycle_host.observe() {
+            Ok(observation) => observation.repository,
+            Err(error) => {
+                return Err(managed_setup_error(
+                    &mut bus,
+                    anyhow::anyhow!("managed lifecycle observation failed: {error:?}"),
+                )
+                .await);
+            }
+        };
+        if let Some(observation) = lifecycle_observation {
+            let snapshot =
+                features::work_aggregation::WorkAggregationFeature::snapshot_from_observation(
+                    observation,
+                )
+                .await;
+            if let Err(error) = work_snapshot_publisher.publish(snapshot) {
+                return Err(managed_setup_error(&mut bus, error).await);
+            }
+        }
+        let lifecycle_snapshot = LifecycleSnapshot::from_managed(&lifecycle_host);
         drop(plugin_admissions);
         drop(extension_admission);
-        let work_snapshot = features::work_aggregation::capture_work_snapshot(&bus)?;
-        let behavior_policy = features::behavior_policy::capture_behavior_policy(&bus)?;
-        if let Some(snapshot) = work_snapshot.as_ref() {
-            work_snapshot_slot
+        let work_snapshot = match features::work_aggregation::capture_work_snapshot(&bus) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Err(managed_setup_error(&mut bus, error).await),
+        };
+        let behavior_policy = match features::behavior_policy::capture_behavior_policy(&bus) {
+            Ok(policy) => policy,
+            Err(error) => return Err(managed_setup_error(&mut bus, error).await),
+        };
+        if let Some(snapshot) = work_snapshot.as_ref()
+            && let Err(error) = work_snapshot_slot
                 .set(std::sync::Arc::clone(snapshot))
-                .map_err(|_| anyhow::anyhow!("work snapshot slot was already initialized"))?;
+                .map_err(|_| anyhow::anyhow!("work snapshot slot was already initialized"))
+        {
+            return Err(managed_setup_error(&mut bus, error).await);
         }
 
         // Wire ManageTools state so runtime filtering and list output reflect
@@ -1407,7 +1488,7 @@ impl AgentSetup {
                             ConversationState::new()
                         }
                         Err(error @ session::ResumeLoadError::Authority(_)) => {
-                            return Err(error.into());
+                            return Err(managed_setup_error(&mut bus, error.into()).await);
                         }
                     }
                 }
@@ -1541,10 +1622,29 @@ impl AgentSetup {
         if !pruned.is_empty() {
             tracing::debug!(?pruned, "pruned stale instance directories");
         }
+        let session_id = resume_info
+            .as_ref()
+            .map(|r| r.session_id.clone())
+            .unwrap_or_else(|| startup_session_id_hint.clone());
+        let session_snapshot = match crate::session_consumers::snapshot_path(&cwd, &session_id) {
+            Some(path) => path,
+            None => {
+                return Err(managed_setup_error(
+                    &mut bus,
+                    anyhow::anyhow!("cannot determine interactive session path"),
+                )
+                .await);
+            }
+        };
+        let session_view_binding =
+            crate::session_consumers::SessionViewBinding::new(session_snapshot, session_id.clone());
+        deferred_session_view.bind(session_view_binding.clone());
+
         let runtime_ownership =
             match crate::workspace::runtime::RuntimeOwnership::start(&cwd, runtime_mode) {
                 Ok(ownership) => ownership,
                 Err(error) => {
+                    let managed_error = managed_setup_error(&mut bus, error).await;
                     let cleanup_failures = crate::extensions::shutdown_supervisors(
                         &extension_supervisors,
                         std::time::Duration::from_millis(500),
@@ -1559,9 +1659,9 @@ impl AgentSetup {
                         );
                     }
                     if cleanup_failures.is_empty() && mcp_cleanup_failures.is_empty() {
-                        return Err(error);
+                        return Err(managed_error);
                     }
-                    return Err(error.context(format!(
+                    return Err(managed_error.context(format!(
                         "published startup candidate cleanup degraded: {}",
                         cleanup_failures
                             .into_iter()
@@ -1571,6 +1671,7 @@ impl AgentSetup {
                     )));
                 }
             };
+        bus.bind_runtime_ownership_retention(runtime_ownership.retention_flag());
         let instance_id = runtime_ownership.runtime_id().to_string();
         let _ =
             crate::workspace::runtime::write_workspace_lease(&cwd, &instance_id, &workspace_lease);
@@ -1585,22 +1686,13 @@ impl AgentSetup {
             lifecycle: lifecycle_snapshot,
         };
 
-        let session_id = resume_info
-            .as_ref()
-            .map(|r| r.session_id.clone())
-            .unwrap_or_else(|| startup_session_id_hint.clone());
-        let session_snapshot = crate::session_consumers::snapshot_path(&cwd, &session_id)
-            .ok_or_else(|| anyhow::anyhow!("cannot determine interactive session path"))?;
-        let session_view_binding =
-            crate::session_consumers::SessionViewBinding::new(session_snapshot, session_id.clone());
-        deferred_session_view.bind(session_view_binding.clone());
-
         let initial_harness_status = harness_status;
 
         Ok(Self {
             bus,
             work_snapshot,
             behavior_policy,
+            lifecycle_binding: lifecycle_binding.clone(),
             session_id,
             session_view_binding,
             instance_id,
@@ -1628,7 +1720,7 @@ impl AgentSetup {
             extension_rpc_handles,
             widget_receivers,
             dashboard_handles: crate::runtime_state::RuntimeStateHandles::new(
-                Some(lifecycle_handle),
+                lifecycle_host,
                 Some(cleave_handle),
                 Some(delegate_handle),
                 Some(delegate_tasks),

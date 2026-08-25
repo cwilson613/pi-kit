@@ -1971,7 +1971,7 @@ pub async fn runtime_substrate_refresh_response(
 }
 
 pub async fn status_view_response(
-    runtime_state: &InteractiveAgentState,
+    runtime_state: &mut InteractiveAgentState,
     agent: &InteractiveAgentHost,
     shared_settings: &settings::SharedSettings,
 ) -> SlashCommandResponse {
@@ -2353,20 +2353,17 @@ pub async fn checkin_view_response(
         ));
     }
 
-    let opsx_dir = agent.cwd.join("openspec").join("changes");
-    if opsx_dir.exists()
-        && let Ok(entries) = std::fs::read_dir(&opsx_dir)
+    if let Ok(observation) = agent.dashboard_handles.lifecycle_service.observe()
+        && let Some(repository) = observation.repository
     {
-        let active: Vec<String> = entries
-            .filter_map(|e| {
-                let e = e.ok()?;
-                if e.file_type().ok()?.is_dir() {
-                    Some(e.file_name().to_string_lossy().to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut active = repository
+            .lifecycle
+            .openspec
+            .changes
+            .iter()
+            .map(|change| change.name.clone())
+            .collect::<Vec<_>>();
+        active.sort();
         if !active.is_empty() {
             sections.push(format!(
                 "📋 {} OpenSpec change{}: {}",

@@ -33,6 +33,7 @@ pub struct SessionLog {
     turn_summaries: Vec<TurnSummary>,
     session_binding: Option<crate::session_consumers::DeferredSessionViewBinding>,
     event_session_id: Option<String>,
+    lifecycle: Option<crate::runtime_state::LifecycleHostHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +148,7 @@ impl SessionLog {
             turn_summaries: Vec::new(),
             session_binding: None,
             event_session_id: None,
+            lifecycle: None,
         }
     }
 
@@ -155,6 +157,14 @@ impl SessionLog {
         binding: crate::session_consumers::DeferredSessionViewBinding,
     ) -> Self {
         self.session_binding = Some(binding);
+        self
+    }
+
+    pub(crate) fn with_lifecycle(
+        mut self,
+        lifecycle: crate::runtime_state::LifecycleHostHandle,
+    ) -> Self {
+        self.lifecycle = Some(lifecycle);
         self
     }
 
@@ -233,34 +243,28 @@ impl SessionLog {
 
     /// Collect active OpenSpec changes (any with incomplete tasks).
     fn active_openspec(&self) -> Vec<String> {
-        let changes_dir = self.cwd.join("openspec/changes");
-        if !changes_dir.is_dir() {
-            return vec![];
-        }
-
-        let mut active = vec![];
-        if let Ok(entries) = fs::read_dir(&changes_dir) {
-            for entry in entries.flatten() {
-                let tasks_path = entry.path().join("tasks.md");
-                if !tasks_path.exists() {
-                    continue;
-                }
-                if let Ok(content) = fs::read_to_string(&tasks_path) {
-                    let total = content
-                        .lines()
-                        .filter(|l| l.trim_start().starts_with("- ["))
-                        .count();
-                    let done = content
-                        .lines()
-                        .filter(|l| l.trim_start().starts_with("- [x]"))
-                        .count();
-                    if total > 0 {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        active.push(format!("{name} ({done}/{total})"));
-                    }
-                }
-            }
-        }
+        let mut active = self
+            .lifecycle
+            .as_ref()
+            .and_then(|lifecycle| lifecycle.observe().ok()?.repository)
+            .map(|repository| {
+                repository
+                    .lifecycle
+                    .openspec
+                    .changes
+                    .iter()
+                    .filter(|change| {
+                        change.total_tasks > 0 && change.done_tasks < change.total_tasks
+                    })
+                    .map(|change| {
+                        format!(
+                            "{} ({}/{})",
+                            change.name, change.done_tasks, change.total_tasks
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         active.sort();
         active
     }

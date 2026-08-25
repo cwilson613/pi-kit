@@ -711,6 +711,9 @@ pub struct OmegonAcpAgent {
             >,
         >,
     >,
+    lifecycle_binding: RefCell<Option<crate::lifecycle_service::LifecycleBinding>>,
+    lifecycle_binding_rx:
+        RefCell<Option<tokio::sync::oneshot::Receiver<crate::lifecycle_service::LifecycleBinding>>>,
     host_caps: RefCell<HostCapabilities>,
     extension_metadata: Rc<RefCell<std::collections::BTreeMap<String, serde_json::Value>>>,
     extension_rpc_handles:
@@ -724,6 +727,8 @@ impl OmegonAcpAgent {
     fn clear_work_snapshot_capture(&self) {
         self.work_snapshot.borrow_mut().take();
         self.work_snapshot_rx.borrow_mut().take();
+        self.lifecycle_binding.borrow_mut().take();
+        self.lifecycle_binding_rx.borrow_mut().take();
     }
 
     pub fn new(model: &str) -> Self {
@@ -784,6 +789,8 @@ impl OmegonAcpAgent {
             secrets: RefCell::new(None),
             work_snapshot: RefCell::new(None),
             work_snapshot_rx: RefCell::new(None),
+            lifecycle_binding: RefCell::new(None),
+            lifecycle_binding_rx: RefCell::new(None),
             host_caps: RefCell::new(HostCapabilities::default()),
             extension_metadata: Rc::new(RefCell::new(extension_metadata)),
             extension_rpc_handles: Rc::new(RefCell::new(Default::default())),
@@ -1048,6 +1055,12 @@ impl OmegonAcpAgent {
             );
             self.work_snapshot.borrow_mut().take();
             *self.work_snapshot_rx.borrow_mut() = Some(work_snapshot_rx);
+            let lifecycle_binding_rx = std::mem::replace(
+                &mut handle.lifecycle_binding_rx,
+                tokio::sync::oneshot::channel().1,
+            );
+            self.lifecycle_binding.borrow_mut().take();
+            *self.lifecycle_binding_rx.borrow_mut() = Some(lifecycle_binding_rx);
 
             // Persistent lifecycle subscriber. Worker setup can emit extension
             // metadata/handles before any prompt is sent; prompt-time subscribers
@@ -2548,26 +2561,33 @@ impl OmegonAcpAgent {
         })
     }
 
-    fn lifecycle_repo_root(&self) -> std::path::PathBuf {
-        let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
-        crate::setup::find_project_root(&cwd)
+    async fn captured_lifecycle_binding(
+        &self,
+    ) -> anyhow::Result<crate::lifecycle_service::LifecycleBinding> {
+        if let Some(binding) = self.lifecycle_binding.borrow().clone() {
+            return Ok(binding);
+        }
+        let receiver = self.lifecycle_binding_rx.borrow_mut().take();
+        let binding = receiver
+            .ok_or_else(|| anyhow::anyhow!("managed lifecycle service is unavailable"))?
+            .await
+            .map_err(|_| anyhow::anyhow!("managed lifecycle binding transfer failed"))?;
+        *self.lifecycle_binding.borrow_mut() = Some(binding.clone());
+        Ok(binding)
     }
 
-    fn lifecycle_read_handle(&self) -> crate::lifecycle::read_model::LifecycleReadHandle {
-        let repo_root = self.lifecycle_repo_root();
-        let provider = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::lifecycle::context::LifecycleContextProvider::new(&repo_root),
-        ));
-        let opsx = std::sync::Arc::new(std::sync::Mutex::new(
-            omegon_opsx::Lifecycle::load(omegon_opsx::JsonFileStore::new(&repo_root))
-                .expect("lifecycle store should load"),
-        ));
-        crate::lifecycle::read_model::LifecycleReadHandle::new(provider, opsx, repo_root)
+    async fn lifecycle_request(
+        &self,
+        request: crate::lifecycle_service::LifecycleRequestV1,
+    ) -> anyhow::Result<crate::lifecycle_service::LifecycleResponseV1> {
+        self.captured_lifecycle_binding()
+            .await?
+            .invoke(request)
+            .await
+            .map_err(|error| anyhow::anyhow!("managed lifecycle request failed: {error:?}"))
     }
 
-    fn acp_lifecycle_snapshot_json(
+    async fn acp_lifecycle_snapshot_json(
         &self,
         params: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
@@ -2579,13 +2599,21 @@ impl OmegonAcpAgent {
             .get("include_specs")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let snapshot = self.lifecycle_read_handle().snapshot(
-            crate::lifecycle::read_model::SnapshotOptions {
-                include_archived,
-                include_specs,
-            },
-        )?;
+        let response = self
+            .lifecycle_request(crate::lifecycle_service::LifecycleRequestV1::Snapshot {
+                options: crate::lifecycle::read_model::SnapshotOptions {
+                    include_archived,
+                    include_specs,
+                },
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await?;
+        let crate::lifecycle_service::LifecyclePayloadV1::Snapshot(snapshot) = response.payload
+        else {
+            anyhow::bail!("managed lifecycle returned an unexpected snapshot response");
+        };
         Ok(serde_json::json!({
+            "revision": response.revision,
             "openspec": {
                 "total_tasks": snapshot.openspec.total_tasks,
                 "done_tasks": snapshot.openspec.done_tasks,
@@ -2618,11 +2646,17 @@ impl OmegonAcpAgent {
         }))
     }
 
-    fn acp_lifecycle_design_list_json(&self) -> anyhow::Result<serde_json::Value> {
-        let repo_root = self.lifecycle_repo_root();
-        let mut provider = crate::lifecycle::context::LifecycleContextProvider::new(&repo_root);
-        provider.refresh();
-        let nodes = provider.all_nodes();
+    async fn acp_lifecycle_design_list_json(&self) -> anyhow::Result<serde_json::Value> {
+        let response = self
+            .lifecycle_request(crate::lifecycle_service::LifecycleRequestV1::DesignTree {
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await?;
+        let crate::lifecycle_service::LifecyclePayloadV1::DesignTree(snapshot) = response.payload
+        else {
+            anyhow::bail!("managed lifecycle returned an unexpected design-tree response");
+        };
+        let nodes = snapshot.nodes;
         let list = nodes
             .values()
             .filter(|n| !crate::lifecycle::query::is_archived(n))
@@ -2638,14 +2672,14 @@ impl OmegonAcpAgent {
                     "branches": n.branches,
                     "openspec_change": n.openspec_change,
                     "priority": n.priority,
-                    "children": crate::lifecycle::design::get_children(nodes, &n.id).len(),
+                    "children": crate::lifecycle::design::get_children(&nodes, &n.id).len(),
                 })
             })
             .collect::<Vec<_>>();
-        Ok(serde_json::json!({ "nodes": list }))
+        Ok(serde_json::json!({ "revision": response.revision, "nodes": list }))
     }
 
-    fn acp_lifecycle_design_get_json(
+    async fn acp_lifecycle_design_get_json(
         &self,
         params: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
@@ -2653,14 +2687,29 @@ impl OmegonAcpAgent {
             .get("node_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-        let repo_root = self.lifecycle_repo_root();
-        let provider = crate::lifecycle::context::LifecycleContextProvider::new(&repo_root);
-        let node = provider
-            .get_node(node_id)
+        let response = self
+            .lifecycle_request(
+                crate::lifecycle_service::LifecycleRequestV1::ObserveDesignNode {
+                    id: node_id.into(),
+                    include_sections: true,
+                    include_tree_context: true,
+                    cancellation: tokio_util::sync::CancellationToken::new(),
+                },
+            )
+            .await?;
+        let crate::lifecycle_service::LifecyclePayloadV1::DesignNode(observation) =
+            response.payload
+        else {
+            anyhow::bail!("managed lifecycle returned an unexpected design-node response");
+        };
+        let observation = observation
+            .as_ref()
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Node '{node_id}' not found"))?;
-        let sections = crate::lifecycle::design::read_node_sections(node);
-        let children = crate::lifecycle::query::children(provider.all_nodes(), node_id);
+        let node = &observation.node;
+        let sections = observation.sections.as_ref();
         let mut result = serde_json::json!({
+            "revision": response.revision,
             "id": node.id,
             "title": node.title,
             "status": node.status.as_str(),
@@ -2672,17 +2721,17 @@ impl OmegonAcpAgent {
             "branches": node.branches,
             "openspec_change": node.openspec_change,
             "priority": node.priority,
-            "children": children.into_iter().map(|c| serde_json::json!({
-                "id": c.id,
-                "title": c.title,
-                "status": c.status,
+            "children": observation.children.as_deref().unwrap_or_default().iter().map(|child| serde_json::json!({
+                "id": child.id,
+                "title": child.title,
+                "status": child.status,
             })).collect::<Vec<_>>(),
         });
         if let Some(s) = sections {
             result["overview"] = serde_json::json!(s.overview);
             result["research"] = serde_json::json!(
                 s.research
-                    .into_iter()
+                    .iter()
                     .map(|r| serde_json::json!({
                         "heading": r.heading,
                         "content": r.content,
@@ -2691,7 +2740,7 @@ impl OmegonAcpAgent {
             );
             result["decisions"] = serde_json::json!(
                 s.decisions
-                    .into_iter()
+                    .iter()
                     .map(|d| serde_json::json!({
                         "title": d.title,
                         "status": d.status,
@@ -2704,35 +2753,52 @@ impl OmegonAcpAgent {
         Ok(result)
     }
 
-    fn acp_lifecycle_design_query_json(&self, query: &str) -> anyhow::Result<serde_json::Value> {
-        let repo_root = self.lifecycle_repo_root();
-        let provider = crate::lifecycle::context::LifecycleContextProvider::new(&repo_root);
-        let nodes = provider.all_nodes();
-        match query {
-            "ready" => Ok(serde_json::json!({
-                "nodes": crate::lifecycle::query::ready(nodes).into_iter().map(|n| serde_json::json!({
+    async fn acp_lifecycle_design_query_json(
+        &self,
+        query: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let query_kind = match query {
+            "ready" => crate::lifecycle_service::LifecycleReadQueryV1::Ready,
+            "blocked" => crate::lifecycle_service::LifecycleReadQueryV1::Blocked,
+            "frontier" => crate::lifecycle_service::LifecycleReadQueryV1::Frontier,
+            _ => anyhow::bail!("unknown lifecycle design query: {query}"),
+        };
+        let response = self
+            .lifecycle_request(crate::lifecycle_service::LifecycleRequestV1::QueryDesign {
+                query: query_kind,
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await?;
+        match response.payload {
+            crate::lifecycle_service::LifecyclePayloadV1::Ready(nodes) => Ok(serde_json::json!({
+                "revision": response.revision,
+                "nodes": nodes.into_iter().map(|n| serde_json::json!({
                     "id": n.id,
                     "title": n.title,
                     "priority": n.priority,
                 })).collect::<Vec<_>>()
             })),
-            "blocked" => Ok(serde_json::json!({
-                "nodes": crate::lifecycle::query::blocked(nodes).into_iter().map(|n| serde_json::json!({
+            crate::lifecycle_service::LifecyclePayloadV1::Blocked(nodes) => Ok(serde_json::json!({
+                "revision": response.revision,
+                "nodes": nodes.into_iter().map(|n| serde_json::json!({
                     "id": n.id,
                     "title": n.title,
                     "status": n.status,
                     "blocked_by": n.blocked_by,
                 })).collect::<Vec<_>>()
             })),
-            "frontier" => Ok(serde_json::json!({
-                "nodes": crate::lifecycle::query::frontier(nodes).into_iter().map(|n| serde_json::json!({
-                    "id": n.id,
-                    "title": n.title,
-                    "status": n.status,
-                    "open_questions": n.open_questions,
-                })).collect::<Vec<_>>()
-            })),
-            _ => anyhow::bail!("unknown lifecycle design query: {query}"),
+            crate::lifecycle_service::LifecyclePayloadV1::Frontier(nodes) => {
+                Ok(serde_json::json!({
+                    "revision": response.revision,
+                    "nodes": nodes.into_iter().map(|n| serde_json::json!({
+                        "id": n.id,
+                        "title": n.title,
+                        "status": n.status,
+                        "open_questions": n.open_questions,
+                    })).collect::<Vec<_>>()
+                }))
+            }
+            _ => anyhow::bail!("managed lifecycle returned an unexpected design-query response"),
         }
     }
 
@@ -2759,12 +2825,12 @@ impl OmegonAcpAgent {
         match method {
             "runtime/status" => Ok(self.runtime_status_json()),
 
-            "lifecycle/snapshot" => self.acp_lifecycle_snapshot_json(params),
-            "lifecycle/design/list" => self.acp_lifecycle_design_list_json(),
-            "lifecycle/design/get" => self.acp_lifecycle_design_get_json(params),
-            "lifecycle/design/ready" => self.acp_lifecycle_design_query_json("ready"),
-            "lifecycle/design/blocked" => self.acp_lifecycle_design_query_json("blocked"),
-            "lifecycle/design/frontier" => self.acp_lifecycle_design_query_json("frontier"),
+            "lifecycle/snapshot" => self.acp_lifecycle_snapshot_json(params).await,
+            "lifecycle/design/list" => self.acp_lifecycle_design_list_json().await,
+            "lifecycle/design/get" => self.acp_lifecycle_design_get_json(params).await,
+            "lifecycle/design/ready" => self.acp_lifecycle_design_query_json("ready").await,
+            "lifecycle/design/blocked" => self.acp_lifecycle_design_query_json("blocked").await,
+            "lifecycle/design/frontier" => self.acp_lifecycle_design_query_json("frontier").await,
 
             "provider/status" => Ok(self.provider_status_json()),
 
@@ -4990,6 +5056,10 @@ mod extension_metadata_tests {
         .unwrap();
         let agent = Rc::new(OmegonAcpAgent::new("test-model"));
         *agent.session_cwd.borrow_mut() = Some(home.path().to_path_buf());
+        let (_bus, binding) = crate::lifecycle_service::test_binding(home.path().to_path_buf())
+            .await
+            .unwrap();
+        *agent.lifecycle_binding.borrow_mut() = Some(binding);
 
         let ready = handle_acp_request_result(
             agent.clone(),
@@ -5033,6 +5103,10 @@ mod extension_metadata_tests {
         .unwrap();
         let agent = Rc::new(OmegonAcpAgent::new("test-model"));
         *agent.session_cwd.borrow_mut() = Some(home.path().to_path_buf());
+        let (_bus, binding) = crate::lifecycle_service::test_binding(home.path().to_path_buf())
+            .await
+            .unwrap();
+        *agent.lifecycle_binding.borrow_mut() = Some(binding);
 
         let snapshot =
             handle_acp_request_result(agent, "_lifecycle/snapshot", &serde_json::json!({}))

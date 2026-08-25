@@ -13,10 +13,12 @@ pub mod codex_export;
 pub mod context;
 pub mod design;
 pub mod doctor;
+#[cfg(test)]
 pub mod mutation;
 pub mod query;
 pub mod read_model;
 pub mod spec;
+#[cfg(test)]
 pub mod sync;
 pub mod types;
 // pub mod decompose; // TODO: decomposition engine (assess, fork, harvest, merge)

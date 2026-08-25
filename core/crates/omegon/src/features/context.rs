@@ -7,20 +7,15 @@
 //! - context_clear: clear history, start fresh
 
 use async_trait::async_trait;
-use omegon_codescan::{BM25Index, Indexer, ScanCache, SearchScope};
 use omegon_memory::{MemoryBackend, Section};
 use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
 use serde_json::{Value, json};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::lifecycle::context::LifecycleContextProvider;
-use crate::lifecycle::design;
 use crate::operator_commands::OperatorCommand as TuiCommand;
 use crate::settings::{Settings, SharedSettings};
 use crate::shadow_context::{ContextKind, EntryBody, ShadowContext, ShadowEntry};
-use omegon_opsx::ChangeState;
 
 fn dispatch_command(command_tx: &SharedCommandTx, command: TuiCommand) -> bool {
     if let Ok(guard) = command_tx.lock()
@@ -105,10 +100,10 @@ pub struct ContextProvider {
     command_tx: SharedCommandTx,
     metrics: Arc<Mutex<SharedContextMetrics>>,
     settings: Option<SharedSettings>,
-    lifecycle: Option<Arc<Mutex<LifecycleContextProvider>>>,
+    lifecycle: Option<crate::runtime_state::LifecycleHostHandle>,
     memory_backend: Option<Arc<dyn MemoryBackend>>,
     memory_mind: Option<String>,
-    repo_path: Option<PathBuf>,
+    codescan: crate::codescan_service::CodescanBinding,
 }
 
 struct PackReport {
@@ -185,18 +180,18 @@ impl ContextProvider {
             lifecycle: None,
             memory_backend: None,
             memory_mind: None,
-            repo_path: None,
+            codescan: crate::codescan_service::CodescanBinding::default(),
         }
     }
 
-    pub fn new_with_sources(
+    pub(crate) fn new_with_sources(
         metrics: Arc<Mutex<SharedContextMetrics>>,
         command_tx: SharedCommandTx,
         settings: Option<SharedSettings>,
-        lifecycle: Option<Arc<Mutex<LifecycleContextProvider>>>,
+        lifecycle: Option<crate::runtime_state::LifecycleHostHandle>,
         memory_backend: Option<Arc<dyn MemoryBackend>>,
         memory_mind: Option<String>,
-        repo_path: Option<PathBuf>,
+        codescan: Option<crate::codescan_service::CodescanBinding>,
     ) -> Self {
         Self {
             command_tx,
@@ -205,7 +200,7 @@ impl ContextProvider {
             lifecycle,
             memory_backend,
             memory_mind,
-            repo_path,
+            codescan: codescan.unwrap_or_default(),
         }
     }
 
@@ -355,19 +350,27 @@ impl ContextProvider {
         }
     }
 
-    fn summarize_decisions(
+    async fn summarize_decisions(
         &self,
         query: &str,
         reason: &str,
         max_items: usize,
+        cancellation: tokio_util::sync::CancellationToken,
     ) -> Option<PackReport> {
         let lifecycle = self.lifecycle.as_ref()?;
-        let provider = lifecycle.lock().ok()?;
+        let observation = lifecycle
+            .refresh(
+                crate::lifecycle::read_model::SnapshotOptions::default(),
+                cancellation,
+            )
+            .await
+            .ok()?;
+        let repository = observation.repository?;
         let mut entries = Vec::new();
 
-        if let Some(node_id) = provider.focused_node_id()
-            && let Some(node) = provider.get_node(node_id)
-            && let Some(sections) = design::read_node_sections(node)
+        if let Some(node_id) = observation.focus.node_id.as_deref()
+            && let Some(node) = repository.design.nodes.get(node_id)
+            && let Some(sections) = repository.sections.get(node_id)
         {
             for (idx, decision) in sections
                 .decisions
@@ -408,22 +411,41 @@ impl ContextProvider {
         Self::select_pack("Decisions", query, reason, entries)
     }
 
-    fn summarize_specs(&self, query: &str, reason: &str, max_items: usize) -> Option<PackReport> {
+    async fn summarize_specs(
+        &self,
+        query: &str,
+        reason: &str,
+        max_items: usize,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> Option<PackReport> {
         let lifecycle = self.lifecycle.as_ref()?;
-        let provider = lifecycle.lock().ok()?;
+        let observation = lifecycle
+            .refresh(
+                crate::lifecycle::read_model::SnapshotOptions {
+                    include_archived: false,
+                    include_specs: true,
+                },
+                cancellation,
+            )
+            .await
+            .ok()?;
+        let repository = observation.repository?;
         let mut entries = Vec::new();
         let query_lower = query.to_lowercase();
 
-        for change in provider.changes().iter().filter(|c| {
-            matches!(
-                c.state,
-                ChangeState::Implementing
-                    | ChangeState::Verifying
-                    | ChangeState::Planned
-                    | ChangeState::Specced
-            )
-        }) {
-            for spec in &change.specs {
+        for change in repository
+            .lifecycle
+            .openspec
+            .changes
+            .iter()
+            .filter(|change| {
+                matches!(
+                    change.lifecycle_state.as_str(),
+                    "implementing" | "verifying" | "planned" | "specced"
+                )
+            })
+        {
+            for spec in &change.spec_documents {
                 for req in &spec.requirements {
                     let req_hay =
                         format!("{} {} {}", spec.domain, req.title, req.description).to_lowercase();
@@ -526,16 +548,27 @@ impl ContextProvider {
         Self::select_pack("Memory", query, reason, entries)
     }
 
-    fn summarize_code(&self, query: &str, reason: &str, max_items: usize) -> Option<PackReport> {
-        let repo_path = self.repo_path.as_ref()?;
-        let db_path = repo_path.join(".omegon").join("codescan.db");
-        let mut cache = ScanCache::open(&db_path).ok()?;
-        Indexer::run(repo_path, &mut cache).ok()?;
-        let code_chunks = cache.all_code_chunks().ok()?;
-        let knowledge_chunks = cache.all_knowledge_chunks().ok()?;
-        let idx = BM25Index::build(&code_chunks, &knowledge_chunks);
+    async fn summarize_code(
+        &self,
+        query: &str,
+        reason: &str,
+        max_items: usize,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> Result<Option<PackReport>, &'static str> {
+        let handle = self.codescan.handle().ok_or("service:unavailable")?;
         let candidate_count = max_items.saturating_mul(4).clamp(max_items, 12);
-        let results = idx.search(query, SearchScope::Code, candidate_count);
+        let results = match handle
+            .invoke(crate::codescan_service::CodescanRequest::CodeContext {
+                query: query.into(),
+                max_results: candidate_count,
+                cancellation,
+            })
+            .await
+        {
+            Ok(crate::codescan_service::CodescanResponse::CodeContext(results)) => results,
+            Ok(_) => return Err("service:invalid_response"),
+            Err(error) => return Err(crate::codescan_service::unavailable_code(&error)),
+        };
         let entries = results
             .into_iter()
             .enumerate()
@@ -564,7 +597,7 @@ impl ContextProvider {
                 entry
             })
             .collect::<Vec<_>>();
-        Self::select_pack("Code", query, reason, entries)
+        Ok(Self::select_pack("Code", query, reason, entries))
     }
 
     fn code_search_text(file: &str, label: &str, preview: &str) -> String {
@@ -671,7 +704,7 @@ impl Feature for ContextProvider {
         tool_name: &str,
         _call_id: &str,
         _args: Value,
-        _cancel: tokio_util::sync::CancellationToken,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
             crate::tool_registry::context::CONTEXT_STATUS => {
@@ -787,11 +820,15 @@ Thinking Level: {}",
                             }));
                         }
                         "decisions" => {
-                            if let Some(pack) = self.summarize_decisions(
-                                query,
-                                reason,
-                                Self::request_max_items(req),
-                            ) {
+                            if let Some(pack) = self
+                                .summarize_decisions(
+                                    query,
+                                    reason,
+                                    Self::request_max_items(req),
+                                    cancel.child_token(),
+                                )
+                                .await
+                            {
                                 supported += 1;
                                 sections.push(pack.text.clone());
                                 pack_details.push(pack.details);
@@ -803,8 +840,14 @@ Thinking Level: {}",
                             }
                         }
                         "specs" => {
-                            if let Some(pack) =
-                                self.summarize_specs(query, reason, Self::request_max_items(req))
+                            if let Some(pack) = self
+                                .summarize_specs(
+                                    query,
+                                    reason,
+                                    Self::request_max_items(req),
+                                    cancel.child_token(),
+                                )
+                                .await
                             {
                                 supported += 1;
                                 sections.push(pack.text.clone());
@@ -832,17 +875,40 @@ Thinking Level: {}",
                             }
                         }
                         "code" => {
-                            if let Some(pack) =
-                                self.summarize_code(query, reason, Self::request_max_items(req))
+                            match self
+                                .summarize_code(
+                                    query,
+                                    reason,
+                                    Self::request_max_items(req),
+                                    cancel.clone(),
+                                )
+                                .await
                             {
-                                supported += 1;
-                                sections.push(pack.text.clone());
-                                pack_details.push(pack.details);
-                            } else {
-                                unsupported += 1;
-                                sections.push(format!(
-                                    "### code\n- Reason: {reason}\n- Query: {query}\n- Status: no code chunks matched this request."
-                                ));
+                                Ok(Some(pack)) => {
+                                    supported += 1;
+                                    sections.push(pack.text.clone());
+                                    pack_details.push(pack.details);
+                                }
+                                Ok(None) => {
+                                    unsupported += 1;
+                                    sections.push(format!(
+                                        "### code\n- Reason: {reason}\n- Query: {query}\n- Status: no code chunks matched this request."
+                                    ));
+                                }
+                                Err(code) => {
+                                    unsupported += 1;
+                                    sections.push(format!(
+                                        "### code\n- Reason: {reason}\n- Query: {query}\n- Status: codescan unavailable ({code})."
+                                    ));
+                                    pack_details.push(json!({
+                                        "kind": "Code",
+                                        "query": query,
+                                        "reason": reason,
+                                        "available": false,
+                                        "code": code,
+                                        "service": "service:codescan",
+                                    }));
+                                }
                             }
                         }
                         other => {
@@ -927,6 +993,30 @@ Thinking Level: {}",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn managed_codescan(
+        path: std::path::PathBuf,
+    ) -> (
+        crate::bus::EventBus,
+        crate::codescan_service::CodescanBinding,
+    ) {
+        let binding = crate::codescan_service::CodescanBinding::default();
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
+            path.clone(),
+            binding.clone(),
+        )));
+        bus.stage_managed_generation(
+            "codescan",
+            crate::codescan_service::start_candidate(path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+        binding.capture(&bus).unwrap();
+        (bus, binding)
+    }
 
     fn expect_text(result: &ToolResult) -> &str {
         match &result.content[0] {
@@ -1196,14 +1286,24 @@ mod tests {
             "---\nid: decision-node\ntitle: Decision Node\nstatus: exploring\nopen_questions: []\ndependencies: []\nrelated: []\n---\n\n# Decision Node\n\n## Overview\n\nOverview.\n\n## Decisions\n\n### Use selector policy\n\n**Status:** decided\n\n**Rationale:** Keeps request shaping bounded.\n",
         )
         .unwrap();
-        let mut lifecycle = LifecycleContextProvider::new(tmp.path());
-        lifecycle.set_focus(Some("decision-node".into()));
+        let (_bus, binding) = crate::lifecycle_service::test_binding(tmp.path().to_path_buf())
+            .await
+            .unwrap();
+        let lifecycle = crate::runtime_state::LifecycleHostHandle::new(binding);
+        lifecycle
+            .refresh(
+                crate::lifecycle::read_model::SnapshotOptions::default(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        lifecycle.set_focus(Some("decision-node".into())).unwrap();
 
         let provider = ContextProvider::new_with_sources(
             SharedContextMetrics::new(),
             new_shared_command_tx(),
             None,
-            Some(Arc::new(Mutex::new(lifecycle))),
+            Some(lifecycle),
             None,
             None,
             None,
@@ -1340,12 +1440,15 @@ mod tests {
         )
         .unwrap();
 
-        let lifecycle = LifecycleContextProvider::new(tmp.path());
+        let (_bus, binding) = crate::lifecycle_service::test_binding(tmp.path().to_path_buf())
+            .await
+            .unwrap();
+        let lifecycle = crate::runtime_state::LifecycleHostHandle::new(binding);
         let provider = ContextProvider::new_with_sources(
             SharedContextMetrics::new(),
             new_shared_command_tx(),
             None,
-            Some(Arc::new(Mutex::new(lifecycle))),
+            Some(lifecycle),
             None,
             None,
             None,
@@ -1394,6 +1497,7 @@ mod tests {
         )
         .unwrap();
 
+        let (_bus, codescan) = managed_codescan(tmp.path().to_path_buf()).await;
         let provider = ContextProvider::new_with_sources(
             SharedContextMetrics::new(),
             new_shared_command_tx(),
@@ -1401,7 +1505,7 @@ mod tests {
             None,
             None,
             None,
-            Some(tmp.path().to_path_buf()),
+            Some(codescan),
         );
         let result = provider
             .execute(
@@ -1447,6 +1551,7 @@ mod tests {
         )
         .unwrap();
 
+        let (_bus, codescan) = managed_codescan(tmp.path().to_path_buf()).await;
         let provider = ContextProvider::new_with_sources(
             SharedContextMetrics::new(),
             new_shared_command_tx(),
@@ -1454,7 +1559,7 @@ mod tests {
             None,
             None,
             None,
-            Some(tmp.path().to_path_buf()),
+            Some(codescan),
         );
         let result = provider
             .execute(
@@ -1505,6 +1610,7 @@ mod tests {
         )
         .unwrap();
 
+        let (_bus, codescan) = managed_codescan(tmp.path().to_path_buf()).await;
         let provider = ContextProvider::new_with_sources(
             SharedContextMetrics::new(),
             new_shared_command_tx(),
@@ -1512,7 +1618,7 @@ mod tests {
             None,
             None,
             None,
-            Some(tmp.path().to_path_buf()),
+            Some(codescan),
         );
         let result = provider
             .execute(
@@ -1554,6 +1660,46 @@ mod tests {
             first_content.contains("shadow_context.rs"),
             "expected first result to target actual selector implementation, got: {first_content}"
         );
+    }
+
+    #[tokio::test]
+    async fn unavailable_code_pack_does_not_block_unrelated_context_kinds() {
+        let provider = ContextProvider::new(SharedContextMetrics::new(), new_shared_command_tx());
+        let result = provider
+            .execute(
+                crate::tool_registry::context::REQUEST_CONTEXT,
+                "call-ctx-mixed-unavailable",
+                json!({
+                    "requests": [
+                        {
+                            "kind": "code",
+                            "query": "managed codescan",
+                            "reason": "Need implementation context"
+                        },
+                        {
+                            "kind": "session_state",
+                            "query": "current state",
+                            "reason": "Need session orientation"
+                        }
+                    ]
+                }),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.details["supported"], 1);
+        assert_eq!(result.details["unsupported"], 1);
+        assert_eq!(result.details["packs"][0]["available"], false);
+        assert_eq!(result.details["packs"][0]["code"], "service:unavailable");
+        let text = result
+            .content
+            .iter()
+            .filter_map(|block| block.as_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("codescan unavailable"), "{text}");
+        assert!(text.contains("Session State"), "{text}");
     }
 
     #[tokio::test]

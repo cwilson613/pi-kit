@@ -378,6 +378,7 @@ impl IpcConnection {
                 }
 
                 "get_graph" => {
+                    crate::web::api::refresh_lifecycle(&cfg.handles).await;
                     let graph = crate::web::api::build_graph_data(&cfg.handles);
                     send_response(&out_tx, req_id, "get_graph", serde_json::to_value(graph)?).await;
                 }

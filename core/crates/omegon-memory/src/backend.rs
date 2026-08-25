@@ -59,6 +59,15 @@ pub(crate) fn mutation_payload_hash(mutation: &MemoryMutation) -> Result<String>
     Ok(hex::encode(Sha256::digest(payload)))
 }
 
+pub(crate) fn jsonl_import_effect(stats: ImportStats) -> MemoryMutationEffect {
+    MemoryMutationEffect::JsonlImported {
+        imported: stats.imported,
+        reinforced: stats.reinforced,
+        skipped: stats.skipped,
+        errors: stats.errors,
+    }
+}
+
 pub(crate) fn validate_embedding(embedding: &[f32]) -> Result<()> {
     if embedding.iter().any(|value| !value.is_finite()) {
         return Err(MemoryError::InvalidMutation(
@@ -129,6 +138,10 @@ pub trait MemoryBackend: Send + Sync {
     /// Supersede a fact — archive the original, store a replacement.
     /// Returns the new replacement fact.
     async fn supersede_fact(&self, id: &str, replacement: StoreFact) -> Result<Fact>;
+
+    /// Resolve an inactive fact ID to its active replacement, following a
+    /// supersession chain. Returns None for active, archived, or unknown IDs.
+    async fn superseding_fact(&self, old_id: &str) -> Result<Option<Fact>>;
 
     // ── Search ───────────────────────────────────────────────────────────
 

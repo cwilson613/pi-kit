@@ -2,7 +2,7 @@
 //! Used for unit tests and ephemeral sessions.
 
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use crate::backend::*;
@@ -73,6 +73,10 @@ impl InMemoryBackend {
 
     fn apply_to_state(state: &mut State, mutation: MemoryMutation) -> Result<MemoryMutationEffect> {
         match mutation {
+            MemoryMutation::ImportJsonl { jsonl } => {
+                let stats = Self::import_jsonl_to_state(state, &jsonl)?;
+                Ok(jsonl_import_effect(stats))
+            }
             MemoryMutation::StoreFact { request } => {
                 let content_hash = hash::content_hash(&request.content);
                 let existing_id = state
@@ -143,6 +147,24 @@ impl InMemoryBackend {
                 })?;
                 if existing.status != FactStatus::Active {
                     return Err(MemoryError::FactNotFound(fact.id));
+                }
+                existing.reinforcement_count += 1;
+                existing.last_reinforced = now_iso();
+                existing.version = version;
+                Ok(MemoryMutationEffect::FactReinforced {
+                    fact_id: existing.id.clone(),
+                    version,
+                    reinforcement_count: existing.reinforcement_count,
+                })
+            }
+            MemoryMutation::ReinforceFactOnce { fact_id } => {
+                let version = Self::next_version(state)?;
+                let existing = state
+                    .facts
+                    .get_mut(&fact_id)
+                    .ok_or_else(|| MemoryError::FactNotFound(fact_id.clone()))?;
+                if existing.status != FactStatus::Active {
+                    return Err(MemoryError::FactNotFound(fact_id));
                 }
                 existing.reinforcement_count += 1;
                 existing.last_reinforced = now_iso();
@@ -246,6 +268,43 @@ impl InMemoryBackend {
                     },
                 })
             }
+            MemoryMutation::SupersedeFactWithExisting { fact, replacement } => {
+                if fact.id == replacement.id {
+                    return Err(MemoryError::InvalidMutation(
+                        "a fact cannot supersede itself".into(),
+                    ));
+                }
+                Self::check_fact_precondition(state, &fact)?;
+                Self::check_fact_precondition(state, &replacement)?;
+                let original = state.facts.get(&fact.id).unwrap();
+                let existing = state.facts.get(&replacement.id).unwrap();
+                if original.status != FactStatus::Active
+                    || existing.status != FactStatus::Active
+                    || original.mind != existing.mind
+                {
+                    return Err(MemoryError::InvalidMutation(
+                        "supersession requires distinct active facts in the same mind".into(),
+                    ));
+                }
+                let original_version = Self::next_version(state)?;
+                let original = state.facts.get_mut(&fact.id).unwrap();
+                original.status = FactStatus::Superseded;
+                original.version = original_version;
+                let replacement_version = Self::next_version(state)?;
+                let existing = state.facts.get_mut(&replacement.id).unwrap();
+                existing.superseded_by = Some(fact.id.clone());
+                existing.version = replacement_version;
+                Ok(MemoryMutationEffect::FactSuperseded {
+                    original: FactPrecondition {
+                        id: fact.id,
+                        expected_version: original_version,
+                    },
+                    replacement: FactPrecondition {
+                        id: replacement.id,
+                        expected_version: replacement_version,
+                    },
+                })
+            }
             MemoryMutation::StoreEmbedding {
                 fact,
                 model_name,
@@ -317,6 +376,99 @@ impl InMemoryBackend {
                 Ok(MemoryMutationEffect::EpisodeStored { episode_id })
             }
         }
+    }
+
+    fn import_jsonl_to_state(state: &mut State, jsonl: &str) -> Result<ImportStats> {
+        let mut stats = ImportStats::default();
+        for line in jsonl.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<JsonlRecord>(trimmed) {
+                Ok(JsonlRecord::Fact(jf)) => {
+                    persisted_lamport_version(jf.version)?;
+                    let content_hash = jf
+                        .content_hash
+                        .clone()
+                        .unwrap_or_else(|| hash::content_hash(&jf.content));
+                    if let Some(existing) = state.facts.get(&jf.id) {
+                        if jf.version > existing.version {
+                            let mut updated = existing.clone();
+                            updated.content = jf.content;
+                            updated.section = jf.section;
+                            updated.mind = jf.mind;
+                            updated.status = jf.status;
+                            updated.source = jf.source;
+                            updated.content_hash = Some(content_hash);
+                            updated.superseded_by = jf.supersedes;
+                            updated.decay_profile = jf.decay_profile;
+                            updated.persona_id = jf.persona_id;
+                            updated.layer = jf.layer;
+                            updated.tags = jf.tags;
+                            updated.version = jf.version;
+                            state.version_clock = state.version_clock.max(jf.version);
+                            state.facts.insert(jf.id, updated);
+                            stats.reinforced += 1;
+                        } else {
+                            stats.skipped += 1;
+                        }
+                    } else {
+                        state.version_clock = state.version_clock.max(jf.version);
+                        let fact = Fact {
+                            id: jf.id.clone(),
+                            mind: jf.mind,
+                            content: jf.content,
+                            section: jf.section,
+                            status: jf.status,
+                            confidence: 1.0,
+                            reinforcement_count: 1,
+                            decay_rate: 0.05,
+                            decay_profile: jf.decay_profile,
+                            last_reinforced: jf.created_at.clone(),
+                            created_at: jf.created_at,
+                            version: jf.version,
+                            superseded_by: jf.supersedes,
+                            source: jf.source,
+                            content_hash: Some(content_hash),
+                            last_accessed: None,
+                            created_session: None,
+                            superseded_at: None,
+                            archived_at: None,
+                            jj_change_id: None,
+                            persona_id: jf.persona_id,
+                            layer: jf.layer,
+                            tags: jf.tags,
+                        };
+                        state.facts.insert(jf.id, fact);
+                        stats.imported += 1;
+                    }
+                }
+                Ok(JsonlRecord::Episode(ep)) => {
+                    if state.episodes.iter().any(|existing| existing.id == ep.id) {
+                        stats.skipped += 1;
+                    } else {
+                        state.episodes.push(ep);
+                        stats.imported += 1;
+                    }
+                }
+                Ok(JsonlRecord::Edge(edge)) => {
+                    if state.edges.iter().any(|existing| existing.id == edge.id) {
+                        stats.skipped += 1;
+                    } else if !state.facts.contains_key(&edge.source_id) {
+                        return Err(MemoryError::FactNotFound(edge.source_id));
+                    } else if !state.facts.contains_key(&edge.target_id) {
+                        return Err(MemoryError::FactNotFound(edge.target_id));
+                    } else {
+                        state.edges.push(edge);
+                        stats.imported += 1;
+                    }
+                }
+                Ok(JsonlRecord::Mind(_)) => stats.skipped += 1,
+                Err(_) => stats.errors += 1,
+            }
+        }
+        Ok(stats)
     }
 }
 
@@ -560,6 +712,81 @@ impl MemoryBackend for InMemoryBackend {
 
         s.facts.insert(new_id, new_fact.clone());
         Ok(new_fact)
+    }
+
+    async fn superseding_fact(&self, old_id: &str) -> Result<Option<Fact>> {
+        let state = self.state.lock().unwrap();
+        let Some(original) = state.facts.get(old_id) else {
+            return Ok(None);
+        };
+        if original.status != FactStatus::Superseded {
+            return Ok(None);
+        }
+        let mut predecessor = old_id;
+        let mut visited = HashSet::new();
+        visited.insert(old_id);
+        while let Some(replacement) = state
+            .facts
+            .values()
+            .filter(|fact| fact.superseded_by.as_deref() == Some(predecessor))
+            .max_by(|left, right| {
+                left.version
+                    .cmp(&right.version)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+        {
+            if !visited.insert(replacement.id.as_str()) {
+                return Err(MemoryError::Storage(anyhow::anyhow!(
+                    "supersession cycle detected"
+                )));
+            }
+            if replacement.status == FactStatus::Active {
+                return Ok(Some(replacement.clone()));
+            }
+            if replacement.status != FactStatus::Superseded {
+                break;
+            }
+            predecessor = &replacement.id;
+        }
+
+        let Some(source) = original
+            .source
+            .as_deref()
+            .filter(|source| source.starts_with("codex-vault:"))
+        else {
+            return Ok(None);
+        };
+        let Some(latest) = state
+            .facts
+            .values()
+            .filter(|fact| fact.source.as_deref() == Some(source))
+            .max_by(|left, right| {
+                left.version
+                    .cmp(&right.version)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+        else {
+            return Ok(None);
+        };
+        if latest.status == FactStatus::Active {
+            return Ok(Some(latest.clone()));
+        }
+        if latest.status != FactStatus::Superseded {
+            return Ok(None);
+        }
+        Ok(state
+            .facts
+            .values()
+            .filter(|fact| {
+                fact.status == FactStatus::Active
+                    && fact.superseded_by.as_deref() == Some(latest.id.as_str())
+            })
+            .max_by(|left, right| {
+                left.version
+                    .cmp(&right.version)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+            .cloned())
     }
 
     async fn fts_search(&self, mind: &str, query: &str, k: usize) -> Result<Vec<ScoredFact>> {
@@ -843,103 +1070,9 @@ impl MemoryBackend for InMemoryBackend {
     }
 
     async fn import_jsonl(&self, jsonl: &str) -> Result<ImportStats> {
-        let mut stats = ImportStats::default();
         let mut state = self.state.lock().unwrap();
         let mut staged = state.clone();
-        for line in jsonl.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<JsonlRecord>(trimmed) {
-                Ok(JsonlRecord::Fact(jf)) => {
-                    persisted_lamport_version(jf.version)?;
-                    let content_hash = jf
-                        .content_hash
-                        .clone()
-                        .unwrap_or_else(|| hash::content_hash(&jf.content));
-                    if let Some(existing) = staged.facts.get(&jf.id) {
-                        if jf.version > existing.version {
-                            // Higher version wins
-                            let mut updated = existing.clone();
-                            updated.content = jf.content;
-                            updated.section = jf.section;
-                            updated.mind = jf.mind;
-                            updated.status = jf.status;
-                            updated.source = jf.source;
-                            updated.content_hash = Some(content_hash);
-                            updated.superseded_by = jf.supersedes;
-                            updated.decay_profile = jf.decay_profile;
-                            updated.persona_id = jf.persona_id;
-                            updated.layer = jf.layer;
-                            updated.tags = jf.tags;
-                            updated.version = jf.version;
-                            staged.version_clock = staged.version_clock.max(jf.version);
-                            staged.facts.insert(jf.id, updated);
-                            stats.reinforced += 1;
-                        } else {
-                            stats.skipped += 1;
-                        }
-                    } else {
-                        staged.version_clock = staged.version_clock.max(jf.version);
-                        let fact = Fact {
-                            id: jf.id.clone(),
-                            mind: jf.mind,
-                            content: jf.content,
-                            section: jf.section,
-                            status: jf.status,
-                            confidence: 1.0,
-                            reinforcement_count: 1,
-                            decay_rate: 0.05,
-                            decay_profile: jf.decay_profile,
-                            last_reinforced: jf.created_at.clone(),
-                            created_at: jf.created_at,
-                            version: jf.version,
-                            superseded_by: jf.supersedes,
-                            source: jf.source,
-                            content_hash: Some(content_hash),
-                            last_accessed: None,
-                            created_session: None,
-                            superseded_at: None,
-                            archived_at: None,
-                            jj_change_id: None,
-                            persona_id: jf.persona_id,
-                            layer: jf.layer,
-                            tags: jf.tags,
-                        };
-                        staged.facts.insert(jf.id, fact);
-                        stats.imported += 1;
-                    }
-                }
-                Ok(JsonlRecord::Episode(ep)) => {
-                    if staged.episodes.iter().any(|existing| existing.id == ep.id) {
-                        stats.skipped += 1;
-                    } else {
-                        staged.episodes.push(ep);
-                        stats.imported += 1;
-                    }
-                }
-                Ok(JsonlRecord::Edge(edge)) => {
-                    if staged.edges.iter().any(|existing| existing.id == edge.id) {
-                        stats.skipped += 1;
-                    } else if !staged.facts.contains_key(&edge.source_id) {
-                        return Err(MemoryError::FactNotFound(edge.source_id));
-                    } else if !staged.facts.contains_key(&edge.target_id) {
-                        return Err(MemoryError::FactNotFound(edge.target_id));
-                    } else {
-                        staged.edges.push(edge);
-                        stats.imported += 1;
-                    }
-                }
-                Ok(JsonlRecord::Mind(_)) => {
-                    // Minds are informational — no-op for import
-                    stats.skipped += 1;
-                }
-                Err(_) => {
-                    stats.errors += 1;
-                }
-            }
-        }
+        let stats = Self::import_jsonl_to_state(&mut staged, jsonl)?;
         *state = staged;
         Ok(stats)
     }

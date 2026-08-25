@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub const MEMORY_SCHEMA_VERSION: i64 = 8;
@@ -987,6 +988,99 @@ impl SqliteBackend {
         }
         Ok(existing)
     }
+
+    fn import_jsonl_transaction(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        jsonl: &str,
+    ) -> Result<ImportStats> {
+        let mut stats = ImportStats::default();
+        for line in jsonl.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<JsonlRecord>(trimmed) {
+                Ok(JsonlRecord::Fact(jf)) => {
+                    let incoming_version = persisted_lamport_version(jf.version)?;
+                    self.ensure_mind(tx, &jf.mind)
+                        .map_err(|error| MemoryError::Storage(error.into()))?;
+                    let existing_version: Option<i64> = tx
+                        .query_row(
+                            "SELECT version FROM facts WHERE id = ?1",
+                            params![jf.id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(|error| MemoryError::Storage(error.into()))?
+                        .flatten();
+                    if existing_version.is_some_and(|version| incoming_version <= version) {
+                        stats.skipped += 1;
+                        continue;
+                    }
+                    let section = serde_json::to_string(&jf.section)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    let profile = serde_json::to_string(&jf.decay_profile)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    let status = serde_json::to_string(&jf.status)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    let tags = serde_json::to_string(&jf.tags)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    let content_hash = jf
+                        .content_hash
+                        .unwrap_or_else(|| hash::content_hash(&jf.content));
+                    if existing_version.is_some() {
+                        tx.execute(
+                            "UPDATE facts SET mind = ?1, content = ?2, section = ?3, status = ?4, source = ?5, content_hash = ?6, supersedes = ?7, decay_profile = ?8, version = ?9, persona_id = ?10, layer = ?11, tags = ?12 WHERE id = ?13",
+                            params![jf.mind, jf.content, section.trim_matches('"'),
+                                status.trim_matches('"'), jf.source.as_deref().unwrap_or("manual"),
+                                content_hash, jf.supersedes, profile.trim_matches('"'), incoming_version,
+                                jf.persona_id, jf.layer, tags, jf.id],
+                        ).map_err(|error| MemoryError::Storage(error.into()))?;
+                        stats.reinforced += 1;
+                    } else {
+                        tx.execute(
+                            "INSERT INTO facts (id, mind, section, content, status, created_at, source, content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, decay_profile, version, supersedes, persona_id, layer, tags) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1.0,?6,1,0.05,?9,?10,?11,?12,?13,?14)",
+                            params![jf.id, jf.mind, section.trim_matches('"'), jf.content,
+                                status.trim_matches('"'), jf.created_at,
+                                jf.source.as_deref().unwrap_or("manual"), content_hash,
+                                profile.trim_matches('"'), incoming_version, jf.supersedes,
+                                jf.persona_id, jf.layer, tags],
+                        ).map_err(|error| MemoryError::Storage(error.into()))?;
+                        stats.imported += 1;
+                    }
+                }
+                Ok(JsonlRecord::Episode(episode)) => {
+                    self.ensure_mind(tx, &episode.mind)
+                        .map_err(|error| MemoryError::Storage(error.into()))?;
+                    let inserted = tx.execute(
+                        "INSERT OR IGNORE INTO episodes (id, mind, title, narrative, date, created_at, jj_change_id, affected_nodes, affected_changes, files_changed, tags, tool_calls_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                        params![episode.id, episode.mind, episode.title, episode.narrative,
+                            episode.date, episode.created_at, episode.jj_change_id,
+                            serde_json::to_string(&episode.affected_nodes).unwrap_or_else(|_| "[]".into()),
+                            serde_json::to_string(&episode.affected_changes).unwrap_or_else(|_| "[]".into()),
+                            serde_json::to_string(&episode.files_changed).unwrap_or_else(|_| "[]".into()),
+                            serde_json::to_string(&episode.tags).unwrap_or_else(|_| "[]".into()),
+                            episode.tool_calls_count],
+                    ).map_err(|error| MemoryError::Storage(error.into()))?;
+                    stats.imported += inserted;
+                    stats.skipped += usize::from(inserted == 0);
+                }
+                Ok(JsonlRecord::Edge(edge)) => {
+                    let inserted = tx.execute(
+                        "INSERT OR IGNORE INTO edges (id, source_fact_id, target_fact_id, relation, description, confidence, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                        params![edge.id, edge.source_id, edge.target_id, edge.relation,
+                            edge.description, edge.confidence, edge.created_at],
+                    ).map_err(|error| MemoryError::Storage(error.into()))?;
+                    stats.imported += inserted;
+                    stats.skipped += usize::from(inserted == 0);
+                }
+                Ok(JsonlRecord::Mind(_)) => stats.skipped += 1,
+                Err(_) => stats.errors += 1,
+            }
+        }
+        Ok(stats)
+    }
 }
 
 #[async_trait]
@@ -1028,6 +1122,9 @@ impl MemoryBackend for SqliteBackend {
         }
 
         let effect = match mutation {
+            MemoryMutation::ImportJsonl { jsonl } => {
+                jsonl_import_effect(self.import_jsonl_transaction(&transaction, &jsonl)?)
+            }
             MemoryMutation::StoreFact { request } => {
                 self.ensure_mind(&transaction, &request.mind)
                     .map_err(|error| MemoryError::Storage(error.into()))?;
@@ -1083,6 +1180,30 @@ impl MemoryBackend for SqliteBackend {
                 ).map_err(|error| MemoryError::Storage(error.into()))?;
                 MemoryMutationEffect::FactReinforced {
                     fact_id: fact.id,
+                    version,
+                    reinforcement_count: existing.reinforcement_count + 1,
+                }
+            }
+            MemoryMutation::ReinforceFactOnce { fact_id } => {
+                let existing = transaction
+                    .query_row(
+                        "SELECT * FROM facts WHERE id = ?1",
+                        params![fact_id],
+                        Self::row_to_fact,
+                    )
+                    .optional()
+                    .map_err(|error| MemoryError::Storage(error.into()))?
+                    .ok_or_else(|| MemoryError::FactNotFound(fact_id.clone()))?;
+                if existing.status != FactStatus::Active {
+                    return Err(MemoryError::FactNotFound(fact_id));
+                }
+                let version = Self::next_version_static(&transaction)?;
+                transaction.execute(
+                    "UPDATE facts SET reinforcement_count = reinforcement_count + 1, last_reinforced = ?1, version = ?2 WHERE id = ?3",
+                    params![now_iso(), version as i64, fact_id],
+                ).map_err(|error| MemoryError::Storage(error.into()))?;
+                MemoryMutationEffect::FactReinforced {
+                    fact_id,
                     version,
                     reinforcement_count: existing.reinforcement_count + 1,
                 }
@@ -1158,6 +1279,48 @@ impl MemoryBackend for SqliteBackend {
                     },
                     replacement: FactPrecondition {
                         id: replacement_id,
+                        expected_version: replacement_version,
+                    },
+                }
+            }
+            MemoryMutation::SupersedeFactWithExisting { fact, replacement } => {
+                if fact.id == replacement.id {
+                    return Err(MemoryError::InvalidMutation(
+                        "a fact cannot supersede itself".into(),
+                    ));
+                }
+                let original = Self::check_fact_precondition(&transaction, &fact)?;
+                let existing = Self::check_fact_precondition(&transaction, &replacement)?;
+                if original.status != FactStatus::Active
+                    || existing.status != FactStatus::Active
+                    || original.mind != existing.mind
+                {
+                    return Err(MemoryError::InvalidMutation(
+                        "supersession requires distinct active facts in the same mind".into(),
+                    ));
+                }
+                let original_version = Self::next_version_static(&transaction)?;
+                transaction
+                    .execute(
+                        "UPDATE facts SET status = 'superseded', version = ?1 WHERE id = ?2",
+                        params![original_version as i64, fact.id],
+                    )
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                let replacement_version = original_version + 1;
+                let replacement_version_sql = persisted_lamport_version(replacement_version)?;
+                transaction
+                    .execute(
+                        "UPDATE facts SET supersedes = ?1, version = ?2 WHERE id = ?3",
+                        params![fact.id, replacement_version_sql, replacement.id],
+                    )
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                MemoryMutationEffect::FactSuperseded {
+                    original: FactPrecondition {
+                        id: fact.id,
+                        expected_version: original_version,
+                    },
+                    replacement: FactPrecondition {
+                        id: replacement.id,
                         expected_version: replacement_version,
                     },
                 }
@@ -1528,6 +1691,84 @@ impl MemoryBackend for SqliteBackend {
 
         tx.commit().map_err(|e| MemoryError::Storage(e.into()))?;
         Ok(fact)
+    }
+
+    async fn superseding_fact(&self, old_id: &str) -> Result<Option<Fact>> {
+        let conn = self.conn.lock().unwrap();
+        let original: Option<Fact> = conn
+            .query_row(
+                "SELECT * FROM facts WHERE id = ?1",
+                params![old_id],
+                Self::row_to_fact,
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let Some(original) = original else {
+            return Ok(None);
+        };
+        if original.status != FactStatus::Superseded {
+            return Ok(None);
+        }
+        let mut predecessor = old_id.to_owned();
+        let mut visited = HashSet::new();
+        visited.insert(predecessor.clone());
+        loop {
+            let replacement: Option<Fact> = conn
+                .query_row(
+                    "SELECT * FROM facts WHERE supersedes = ?1 ORDER BY version DESC, id DESC LIMIT 1",
+                    params![predecessor],
+                    Self::row_to_fact,
+                )
+                .optional()
+                .map_err(|error| MemoryError::Storage(error.into()))?;
+            let Some(replacement) = replacement else {
+                break;
+            };
+            if !visited.insert(replacement.id.clone()) {
+                return Err(MemoryError::Storage(anyhow::anyhow!(
+                    "supersession cycle detected"
+                )));
+            }
+            if replacement.status == FactStatus::Active {
+                return Ok(Some(replacement));
+            }
+            if replacement.status != FactStatus::Superseded {
+                break;
+            }
+            predecessor = replacement.id;
+        }
+
+        let Some(source) = original
+            .source
+            .as_deref()
+            .filter(|source| source.starts_with("codex-vault:"))
+        else {
+            return Ok(None);
+        };
+        let latest: Option<Fact> = conn
+            .query_row(
+                "SELECT * FROM facts WHERE source = ?1 ORDER BY version DESC, id DESC LIMIT 1",
+                params![source],
+                Self::row_to_fact,
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let Some(latest) = latest else {
+            return Ok(None);
+        };
+        if latest.status == FactStatus::Active {
+            return Ok(Some(latest));
+        }
+        if latest.status != FactStatus::Superseded {
+            return Ok(None);
+        }
+        conn.query_row(
+            "SELECT * FROM facts WHERE supersedes = ?1 AND status = 'active' ORDER BY version DESC, id DESC LIMIT 1",
+            params![latest.id],
+            Self::row_to_fact,
+        )
+        .optional()
+        .map_err(|error| MemoryError::Storage(error.into()))
     }
 
     async fn fts_search(&self, mind: &str, query: &str, k: usize) -> Result<Vec<ScoredFact>> {
@@ -1941,109 +2182,12 @@ impl MemoryBackend for SqliteBackend {
     }
 
     async fn import_jsonl(&self, jsonl: &str) -> Result<ImportStats> {
-        let mut stats = ImportStats::default();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| MemoryError::Storage(e.into()))?;
 
-        for line in jsonl.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<JsonlRecord>(trimmed) {
-                Ok(JsonlRecord::Fact(jf)) => {
-                    let incoming_version = persisted_lamport_version(jf.version)?;
-                    self.ensure_mind(&tx, &jf.mind)
-                        .map_err(|error| MemoryError::Storage(error.into()))?;
-                    let existing_version: Option<i64> = tx
-                        .query_row(
-                            "SELECT version FROM facts WHERE id = ?1",
-                            params![jf.id],
-                            |r| r.get(0),
-                        )
-                        .optional()
-                        .map_err(|e| MemoryError::Storage(e.into()))?
-                        .flatten();
-
-                    if let Some(ev) = existing_version {
-                        if incoming_version > ev {
-                            let section_str =
-                                serde_json::to_string(&jf.section).unwrap_or_default();
-                            let section_str = section_str.trim_matches('"');
-                            let profile_str =
-                                serde_json::to_string(&jf.decay_profile).unwrap_or_default();
-                            let status_str = serde_json::to_string(&jf.status).unwrap_or_default();
-                            let content_hash = jf
-                                .content_hash
-                                .unwrap_or_else(|| hash::content_hash(&jf.content));
-                            tx.execute(
-                                "UPDATE facts SET mind = ?1, content = ?2, section = ?3, status = ?4, source = ?5, content_hash = ?6, supersedes = ?7, decay_profile = ?8, version = ?9, persona_id = ?10, layer = ?11, tags = ?12 WHERE id = ?13",
-                                params![jf.mind, jf.content, section_str,
-                                    status_str.trim_matches('"'), jf.source.as_deref().unwrap_or("manual"),
-                                    content_hash, jf.supersedes, profile_str.trim_matches('"'), incoming_version,
-                                    jf.persona_id, jf.layer, serde_json::to_string(&jf.tags).unwrap_or_else(|_| "[]".into()), jf.id],
-                            ).map_err(|e| MemoryError::Storage(e.into()))?;
-                            stats.reinforced += 1;
-                        } else {
-                            stats.skipped += 1;
-                        }
-                    } else {
-                        let section_str = serde_json::to_string(&jf.section).unwrap_or_default();
-                        let section_str = section_str.trim_matches('"');
-                        let profile_str =
-                            serde_json::to_string(&jf.decay_profile).unwrap_or_default();
-                        let profile_str = profile_str.trim_matches('"');
-                        let ch = jf
-                            .content_hash
-                            .unwrap_or_else(|| hash::content_hash(&jf.content));
-                        tx.execute(
-                            "INSERT INTO facts (id, mind, section, content, status, created_at, source, \
-                             content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, \
-                             decay_profile, version, supersedes, persona_id, layer, tags) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1.0,?6,1,0.05,?9,?10,?11,?12,?13,?14)",
-                            params![jf.id, jf.mind, section_str, jf.content,
-                                    serde_json::to_string(&jf.status).unwrap_or_default().trim_matches('"'),
-                                    jf.created_at, jf.source.as_deref().unwrap_or("manual"),
-                                    ch, profile_str, incoming_version, jf.supersedes, jf.persona_id,
-                                    jf.layer, serde_json::to_string(&jf.tags).unwrap_or_else(|_| "[]".into())],
-                        ).map_err(|e| MemoryError::Storage(e.into()))?;
-                        stats.imported += 1;
-                    }
-                }
-                Ok(JsonlRecord::Episode(ep)) => {
-                    self.ensure_mind(&tx, &ep.mind)
-                        .map_err(|error| MemoryError::Storage(error.into()))?;
-                    let inserted = tx.execute(
-                        "INSERT OR IGNORE INTO episodes (id, mind, title, narrative, date, created_at, jj_change_id, affected_nodes, affected_changes, files_changed, tags, tool_calls_count) \
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-                        params![ep.id, ep.mind, ep.title, ep.narrative, ep.date, ep.created_at,
-                            ep.jj_change_id, serde_json::to_string(&ep.affected_nodes).unwrap_or_else(|_| "[]".into()),
-                            serde_json::to_string(&ep.affected_changes).unwrap_or_else(|_| "[]".into()),
-                            serde_json::to_string(&ep.files_changed).unwrap_or_else(|_| "[]".into()),
-                            serde_json::to_string(&ep.tags).unwrap_or_else(|_| "[]".into()), ep.tool_calls_count],
-                    ).map_err(|e| MemoryError::Storage(e.into()))?;
-                    stats.imported += inserted;
-                    stats.skipped += usize::from(inserted == 0);
-                }
-                Ok(JsonlRecord::Edge(edge)) => {
-                    let inserted = tx.execute(
-                        "INSERT OR IGNORE INTO edges (id, source_fact_id, target_fact_id, relation, description, confidence, created_at) \
-                         VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                        params![edge.id, edge.source_id, edge.target_id, edge.relation,
-                                edge.description, edge.confidence, edge.created_at],
-                    ).map_err(|e| MemoryError::Storage(e.into()))?;
-                    stats.imported += inserted;
-                    stats.skipped += usize::from(inserted == 0);
-                }
-                Ok(JsonlRecord::Mind(_)) => {
-                    stats.skipped += 1;
-                }
-                Err(_) => {
-                    stats.errors += 1;
-                }
-            }
-        }
+        let stats = self.import_jsonl_transaction(&tx, jsonl)?;
         tx.commit().map_err(|e| MemoryError::Storage(e.into()))?;
         Ok(stats)
     }

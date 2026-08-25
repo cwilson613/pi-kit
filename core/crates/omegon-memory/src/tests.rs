@@ -15,6 +15,9 @@ pub async fn run_backend_tests(b: &dyn MemoryBackend) {
     test_reinforce(b).await;
     test_archive(b).await;
     test_supersede(b).await;
+    test_superseding_fact(b).await;
+    test_supersede_with_existing(b).await;
+    test_vault_source_lineage_fallback(b).await;
     test_fts_search(b).await;
     test_vector_store_and_search(b).await;
     test_vector_dimension_mismatch(b).await;
@@ -229,6 +232,241 @@ async fn test_supersede(b: &dyn MemoryBackend) {
     assert!(
         old.is_none(),
         "superseded fact should not be returned by get_fact"
+    );
+}
+
+async fn test_superseding_fact(b: &dyn MemoryBackend) {
+    let original = b
+        .store_fact(store_request("superseding-lookup", "Original lineage"))
+        .await
+        .unwrap();
+    assert!(
+        b.superseding_fact(&original.fact.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let replacement = b
+        .supersede_fact(
+            &original.fact.id,
+            store_request("superseding-lookup", "Replacement lineage"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        b.superseding_fact(&original.fact.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        replacement.id
+    );
+    let current = b
+        .supersede_fact(
+            &replacement.id,
+            store_request("superseding-lookup", "Current lineage"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        b.superseding_fact(&original.fact.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        current.id
+    );
+    assert!(b.superseding_fact("unknown").await.unwrap().is_none());
+}
+
+async fn test_supersede_with_existing(b: &dyn MemoryBackend) {
+    let original = b
+        .store_fact(store_request(
+            "supersede-existing",
+            "Obsolete alias content",
+        ))
+        .await
+        .unwrap()
+        .fact;
+    let replacement = b
+        .store_fact(store_request(
+            "supersede-existing",
+            "Converged alias content",
+        ))
+        .await
+        .unwrap()
+        .fact;
+    let reinforcement_count = replacement.reinforcement_count;
+    let mutation = MemoryMutation::SupersedeFactWithExisting {
+        fact: FactPrecondition {
+            id: original.id.clone(),
+            expected_version: original.version,
+        },
+        replacement: FactPrecondition {
+            id: replacement.id.clone(),
+            expected_version: replacement.version,
+        },
+    };
+    let first = b
+        .apply_mutation("supersede-with-existing", mutation.clone())
+        .await
+        .unwrap();
+    assert!(!first.replayed);
+    let active = b
+        .list_facts("supersede-existing", FactFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].id, replacement.id);
+    assert_eq!(active[0].reinforcement_count, reinforcement_count);
+    assert_eq!(
+        b.superseding_fact(&original.id).await.unwrap().unwrap().id,
+        replacement.id
+    );
+    let replay = b
+        .apply_mutation("supersede-with-existing", mutation)
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(
+        b.get_fact(&replacement.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .reinforcement_count,
+        reinforcement_count
+    );
+}
+
+async fn test_vault_source_lineage_fallback(b: &dyn MemoryBackend) {
+    let vault_request = |content: &str, source: &str| StoreFact {
+        mind: "vault-source-lineage".into(),
+        content: content.into(),
+        section: Section::Architecture,
+        decay_profile: DecayProfileName::Standard,
+        source: Some(source.into()),
+    };
+    let original = b
+        .store_fact(vault_request("Shared v1", "codex-vault:alias-a"))
+        .await
+        .unwrap()
+        .fact;
+    let first_change = b
+        .supersede_fact(
+            &original.id,
+            vault_request("Changed v1", "codex-vault:alias-a"),
+        )
+        .await
+        .unwrap();
+    let shared = b
+        .store_fact(vault_request("Shared restored", "codex-vault:alias-b"))
+        .await
+        .unwrap()
+        .fact;
+    let converge_first = MemoryMutation::SupersedeFactWithExisting {
+        fact: FactPrecondition {
+            id: first_change.id.clone(),
+            expected_version: first_change.version,
+        },
+        replacement: FactPrecondition {
+            id: shared.id.clone(),
+            expected_version: shared.version,
+        },
+    };
+    b.apply_mutation("vault-source-converge-first", converge_first)
+        .await
+        .unwrap();
+    let shared = b.get_fact(&shared.id).await.unwrap().unwrap();
+    let second_change = b
+        .store_fact(vault_request("Changed v2", "codex-vault:alias-a"))
+        .await
+        .unwrap()
+        .fact;
+    b.apply_mutation(
+        "vault-source-converge-second",
+        MemoryMutation::SupersedeFactWithExisting {
+            fact: FactPrecondition {
+                id: second_change.id.clone(),
+                expected_version: second_change.version,
+            },
+            replacement: FactPrecondition {
+                id: shared.id.clone(),
+                expected_version: shared.version,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    for historical in [&original, &first_change, &second_change] {
+        assert_eq!(
+            b.superseding_fact(&historical.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            shared.id
+        );
+    }
+    assert!(b.superseding_fact(&shared.id).await.unwrap().is_none());
+
+    let manual_original = b
+        .store_fact(vault_request("Manual original", "manual"))
+        .await
+        .unwrap()
+        .fact;
+    let manual_change = b
+        .supersede_fact(
+            &manual_original.id,
+            vault_request("Manual change", "manual"),
+        )
+        .await
+        .unwrap();
+    let manual_target = b
+        .store_fact(vault_request("Manual target", "other"))
+        .await
+        .unwrap()
+        .fact;
+    b.apply_mutation(
+        "manual-converge-first",
+        MemoryMutation::SupersedeFactWithExisting {
+            fact: FactPrecondition {
+                id: manual_change.id.clone(),
+                expected_version: manual_change.version,
+            },
+            replacement: FactPrecondition {
+                id: manual_target.id.clone(),
+                expected_version: manual_target.version,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let manual_target = b.get_fact(&manual_target.id).await.unwrap().unwrap();
+    let latest_manual = b
+        .store_fact(vault_request("Latest manual", "manual"))
+        .await
+        .unwrap()
+        .fact;
+    b.apply_mutation(
+        "manual-converge-second",
+        MemoryMutation::SupersedeFactWithExisting {
+            fact: FactPrecondition {
+                id: latest_manual.id,
+                expected_version: latest_manual.version,
+            },
+            replacement: FactPrecondition {
+                id: manual_target.id,
+                expected_version: manual_target.version,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        b.superseding_fact(&manual_original.id)
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -509,6 +747,58 @@ async fn test_mutation_replay_and_conflict(b: &dyn MemoryBackend) {
         )
         .await;
     assert!(matches!(conflict, Err(MemoryError::OperationConflict(_))));
+
+    let jsonl = serde_json::to_string(&JsonlRecord::Fact(JsonlFact {
+        id: "operation-jsonl-fact".into(),
+        mind: "operation-jsonl".into(),
+        content: "Imported exactly once".into(),
+        section: Section::Architecture,
+        status: FactStatus::Active,
+        created_at: "2026-01-01T00:00:00Z".into(),
+        source: Some("test".into()),
+        content_hash: None,
+        supersedes: None,
+        version: 41,
+        decay_profile: DecayProfileName::Standard,
+        persona_id: None,
+        layer: "project".into(),
+        tags: vec![],
+    }))
+    .unwrap();
+    let import = MemoryMutation::ImportJsonl {
+        jsonl: jsonl.clone(),
+    };
+    let imported = b
+        .apply_mutation("operation-replay-jsonl", import.clone())
+        .await
+        .unwrap();
+    let imported_replay = b
+        .apply_mutation("operation-replay-jsonl", import)
+        .await
+        .unwrap();
+    assert!(!imported.replayed);
+    assert!(imported_replay.replayed);
+    assert_eq!(imported.effect, imported_replay.effect);
+    assert!(matches!(
+        imported.effect,
+        MemoryMutationEffect::JsonlImported {
+            imported: 1,
+            reinforced: 0,
+            ..
+        }
+    ));
+    let import_conflict = b
+        .apply_mutation(
+            "operation-replay-jsonl",
+            MemoryMutation::ImportJsonl {
+                jsonl: format!("{jsonl}\n{{\"invalid\":true}}"),
+            },
+        )
+        .await;
+    assert!(matches!(
+        import_conflict,
+        Err(MemoryError::OperationConflict(_))
+    ));
 
     let supersede = MemoryMutation::SupersedeFact {
         fact: FactPrecondition {

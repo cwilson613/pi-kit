@@ -603,7 +603,6 @@ impl AgentSetup {
             }
         }
 
-        let _codex_integration = crate::codex_config::load(&project_root);
         let codex_integration = crate::codex_config::load(&project_root);
         let codex_vault_path = codex_integration
             .as_ref()
@@ -627,6 +626,21 @@ impl AgentSetup {
         };
         let mut memory_warning: Option<String> = None;
         let memory_binding = crate::memory_service::MemoryBinding::default();
+        let memory_vault_config = match (codex_vault_path.as_ref(), codex_integration.as_ref()) {
+            (Some(path), Some(integration)) => {
+                match crate::memory_service::MemoryVaultConfigV1::validated(
+                    path.clone(),
+                    &integration.memory,
+                ) {
+                    Ok(config) => Some(config),
+                    Err(error) => {
+                        tracing::warn!(%error, "Codex vault memory synchronization disabled");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
         let mut memory_feature_registered = false;
 
         let mut context_memory_backend: Option<std::sync::Arc<dyn omegon_memory::MemoryBackend>> =
@@ -651,42 +665,13 @@ impl AgentSetup {
                     tracing::info!(mind = %mind, db = %db_path.display(), child = is_child, "memory backend loaded");
 
                     if let Ok(stats) = backend.stats(&mind).await {
-                        initial_memory_status = crate::status::MemoryStatus {
-                            total_facts: stats.total_facts,
-                            active_facts: stats.active_facts,
-                            project_facts: stats.active_facts,
-                            persona_facts: 0,
-                            working_facts: 0,
-                            episodes: stats.episodes,
-                            edges: stats.edges,
-                            active_persona_mind: None,
-                        };
+                        initial_memory_status = memory_status_from_stats(stats);
                         tracing::info!(
                             facts = initial_memory_status.active_facts,
                             episodes = initial_memory_status.episodes,
                             edges = initial_memory_status.edges,
                             "memory snapshot for TUI"
                         );
-                    }
-
-                    // Import JSONL if database is empty (but not in child processes)
-                    if !is_child {
-                        let stats = backend.stats(&mind).await.ok();
-                        if stats.as_ref().is_none_or(|s| s.active_facts == 0)
-                            && jsonl_path.as_ref().is_some_and(|path| path.exists())
-                            && let Some(jsonl_path) = jsonl_path.as_ref()
-                            && let Ok(jsonl) = std::fs::read_to_string(jsonl_path)
-                        {
-                            match backend.import_jsonl(&jsonl).await {
-                                Ok(import) => {
-                                    tracing::info!(
-                                        imported = import.imported,
-                                        "imported facts.jsonl"
-                                    )
-                                }
-                                Err(e) => tracing::warn!("JSONL import failed: {e}"),
-                            }
-                        }
                     }
 
                     // Register MemoryFeature with Arc<dyn MemoryBackend>
@@ -747,14 +732,11 @@ impl AgentSetup {
                         }; // end if is_child else probe
 
                     let mut memory_feature =
-                        features::memory::MemoryFeature::new(memory_backend, mind);
+                        features::memory::MemoryFeature::new(memory_backend, mind.clone())
+                            .with_memory_binding(memory_binding.clone());
                     if let Some(ref svc) = embed_service {
                         memory_feature = memory_feature.with_embed_service(svc.clone());
                         context_embed_service = Some(svc.clone());
-                    }
-                    if let Some(ref vp) = codex_vault_path {
-                        memory_feature = memory_feature.with_codex_vault(vp.clone());
-                        tracing::info!(vault = %vp.display(), "Codex vault sync enabled for memory");
                     }
                     if embed_service.is_some() {
                         memory_feature = memory_feature
@@ -1154,11 +1136,25 @@ impl AgentSetup {
             ),
         }
         if let Some(project_path) = db_path.clone() {
-            let global_path = crate::paths::omegon_home()
-                .ok()
-                .map(|home| home.join("memory").join("global.db"))
+            let global_path = Some(crate::paths::user_config_dir().join("global-memory.db"))
                 .filter(|path| path.is_file());
-            match crate::memory_service::start_candidate(project_path, global_path).await {
+            let project_jsonl_path = jsonl_path
+                .clone()
+                .expect("project DB and JSONL paths derive from the same memory root");
+            match crate::memory_service::start_candidate(
+                crate::memory_service::MemoryWorkerConfig {
+                    project_memory_root: memory_dir
+                        .clone()
+                        .expect("project memory paths derive from an initialized root"),
+                    project_db_path: project_path,
+                    project_jsonl_path,
+                    global_db_path: global_path,
+                    vault: memory_vault_config,
+                    startup_sync_enabled: !is_child,
+                },
+            )
+            .await
+            {
                 Ok(candidate) => bus.stage_managed_generation("memory", candidate)?,
                 Err(error) => tracing::warn!(
                     %error,
@@ -1214,6 +1210,25 @@ impl AgentSetup {
         }
         if let Err(error) = memory_binding.capture(&bus) {
             return Err(managed_setup_error(&mut bus, error).await);
+        }
+        if memory_binding.available() {
+            match memory_binding
+                .invoke(crate::memory_service::MemoryRequestV1::Stats {
+                    scope: crate::memory_service::MemoryScopeV1::Project,
+                    mind: mind.clone(),
+                    cancellation: tokio_util::sync::CancellationToken::new(),
+                })
+                .await
+            {
+                Ok(crate::memory_service::MemoryResponseV1 {
+                    payload: crate::memory_service::MemoryPayloadV1::Stats(stats),
+                    ..
+                }) => initial_memory_status = memory_status_from_stats(stats),
+                Ok(_) => tracing::warn!("managed memory readiness returned unexpected statistics"),
+                Err(error) => {
+                    tracing::warn!(?error, "managed memory readiness statistics unavailable")
+                }
+            }
         }
         if lifecycle_binding.available()
             && let Err(error) = lifecycle_host
@@ -2343,6 +2358,21 @@ fn activate_startup_persona(
     });
 }
 
+fn memory_status_from_stats(
+    stats: omegon_memory::backend::MemoryStats,
+) -> crate::status::MemoryStatus {
+    crate::status::MemoryStatus {
+        total_facts: stats.total_facts,
+        active_facts: stats.active_facts,
+        project_facts: stats.active_facts,
+        persona_facts: 0,
+        working_facts: 0,
+        episodes: stats.episodes,
+        edges: stats.edges,
+        active_persona_mind: None,
+    }
+}
+
 fn activate_startup_tone(
     registry: &mut crate::plugins::registry::AugmentRegistry,
     cwd: &Path,
@@ -2367,6 +2397,81 @@ fn activate_startup_tone(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_setup_and_memory_feature_do_not_own_jsonl_or_vault_io() {
+        fn visit(directory: &Path, findings: &mut Vec<String>) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(&path, findings);
+                    continue;
+                }
+                if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap()
+                    .to_string_lossy();
+                if matches!(
+                    relative.as_ref(),
+                    "src/memory_service.rs" | "src/migrate.rs"
+                ) {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let production = source
+                    .split_once("#[cfg(test)]\nmod tests")
+                    .map_or(source.as_str(), |(production, _)| production);
+                for forbidden in [
+                    "omegon_memory::vault_sync::",
+                    ".import_jsonl(",
+                    ".export_jsonl(",
+                ] {
+                    if production.contains(forbidden) {
+                        findings.push(format!("{relative}: {forbidden}"));
+                    }
+                }
+            }
+        }
+
+        let mut findings = Vec::new();
+        visit(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut findings,
+        );
+        assert!(
+            findings.is_empty(),
+            "direct memory persistence owners: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn managed_readiness_stats_drive_initial_memory_status() {
+        let status = memory_status_from_stats(omegon_memory::backend::MemoryStats {
+            total_facts: 7,
+            active_facts: 5,
+            episodes: 3,
+            edges: 2,
+            ..Default::default()
+        });
+        assert_eq!(status.total_facts, 7);
+        assert_eq!(status.active_facts, 5);
+        assert_eq!(status.project_facts, 5);
+        assert_eq!(status.episodes, 3);
+        assert_eq!(status.edges, 2);
+
+        let source = include_str!("setup.rs");
+        let capture = source.find("memory_binding.capture(&bus)").unwrap();
+        let readiness_stats = source[capture..]
+            .find("MemoryRequestV1::Stats")
+            .map(|offset| capture + offset)
+            .unwrap();
+        let publish = source.find("harness_status.update_memory").unwrap();
+        assert!(capture < readiness_stats && readiness_stats < publish);
+    }
 
     struct ExtensionEnvGuard(Option<std::ffi::OsString>);
 

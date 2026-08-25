@@ -283,7 +283,7 @@ pub struct StoreEpisode {
 }
 
 /// Stats from a JSONL import.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportStats {
     pub imported: usize,
     pub reinforced: usize,
@@ -303,11 +303,17 @@ pub struct FactPrecondition {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MemoryMutation {
+    ImportJsonl {
+        jsonl: String,
+    },
     StoreFact {
         request: StoreFact,
     },
     ReinforceFact {
         fact: FactPrecondition,
+    },
+    ReinforceFactOnce {
+        fact_id: String,
     },
     TransitionFacts {
         facts: Vec<FactPrecondition>,
@@ -316,6 +322,10 @@ pub enum MemoryMutation {
     SupersedeFact {
         fact: FactPrecondition,
         replacement: StoreFact,
+    },
+    SupersedeFactWithExisting {
+        fact: FactPrecondition,
+        replacement: FactPrecondition,
     },
     StoreEmbedding {
         fact: FactPrecondition,
@@ -335,6 +345,12 @@ pub enum MemoryMutation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MemoryMutationEffect {
+    JsonlImported {
+        imported: usize,
+        reinforced: usize,
+        skipped: usize,
+        errors: usize,
+    },
     FactStored {
         fact_id: String,
         version: u64,

@@ -51,10 +51,8 @@ pub struct MemoryFeature {
     /// Set to true by memory mutation tools so the next provide_context()
     /// re-renders even if the hash would match (facts changed underneath).
     context_dirty: AtomicBool,
-    /// Optional Codex vault path for materialization on session end.
-    /// When set, `SessionEnd` materializes facts and episodes to the vault
-    /// and reinforces facts referenced by vault documents.
-    codex_vault_path: Option<std::path::PathBuf>,
+    /// Boot-captured managed owner for configured JSONL and vault effects.
+    memory_binding: crate::memory_service::MemoryBinding,
     /// Model for session-end fact extraction. When set, SessionEnd uses
     /// quick_completion to extract novel facts from the session summary.
     extraction_model: Option<String>,
@@ -72,7 +70,7 @@ impl MemoryFeature {
             embed_service: None,
             last_context_hash: Mutex::new(0),
             context_dirty: AtomicBool::new(true), // force initial render
-            codex_vault_path: None,
+            memory_binding: crate::memory_service::MemoryBinding::default(),
             extraction_model: None,
         }
     }
@@ -82,9 +80,11 @@ impl MemoryFeature {
         self
     }
 
-    /// Set the Codex vault path for automatic materialization on session end.
-    pub fn with_codex_vault(mut self, path: std::path::PathBuf) -> Self {
-        self.codex_vault_path = Some(path);
+    pub(crate) fn with_memory_binding(
+        mut self,
+        binding: crate::memory_service::MemoryBinding,
+    ) -> Self {
+        self.memory_binding = binding;
         self
     }
 
@@ -946,7 +946,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
             } if *turns > 0 => {
                 let backend = self.backend.clone();
                 let mind = self.mind.clone();
-                let vault_path = self.codex_vault_path.clone();
+                let memory_binding = self.memory_binding.clone();
                 let extraction_model = self.extraction_model.clone();
                 let embed_svc = self.embed_service.clone();
                 let prompt_text = initial_prompt.clone().unwrap_or_default();
@@ -1016,62 +1016,24 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                                         });
                                     }
 
-                                    if let Some(ref vp) = vault_path {
-                                        // Import Codex-authored facts first
-                                        match omegon_memory::vault_sync::import_from_vault(
-                                            backend.as_ref(), vp, &mind,
-                                        ).await {
-                                            Ok(r) if r.facts_imported > 0 => {
-                                                tracing::info!(
-                                                    imported = r.facts_imported,
-                                                    "imported facts from Codex vault"
-                                                );
-                                            }
-                                            Err(e) => tracing::warn!("vault import failed: {e}"),
-                                            _ => {}
-                                        }
-
-                                        // Reinforce facts referenced by vault notes
-                                        match omegon_memory::vault_sync::reinforce_referenced_facts(
-                                            backend.as_ref(), vp,
-                                        ).await {
-                                            Ok(r) => {
-                                                if r.facts_reinforced > 0 {
-                                                    tracing::info!(
-                                                        reinforced = r.facts_reinforced,
-                                                        dangling = r.references_dangling,
-                                                        superseded = r.references_superseded.len(),
-                                                        "reinforced facts referenced by vault notes"
-                                                    );
-                                                }
-                                            }
-                                            Err(e) => tracing::warn!("vault reinforcement failed: {e}"),
-                                        }
-
-                                        // Materialize facts to vault
-                                        match omegon_memory::vault_sync::materialize_to_vault(
-                                            backend.as_ref(), vp, &mind,
-                                        ).await {
-                                            Ok(r) => {
-                                                tracing::info!(
-                                                    sections = r.sections_written,
-                                                    facts = r.facts_written,
-                                                    "materialized memory to Codex vault"
-                                                );
-                                            }
-                                            Err(e) => tracing::warn!("vault materialization failed: {e}"),
-                                        }
-
-                                        // Materialize episodes
-                                        match omegon_memory::vault_sync::materialize_episodes_to_vault(
-                                            backend.as_ref(), vp, &mind, 20,
-                                        ).await {
-                                            Ok(n) if n > 0 => {
-                                                tracing::info!(episodes = n, "materialized episodes to Codex vault");
-                                            }
-                                            Err(e) => tracing::warn!("episode materialization failed: {e}"),
-                                            _ => {}
-                                        }
+                                    if let Err(error) = memory_binding
+                                        .invoke(crate::memory_service::MemoryRequestV1::VaultSessionEnd {
+                                            scope: crate::memory_service::MemoryScopeV1::Project,
+                                            mind: mind.clone(),
+                                            cancellation: tokio_util::sync::CancellationToken::new(),
+                                        })
+                                        .await
+                                        && !matches!(
+                                            error,
+                                            ManagedServiceCallError::Operation(ref error)
+                                                if matches!(
+                                                    error.code,
+                                                    crate::memory_service::MemoryServiceErrorCodeV1::Unavailable
+                                                        | crate::memory_service::MemoryServiceErrorCodeV1::SyncNotConfigured
+                                                )
+                                        )
+                                    {
+                                        tracing::warn!(?error, "vault session-end synchronization failed");
                                     }
                                 })
                             })

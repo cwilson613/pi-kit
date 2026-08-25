@@ -148,25 +148,6 @@ pub fn load(project_root: &Path) -> Option<CodexIntegration> {
         }
     }
 
-    // Auto-detect: if .codex/ directory exists with config.toml, treat the
-    // project root itself as the vault (common case — vault IS the repo).
-    let codex_config = project_root.join(".codex/config.toml");
-    if codex_config.exists() {
-        tracing::info!(
-            "auto-detected Codex vault at project root (no explicit integration config)"
-        );
-        return Some(CodexIntegration {
-            enabled: true,
-            vault: VaultBinding {
-                path: ".".into(),
-                name: None,
-            },
-            memory: MemorySync::default(),
-            design_tree: DesignTreeSync::default(),
-            agent: None,
-        });
-    }
-
     None
 }
 
@@ -288,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_detect_finds_codex_vault() {
+    fn generic_codex_config_does_not_enable_integration() {
         let tmp = tempfile::tempdir().unwrap();
         let codex_dir = tmp.path().join(".codex");
         std::fs::create_dir_all(&codex_dir).unwrap();
@@ -298,7 +279,6 @@ mod tests {
         )
         .unwrap();
 
-        let config = load(tmp.path()).expect("should auto-detect");
-        assert_eq!(config.vault.path, ".");
+        assert!(load(tmp.path()).is_none());
     }
 }

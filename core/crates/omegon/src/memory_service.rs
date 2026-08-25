@@ -20,6 +20,7 @@ use omegon_traits::{
     RuntimeLifecyclePolicy, RuntimeLifecycleRequirement, RuntimeOwnedResourceKind,
     RuntimeServiceInterfaceId,
 };
+use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -35,6 +36,46 @@ const DTO_VERSION: u32 = 1;
 const QUEUE_CAPACITY: usize = 16;
 const MAX_RESULT_LIMIT: usize = 10_000;
 const MAX_VECTOR_DIMENSIONS: usize = 16_384;
+const MAX_JSONL_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_VAULT_EPISODES: usize = 1_000;
+
+#[derive(Debug, Clone)]
+pub(crate) struct MemoryWorkerConfig {
+    pub project_memory_root: PathBuf,
+    pub project_db_path: PathBuf,
+    pub project_jsonl_path: PathBuf,
+    pub global_db_path: Option<PathBuf>,
+    pub vault: Option<MemoryVaultConfigV1>,
+    pub startup_sync_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MemoryVaultConfigV1 {
+    root: PathBuf,
+    import_on_session_start: bool,
+    materialize_on_session_end: bool,
+    reinforce_references: bool,
+    max_episodes: usize,
+}
+
+impl MemoryVaultConfigV1 {
+    pub(crate) fn validated(
+        root: PathBuf,
+        sync: &crate::codex_config::MemorySync,
+    ) -> anyhow::Result<Self> {
+        if sync.max_episodes > MAX_VAULT_EPISODES {
+            anyhow::bail!("Codex memory max_episodes exceeds {MAX_VAULT_EPISODES}");
+        }
+        Ok(Self {
+            root: omegon_memory::vault_sync::validate_vault_root(&root)
+                .map_err(|error| anyhow::anyhow!(error))?,
+            import_on_session_start: sync.import_on_session_start,
+            materialize_on_session_end: sync.materialize_on_session_end,
+            reinforce_references: sync.reinforce_references,
+            max_episodes: sync.max_episodes,
+        })
+    }
+}
 
 pub(crate) fn memory_capability_id() -> RuntimeCapabilityId {
     RuntimeCapabilityId::new(MEMORY_CAPABILITY).expect("static capability id is valid")
@@ -208,6 +249,29 @@ pub(crate) enum MemoryRequestV1 {
         #[serde(skip, default)]
         cancellation: CancellationToken,
     },
+    ImportConfiguredJsonl {
+        scope: MemoryScopeV1,
+        #[serde(skip, default)]
+        cancellation: CancellationToken,
+    },
+    ExportConfiguredJsonl {
+        scope: MemoryScopeV1,
+        mind: String,
+        #[serde(skip, default)]
+        cancellation: CancellationToken,
+    },
+    VaultSessionStart {
+        scope: MemoryScopeV1,
+        mind: String,
+        #[serde(skip, default)]
+        cancellation: CancellationToken,
+    },
+    VaultSessionEnd {
+        scope: MemoryScopeV1,
+        mind: String,
+        #[serde(skip, default)]
+        cancellation: CancellationToken,
+    },
     #[cfg(test)]
     #[serde(skip)]
     TestBlock {
@@ -233,6 +297,13 @@ pub(crate) enum MemoryRequestV1 {
         mutation: MemoryMutation,
         cancellation: CancellationToken,
     },
+    #[cfg(test)]
+    #[serde(skip)]
+    TestVaultSessionStart {
+        started: std::sync::mpsc::SyncSender<()>,
+        mind: String,
+        cancellation: CancellationToken,
+    },
 }
 
 impl MemoryRequestV1 {
@@ -248,12 +319,17 @@ impl MemoryRequestV1 {
             | Self::GetEdges { cancellation, .. }
             | Self::ListEpisodes { cancellation, .. }
             | Self::SearchEpisodes { cancellation, .. }
-            | Self::ApplyMutation { cancellation, .. } => cancellation,
+            | Self::ApplyMutation { cancellation, .. }
+            | Self::ImportConfiguredJsonl { cancellation, .. }
+            | Self::ExportConfiguredJsonl { cancellation, .. }
+            | Self::VaultSessionStart { cancellation, .. }
+            | Self::VaultSessionEnd { cancellation, .. } => cancellation,
             #[cfg(test)]
             Self::TestBlock { cancellation, .. }
             | Self::TestRecord { cancellation, .. }
             | Self::TestPanic { cancellation }
-            | Self::TestAtomicMutation { cancellation, .. } => cancellation,
+            | Self::TestAtomicMutation { cancellation, .. }
+            | Self::TestVaultSessionStart { cancellation, .. } => cancellation,
         }
     }
 }
@@ -270,6 +346,32 @@ pub(crate) enum MemoryPayloadV1 {
     Edges(Vec<Edge>),
     Episodes(Vec<Episode>),
     Mutation(MemoryMutationOutcome),
+    Jsonl(JsonlSyncReportV1),
+    Vault(VaultSyncReportV1),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct JsonlSyncReportV1 {
+    pub imported: usize,
+    pub reinforced: usize,
+    pub skipped: usize,
+    pub errors: usize,
+    pub bytes: u64,
+    pub changed: bool,
+    pub content_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct VaultSyncReportV1 {
+    pub imported: usize,
+    pub skipped: usize,
+    pub reinforced: usize,
+    pub dangling: usize,
+    pub superseded: usize,
+    pub sections_written: usize,
+    pub facts_written: usize,
+    pub files_written: usize,
+    pub episodes_written: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -298,6 +400,11 @@ pub(crate) enum MemoryServiceErrorCodeV1 {
     FactVersionConflict,
     InvalidMutation,
     InvalidRequest,
+    SyncNotConfigured,
+    SyncTransient,
+    UnsafePath,
+    InputTooLarge,
+    Filesystem,
     Storage,
     Internal,
 }
@@ -338,6 +445,31 @@ impl MemoryServiceErrorV1 {
             }
             MemoryError::InvalidMutation(_) => MemoryServiceErrorCodeV1::InvalidMutation,
             MemoryError::Storage(_) => MemoryServiceErrorCodeV1::Storage,
+        };
+        Self::new(code, error.to_string())
+    }
+
+    fn from_vault(error: omegon_memory::vault_sync::VaultSyncError) -> Self {
+        let code = match &error {
+            omegon_memory::vault_sync::VaultSyncError::Cancelled => {
+                MemoryServiceErrorCodeV1::Cancelled
+            }
+            omegon_memory::vault_sync::VaultSyncError::InvalidPath(_) => {
+                MemoryServiceErrorCodeV1::UnsafePath
+            }
+            omegon_memory::vault_sync::VaultSyncError::InvalidInput(_) => {
+                MemoryServiceErrorCodeV1::InvalidRequest
+            }
+            omegon_memory::vault_sync::VaultSyncError::TransientRead(_) => {
+                MemoryServiceErrorCodeV1::SyncTransient
+            }
+            omegon_memory::vault_sync::VaultSyncError::Storage(_)
+            | omegon_memory::vault_sync::VaultSyncError::PublishedButDirectorySyncFailed {
+                ..
+            }
+            | omegon_memory::vault_sync::VaultSyncError::Memory(_) => {
+                MemoryServiceErrorCodeV1::Filesystem
+            }
         };
         Self::new(code, error.to_string())
     }
@@ -536,8 +668,7 @@ impl ManagedResourceController for WriterController {
 }
 
 pub(crate) async fn start_candidate(
-    project_path: PathBuf,
-    global_path: Option<PathBuf>,
+    config: MemoryWorkerConfig,
 ) -> anyhow::Result<ManagedGenerationCandidate> {
     let (commands, receiver) = mpsc::channel(QUEUE_CAPACITY);
     let state = Arc::new(WorkerState {
@@ -552,7 +683,7 @@ pub(crate) async fn start_candidate(
     let worker_state = Arc::clone(&state);
     let join = std::thread::Builder::new()
         .name("omegon-memory".into())
-        .spawn(move || run_worker(project_path, global_path, receiver, worker_state, startup))?;
+        .spawn(move || run_worker(config, receiver, worker_state, startup))?;
     *state
         .join
         .lock()
@@ -613,8 +744,7 @@ pub(crate) async fn start_candidate(
 }
 
 fn run_worker(
-    project_path: PathBuf,
-    global_path: Option<PathBuf>,
+    mut config: MemoryWorkerConfig,
     mut receiver: mpsc::Receiver<WorkerCommand>,
     state: Arc<WorkerState>,
     startup: std::sync::mpsc::SyncSender<Result<(), String>>,
@@ -627,15 +757,23 @@ fn run_worker(
         }
     }
     let _closure = StoreClosure(Arc::clone(&state));
-    let project = match SqliteBackend::open(&project_path) {
+    let project_root = match validate_project_memory_config(&config) {
+        Ok(root) => root,
+        Err(error) => {
+            let _ = startup.send(Err(error.message));
+            return;
+        }
+    };
+    config.project_memory_root = project_root;
+    let project = match SqliteBackend::open(&config.project_db_path) {
         Ok(store) => store,
         Err(error) => {
             let _ = startup.send(Err(error.to_string()));
             return;
         }
     };
-    let global = match global_path {
-        Some(path) => match SqliteBackend::open_existing(&path) {
+    let global = match config.global_db_path.as_ref() {
+        Some(path) => match SqliteBackend::open_existing(path) {
             Ok(store) => Some(store),
             Err(error) => {
                 tracing::warn!(
@@ -660,6 +798,40 @@ fn run_worker(
             return;
         }
     };
+    if config.startup_sync_enabled {
+        let startup_cancelled = || state.stopping.load(Ordering::Acquire);
+        let startup_result: Result<(), MemoryServiceErrorV1> = (|| {
+            let stats = runtime
+                .block_on(project.stats(omegon_memory::sqlite::PRIMENSUS_MIND))
+                .map_err(MemoryServiceErrorV1::from_memory)?;
+            if stats.active_facts == 0 {
+                import_configured_jsonl(
+                    &runtime,
+                    &project,
+                    &config.project_memory_root,
+                    &startup_cancelled,
+                )?;
+            }
+            if config.vault.is_some() {
+                vault_session_start(
+                    &runtime,
+                    &project,
+                    config.vault.as_ref(),
+                    true,
+                    omegon_memory::sqlite::PRIMENSUS_MIND,
+                    &startup_cancelled,
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = startup_result {
+            drop(runtime);
+            drop(global);
+            drop(project);
+            let _ = startup.send(Err(error.message));
+            return;
+        }
+    }
     let _ = startup.send(Ok(()));
 
     while let Some(command) = receiver.blocking_recv() {
@@ -674,7 +846,18 @@ fn run_worker(
                 .send(Err(MemoryServiceErrorV1::cancelled()));
             continue;
         }
-        let result = execute_request(&runtime, &project, global.as_ref(), command.request);
+        let result = execute_request(
+            &runtime,
+            &project,
+            global.as_ref(),
+            &config,
+            command.request,
+            &|| {
+                caller.is_cancelled()
+                    || generation.is_cancelled()
+                    || state.stopping.load(Ordering::Acquire)
+            },
+        );
         let _ = command.response.send(result);
     }
     drop(runtime);
@@ -682,14 +865,314 @@ fn run_worker(
     drop(project);
 }
 
+fn validate_project_memory_config(
+    config: &MemoryWorkerConfig,
+) -> Result<PathBuf, MemoryServiceErrorV1> {
+    let root = omegon_memory::vault_sync::validate_vault_root(&config.project_memory_root)
+        .map_err(MemoryServiceErrorV1::from_vault)?;
+    for path in [&config.project_db_path, &config.project_jsonl_path] {
+        let parent = path.parent().ok_or_else(|| {
+            MemoryServiceErrorV1::new(
+                MemoryServiceErrorCodeV1::UnsafePath,
+                "configured project memory path has no parent",
+            )
+        })?;
+        let canonical_parent = std::fs::canonicalize(parent).map_err(|error| {
+            MemoryServiceErrorV1::new(
+                MemoryServiceErrorCodeV1::UnsafePath,
+                format!("configured project memory parent is invalid: {error}"),
+            )
+        })?;
+        if canonical_parent != root {
+            return Err(MemoryServiceErrorV1::new(
+                MemoryServiceErrorCodeV1::UnsafePath,
+                "configured project memory path escapes the selected root",
+            ));
+        }
+        if let Ok(metadata) = std::fs::symlink_metadata(path)
+            && metadata.file_type().is_symlink()
+        {
+            return Err(MemoryServiceErrorV1::new(
+                MemoryServiceErrorCodeV1::UnsafePath,
+                "configured project memory file must not be a symlink",
+            ));
+        }
+    }
+    if config
+        .project_jsonl_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("facts.jsonl")
+    {
+        return Err(MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::UnsafePath,
+            "configured project JSONL path must be facts.jsonl beneath the selected root",
+        ));
+    }
+    Ok(root)
+}
+
+fn check_cancelled(cancelled: &dyn Fn() -> bool) -> Result<(), MemoryServiceErrorV1> {
+    if cancelled() {
+        Err(MemoryServiceErrorV1::cancelled())
+    } else {
+        Ok(())
+    }
+}
+
+fn import_configured_jsonl(
+    runtime: &tokio::runtime::Runtime,
+    backend: &SqliteBackend,
+    project_memory_root: &std::path::Path,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<JsonlSyncReportV1, MemoryServiceErrorV1> {
+    check_cancelled(cancelled)?;
+    let path = project_memory_root.join("facts.jsonl");
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(JsonlSyncReportV1::default());
+        }
+        Err(error) => {
+            return Err(MemoryServiceErrorV1::new(
+                MemoryServiceErrorCodeV1::Filesystem,
+                format!("configured JSONL metadata failed: {error}"),
+            ));
+        }
+    };
+    check_cancelled(cancelled)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::UnsafePath,
+            "configured JSONL path must be a non-symlink regular file",
+        ));
+    }
+    let canonical = std::fs::canonicalize(&path).map_err(|error| {
+        MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::Filesystem,
+            format!("configured JSONL canonicalization failed: {error}"),
+        )
+    })?;
+    if !canonical.starts_with(project_memory_root) {
+        return Err(MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::UnsafePath,
+            "configured JSONL escapes the selected project memory root",
+        ));
+    }
+    if metadata.len() > MAX_JSONL_BYTES {
+        return Err(MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::InputTooLarge,
+            format!("configured JSONL exceeds {MAX_JSONL_BYTES} bytes"),
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|error| {
+        MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::Filesystem,
+            format!("configured JSONL read failed: {error}"),
+        )
+    })?;
+    check_cancelled(cancelled)?;
+    if bytes.len() as u64 > MAX_JSONL_BYTES {
+        return Err(MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::InputTooLarge,
+            format!("configured JSONL exceeds {MAX_JSONL_BYTES} bytes"),
+        ));
+    }
+    let after = std::fs::symlink_metadata(&path).map_err(|error| {
+        MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::Filesystem,
+            format!("configured JSONL changed while reading: {error}"),
+        )
+    })?;
+    if after.file_type().is_symlink() || !after.is_file() {
+        return Err(MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::UnsafePath,
+            "configured JSONL changed to an unsafe path while reading",
+        ));
+    }
+    let jsonl = String::from_utf8(bytes).map_err(|error| {
+        MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::Filesystem,
+            format!("configured JSONL is not UTF-8: {error}"),
+        )
+    })?;
+    check_cancelled(cancelled)?;
+    let content_hash = format!("{:x}", Sha256::digest(jsonl.as_bytes()));
+    let outcome = runtime
+        .block_on(backend.apply_mutation(
+            &format!("configured-jsonl-import-{content_hash}"),
+            MemoryMutation::ImportJsonl { jsonl },
+        ))
+        .map_err(MemoryServiceErrorV1::from_memory)?;
+    let omegon_memory::MemoryMutationEffect::JsonlImported {
+        imported,
+        reinforced,
+        skipped,
+        errors,
+    } = outcome.effect
+    else {
+        return Err(MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::Internal,
+            "configured JSONL import returned an unexpected effect",
+        ));
+    };
+    Ok(JsonlSyncReportV1 {
+        imported,
+        reinforced,
+        skipped,
+        errors,
+        bytes: metadata.len(),
+        changed: !outcome.replayed && (imported > 0 || reinforced > 0),
+        content_hash: Some(content_hash),
+    })
+}
+
+fn export_configured_jsonl(
+    runtime: &tokio::runtime::Runtime,
+    backend: &SqliteBackend,
+    project_memory_root: &std::path::Path,
+    mind: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<JsonlSyncReportV1, MemoryServiceErrorV1> {
+    check_cancelled(cancelled)?;
+    let content = runtime
+        .block_on(backend.export_jsonl(mind))
+        .map_err(MemoryServiceErrorV1::from_memory)?;
+    check_cancelled(cancelled)?;
+    if content.len() as u64 > MAX_JSONL_BYTES {
+        return Err(MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::InputTooLarge,
+            format!("configured JSONL export exceeds {MAX_JSONL_BYTES} bytes"),
+        ));
+    }
+    let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    check_cancelled(cancelled)?;
+    let changed = omegon_memory::vault_sync::atomic_publish_contained(
+        project_memory_root,
+        std::path::Path::new("facts.jsonl"),
+        content.as_bytes(),
+        MAX_JSONL_BYTES,
+    )
+    .map_err(MemoryServiceErrorV1::from_vault)?
+    .changed;
+    Ok(JsonlSyncReportV1 {
+        bytes: content.len() as u64,
+        changed,
+        content_hash: Some(content_hash),
+        ..JsonlSyncReportV1::default()
+    })
+}
+
+fn vault_session_start(
+    runtime: &tokio::runtime::Runtime,
+    backend: &SqliteBackend,
+    config: Option<&MemoryVaultConfigV1>,
+    startup_sync_enabled: bool,
+    mind: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<VaultSyncReportV1, MemoryServiceErrorV1> {
+    let config = config.ok_or_else(|| {
+        MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::SyncNotConfigured,
+            "Codex vault synchronization is not configured",
+        )
+    })?;
+    let mut report = VaultSyncReportV1::default();
+    if startup_sync_enabled && config.import_on_session_start {
+        let imported = runtime
+            .block_on(omegon_memory::vault_sync::import_from_vault_cancellable(
+                backend,
+                &config.root,
+                mind,
+                cancelled,
+            ))
+            .map_err(MemoryServiceErrorV1::from_vault)?;
+        report.imported = imported.facts_imported;
+        report.skipped = imported.facts_skipped;
+    }
+    Ok(report)
+}
+
+fn vault_session_end(
+    runtime: &tokio::runtime::Runtime,
+    backend: &SqliteBackend,
+    config: Option<&MemoryVaultConfigV1>,
+    mind: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<VaultSyncReportV1, MemoryServiceErrorV1> {
+    let config = config.ok_or_else(|| {
+        MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::SyncNotConfigured,
+            "Codex vault synchronization is not configured",
+        )
+    })?;
+    let mut report = VaultSyncReportV1::default();
+    if config.reinforce_references {
+        let reinforced = runtime
+            .block_on(
+                omegon_memory::vault_sync::reinforce_referenced_facts_cancellable(
+                    backend,
+                    &config.root,
+                    cancelled,
+                ),
+            )
+            .map_err(MemoryServiceErrorV1::from_vault)?;
+        report.reinforced = reinforced.facts_reinforced;
+        report.dangling = reinforced.references_dangling;
+        report.superseded = reinforced.references_superseded_total;
+    }
+    if config.materialize_on_session_end {
+        let materialized = runtime
+            .block_on(omegon_memory::vault_sync::materialize_to_vault_cancellable(
+                backend,
+                &config.root,
+                mind,
+                cancelled,
+            ))
+            .map_err(MemoryServiceErrorV1::from_vault)?;
+        report.sections_written = materialized.sections_written;
+        report.facts_written = materialized.facts_written;
+        report.files_written = materialized.files_changed_total;
+        report.episodes_written = runtime
+            .block_on(
+                omegon_memory::vault_sync::materialize_episodes_to_vault_cancellable(
+                    backend,
+                    &config.root,
+                    mind,
+                    config.max_episodes,
+                    cancelled,
+                ),
+            )
+            .map_err(MemoryServiceErrorV1::from_vault)?;
+    }
+    Ok(report)
+}
+
 fn execute_request(
     runtime: &tokio::runtime::Runtime,
     project: &SqliteBackend,
     global: Option<&SqliteBackend>,
+    config: &MemoryWorkerConfig,
     request: MemoryRequestV1,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<MemoryResponseV1, MemoryServiceErrorV1> {
+    check_cancelled(cancelled)?;
     validate_request(&request)?;
     let scope = request_scope(&request);
+    if scope == MemoryScopeV1::Global
+        && matches!(
+            request,
+            MemoryRequestV1::ImportConfiguredJsonl { .. }
+                | MemoryRequestV1::ExportConfiguredJsonl { .. }
+                | MemoryRequestV1::VaultSessionStart { .. }
+                | MemoryRequestV1::VaultSessionEnd { .. }
+        )
+    {
+        return Err(MemoryServiceErrorV1::new(
+            MemoryServiceErrorCodeV1::SyncNotConfigured,
+            "configured synchronization is unavailable for global memory",
+        ));
+    }
     let backend = match scope {
         MemoryScopeV1::Project => project,
         MemoryScopeV1::Global => match global {
@@ -712,6 +1195,63 @@ fn execute_request(
             }
         },
     };
+    let configured_payload = match &request {
+        MemoryRequestV1::ImportConfiguredJsonl { .. } => Some(
+            import_configured_jsonl(runtime, project, &config.project_memory_root, cancelled)
+                .map(MemoryPayloadV1::Jsonl),
+        ),
+        MemoryRequestV1::ExportConfiguredJsonl { mind, .. } => Some(
+            export_configured_jsonl(
+                runtime,
+                project,
+                &config.project_memory_root,
+                mind,
+                cancelled,
+            )
+            .map(MemoryPayloadV1::Jsonl),
+        ),
+        MemoryRequestV1::VaultSessionStart { mind, .. } => Some(
+            vault_session_start(
+                runtime,
+                project,
+                config.vault.as_ref(),
+                config.startup_sync_enabled,
+                mind,
+                cancelled,
+            )
+            .map(MemoryPayloadV1::Vault),
+        ),
+        MemoryRequestV1::VaultSessionEnd { mind, .. } => Some(
+            vault_session_end(runtime, project, config.vault.as_ref(), mind, cancelled)
+                .map(MemoryPayloadV1::Vault),
+        ),
+        #[cfg(test)]
+        MemoryRequestV1::TestVaultSessionStart { started, mind, .. } => {
+            let _ = started.send(());
+            while !cancelled() {
+                std::thread::yield_now();
+            }
+            Some(
+                vault_session_start(
+                    runtime,
+                    project,
+                    config.vault.as_ref(),
+                    config.startup_sync_enabled,
+                    mind,
+                    cancelled,
+                )
+                .map(MemoryPayloadV1::Vault),
+            )
+        }
+        _ => None,
+    };
+    if let Some(payload) = configured_payload {
+        return Ok(MemoryResponseV1 {
+            version: DTO_VERSION,
+            scope,
+            payload: payload?,
+        });
+    }
     let payload = runtime
         .block_on(async {
             match request {
@@ -774,6 +1314,12 @@ fn execute_request(
                     .apply_mutation(&operation_id, mutation)
                     .await
                     .map(MemoryPayloadV1::Mutation),
+                MemoryRequestV1::ImportConfiguredJsonl { .. }
+                | MemoryRequestV1::ExportConfiguredJsonl { .. }
+                | MemoryRequestV1::VaultSessionStart { .. }
+                | MemoryRequestV1::VaultSessionEnd { .. } => unreachable!("handled above"),
+                #[cfg(test)]
+                MemoryRequestV1::TestVaultSessionStart { .. } => unreachable!("handled above"),
                 #[cfg(test)]
                 MemoryRequestV1::TestBlock {
                     started, release, ..
@@ -875,12 +1421,17 @@ fn request_scope(request: &MemoryRequestV1) -> MemoryScopeV1 {
         | MemoryRequestV1::GetEdges { scope, .. }
         | MemoryRequestV1::ListEpisodes { scope, .. }
         | MemoryRequestV1::SearchEpisodes { scope, .. }
-        | MemoryRequestV1::ApplyMutation { scope, .. } => *scope,
+        | MemoryRequestV1::ApplyMutation { scope, .. }
+        | MemoryRequestV1::ImportConfiguredJsonl { scope, .. }
+        | MemoryRequestV1::ExportConfiguredJsonl { scope, .. }
+        | MemoryRequestV1::VaultSessionStart { scope, .. }
+        | MemoryRequestV1::VaultSessionEnd { scope, .. } => *scope,
         #[cfg(test)]
         MemoryRequestV1::TestBlock { .. }
         | MemoryRequestV1::TestRecord { .. }
         | MemoryRequestV1::TestPanic { .. }
-        | MemoryRequestV1::TestAtomicMutation { .. } => MemoryScopeV1::Project,
+        | MemoryRequestV1::TestAtomicMutation { .. }
+        | MemoryRequestV1::TestVaultSessionStart { .. } => MemoryScopeV1::Project,
     }
 }
 
@@ -888,7 +1439,8 @@ fn request_scope(request: &MemoryRequestV1) -> MemoryScopeV1 {
 mod tests {
     use super::*;
     use omegon_memory::{
-        DecayProfileName, FactPrecondition, MemoryMutationEffect, Section, StoreFact,
+        DecayProfileName, FactPrecondition, FactStatus, JsonlFact, JsonlRecord,
+        MemoryMutationEffect, Section, StoreFact,
     };
     use std::sync::atomic::AtomicUsize;
 
@@ -919,13 +1471,51 @@ mod tests {
         }
     }
 
+    fn worker_config(project: PathBuf, global: Option<PathBuf>) -> MemoryWorkerConfig {
+        let project_memory_root = project.parent().unwrap().to_path_buf();
+        MemoryWorkerConfig {
+            project_memory_root,
+            project_jsonl_path: project.parent().unwrap().join("facts.jsonl"),
+            project_db_path: project,
+            global_db_path: global,
+            vault: None,
+            startup_sync_enabled: true,
+        }
+    }
+
+    fn jsonl_fact(id: &str, content: &str) -> String {
+        serde_json::to_string(&JsonlRecord::Fact(JsonlFact {
+            id: id.into(),
+            mind: MIND.into(),
+            content: content.into(),
+            section: Section::Architecture,
+            status: FactStatus::Active,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            source: Some("test".into()),
+            content_hash: None,
+            supersedes: None,
+            version: 17,
+            decay_profile: DecayProfileName::Standard,
+            persona_id: None,
+            layer: "project".into(),
+            tags: vec![],
+        }))
+        .unwrap()
+    }
+
     async fn managed_service(
         project: PathBuf,
         global: Option<PathBuf>,
     ) -> (crate::bus::EventBus, ManagedServiceHandle<MemoryService>) {
+        managed_service_with_config(worker_config(project, global)).await
+    }
+
+    async fn managed_service_with_config(
+        config: MemoryWorkerConfig,
+    ) -> (crate::bus::EventBus, ManagedServiceHandle<MemoryService>) {
         let mut bus = crate::bus::EventBus::new();
         bus.register(Box::new(MemoryDeclarationFeature));
-        bus.stage_managed_generation("memory", start_candidate(project, global).await.unwrap())
+        bus.stage_managed_generation("memory", start_candidate(config).await.unwrap())
             .unwrap();
         bus.try_finalize_managed().await.unwrap();
         let handle = bus
@@ -1029,6 +1619,299 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_imports_configured_jsonl_before_readiness_for_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("facts.db");
+        let jsonl = project.with_extension("jsonl");
+        std::fs::write(&jsonl, jsonl_fact("startup-fact", "ready before publish")).unwrap();
+        let (mut bus, handle) = managed_service(project.clone(), None).await;
+        let response = handle
+            .invoke(MemoryRequestV1::GetFact {
+                scope: MemoryScopeV1::Project,
+                id: "startup-fact".into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(response.payload, MemoryPayloadV1::Fact(fact)
+            if fact.as_ref().as_ref().is_some_and(|fact| fact.content == "ready before publish")));
+        let stats = handle
+            .invoke(MemoryRequestV1::Stats {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(stats.payload, MemoryPayloadV1::Stats(stats)
+            if stats.total_facts == 1 && stats.active_facts == 1));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_skips_configured_jsonl_when_project_has_active_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("facts.db");
+        let backend = SqliteBackend::open(&project).unwrap();
+        backend
+            .store_fact(StoreFact {
+                mind: MIND.into(),
+                content: "existing active fact".into(),
+                section: Section::Architecture,
+                decay_profile: DecayProfileName::Standard,
+                source: Some("test".into()),
+            })
+            .await
+            .unwrap();
+        drop(backend);
+        std::fs::write(
+            dir.path().join("facts.jsonl"),
+            jsonl_fact("startup-skipped", "explicit reconcile only"),
+        )
+        .unwrap();
+        let (mut bus, handle) = managed_service(project, None).await;
+        let response = handle
+            .invoke(MemoryRequestV1::GetFact {
+                scope: MemoryScopeV1::Project,
+                id: "startup-skipped".into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(response.payload, MemoryPayloadV1::Fact(fact)
+            if fact.as_ref().as_ref().is_none()));
+        handle
+            .invoke(MemoryRequestV1::ImportConfiguredJsonl {
+                scope: MemoryScopeV1::Project,
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        let response = handle
+            .invoke(MemoryRequestV1::GetFact {
+                scope: MemoryScopeV1::Project,
+                id: "startup-skipped".into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(response.payload, MemoryPayloadV1::Fact(fact)
+            if fact.as_ref().as_ref().is_some()));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_rejects_symlinked_jsonl_without_reading_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("memory");
+        std::fs::create_dir(&root).unwrap();
+        let outside = dir.path().join("outside.jsonl");
+        std::fs::write(&outside, jsonl_fact("outside", "must not import")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("facts.jsonl")).unwrap();
+        for startup_sync_enabled in [true, false] {
+            let error = match start_candidate(MemoryWorkerConfig {
+                project_memory_root: root.clone(),
+                project_db_path: root.join("facts.db"),
+                project_jsonl_path: root.join("facts.jsonl"),
+                global_db_path: None,
+                vault: None,
+                startup_sync_enabled,
+            })
+            .await
+            {
+                Ok(_) => panic!("symlinked JSONL candidate unexpectedly started"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("symlink"));
+        }
+        assert_eq!(
+            std::fs::read_to_string(outside).unwrap(),
+            jsonl_fact("outside", "must not import")
+        );
+    }
+
+    #[tokio::test]
+    async fn candidate_rejects_jsonl_outside_selected_project_memory_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("memory");
+        std::fs::create_dir(&root).unwrap();
+        let error = match start_candidate(MemoryWorkerConfig {
+            project_memory_root: root.clone(),
+            project_db_path: root.join("facts.db"),
+            project_jsonl_path: dir.path().join("facts.jsonl"),
+            global_db_path: None,
+            vault: None,
+            startup_sync_enabled: true,
+        })
+        .await
+        {
+            Ok(_) => panic!("escaping JSONL candidate unexpectedly started"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("escapes"));
+    }
+
+    #[tokio::test]
+    async fn child_startup_policy_skips_jsonl_and_vault_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("facts.db");
+        std::fs::write(
+            dir.path().join("facts.jsonl"),
+            jsonl_fact("child-jsonl", "skip JSONL"),
+        )
+        .unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join("ai/memory")).unwrap();
+        std::fs::write(
+            vault.join("ai/memory/note.md"),
+            "+++\nkind = \"memory_fact\"\n+++\nskip vault\n",
+        )
+        .unwrap();
+        let config = MemoryWorkerConfig {
+            project_memory_root: dir.path().to_path_buf(),
+            project_jsonl_path: dir.path().join("facts.jsonl"),
+            project_db_path: project,
+            global_db_path: None,
+            vault: Some(
+                MemoryVaultConfigV1::validated(vault, &crate::codex_config::MemorySync::default())
+                    .unwrap(),
+            ),
+            startup_sync_enabled: false,
+        };
+        let (mut bus, handle) = managed_service_with_config(config).await;
+        let facts = handle
+            .invoke(MemoryRequestV1::ListFacts {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                filter: FactFilter::default(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(facts.payload, MemoryPayloadV1::Facts(facts) if facts.is_empty()));
+        let sync = handle
+            .invoke(MemoryRequestV1::VaultSessionStart {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(sync.payload, MemoryPayloadV1::Vault(report) if report.imported == 0));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn export_bounds_comparison_of_oversized_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("facts.db");
+        let jsonl = dir.path().join("facts.jsonl");
+        let file = std::fs::File::create(&jsonl).unwrap();
+        file.set_len(MAX_JSONL_BYTES + 1).unwrap();
+        let mut config = worker_config(project, None);
+        config.startup_sync_enabled = false;
+        let (mut bus, handle) = managed_service_with_config(config).await;
+        let response = handle
+            .invoke(MemoryRequestV1::ExportConfiguredJsonl {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(response.payload, MemoryPayloadV1::Jsonl(report) if report.changed));
+        assert_eq!(std::fs::metadata(jsonl).unwrap().len(), 0);
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_jsonl_is_a_noop_and_export_is_compare_before_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("facts.db");
+        let jsonl = project.with_extension("jsonl");
+        let (mut bus, handle) = managed_service(project, None).await;
+        assert!(!jsonl.exists());
+        handle
+            .invoke(request(
+                MemoryScopeV1::Project,
+                "export-fact",
+                store("deterministic export"),
+            ))
+            .await
+            .unwrap();
+        let first = handle
+            .invoke(MemoryRequestV1::ExportConfiguredJsonl {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(first.payload, MemoryPayloadV1::Jsonl(report) if report.changed));
+        let modified = std::fs::metadata(&jsonl).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let second = handle
+            .invoke(MemoryRequestV1::ExportConfiguredJsonl {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(second.payload, MemoryPayloadV1::Jsonl(report) if !report.changed));
+        assert_eq!(
+            std::fs::metadata(&jsonl).unwrap().modified().unwrap(),
+            modified
+        );
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_global_sync_never_falls_back_even_when_global_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.db");
+        let global = dir.path().join("global.db");
+        drop(SqliteBackend::open(&global).unwrap());
+        let (mut bus, handle) = managed_service(project, Some(global)).await;
+        let error = handle
+            .invoke(MemoryRequestV1::ExportConfiguredJsonl {
+                scope: MemoryScopeV1::Global,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ManagedServiceCallError::Operation(error)
+            if error.code == MemoryServiceErrorCodeV1::SyncNotConfigured));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
     async fn a_missing_global_path_degrades_locally_without_creation() {
         let dir = tempfile::tempdir().unwrap();
         let global = dir.path().join("missing-global.db");
@@ -1092,6 +1975,33 @@ mod tests {
         assert!(
             matches!(decoded, MemoryRequestV1::VectorSearch { vector, .. } if vector == vec![1.0, 0.0])
         );
+        for request in [
+            MemoryRequestV1::ImportConfiguredJsonl {
+                scope: MemoryScopeV1::Project,
+                cancellation: CancellationToken::new(),
+            },
+            MemoryRequestV1::ExportConfiguredJsonl {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            },
+            MemoryRequestV1::VaultSessionStart {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            },
+            MemoryRequestV1::VaultSessionEnd {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            },
+        ] {
+            let encoded = serde_json::to_string(&request).unwrap();
+            assert!(
+                !encoded.contains("path"),
+                "request leaked a path: {encoded}"
+            );
+        }
 
         let errors = [
             (
@@ -1137,6 +2047,153 @@ mod tests {
             assert_eq!(mapped.code, expected);
             serde_json::to_string(&mapped).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn configured_jsonl_and_vault_import_before_worker_readiness() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join("ai/memory")).unwrap();
+        std::fs::write(
+            vault.join("ai/memory/codex.md"),
+            "+++\nkind = \"memory_fact\"\ntopic = \"Architecture\"\n+++\nVault-owned fact\n",
+        )
+        .unwrap();
+        let project = dir.path().join("facts.db");
+        std::fs::write(
+            project.with_extension("jsonl"),
+            jsonl_fact("startup-jsonl-with-vault", "JSONL bootstrap fact"),
+        )
+        .unwrap();
+        let config = MemoryWorkerConfig {
+            project_memory_root: dir.path().to_path_buf(),
+            project_jsonl_path: project.with_extension("jsonl"),
+            project_db_path: project,
+            global_db_path: None,
+            vault: Some(
+                MemoryVaultConfigV1::validated(
+                    vault.clone(),
+                    &crate::codex_config::MemorySync {
+                        import_on_session_start: true,
+                        materialize_on_session_end: true,
+                        reinforce_references: true,
+                        max_episodes: 3,
+                    },
+                )
+                .unwrap(),
+            ),
+            startup_sync_enabled: true,
+        };
+        let (mut bus, handle) = managed_service_with_config(config).await;
+        let start = handle
+            .invoke(MemoryRequestV1::VaultSessionStart {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(start.payload, MemoryPayloadV1::Vault(report)
+            if report.imported == 0 && report.skipped == 1));
+        let facts = handle
+            .invoke(MemoryRequestV1::ListFacts {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                filter: FactFilter::default(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        let MemoryPayloadV1::Facts(facts) = facts.payload else {
+            panic!("expected imported facts");
+        };
+        assert_eq!(facts.len(), 2);
+        std::fs::write(
+            vault.join("note.md"),
+            format!(
+                "+++\nrelated_facts = [\"{}\"]\n+++\nStable note\n",
+                facts[0].id
+            ),
+        )
+        .unwrap();
+        let first = handle
+            .invoke(MemoryRequestV1::VaultSessionEnd {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(first.payload, MemoryPayloadV1::Vault(report)
+            if report.reinforced == 1 && report.files_written > 0));
+        let replay = handle
+            .invoke(MemoryRequestV1::VaultSessionEnd {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(replay.payload, MemoryPayloadV1::Vault(report)
+            if report.reinforced == 0 && report.files_written == 0));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn active_vault_cancellation_settles_strict_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join("ai/memory")).unwrap();
+        let project = dir.path().join("facts.db");
+        let config = MemoryWorkerConfig {
+            project_memory_root: dir.path().to_path_buf(),
+            project_jsonl_path: project.with_extension("jsonl"),
+            project_db_path: project,
+            global_db_path: None,
+            vault: Some(MemoryVaultConfigV1 {
+                root: vault.clone(),
+                import_on_session_start: true,
+                materialize_on_session_end: false,
+                reinforce_references: false,
+                max_episodes: 0,
+            }),
+            startup_sync_enabled: true,
+        };
+        let (mut bus, handle) = managed_service_with_config(config).await;
+        let cancellation = CancellationToken::new();
+        let (started, started_rx) = std::sync::mpsc::sync_channel(1);
+        let request = tokio::spawn({
+            let handle = handle.clone();
+            let cancellation = cancellation.clone();
+            async move {
+                handle
+                    .invoke(MemoryRequestV1::TestVaultSessionStart {
+                        started,
+                        mind: MIND.into(),
+                        cancellation,
+                    })
+                    .await
+            }
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(2)))
+            .await
+            .unwrap()
+            .unwrap();
+        cancellation.cancel();
+        assert!(
+            matches!(request.await.unwrap(), Err(ManagedServiceCallError::Operation(error))
+                if error.code == MemoryServiceErrorCodeV1::Cancelled)
+        );
+        let settlement =
+            tokio::time::timeout(Duration::from_secs(2), bus.shutdown_managed_services())
+                .await
+                .expect("cancelled vault worker should settle promptly");
+        assert!(settlement.all_resources_settled());
+        std::fs::rename(&vault, dir.path().join("vault-released")).unwrap();
     }
 
     #[tokio::test]
@@ -1355,7 +2412,7 @@ mod tests {
         bus.register(Box::new(MemoryDeclarationFeature));
         bus.stage_managed_generation(
             "memory",
-            start_candidate(project.clone(), Some(global.clone()))
+            start_candidate(worker_config(project.clone(), Some(global.clone())))
                 .await
                 .unwrap(),
         )
@@ -1425,8 +2482,14 @@ mod tests {
         });
         let (startup, started) = std::sync::mpsc::sync_channel(1);
         let worker_state = Arc::clone(&state);
-        let join =
-            std::thread::spawn(move || run_worker(project, None, receiver, worker_state, startup));
+        let join = std::thread::spawn(move || {
+            run_worker(
+                worker_config(project, None),
+                receiver,
+                worker_state,
+                startup,
+            )
+        });
         *state.join.lock().unwrap() = Some(join);
         tokio::task::spawn_blocking(move || started.recv())
             .await

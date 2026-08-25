@@ -175,7 +175,7 @@ pub struct Edge {
 // ─── Request/response types ─────────────────────────────────────────────────
 
 /// Request to store a new fact.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoreFact {
     pub mind: String,
     pub content: String,
@@ -205,13 +205,13 @@ pub struct MaintenanceApplyResult {
 }
 
 /// Result of storing a fact — what happened.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreResult {
     pub fact: Fact,
     pub action: StoreAction,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum StoreAction {
     Stored,
     Reinforced,
@@ -260,7 +260,7 @@ pub struct RenderedContext {
 }
 
 /// Request to create an edge.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateEdge {
     pub source_id: String,
     pub target_id: String,
@@ -269,7 +269,7 @@ pub struct CreateEdge {
 }
 
 /// Request to store an episode.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoreEpisode {
     pub mind: String,
     pub title: String,
@@ -289,6 +289,87 @@ pub struct ImportStats {
     pub reinforced: usize,
     pub skipped: usize,
     pub errors: usize,
+}
+
+/// Entity-specific optimistic precondition for a targeted mutation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FactPrecondition {
+    pub id: String,
+    pub expected_version: u64,
+}
+
+/// A durable memory mutation whose stable operation identity is supplied by
+/// [`MemoryBackend::apply_mutation`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MemoryMutation {
+    StoreFact {
+        request: StoreFact,
+    },
+    ReinforceFact {
+        fact: FactPrecondition,
+    },
+    TransitionFacts {
+        facts: Vec<FactPrecondition>,
+        status: FactStatus,
+    },
+    SupersedeFact {
+        fact: FactPrecondition,
+        replacement: StoreFact,
+    },
+    StoreEmbedding {
+        fact: FactPrecondition,
+        model_name: String,
+        embedding: Vec<f32>,
+    },
+    CreateEdge {
+        request: CreateEdge,
+    },
+    StoreEpisode {
+        request: StoreEpisode,
+    },
+}
+
+/// Compact durable effect recorded for operation replay. Fact content and
+/// vectors are not duplicated into the operation receipt table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MemoryMutationEffect {
+    FactStored {
+        fact_id: String,
+        version: u64,
+        action: StoreAction,
+    },
+    FactReinforced {
+        fact_id: String,
+        version: u64,
+        reinforcement_count: u32,
+    },
+    FactsTransitioned {
+        facts: Vec<FactPrecondition>,
+        status: FactStatus,
+    },
+    FactSuperseded {
+        original: FactPrecondition,
+        replacement: FactPrecondition,
+    },
+    EmbeddingStored {
+        fact_id: String,
+        model_name: String,
+        dims: u32,
+    },
+    EdgeCreated {
+        edge_id: String,
+    },
+    EpisodeStored {
+        episode_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryMutationOutcome {
+    pub effect: MemoryMutationEffect,
+    pub replayed: bool,
 }
 
 // ─── JSONL wire format ──────────────────────────────────────────────────────

@@ -341,7 +341,7 @@ pub(crate) fn ensure_project_memory_store_ready(
     let status = omegon_memory::sqlite::SqliteBackend::status(db_path)?;
     match status.schema_version {
         omegon_memory::sqlite::MEMORY_SCHEMA_VERSION => {
-            omegon_memory::sqlite::SqliteBackend::reconcile_v7_default_mind(db_path)?;
+            omegon_memory::sqlite::SqliteBackend::reconcile_current_default_mind(db_path)?;
             Ok(None)
         }
         version if omegon_memory::sqlite::LEGACY_MEMORY_SCHEMA_VERSIONS.contains(&version) => {
@@ -358,7 +358,7 @@ pub(crate) fn ensure_project_memory_store_ready(
             Ok(Some(result))
         }
         version => anyhow::bail!(
-            "unsupported memory schema v{version} at {}; run `omegon memory migrate --status --path {}` and restore a supported v5/v6 backup or upgrade Omegon",
+            "unsupported memory schema v{version} at {}; run `omegon memory migrate --status --path {}` and restore a supported v5-v7 backup or upgrade Omegon",
             db_path.display(),
             db_path.display()
         ),
@@ -2871,6 +2871,42 @@ mod init_gating_tests {
         assert!(project_memory_dir_if_initialized(dir.path()).is_none());
         assert!(!dir.path().join("ai").exists());
         assert!(!dir.path().join(".omegon").exists());
+    }
+
+    #[tokio::test]
+    async fn legacy_memory_root_reopens_the_same_persisted_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_root = dir.path().join(".omegon").join("memory");
+        std::fs::create_dir_all(&legacy_root).unwrap();
+        assert_eq!(
+            project_memory_dir_if_initialized(dir.path()),
+            Some(legacy_root.clone())
+        );
+
+        let db_path = legacy_root.join("facts.db");
+        let backend = omegon_memory::SqliteBackend::open(&db_path).unwrap();
+        let stored = backend
+            .store_fact(omegon_memory::StoreFact {
+                mind: omegon_memory::sqlite::PRIMENSUS_MIND.into(),
+                content: "Legacy-root reopen fixture".into(),
+                section: omegon_memory::Section::Architecture,
+                decay_profile: omegon_memory::DecayProfileName::Standard,
+                source: Some("test".into()),
+            })
+            .await
+            .unwrap();
+        drop(backend);
+
+        let reopened = omegon_memory::SqliteBackend::open(&db_path).unwrap();
+        assert_eq!(
+            reopened
+                .get_fact(&stored.fact.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "Legacy-root reopen fixture"
+        );
     }
 
     #[test]

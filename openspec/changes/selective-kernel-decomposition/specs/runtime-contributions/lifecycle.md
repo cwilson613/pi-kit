@@ -364,6 +364,67 @@ When the lifecycle candidate resolves repository resources
 Then readiness fails with a typed conflicting-authority diagnostic
 And the service does not merge, shadow, or mutate either root
 
+### Requirement: Durable memory is an optional managed service
+
+The release-coupled memory implementation must publish `service:memory` / `interface:omegon-memory-v1` as an optional boot-only managed service. One serial worker must own the selected project store, optional global store, SQLite and WAL state, durable facts, minds, edges, episodes, vectors, JSONL synchronization, and configured Codex-vault synchronization. Consumers must use one boot-captured generation-tagged handle or immutable service output. They must not retain a backend, connection, vault writer, implementation callback, or direct persistence fallback.
+
+#### Scenario: Memory is present
+Given an accepted memory generation was captured at boot
+When tools, context, lifecycle ingestion, session-end persistence, embedding-result writes, or status surfaces need durable memory
+Then they use the captured managed handle and return existing compatible DTOs or typed service errors
+And one service worker owns all project and optional global durable store access
+And no consumer opens SQLite, imports or exports JSONL, or synchronizes the vault directly
+
+#### Scenario: Independent mutations remain concurrent in meaning
+Given two accepted requests store independent facts against the same service generation
+When the serial worker commits both requests
+Then each request uses stable operation identity and existing content-addressed idempotency
+And neither request fails because an unrelated fact changed a global store revision
+And replay of either committed operation does not duplicate its durable effect
+
+#### Scenario: Targeted and imported mutations preserve conflict policy
+Given a request targets an existing fact or imports a JSONL record
+When the request conflicts with a newer durable entity version
+Then the targeted mutation returns a typed precondition conflict or the JSONL import applies the existing Lamport conflict rule
+And all multi-record SQLite effects remain atomic
+And deterministic tie-breaking produces the same result after reopen
+
+#### Scenario: Embeddings are unavailable
+Given the managed memory service is present but no embedding provider can produce a vector
+When a consumer recalls facts
+Then retrieval uses the existing deterministic non-vector path
+And durable fact, episode, graph, JSONL, and vault operations remain callable
+And the service does not fabricate an embedding model or retain provider credentials
+
+#### Scenario: Session and provider state remain outside memory
+Given two sessions share one accepted memory service generation
+When they select different minds, pin different working facts, advance different context TTLs, or run different extraction providers
+Then each session retains its own selection, pins, context state, and provider tasks
+And durable mind records and submitted persistence results remain service-owned
+And provider tasks can persist only through the captured handle and must settle before managed shutdown
+
+#### Scenario: Memory resources shut down
+Given the memory worker is `resource:memory-worker` and depends on `resource:memory-writer`
+When managed shutdown closes admission
+Then active calls receive one 30-second drain deadline
+And cleanup receives one non-resetting 5-second deadline
+And the queue and worker stop and join before SQLite, WAL, JSONL, and vault writer settlement
+And timeout or failure retains degraded ownership without claiming retirement
+
+#### Scenario: Memory is absent
+Given the optional memory service is unavailable at boot
+When a memory tool, status surface, or mixed context request executes
+Then memory tools and surfaces remain declared with typed unavailable evidence
+And durable memory context is omitted while unrelated context and host-owned compaction continue
+And no project or global store, JSONL synchronizer, vault writer, service owner, or generation is fabricated
+
+#### Scenario: Offline maintenance respects service ownership
+Given a stopped-runtime schema or selected-root migration or a one-shot embedding backfill is requested
+When the operation runs
+Then migration remains a non-concurrent maintenance owner
+And embedding backfill uses a bounded managed memory composition that shuts down before exit
+And neither path can bypass an active memory generation
+
 ### Requirement: Behavior policy is a stateless optional service
 
 The release-coupled behavior-policy implementation must publish `service:behavior-policy` / `interface:omegon-behavior-policy-v1` as an optional synchronous in-process service with strict no-resource teardown. Its object-safe contract may consume immutable host-normalized per-turn policy views and return only advisory unpinned task-mode inference, phase, drift, progress/evidence, pressure, pressure/meta-message, substantive-prose, and pathological-meta-response decisions. It must not retain conversation, tool, controller, frontend, or durable-session state. Session and host owners retain explicit operator mode parsing and correction recovery, declared tool capabilities, authoritative observation normalization, `IntentDocument`, persisted task mode, controller streaks, stuck/dead-mouse/meta counters, tool execution, event emission, and nudge insertion. Dynamic tool declarations and normalized observations are caller input rather than boot-cached service state.

@@ -724,6 +724,41 @@ scanners out of production consumers. Direct compatibility adapters remain
 available only to tests. External Markdown authoring, append-only TDD evidence,
 and stopped-runtime migration remain explicit adjacent boundaries.
 
+Slice 6.1.9 freezes memory as the next managed lane. One boot-only
+`service:memory` / `interface:omegon-memory-v1` worker owns the selected project
+store, optional global store, SQLite connections and WAL state, durable facts,
+minds, edges, episodes, vectors, JSONL import/export, and configured Codex-vault
+synchronization. Consumers capture one generation-tagged handle at boot or use
+owned output from that handle. They cannot retain `MemoryBackend`, a database
+connection, a vault writer, or a callback that exposes the implementation.
+
+Memory mutations use stable operation identities. Content-addressed stores keep
+their natural idempotency, while targeted mutations use entity-specific version
+preconditions. Independent fact writes do not contend on an artificial global
+revision. JSONL import retains its per-record Lamport conflict policy. SQLite
+changes that span facts, edges, vectors, or metadata remain atomic. Embedding
+generation stays outside the service, and vector failure preserves deterministic
+FTS retrieval. The service stores provider results but does not select providers,
+retain credentials, or execute extraction and embedding policy.
+
+The host retains session-local working-memory pins, selected mind, context TTL,
+context hashes and presentation policy, tool rendering, authorization, frontend
+state, provider tasks, and compaction. Durable minds and parent relationships
+remain service-owned. Host-owned provider tasks must be bounded and joined before
+managed shutdown, and they persist only through the captured handle. The strict
+memory worker depends on one strict durable writer. Shutdown stops and joins the
+worker before SQLite/WAL, JSONL, and vault writes settle. Stopped-runtime schema
+or selected-root migration remains outside the service. Embedding backfill uses
+a bounded managed composition rather than opening SQLite directly.
+
+Compatibility includes the existing selected-root policy, persisted schema and
+wire vocabulary, SQLite/in-memory parity, retrieval and decay behavior, minds,
+graphs, episodes, JSONL merge behavior, vault path safety, tool contracts,
+context ordering, and status projections. If memory is absent, tools and status
+remain declared with typed unavailability, durable memory context is omitted,
+and unrelated context and host-owned compaction continue without a direct store,
+JSONL, or vault fallback.
+
 ## Selective decomposition map
 
 | Current subsystem | Target tier | First boundary to establish |
@@ -1184,14 +1219,17 @@ and cursors without depending on missed broadcasts.
 - Slice 6.1.7 publishes codescan as the first resource-bearing production
   managed service. Tools and code-context requests share one boot-captured
   handle and one serial worker. Optional absence remains typed and local.
-- Slice 6.1.8 freezes lifecycle/OpenSpec as one revisioned managed repository
-  service. Ledger persistence is revision checked, and one boot-only serial
-  worker now owns revisioned reads, health, and explicit safe recovery behind a
-  typed managed handle with strict worker/writer cleanup. Git-native content
-  authority, host/session state, and external authoring remain outside.
-  Design mutations use crash-recoverable artifact-plus-ledger journals and
-  idempotent receipts. General OpenSpec journals and production consumer cutover
-  remain subsequent checkpoints.
+- Slice 6.1.8 publishes lifecycle/OpenSpec as one revisioned managed repository
+  service. One boot-only serial worker owns revisioned reads, mutations, health,
+  and safe recovery behind a typed handle with strict worker/writer cleanup.
+  Design and OpenSpec mutations use crash-recoverable artifact-plus-ledger
+  journals and idempotent receipts. Production consumers use captured handles or
+  immutable observations. Git-native content authority, host/session state, and
+  external authoring remain outside.
+- Slice 6.1.9 freezes memory as one managed durable service. One serial worker
+  owns project/global stores and JSONL/vault persistence. Session context and
+  provider computation remain host-owned, deterministic FTS remains available
+  without embeddings, and optional absence has no direct storage fallback.
 - Convert memory, context/compaction, and Git integration to declared
   in-process services.
 - Remove concrete feature imports from semantic surfaces.

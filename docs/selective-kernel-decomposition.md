@@ -762,11 +762,24 @@ exact result. Candidate rejection and retirement close both stores, worker
 panic remains a strict cleanup failure, exact-generation transfer preserves the
 captured handle, and retired handles fail closed.
 
-This is an intermediate ownership checkpoint. Existing memory tools, context,
-status, lifecycle/session producers, and embedding-result writers retain their
-compatibility backend until 6.1.9.4. JSONL and vault effects move behind the
-worker in 6.1.9.3. Sole production ownership and direct-owner source guards are
-therefore not claimed yet.
+The 6.1.9.3 checkpoint moves project JSONL and configured Codex-vault effects
+behind the same worker. Database and JSONL paths come from one selected memory
+root. The existing non-child, empty-store JSONL bootstrap completes before
+readiness; explicit import/export remains bounded, project-only, replayable,
+and atomically published. Explicit Codex integration supplies one validated
+vault root and synchronization policy. The worker snapshots bounded contained
+non-symlink input before mutation, uses stable note and fact lineage for repeat
+convergence, and publishes deterministic section, index, and grouped daily
+episode files only when bytes change. Cancellation stops between atomic
+sub-operations, and strict settlement includes temporary and published file
+handles. Static traversal and symlink escape fail closed; hostile concurrent
+path replacement is not claimed as a filesystem sandbox.
+
+This remains an intermediate ownership checkpoint. Existing memory tools,
+context, status, lifecycle/session producers, embedding-result writers, and
+embedding backfill retain their compatibility backend until 6.1.9.4. Sole
+SQLite ownership and final direct-owner source guards are therefore not claimed
+yet.
 
 Compatibility includes the existing selected-root policy, persisted schema and
 wire vocabulary, SQLite/in-memory parity, retrieval and decay behavior, minds,

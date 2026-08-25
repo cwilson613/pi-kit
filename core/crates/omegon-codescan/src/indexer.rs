@@ -285,6 +285,10 @@ fn should_skip_path(path: &Path) -> bool {
     })
 }
 
+fn normalized_relative_path(path: &Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().replace('\\', "/"))
+}
+
 fn discover_code_files(repo_path: &Path) -> Vec<PathBuf> {
     use walkdir::WalkDir;
     let mut files = WalkDir::new(repo_path)
@@ -300,7 +304,12 @@ fn discover_code_files(repo_path: &Path) -> Vec<PathBuf> {
                 .map(is_supported_code_extension)
                 .unwrap_or(false)
         })
-        .filter_map(|e| e.path().strip_prefix(repo_path).ok().map(Path::to_path_buf))
+        .filter_map(|e| {
+            e.path()
+                .strip_prefix(repo_path)
+                .ok()
+                .map(normalized_relative_path)
+        })
         .collect::<Vec<_>>();
     files.sort();
     files
@@ -315,7 +324,7 @@ fn discover_knowledge_files(repo_path: &Path, dirs: &KnowledgeDirs) -> Vec<PathB
                 if p.is_file()
                     && let Ok(relative) = p.strip_prefix(repo_path)
                 {
-                    files.push(relative.to_path_buf());
+                    files.push(normalized_relative_path(relative));
                 }
             }
         }

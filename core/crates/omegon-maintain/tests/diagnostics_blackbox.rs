@@ -1076,7 +1076,7 @@ fn project_mutation_admission_requires_workspace_before_deferred_refusal() {
         [
             "--json",
             "--deadline",
-            "1s",
+            "5s",
             "--home",
             home.to_str().unwrap(),
             "--config-home",

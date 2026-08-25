@@ -1918,7 +1918,7 @@ mod tests {
             LifecyclePayloadV1::DesignMutation(LifecycleMutationReceiptV1 {
                 outcome: LifecycleMutationOutcomeV1::DesignCreated { ref path },
                 ..
-            }) if path.ends_with("ai/docs/node.md")
+            }) if Path::new(path).ends_with(Path::new("ai").join("docs").join("node.md"))
         ));
 
         let updated = mutate_direct(
@@ -1974,7 +1974,9 @@ mod tests {
             LifecyclePayloadV1::OpenSpecMutation(LifecycleMutationReceiptV1 {
                 outcome: LifecycleMutationOutcomeV1::OpenSpecProposed { ref path },
                 ..
-            }) if path.ends_with("ai/openspec/changes/managed-change")
+            }) if Path::new(path).ends_with(
+                Path::new("ai").join("openspec").join("changes").join("managed-change")
+            )
         ));
 
         let replay = mutate_openspec_direct(

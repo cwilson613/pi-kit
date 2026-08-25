@@ -43,7 +43,6 @@ pub(crate) struct InteractiveRuntimeSupervisor {
     host_session_generation: u64,
     projection_binding: Option<crate::session_replacement::ProjectionBinding>,
     projection_worker: Option<crate::session_shadow_projection::SessionProjectionWorker>,
-    retired_projection_workers: Vec<crate::session_shadow_projection::SessionProjectionWorker>,
     projection_start_error: Option<crate::session_shadow_projection::SessionProjectionWorkerError>,
 }
 
@@ -59,7 +58,6 @@ impl Default for InteractiveRuntimeSupervisor {
             host_session_generation: 1,
             projection_binding: None,
             projection_worker: None,
-            retired_projection_workers: Vec::new(),
             projection_start_error: None,
         }
     }
@@ -293,37 +291,15 @@ impl InteractiveRuntimeSupervisor {
         if let Some(mut worker) = self.projection_worker.take() {
             worker.shutdown();
         }
-        for worker in &mut self.retired_projection_workers {
-            worker.shutdown();
-        }
-        self.retired_projection_workers.clear();
     }
 
-    pub(crate) fn retire_shadow_projection_worker(
-        &mut self,
-    ) -> Option<crate::session_shadow_projection::SessionProjectionWorker> {
+    pub(crate) fn drain_shadow_projection_worker(&mut self) {
         if let Some(authority) = &self.authority {
             authority.clear_projection_wake();
         }
-        self.projection_worker
-            .take()
-            .inspect(|worker| worker.request_shutdown())
-    }
-
-    pub(crate) fn own_retired_projection_worker(
-        &mut self,
-        worker: crate::session_shadow_projection::SessionProjectionWorker,
-    ) {
-        let mut index = 0;
-        while index < self.retired_projection_workers.len() {
-            if self.retired_projection_workers[index].is_finished() {
-                let mut finished = self.retired_projection_workers.swap_remove(index);
-                finished.shutdown();
-            } else {
-                index += 1;
-            }
+        if let Some(mut worker) = self.projection_worker.take() {
+            worker.shutdown();
         }
-        self.retired_projection_workers.push(worker);
     }
 
     pub(crate) fn host_session_generation(&self) -> u64 {

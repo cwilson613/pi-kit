@@ -3814,19 +3814,21 @@ This agent runs in write mode and can modify files.
 
     fn write_fake_child(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
+        let staged = dir.join(format!(".{name}.tmp"));
         {
             use std::io::Write;
-            let mut file = std::fs::File::create(&path).unwrap();
+            let mut file = std::fs::File::create(&staged).unwrap();
             file.write_all(body.as_bytes()).unwrap();
             file.sync_all().unwrap();
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            let mut perms = std::fs::metadata(&staged).unwrap().permissions();
             perms.set_mode(0o755);
-            std::fs::set_permissions(&path, perms).unwrap();
+            std::fs::set_permissions(&staged, perms).unwrap();
         }
+        std::fs::rename(staged, &path).unwrap();
         path
     }
 

@@ -251,9 +251,7 @@ pub(crate) fn replace(
         })?;
     }
 
-    if let Some(worker) = publication.supervisor.retire_shadow_projection_worker() {
-        candidate.own_retired_projection_worker(worker);
-    }
+    publication.supervisor.drain_shadow_projection_worker();
     *publication.supervisor = candidate;
     *publication.conversation = request.target_conversation;
     *publication.displayed_session_id = request.target_session_id.clone();

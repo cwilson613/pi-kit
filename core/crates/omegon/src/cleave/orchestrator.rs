@@ -1711,14 +1711,16 @@ fn nanoid(len: usize) -> String {
 
 fn write_fake_child(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
-    std::fs::write(&path, body).unwrap();
+    let staged = dir.join(format!(".{name}.tmp"));
+    std::fs::write(&staged, body).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        let mut perms = std::fs::metadata(&staged).unwrap().permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).unwrap();
+        std::fs::set_permissions(&staged, perms).unwrap();
     }
+    std::fs::rename(staged, &path).unwrap();
     path
 }
 

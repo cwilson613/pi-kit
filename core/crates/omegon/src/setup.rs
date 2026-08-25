@@ -62,6 +62,8 @@ pub struct AgentSetup {
     pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
     /// Boot-captured exact-generation lifecycle service binding.
     pub(crate) lifecycle_binding: crate::lifecycle_service::LifecycleBinding,
+    /// Boot-captured exact-generation memory service binding.
+    pub(crate) memory_binding: crate::memory_service::MemoryBinding,
     /// Stable session id for the current live conversation. Fresh sessions
     /// get a generated id at startup; resumed sessions reuse their saved id.
     pub session_id: String,
@@ -624,6 +626,8 @@ impl AgentSetup {
             active_persona_mind: None,
         };
         let mut memory_warning: Option<String> = None;
+        let memory_binding = crate::memory_service::MemoryBinding::default();
+        let mut memory_feature_registered = false;
 
         let mut context_memory_backend: Option<std::sync::Arc<dyn omegon_memory::MemoryBackend>> =
             None;
@@ -757,6 +761,7 @@ impl AgentSetup {
                             .with_extraction_model("anthropic:claude-haiku-4-5-20251001".into());
                     }
                     bus.register(Box::new(memory_feature));
+                    memory_feature_registered = true;
                     bus.register_internal_tool(
                         crate::tool_registry::memory::MEMORY_STORE,
                         "memory",
@@ -780,6 +785,9 @@ impl AgentSetup {
                 "Project memory is not initialized — run `/init` to create `ai/memory/` for durable project facts."
                     .to_string(),
             );
+        }
+        if !memory_feature_registered {
+            bus.register(Box::new(crate::memory_service::MemoryDeclarationFeature));
         }
 
         // ─── Lifecycle (design-tree + openspec) ──────────────────────────
@@ -1145,6 +1153,19 @@ impl AgentSetup {
                 "managed lifecycle startup failed; lifecycle tools remain declared but unavailable"
             ),
         }
+        if let Some(project_path) = db_path.clone() {
+            let global_path = crate::paths::omegon_home()
+                .ok()
+                .map(|home| home.join("memory").join("global.db"))
+                .filter(|path| path.is_file());
+            match crate::memory_service::start_candidate(project_path, global_path).await {
+                Ok(candidate) => bus.stage_managed_generation("memory", candidate)?,
+                Err(error) => tracing::warn!(
+                    %error,
+                    "managed memory startup failed; memory binding remains unavailable"
+                ),
+            }
+        }
         let (publication, mcp_supervisors, plugin_admissions) =
             plugins.publish_candidate(|plugins| {
                 for plugin in plugins {
@@ -1189,6 +1210,9 @@ impl AgentSetup {
             return Err(managed_setup_error(&mut bus, error).await);
         }
         if let Err(error) = lifecycle_binding.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        if let Err(error) = memory_binding.capture(&bus) {
             return Err(managed_setup_error(&mut bus, error).await);
         }
         if lifecycle_binding.available()
@@ -1693,6 +1717,7 @@ impl AgentSetup {
             work_snapshot,
             behavior_policy,
             lifecycle_binding: lifecycle_binding.clone(),
+            memory_binding: memory_binding.clone(),
             session_id,
             session_view_binding,
             instance_id,

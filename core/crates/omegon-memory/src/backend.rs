@@ -216,7 +216,7 @@ pub trait ContextRenderer: Send + Sync {
 }
 
 /// Summary statistics for a memory store.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MemoryStats {
     pub total_facts: usize,
     pub active_facts: usize,

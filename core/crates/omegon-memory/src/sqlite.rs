@@ -623,6 +623,27 @@ impl SqliteBackend {
         Ok(backend)
     }
 
+    /// Open an existing sqlite DB without granting SQLite permission to create it.
+    pub fn open_existing(path: &Path) -> anyhow::Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let has_schema_version: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_schema_version {
+            anyhow::bail!("existing file is not an initialized memory store");
+        }
+        let backend = Self {
+            conn: Mutex::new(conn),
+        };
+        backend.init_schema(true)?;
+        Ok(backend)
+    }
+
     /// Create an in-memory sqlite DB (for testing).
     pub fn in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;

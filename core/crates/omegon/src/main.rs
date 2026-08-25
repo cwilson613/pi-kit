@@ -144,6 +144,7 @@ mod loop_permission;
 mod loop_session;
 mod managed_agent_supervisor;
 mod managed_service_bus;
+mod memory_service;
 mod model_catalog;
 mod model_preferences;
 mod model_registry;
@@ -10207,6 +10208,7 @@ mod tests {
             work_snapshot: None,
             behavior_policy: None,
             lifecycle_binding: crate::lifecycle_service::LifecycleBinding::default(),
+            memory_binding: crate::memory_service::MemoryBinding::default(),
             session_id: "test-session".into(),
             session_view_binding: crate::session_consumers::SessionViewBinding::new(
                 cwd.join("test-session.json"),

@@ -235,6 +235,21 @@ impl Feature for MemoryFeature {
         "memory"
     }
 
+    fn runtime_contribution_generation_id(&self) -> Option<RuntimeContributionGenerationId> {
+        Some(
+            RuntimeContributionGenerationId::new(crate::memory_service::MEMORY_GENERATION)
+                .expect("static generation id is valid"),
+        )
+    }
+
+    fn runtime_lifecycle_policy(&self) -> Option<RuntimeLifecyclePolicy> {
+        Some(crate::memory_service::memory_lifecycle_policy())
+    }
+
+    fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
+        Some(crate::memory_service::memory_transition_policy())
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {

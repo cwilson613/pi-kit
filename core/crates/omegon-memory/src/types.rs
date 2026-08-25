@@ -219,7 +219,7 @@ pub enum StoreAction {
 }
 
 /// Filter for listing facts.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FactFilter {
     pub section: Option<Section>,
     pub status: Option<FactStatus>,

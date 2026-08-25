@@ -751,6 +751,23 @@ worker before SQLite/WAL, JSONL, and vault writes settle. Stopped-runtime schema
 or selected-root migration remains outside the service. Embedding backfill uses
 a bounded managed composition rather than opening SQLite directly.
 
+The 6.1.9.2 checkpoint publishes this optional boot service with one bounded
+serial worker and a strict worker-before-writer cleanup graph. Requests select
+the project store or an already initialized global store explicitly and return
+owned version-1 status, fact, retrieval, graph, episode, or mutation results.
+Missing and uninitialized global files are not created during discovery.
+Queued cancellation prevents execution; if cancellation races an atomic write,
+the worker settles the transaction and the stable operation ID recovers its
+exact result. Candidate rejection and retirement close both stores, worker
+panic remains a strict cleanup failure, exact-generation transfer preserves the
+captured handle, and retired handles fail closed.
+
+This is an intermediate ownership checkpoint. Existing memory tools, context,
+status, lifecycle/session producers, and embedding-result writers retain their
+compatibility backend until 6.1.9.4. JSONL and vault effects move behind the
+worker in 6.1.9.3. Sole production ownership and direct-owner source guards are
+therefore not claimed yet.
+
 Compatibility includes the existing selected-root policy, persisted schema and
 wire vocabulary, SQLite/in-memory parity, retrieval and decay behavior, minds,
 graphs, episodes, JSONL merge behavior, vault path safety, tool contracts,

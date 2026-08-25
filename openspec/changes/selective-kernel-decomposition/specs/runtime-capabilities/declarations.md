@@ -28,6 +28,8 @@ When validation runs
 Then diagnostics report both defects in deterministic order
 And no subset of the candidate declarations is promoted or made callable
 
+## ADDED Requirements
+
 ### Requirement: Slice-2 composition authority retains a legacy dispatch adapter
 
 The read-only declaration inventory must remain authority-neutral through Slice 1 and until an approved Slice-2 graph generation passes graph validation, admission, activation, readiness, and projection parity gates. After those gates pass, the graph becomes authoritative for composition, activation, and projection. Slice 2 must derive a one-way legacy EventBus registration adapter from the promoted graph; the EventBus cannot independently select or reactivate an owner rejected by that graph. Generation-bound privileged invocation leases and dispatch migration remain Slice 3. Compatibility mode must remain explicit rather than allowing both paths to select owners independently.

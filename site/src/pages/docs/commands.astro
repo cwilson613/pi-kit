@@ -163,14 +163,14 @@ import { snippet } from "../../lib/snippets";
   <h2>Agent tools</h2>
   <p>In addition to slash commands, the agent has access to structured tools that it calls autonomously.</p>
 
-  <h3>Always available</h3>
-  <p>These tools are available in both <code>om</code> (slim) and <code>omegon</code> (full) modes:</p>
+  <h3>Default inventory</h3>
+  <p>These tools are declared in both <code>om</code> (slim) and <code>omegon</code> (full) modes. Optional backing services can still report typed unavailability:</p>
   <ul>
     <li><code>read</code> / <code>edit</code> / <code>write</code> / <code>bash</code> / <code>change</code> / <code>commit</code> — file and system operations with atomic edits and commits</li>
     <li><code>memory_store</code> / <code>memory_recall</code> / <code>memory_query</code> / <code>memory_episodes</code> — persistent project memory across sessions</li>
     <li><code>web_search</code> — multi-provider web search</li>
     <li><code>api_*</code> — project REST API tools generated from <code>.omegon/openapi.toml</code> when configured</li>
-    <li><code>codebase_search</code> — ranked discovery across code and project knowledge</li>
+    <li><code>codebase_search</code> / <code>codebase_index</code> — ranked discovery and indexing across code and project knowledge; calls report typed unavailability if the managed codescan service cannot start</li>
     <li><code>chronos</code> — authoritative date/time</li>
     <li><code>whoami</code> — auth status across development tools</li>
     <li><code>manage_tools</code> — enable/disable tools or whole tool groups</li>
@@ -184,7 +184,6 @@ import { snippet } from "../../lib/snippets";
     <li><code>design_tree</code> / <code>design_tree_update</code> — query and mutate design knowledge.</li>
     <li><code>cleave_assess</code> / <code>cleave_run</code> — assess and execute coordinated decomposition when enabled.</li>
     <li><code>delegate</code> / <code>delegate_result</code> / <code>delegate_status</code> — bounded subordinate work.</li>
-    <li><code>codebase_search</code> — ranked concept search across code and project knowledge.</li>
     <li><code>ask_local_model</code> / <code>list_local_models</code> / <code>manage_ollama</code> — local inference controls when installed.</li>
     <li>Generated <code>api_*</code> tools — project-configured OpenAPI operations.</li>
   </ul>

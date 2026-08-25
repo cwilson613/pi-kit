@@ -159,7 +159,6 @@ foreground execution.
 - release/version checks
 - telemetry/webhook hooks
 - opportunistic cache refreshes
-- maintenance/reindex checks
 - simulated background completion helpers in non-critical paths
 
 **Current examples:**
@@ -168,7 +167,6 @@ foreground execution.
 - `core/crates/omegon/src/plugins/http_feature.rs`
 - `core/crates/omegon/src/features/auth.rs`
 - `core/crates/omegon/src/features/delegate.rs`
-- `core/crates/omegon/src/tools/codebase_search.rs`
 - background update check in `core/crates/omegon/src/update.rs`
 
 ### 5. Provider stream parser tasks
@@ -236,6 +234,17 @@ Again, this is structured connection machinery rather than orphaned work.
 - orchestration awaits them and propagates failure structurally
 
 This is not a silent detached-task hazard.
+
+### Managed blocking workers
+
+#### `core/crates/omegon/src/codescan_service.rs`
+
+- one serial generation-owned worker owns SQLite, scanning, and BM25 construction
+- managed call admission carries queued and active cancellation
+- strict resource cleanup joins the worker before SQLite writer settlement
+
+This worker is not a best-effort task. The managed-service lifecycle retains ownership until
+strict cleanup has positive settlement evidence.
 
 ### Startup / host ownership in `main.rs`
 
@@ -349,7 +358,8 @@ Completed migrations include:
 - operator-facing login hardening
 - infrastructure server startup tasks
 - advisory/background tasks (version check, plugin telemetry, auth refresh,
-  delegate simulation, codebase search maintenance, update check)
+  delegate simulation, update check)
+- generation-owned codescan worker with managed call drain and strict cleanup
 - provider stream parser tasks
 
 Future work should apply this policy to new runtime code by default rather than

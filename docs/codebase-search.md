@@ -1,7 +1,7 @@
 +++
 id = "47774561-f997-4bcc-a1d4-d270bade54ad"
 kind = "document"
-title = "codebase_search — AST-aware code retrieval with memory seeding"
+title = "codebase_search — AST-aware code and knowledge retrieval"
 status = "implemented"
 tags = ["architecture", "tools", "code-intelligence", "memory", "lsp", "retrieval"]
 aliases = ["codebase-search"]
@@ -18,13 +18,18 @@ priority = "1"
 related = ["lsp-integration"]
 +++
 
-# codebase_search — AST-aware code retrieval with memory seeding
+# codebase_search — AST-aware code and knowledge retrieval
 
 ## Overview
 
-A `codebase_search(query, strategy)` tool backed by tree-sitter AST parsing and BM25 keyword
-indexing. Answers concept-retrieval questions ("find code about packet fragmentation") that LSP
-cannot answer and that the agent currently handles by guessing file paths and running grep.
+The `codebase_search` tool uses tree-sitter and language-specific fallback scanners to create
+structural code chunks. It also indexes project knowledge files. An in-process BM25 index ranks
+concept queries such as "find code about packet fragmentation."
+
+The tool accepts `query`, `scope`, `max_results`, optional knowledge `tags`, and an optional
+repository-relative `within` prefix. `codebase_index(invalidate)` runs an incremental or full
+index operation. The tools remain declared if the optional managed codescan service cannot start;
+calls then return typed unavailable details.
 
 Inspired by ATLAS's PageIndex component (itigges22/ATLAS), which replaced Qdrant vector RAG with
 AST-aware chunking after finding that function/class boundaries are semantically meaningful chunk
@@ -55,7 +60,10 @@ Shared dependency: tree-sitter. LSP client implementation and `codebase_search` 
 AST parsing. The tree-sitter crates (`tree-sitter`, `tree-sitter-rust`, `tree-sitter-python`,
 etc.) should be factored into a shared `omegon-codescan` crate rather than duplicated.
 
-### Memory Seeding Integration
+### Future Memory Seeding
+
+The following memory integration is a future direction. The current codescan service does not
+write structural facts to project memory.
 
 The indexing pass produces a complete structural map: modules, types, functions, their
 relationships and locations. This is exactly the architectural knowledge that currently has to
@@ -80,40 +88,34 @@ Personas with minds (memory stores) can be instantiated with codebase-indexed kn
 A "Rust Developer" persona in styrene-rs would arrive knowing the module structure, key types,
 and dependency graph — genuine project-specific knowledge, not generic expertise.
 
-### Invalidation strategy
+### Invalidation Strategy
 
-Code-structure facts have different staleness semantics than session facts:
-- Session facts: decay by time (Ebbinghaus model, already implemented)
-- Code-structure facts: invalidated by file changes, not time
+The SQLite cache stores a content hash for each repository-relative path and content kind.
+Incremental indexing atomically replaces changed paths. It prunes removed paths and publishes
+the current Git HEAD only after a complete successful run. A cancelled or failed full invalidation
+rolls back to the prior complete index.
 
-Proposed: code-structure facts stored with a `source_hash` field (file content hash or git
-tree SHA). On session start, `codebase_search` checks if indexed facts are stale against
-current git HEAD. Changed files invalidate only their associated facts — not the full index.
-
-This is a cache-with-invalidation, not a decay system. The memory schema needs a `source_hash`
-field and an invalidation query to support this cleanly.
-
-### Implementation sketch
+### Current Implementation
 
 ```
-omegon-codescan/        Shared crate
-  src/
-    ast/                tree-sitter parsing → ASTNode tree
-    bm25/               BM25 index (rank-bm25 or manual)
-    hybrid/             Combined AST tree search + BM25
-    indexer/            Repo walker, builds index
-    seeder/             Writes structural facts to memory
-
-Tool: codebase_search(query: str, strategy: "ast" | "bm25" | "hybrid") -> Vec<CodeChunk>
-Tool: codebase_index(invalidate: bool) -> IndexStats
+core/crates/omegon-codescan/          Scanners, SQLite cache, indexer, and BM25
+core/crates/omegon/src/codescan_service.rs
+                                     Managed worker and service contract
+core/crates/omegon/src/tools/codebase_search.rs
+                                     Tool validation and result rendering
 ```
+
+One boot-owned serial worker exclusively owns SQLite, scanning, Git HEAD freshness checks, and
+BM25 construction. `codebase_search`, `codebase_index`, and code-context requests use one
+boot-captured managed handle. They do not open the database directly. Managed shutdown drains
+active calls, joins the worker, and then settles the SQLite writer.
 
 ## Decisions
 
 ### Decision: Two-index SQLite cache (.omegon/codescan.db) with tree-sitter code scanner and markdown/JSON knowledge scanner
 
 **Status:** decided
-**Rationale:** Separate from facts.db (different invalidation: file content hash, not time decay). Code index uses tree-sitter AST for named declaration boundaries with regex fallback. Knowledge index uses pulldown-cmark heading-hierarchy for docs/, openspec/, .omegon/, and ai/memory/facts.jsonl. BM25 in-process. Lazy first-query indexing with HEAD-based fast-path (skip file walk when HEAD unchanged). Incremental reindex on HEAD change via rate-limited background tokio task (30s cooldown). Preview: 300 chars multi-line in table, 400 chars in JSON details.
+**Rationale:** The cache is separate from `facts.db` because it uses file-content invalidation rather than fact decay. The code index uses tree-sitter declaration boundaries with language-specific fallbacks. The knowledge index scans supported project documentation and JSON sources. A HEAD-based fast path skips the file walk when the commit and relevant worktree state are unchanged. Each request performs freshness work on the managed worker; no detached refresh task owns the database.
 
 ## Open Questions
 

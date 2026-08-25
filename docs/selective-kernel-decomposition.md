@@ -626,13 +626,20 @@ cancellation, panic handling, and active-call accounting; no consumer receives
 the implementation by reference or `Arc`. Stale handles retain identity but
 return typed draining, degraded, or retired errors without switching owners.
 Candidate resources remain unpublished and roll back independently of the
-active graph.
+active graph. Synthetic managed generations stage under an owning feature name.
+The asynchronous EventBus finalizer derives their composition, owner, and
+contribution-generation identities from the prepared graph. It validates graph,
+implementation, resource, transition-policy, and capability-ownership parity
+before publication. The existing synchronous finalizer remains the no-resource
+path and fails closed while graph-managed generations are staged or active.
 
 All handles consult one shared admission table keyed by contribution generation.
 After fallible preparation, replacing that complete table is the publication
 linearization point. Calls racing it use the old or new table, never a partially
 closed set; pre-point failure rolls back the candidate, while post-point cleanup
-degradation cannot falsely claim rollback. The active-call deadline starts at
+degradation cannot falsely claim rollback. EventBus commits the already-prepared
+graph and compatibility caches without suspension after that swap. The
+active-call deadline starts at
 the table swap. Remaining calls are cancelled, aborted, and joined before a
 separate cleanup deadline begins. Resource controllers use a validated
 dependency DAG; stop, conditional force-stop, and settlement run in reverse
@@ -642,23 +649,80 @@ Strict cleanup requires positive settlement before retirement or ownership
 release. Timeout or failure is nonterminal degraded cleanup with retained owner
 and bounded evidence of attempted stop/force-stop; cross-boundary best-effort
 cleanup may be unverified. A later retry can finish retirement. Unchanged
-contribution generations transfer without cleanup. Boot-only service changes
-are always rejected after first publication. Quiescent-declared replacement
-requires a current runtime/session-bound one-use proof; this substrate ships no
-production proof issuer or migration command.
+contribution generations transfer without cleanup. Their canonical lifecycle
+and resource records retain the composition generation that originally admitted
+the physical owner; the containing composition projection identifies the current
+accepted composition. Boot-only service changes are always rejected after first
+publication. Quiescent-declared replacement requires a current
+runtime/session-bound one-use proof; this substrate ships no production proof
+issuer or migration command.
 
 EventBus retains cleanup tasks and lifecycle records, serializes replacement
 with explicit async shutdown, and prevents caller cancellation from detaching
-work. Clean shutdown removes process ownership only after strict settlement;
-degraded shutdown leaves final ownership evidence for maintenance or stale
-pruning. Drop can request cancellation/force-stop but cannot claim settlement.
-The RG01-RG12 synthetic campaign proves the machinery before codescan becomes
-the first production managed lane. Codescan is selected because its index is
-rebuildable and workspace-scoped, with no required subprocess or session
-authority; its lane must still consolidate the context-side SQLite writer,
-transactional path updates, cancellation, background task join, cache close,
-typed absence, and unrelated-context continuity. Memory, lifecycle, Git, and
+work. Diagnostics retain a bounded DTO-only history of published and rejected
+attempts and project actual lifecycle, resource settlement, stop, force-stop,
+and bounded reason evidence through the shared composition surface. Interactive,
+daemon, headless, bounded, Sentry, ACP worker, cleave, and injected-runtime hosts
+await managed shutdown before releasing runtime ownership. Clean shutdown
+removes process ownership only after every resource settles; degraded or
+unverified owners remain retained for retry. Drop can request
+cancellation/force-stop but cannot claim settlement. The RG01-RG12 synthetic
+campaign proves the shared machinery. Codescan is the first production managed
+lane because its index is rebuildable and workspace-scoped, with no required
+subprocess or session authority. One serial worker now owns SQLite, indexing,
+HEAD freshness, and BM25 construction for tools and code-context requests.
+Its strict task resource depends on its strict durable writer. Shutdown joins
+the worker before SQLite settlement. Memory, lifecycle, Git, and
 context/compaction remain deferred.
+
+Slice 6.1.8 freezes lifecycle/OpenSpec as the next managed lane. One boot-only
+`service:lifecycle` / `interface:omegon-lifecycle-v1` repository worker owns the
+loaded opsx FSM/ledger, design and OpenSpec artifact coordination, repository
+revision, reconciliation, recovery journals, and every Omegon-authored lifecycle
+mutation. Git-native artifacts remain semantic content authority; the ledger is
+enforcement and audit state. Reads and mutations return owned revisioned DTOs,
+and consumers cannot retain the implementation, provider locks, artifact
+repositories, or direct filesystem fallbacks. Session focus, context TTL,
+rendering, authorization, TDD evidence, Codex export, arbitrary prose authoring,
+and stopped-runtime migration remain with their existing session, host, or
+adjacent durable owners.
+
+The lifecycle worker is a strict task depending on a strict durable writer.
+Revision checks protect external Markdown edits from stale overwrite, while
+stable operation identities make ambiguous request replay idempotent. Failed
+in-memory FSM saves must restore their pre-operation state. Multi-resource
+design/OpenSpec/ledger changes use versioned repository-relative journals and
+deterministic recovery to reach one complete pre-operation or post-operation
+state. Optional absence keeps tools and semantic surfaces declared with typed
+unavailability, omits only lifecycle-derived data, and never reconstructs an
+independent ledger or scanner in ACP, work aggregation, workflow, or another
+consumer. The managed read/recovery owner now publishes this worker with
+deterministic ledger, artifact, and transaction revisions, boot-captured typed
+handles, and strict worker-before-writer settlement. Conflicting populated
+OpenSpec roots disable lifecycle before compatibility registration. Design
+mutations now use frozen-root, revision-checked artifact-plus-ledger journals
+with exact pre/post identities, deterministic roll-forward recovery, durable
+operation receipts, and typed stale/conflict/recovery errors. OpenSpec proposal,
+spec, task, test-registration, transition, archive, abandon, and reopen mutations
+now use the same revision and operation-identity boundary. Archive and reopen
+journals contain bounded repository-relative resources, exact tree identities,
+ledger-last settlement, and deterministic recovery. Recovery validates receipts
+before writes and quarantines malformed, unhealthy, oversized, path-tampered, or
+unknown frontiers. A populated legacy OpenSpec root remains selected when the
+primary root contains only metadata.
+
+Production consumers now capture the accepted lifecycle binding at boot or use
+an immutable host-owned repository observation. This boundary covers lifecycle
+tools and doctor, context, setup snapshots, ACP, TUI, Web, IPC, workflow,
+Sentry hooks, work aggregation, project rules, session/check-in projections,
+prompt guidance, startup status, and Codex export. Work aggregation publishes
+its immutable snapshot from the managed observation within the original boot
+composition. Sentry design transitions and one-shot CLI checks create and shut
+down a managed lifecycle composition instead of scanning or writing artifacts
+directly. Source guards keep direct repository constructors and canonical-path
+scanners out of production consumers. Direct compatibility adapters remain
+available only to tests. External Markdown authoring, append-only TDD evidence,
+and stopped-runtime migration remain explicit adjacent boundaries.
 
 ## Selective decomposition map
 
@@ -675,6 +739,7 @@ context/compaction remain deferred.
 | Memory | In-process service | Remove concrete `memory_store` knowledge from loop and provider resolution from feature |
 | Lifecycle/OpenSpec/design | In-process service | Expose read/mutate/projection contracts without kernel or surface imports of concrete feature types |
 | Plans/Workbench/work runtime | In-process aggregation plus semantic projection | Separate session-local plan authority, lifecycle artifacts, and Workbench read model |
+| Codescan | Managed in-process service | Keep one boot-captured handle and one serial owner for SQLite, scanning, freshness, and BM25 |
 | Native/OCI extensions | Out-of-process contribution | Negotiate typed capabilities beyond tools; generation-bind registrations and calls |
 | MCP/manifest plugins | Out-of-process contribution | Join common discovery, admission, process ownership, and projection contracts |
 | Skills/prompts/personas | Content pack | Loading requests admission; content cannot persist trust grants itself |
@@ -1114,8 +1179,21 @@ and cursors without depending on missed broadcasts.
   Explicit mode parsing, tool capabilities, observation normalization, session
   intent, controller/recovery state, tool execution, events, and nudges remain
   host-owned.
-- Convert memory, lifecycle, plans/work, behavior, context/compaction, codescan,
-  and Git integration to declared in-process services.
+- Slice 6.1.6 adds generation-bound managed calls, call drain, strict resource
+  cleanup, retained degradation evidence, and explicit host shutdown.
+- Slice 6.1.7 publishes codescan as the first resource-bearing production
+  managed service. Tools and code-context requests share one boot-captured
+  handle and one serial worker. Optional absence remains typed and local.
+- Slice 6.1.8 freezes lifecycle/OpenSpec as one revisioned managed repository
+  service. Ledger persistence is revision checked, and one boot-only serial
+  worker now owns revisioned reads, health, and explicit safe recovery behind a
+  typed managed handle with strict worker/writer cleanup. Git-native content
+  authority, host/session state, and external authoring remain outside.
+  Design mutations use crash-recoverable artifact-plus-ledger journals and
+  idempotent receipts. General OpenSpec journals and production consumer cutover
+  remain subsequent checkpoints.
+- Convert memory, context/compaction, and Git integration to declared
+  in-process services.
 - Remove concrete feature imports from semantic surfaces.
 - Unify native extension, MCP, and manifest discovery under the contribution
   graph while retaining transport-specific adapters.

@@ -366,7 +366,7 @@ And the service does not merge, shadow, or mutate either root
 
 ### Requirement: Durable memory is an optional managed service
 
-The release-coupled memory implementation must publish `service:memory` / `interface:omegon-memory-v1` as an optional boot-only managed service. One serial worker must own the selected project store, optional global store, SQLite and WAL state, durable facts, minds, edges, episodes, vectors, JSONL synchronization, and configured Codex-vault synchronization. Consumers must use one boot-captured generation-tagged handle or immutable service output. They must not retain a backend, connection, vault writer, implementation callback, or direct persistence fallback.
+The release-coupled memory implementation must publish `service:memory` / `interface:omegon-memory-v1` as an optional boot-only managed service. One serial worker must own the selected project store, optional global store, SQLite and WAL state, durable mind-scoped facts, edges, episodes, vectors, JSONL synchronization, and configured Codex-vault synchronization. Consumers must use one boot-captured generation-tagged handle or immutable service output. They must not retain a backend, connection, vault writer, implementation callback, or direct persistence fallback. The version-1 contract does not require a standalone durable mind-record or parent-mutation API.
 
 #### Scenario: Memory is present
 Given an accepted memory generation was captured at boot
@@ -400,7 +400,7 @@ And the service does not fabricate an embedding model or retain provider credent
 Given two sessions share one accepted memory service generation
 When they select different minds, pin different working facts, advance different context TTLs, or run different extraction providers
 Then each session retains its own selection, pins, context state, and provider tasks
-And durable mind records and submitted persistence results remain service-owned
+And durable mind-scoped records and submitted persistence results remain service-owned
 And provider tasks can persist only through the captured handle and must settle before managed shutdown
 
 #### Scenario: Memory resources shut down

@@ -13,6 +13,11 @@ import Docs from "../../layouts/Docs.astro";
     with <code>local-embeddings</code> can also load a local ONNX sentence-transformer model; without
     either backend, memory falls back to FTS5 keyword search.
   </p>
+  <p>
+    Memory is an optional managed service. If it is unavailable at startup, memory tools and status
+    remain visible with an explicit unavailable result. Durable-memory context is omitted, while
+    unrelated context and the rest of the session continue without a direct-storage fallback.
+  </p>
 
   <h2>Architecture</h2>
   <ul>

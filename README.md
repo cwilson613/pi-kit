@@ -173,6 +173,8 @@ Omegon stores durable facts under typed sections:
 This is not “chat history with search.”
 It is a project memory system with recall, persistence, and lifecycle-aware usage. Semantic recall uses Ollama embeddings when available and can fall back to a local ONNX sentence-transformer model in builds compiled with `local-embeddings`; if neither backend is available, memory degrades to FTS5 keyword search instead of failing.
 
+Memory is an optional managed service. If it is unavailable, memory tools and status remain visible with an explicit unavailable result, durable-memory context is omitted, and the rest of the session continues without a direct-storage fallback.
+
 ### 4. Tracks design and specification as first-class work
 
 Omegon ships with two durable lifecycle systems:

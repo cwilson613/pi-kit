@@ -743,9 +743,11 @@ retain credentials, or execute extraction and embedding policy.
 
 The host retains session-local working-memory pins, selected mind, context TTL,
 context hashes and presentation policy, tool rendering, authorization, frontend
-state, provider tasks, and compaction. Durable minds and parent relationships
-remain service-owned. Host-owned provider tasks must be bounded and joined before
-managed shutdown, and they persist only through the captured handle. The strict
+state, provider tasks, and compaction. Durable records remain isolated by the
+host-selected mind label; the managed version-1 contract does not add a
+standalone durable mind-record or parent-mutation API. Host-owned provider tasks
+must be bounded and joined before managed shutdown, and they persist only
+through the captured handle. The strict
 memory worker depends on one strict durable writer. Shutdown stops and joins the
 worker before SQLite/WAL, JSONL, and vault writes settle. Stopped-runtime schema
 or selected-root migration remains outside the service. Embedding backfill uses
@@ -780,6 +782,15 @@ context, lifecycle ingestion, session-end episode and fact persistence,
 embedding-result writes, status projections, and one-shot embedding backfill
 now use the boot-captured exact-generation binding or a bounded managed
 composition. Production consumers do not open the project or global store.
+
+The 6.1.9.5 checkpoint completes the portable compatibility campaign and source
+guard. Persistence, retrieval, mind-label isolation, episodes, JSONL, vault,
+concurrency, cancellation, typed absence, stale generations, cleanup, status,
+and context parity pass on macOS, Ubuntu, and Windows in GitHub Actions run
+`32936194406` at `a4b14499`. The guard reserves production database, JSONL, and
+vault ownership for the managed worker, with explicit test and stopped-runtime
+migration exceptions. Static traversal and symlink escape fail closed; hostile
+concurrent path replacement remains outside the claimed filesystem trust boundary.
 
 The host scopes durable operation identities to the canonical session and full
 semantic payload. Exact receipt replay does not depend on current fact state.
@@ -1287,10 +1298,10 @@ and cursors without depending on missed broadcasts.
   owns project/global stores and JSONL/vault persistence. Session context and
   provider computation remain host-owned, deterministic FTS remains available
   without embeddings, and optional absence has no direct storage fallback.
-  Its first implementation checkpoint establishes transactional schema-v8
-  persistence, payload-bound operation replay, backend parity, governed v5-v7
-  migration, deterministic fallback, and reopen/rollback evidence.
-- Convert memory, context/compaction, and Git integration to declared
+  Transactional schema-v8 persistence, payload-bound replay, managed consumer
+  cutover, native compatibility campaigns, direct-owner guards, and strict
+  reopen/cleanup evidence are complete.
+- Convert context/compaction and Git integration to declared
   in-process services.
 - Remove concrete feature imports from semantic surfaces.
 - Unify native extension, MCP, and manifest discovery under the contribution

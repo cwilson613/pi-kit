@@ -18,6 +18,11 @@ import Docs from "../../layouts/Docs.astro";
     remain visible with an explicit unavailable result. Durable-memory context is omitted, while
     unrelated context and the rest of the session continue without a direct-storage fallback.
   </p>
+  <p>
+    A separate optional managed context/compaction planner selects deterministic history windows.
+    If it is unavailable, ordinary context assembly and unrelated turns continue, while manual or
+    automatic managed compaction planning reports unavailability instead of calling a direct planner.
+  </p>
 
   <h2>Architecture</h2>
   <ul>

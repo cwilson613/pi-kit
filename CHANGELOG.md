@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
+- Added an executable nine-domain isolation matrix for plans/work, behavior policy, codescan, lifecycle/OpenSpec, memory, context/compaction, Git, dynamic contributions, and shipped content. Its source guard binds each lane to absence/degradation tests, architecture and public-documentation evidence, maintenance dependency exclusions, and constitutional-authority import boundaries.
+
 - Moved shipped skills, prompts, catalog agents, and the currently empty standalone persona, tone, and workflow categories into independently versioned content pack `omegon-shipped` v1. The runtime validates identity, version, canonical and per-file digests, provenance, protocol compatibility, confinement, and content-only capability requests before admitting one immutable boot generation. Missing, corrupt, or incompatible packs disable only shipped content; user and project precedence remains intact. Source/link, direct-install, release archive, Homebrew, Nix/OCI, and npm package metadata now carry the same pack, and compatible replacements take effect on the next process boot without rebuilding Omegon.
 
 - Included extension contexts, operational capability and tool guidance, and the session-compaction instruction in `omegon-shipped`; compaction now records the admitted pack generation and degrades locally when that prompt is unavailable. Only the six non-overridable Lex Imperialis host axioms remain kernel-resident, with source guards covering alternate content paths and known direct body literals.

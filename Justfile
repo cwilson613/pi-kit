@@ -66,6 +66,7 @@ test-dev-scripts:
     python3 -m unittest tests/test_release_manifest.py tests/test_validate_companion.py tests/test_verify_homebrew_formula.py
     python3 -m unittest tests/test_content_pack_packaging.py
     python3 scripts/check_no_embedded_content.py
+    python3 scripts/check_optional_domain_isolation.py
     python3 scripts/tests/test_omegon_launcher.py
 
 # Check provider-published model context docs against the local registry.
@@ -145,6 +146,11 @@ check-omegon-headless-deps:
 
 # Assert the recovery companion excludes normal runtime-domain dependencies.
 check-maintenance-deps:
+    python3 scripts/check_maintenance_dependency_boundary.py
+
+# Validate every optional extraction lane against kernel, maintenance, test, and docs evidence.
+check-optional-domain-isolation:
+    python3 scripts/check_optional_domain_isolation.py
     python3 scripts/check_maintenance_dependency_boundary.py
 
 # Assert the UI InterfaceBoundary contract remains renderer-neutral and backend-internal-free.

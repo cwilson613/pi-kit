@@ -58,6 +58,23 @@ test('public docs explain content-pack packaging, trust, and boot generation', (
   assert.match(plugins, /disables model-driven session compaction locally/);
 });
 
+test('public optional-domain docs state local absence behavior', () => {
+  const index = readDoc('index.astro');
+  const openspec = readDoc('openspec.astro');
+  const memory = readDoc('memory.astro');
+  const cleave = readDoc('cleave.astro');
+  const extensions = readDoc('extensions.astro');
+
+  assert.match(index, /typed unavailability if its optional managed service cannot start/);
+  assert.match(openspec, /optional managed lifecycle service/);
+  assert.match(openspec, /without a direct repository or ledger fallback/);
+  assert.match(memory, /optional managed context\/compaction planner/);
+  assert.match(memory, /instead of calling a direct planner/);
+  assert.match(cleave, /optional managed Git service/);
+  assert.match(cleave, /does not rediscover or spawn a direct\s+Git fallback/);
+  assert.match(extensions, /failure preserves the previously accepted graph/);
+});
+
 test('recovery docs consume canonical maintenance snippets', () => {
   const content = readDoc('recovery.astro');
   const required = [

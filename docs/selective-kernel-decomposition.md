@@ -1383,8 +1383,19 @@ and cursors without depending on missed broadcasts.
   stale-generation, and cleanup evidence. JSON-RPC, HostAction, MCP
   resource/prompt, widget, secret-delivery, process-tree, OCI, and remote HTTP
   semantics remain transport-adapter responsibilities.
-- Move shipped skills, prompts, personas, tones, workflows, and catalog data into
-  independently versioned content packs.
+- Slice 6.4 moves shipped skills, prompts, personas, tones, workflows, and
+  catalog data into the independently versioned `omegon-shipped` content pack.
+  Absence or invalidity disables only optional content and model-driven
+  compaction; the constitutional host axioms remain available.
+
+The versioned executable evidence for every optional Slice-6 domain is
+`openspec/changes/selective-kernel-decomposition/fixtures/optional-domain-proof-v1.toml`.
+`just check-optional-domain-isolation` verifies test symbols, architecture and
+public-documentation dispositions, maintenance dependency exclusions, and the
+absence of optional implementation tokens from selected constitutional
+authority sources. `docs/optional-domain-proof-matrix.md` records the readable
+cross-domain result, including explicit no-public-change evidence for the
+plans/work and behavior-policy lanes.
 
 Exit gate: optional domains can be absent or fail independently without blocking
 the maintenance executable or normal kernel startup.

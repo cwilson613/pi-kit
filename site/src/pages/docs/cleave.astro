@@ -46,6 +46,11 @@ import Docs from "../../layouts/Docs.astro";
     The short version: subagents are cooperative multitasking with no isolation. Cleave is
     preemptive multitasking with full isolation, a merge protocol, and a verification gate.
   </p>
+  <p>
+    Repository and worktree operations use the optional managed Git service. If it is unavailable,
+    Git-backed cleave setup reports typed unavailability and does not rediscover or spawn a direct
+    Git fallback. Ordinary sessions and local-directory workspaces remain available.
+  </p>
 
   <h2>How It Works</h2>
   <ol>

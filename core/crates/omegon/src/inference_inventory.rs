@@ -332,8 +332,26 @@ impl InventoryLayer {
                     conceptual_model: Some(
                         model.conceptual_model_id.clone().map(ConceptualModelId),
                     ),
-                    input_modalities: Some([Modality(Modality::TEXT.into())].into()),
-                    output_modalities: Some([Modality(Modality::TEXT.into())].into()),
+                    input_modalities: Some(
+                        if model.input_modalities.is_empty() {
+                            vec![Modality::TEXT.to_string()]
+                        } else {
+                            model.input_modalities.clone()
+                        }
+                        .into_iter()
+                        .map(Modality)
+                        .collect(),
+                    ),
+                    output_modalities: Some(
+                        if model.output_modalities.is_empty() {
+                            vec![Modality::TEXT.to_string()]
+                        } else {
+                            model.output_modalities.clone()
+                        }
+                        .into_iter()
+                        .map(Modality)
+                        .collect(),
+                    ),
                     capabilities,
                     capability_grades,
                     context_input: Some(Some(model.context_input)),

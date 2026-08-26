@@ -304,7 +304,7 @@ impl App {
                 self.working_verb = spinner::next_verb();
                 self.instrument_panel.tool_started(&name);
                 self.slim_turn_state = SlimTurnState::Tool(name.replace('_', " "));
-                let args_summary = crate::r#loop::summarize_tool_args(&name, &args);
+                let args_summary = crate::invocation_batch::summarize_tool_args(&name, &args);
                 // Full args for detailed view
                 let detail_args = match name.as_str() {
                     "bash" => args.get("command").and_then(|v| v.as_str()).map(|cmd| {
@@ -689,7 +689,7 @@ impl App {
                     .get("active")
                     .is_some_and(serde_json::Value::is_null);
                 self.runtime_queue_snapshot = Some(snapshot_json);
-                if runtime_idle && self.runtime_turn_id.is_some() {
+                if runtime_idle && (self.runtime_turn_id.is_some() || self.agent_active) {
                     self.terminalize_runtime_turn();
                 }
             }
@@ -898,7 +898,13 @@ impl App {
                 }
             }
             AgentEvent::SessionReset => {
-                self.conversation = ConversationView::new();
+                if self.session_view_binding.is_some() {
+                    self.refresh_semantic_session_view();
+                } else {
+                    self.conversation = ConversationView::new();
+                    self.conversation
+                        .push_system("New session started. Previous session saved.");
+                }
                 self.workbench_state.active = None;
                 self.completed_plan_history_available = false;
                 self.tool_inspection_target = None;
@@ -916,8 +922,6 @@ impl App {
                 self.footer_data.tool_calls = 0;
                 self.footer_data.compactions = 0;
                 self.footer_data.update_available = None;
-                self.conversation
-                    .push_system("New session started. Previous session saved.");
             }
             AgentEvent::HarnessStatusChanged { status_json } => {
                 // Deserialize and update the footer's harness status snapshot

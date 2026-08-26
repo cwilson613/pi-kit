@@ -171,14 +171,23 @@ impl App {
                 result_summary,
             });
         }
+        let live_operation = live_cleave
+            .as_ref()
+            .filter(|progress| progress.active)
+            .map(crate::features::operation_surface::project_cleave)
+            .or_else(|| {
+                live_delegate
+                    .as_ref()
+                    .filter(|progress| progress.active || progress.running > 0)
+                    .map(crate::features::operation_surface::project_delegate)
+            });
         let activity_projection = if self.ui_surfaces.activity
             && self.ui_presentation.level != UiPresentationLevel::Full
         {
             crate::surfaces::activity::ActivitySurfaceProjection::for_level(
                 self.ui_presentation.level,
                 live_activity_tools,
-                live_cleave.as_ref(),
-                live_delegate.as_ref(),
+                live_operation,
             )
         } else {
             crate::surfaces::activity::ActivitySurfaceProjection {

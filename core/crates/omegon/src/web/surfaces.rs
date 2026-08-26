@@ -18,6 +18,7 @@ pub struct WebSurfacesSnapshot {
     pub session_id: String,
     pub revision: u64,
     pub generated_at: String,
+    pub projection: super::WebSessionProjection,
     pub surfaces: WebSurfaceBundle,
 }
 
@@ -65,6 +66,8 @@ pub struct WebEditorSurface {
 #[derive(Debug, Clone, Serialize)]
 pub struct WebCommandSurface {
     pub pending_prompt: Option<String>,
+    pub queue_depth: usize,
+    pub active_turn: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -118,6 +121,15 @@ pub struct WebToolRunSurface {
 pub struct WebMemoryStatusSurface {
     pub active_facts: usize,
     pub total_facts: usize,
+}
+
+pub(crate) fn project_memory_status(
+    harness: Option<&crate::status::HarnessStatus>,
+) -> WebMemoryStatusSurface {
+    WebMemoryStatusSurface {
+        active_facts: harness.map(|h| h.memory.active_facts).unwrap_or(0),
+        total_facts: harness.map(|h| h.memory.total_facts).unwrap_or(0),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -212,11 +224,32 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
         .ok()
         .and_then(|guard| guard.clone());
 
+    let queue = state.runtime_queue_snapshot();
+    let mut projection = state.session_projection();
+    projection.queue_depth = queue["depth"]
+        .as_u64()
+        .unwrap_or(projection.queue_depth as u64) as usize;
+    if queue.get("active").is_some() {
+        projection.active_turn = if queue["active"].is_null() {
+            "idle".into()
+        } else {
+            "active".into()
+        };
+    }
+    let queue_depth = queue["depth"]
+        .as_u64()
+        .map_or(projection.queue_depth, |depth| depth as usize);
+    let active_turn = queue
+        .get("active")
+        .map_or(projection.active_turn == "active", |active| {
+            !active.is_null()
+        });
     WebSurfacesSnapshot {
         schema_version: WEB_SURFACES_SCHEMA_VERSION,
-        session_id: "default".to_string(),
+        session_id: state.session_id(),
         revision: 0,
         generated_at: Utc::now().to_rfc3339(),
+        projection,
         surfaces: WebSurfaceBundle {
             conversation: WebConversationSurface {
                 segments: state.conversation_segments(),
@@ -228,7 +261,13 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                 supports_attachments: true,
             },
             command: WebCommandSurface {
-                pending_prompt: None,
+                pending_prompt: queue["previews"]
+                    .as_array()
+                    .and_then(|previews| previews.first())
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                queue_depth,
+                active_turn,
             },
             command_menu: WebCommandMenuSurface {
                 available: true,
@@ -240,7 +279,7 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                     tool_calls: session.as_ref().map(|s| s.tool_calls).unwrap_or(0),
                     compactions: session.as_ref().map(|s| s.compactions).unwrap_or(0),
                 },
-                lifecycle_available: state.handles.lifecycle.is_some(),
+                lifecycle_available: state.handles.lifecycle_service.binding().available(),
                 cleave_available: state.handles.cleave_available(),
                 delegate_available: state.handles.delegate_available(),
                 harness_available: state.handles.harness_available(),
@@ -249,10 +288,7 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                 busy: session.as_ref().is_some_and(|s| s.busy),
             },
             instruments: project_instruments(state),
-            memory_status: WebMemoryStatusSurface {
-                active_facts: harness.as_ref().map(|h| h.memory.active_facts).unwrap_or(0),
-                total_facts: harness.as_ref().map(|h| h.memory.total_facts).unwrap_or(0),
-            },
+            memory_status: project_memory_status(harness.as_ref()),
             operations: project_operations(state),
             plan: project_plan(state),
             runtime: project_runtime(harness.as_ref()),
@@ -262,6 +298,32 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
             },
         },
     }
+}
+
+pub(crate) fn project_historical_web_surfaces(
+    state: &WebState,
+    target: &crate::session_consumers::SessionViewTarget,
+) -> Result<WebSurfacesSnapshot, crate::session_consumers::SessionConsumerError> {
+    let view = crate::session_consumers::SemanticSessionView::load(target)?;
+    let projection = super::web_projection(target, &view);
+    let mut snapshot = project_web_surfaces(state);
+    snapshot.session_id = target.session_id.clone();
+    snapshot.projection = projection;
+    snapshot.surfaces.conversation.segments = super::durable_web_segments(&view);
+    snapshot.surfaces.editor.accepts_prompt = false;
+    snapshot.surfaces.command.pending_prompt = None;
+    snapshot.surfaces.command.queue_depth = view
+        .frontend
+        .as_ref()
+        .map_or(0, |frontend| frontend.queued_prompts.len());
+    snapshot.surfaces.command.active_turn = view
+        .frontend
+        .as_ref()
+        .is_some_and(|frontend| frontend.active_turn.is_some());
+    snapshot.surfaces.footer.busy = false;
+    snapshot.surfaces.instruments.active_tool = None;
+    snapshot.surfaces.instruments.tools.clear();
+    Ok(snapshot)
 }
 
 fn project_instruments(state: &WebState) -> WebInstrumentsSurface {
@@ -340,19 +402,13 @@ fn project_operations(state: &WebState) -> WebOperationsSurface {
         && (delegate.active || !delegate.children.is_empty())
     {
         kind = Some("delegate".to_string());
-        running += delegate.running;
-        completed += delegate.completed;
-        failed += delegate.failed;
-        for child in &delegate.children {
-            children.push(WebOperationChild {
-                label: child.label.clone(),
-                status: child.status.clone(),
-                activity: child.last_tool.clone(),
-                tasks_done: child.tasks_done,
-                tasks_total: child.tasks.len(),
-                result_summary: child.result_summary.clone(),
-            });
-        }
+        append_operation_projection(
+            crate::features::operation_surface::project_delegate(&delegate),
+            &mut running,
+            &mut completed,
+            &mut failed,
+            &mut children,
+        );
     }
 
     if let Some(cleave) = state.handles.observe_cleave().ok().flatten()
@@ -361,23 +417,13 @@ fn project_operations(state: &WebState) -> WebOperationsSurface {
         if kind.is_none() {
             kind = Some("cleave".to_string());
         }
-        running += cleave
-            .children
-            .iter()
-            .filter(|c| c.status == "running")
-            .count();
-        completed += cleave.completed;
-        failed += cleave.failed;
-        for child in &cleave.children {
-            children.push(WebOperationChild {
-                label: child.label.clone(),
-                status: child.status.clone(),
-                activity: child.last_tool.clone(),
-                tasks_done: child.tasks_done,
-                tasks_total: child.tasks.len(),
-                result_summary: None,
-            });
-        }
+        append_operation_projection(
+            crate::features::operation_surface::project_cleave(&cleave),
+            &mut running,
+            &mut completed,
+            &mut failed,
+            &mut children,
+        );
     }
 
     let active_child_runtimes = running;
@@ -389,6 +435,31 @@ fn project_operations(state: &WebState) -> WebOperationsSurface {
         failed,
         children,
     }
+}
+
+fn append_operation_projection(
+    projection: crate::surfaces::operations::OperationWorkbenchProjection,
+    running: &mut usize,
+    completed: &mut usize,
+    failed: &mut usize,
+    children: &mut Vec<WebOperationChild>,
+) {
+    *running += projection.running;
+    *completed += projection.completed;
+    *failed += projection.failed;
+    children.extend(projection.children.into_iter().map(|child| {
+        let progress = child
+            .progress
+            .unwrap_or(crate::surfaces::operations::OperationChildProgress { done: 0, total: 0 });
+        WebOperationChild {
+            label: child.label,
+            status: child.status_label,
+            activity: child.last_activity.map(|activity| activity.label),
+            tasks_done: progress.done,
+            tasks_total: progress.total,
+            result_summary: child.result_summary,
+        }
+    }));
 }
 
 /// Project runtime telemetry for the top HUD strip from `HarnessStatus`.
@@ -432,6 +503,38 @@ mod tests {
             super::super::DashboardHandles::default(),
             tokio::sync::broadcast::channel(16).0,
         )
+    }
+
+    #[test]
+    fn current_surface_uses_dynamic_identity_and_authoritative_queue_busy_state() {
+        let state = test_state();
+        let binding = crate::session_consumers::SessionViewBinding::new(
+            std::path::PathBuf::from("/missing/session.json"),
+            "live-session-2".into(),
+        );
+        binding.update_runtime_queue(serde_json::json!({
+            "depth": 1,
+            "active": {"turn_id": 3},
+            "previews": ["second prompt"]
+        }));
+        let state = state.with_session_view_binding(binding.clone());
+        state.handles.session().set_busy(false);
+
+        let active = project_web_surfaces(&state);
+        assert_eq!(active.session_id, "live-session-2");
+        assert_eq!(active.surfaces.command.queue_depth, 1);
+        assert!(active.surfaces.command.active_turn);
+        assert!(!active.surfaces.footer.busy);
+
+        binding.update_runtime_queue(serde_json::json!({
+            "depth": 0,
+            "active": null,
+            "previews": []
+        }));
+        let idle = project_web_surfaces(&state);
+        assert_eq!(idle.surfaces.command.queue_depth, 0);
+        assert!(!idle.surfaces.command.active_turn);
+        assert!(!idle.surfaces.footer.busy);
     }
 
     fn cleave_child(label: &str, status: &str) -> ChildProgress {

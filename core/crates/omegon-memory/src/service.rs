@@ -39,49 +39,90 @@ pub async fn expand_edges(
     results: Vec<ScoredFact>,
     limit: usize,
 ) -> Vec<ScoredFact> {
-    use std::collections::HashSet;
+    expand_edges_cancellable(backend, mind, results.clone(), limit, &|| false)
+        .await
+        .unwrap_or(results)
+}
 
-    let mut seen: HashSet<String> = results.iter().map(|sf| sf.fact.id.clone()).collect();
-    let mut expanded = results.clone();
+pub async fn expand_edges_cancellable(
+    backend: &dyn MemoryBackend,
+    mind: &str,
+    mut results: Vec<ScoredFact>,
+    limit: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<ScoredFact>> {
+    use std::collections::{BTreeMap, HashSet};
 
-    for sf in &results {
-        let edges = match backend.get_edges(mind, &sf.fact.id).await {
+    const MAX_SEEDS: usize = 1_000;
+    const MAX_EDGES_PER_SEED: usize = 64;
+    const MAX_NEIGHBOR_LOADS: usize = 4_096;
+
+    results.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.fact.id.cmp(&right.fact.id))
+    });
+    let seeds: HashSet<String> = results
+        .iter()
+        .map(|result| result.fact.id.clone())
+        .collect();
+    let mut candidates = BTreeMap::<String, f64>::new();
+    for result in results.iter().take(MAX_SEEDS) {
+        if cancelled() {
+            return None;
+        }
+        let mut edges = match backend.get_edges(mind, &result.fact.id).await {
             Ok(edges) => edges,
             Err(e) => {
-                tracing::debug!(fact_id = %sf.fact.id, error = %e, "edge lookup failed");
+                tracing::debug!(fact_id = %result.fact.id, error = %e, "edge lookup failed");
                 continue;
             }
         };
-
-        for edge in edges {
-            let neighbor_id = if edge.source_id == sf.fact.id {
-                &edge.target_id
+        edges.sort_by(|left, right| {
+            right
+                .confidence
+                .partial_cmp(&left.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        for edge in edges.into_iter().take(MAX_EDGES_PER_SEED) {
+            let neighbor_id = if edge.source_id == result.fact.id {
+                edge.target_id
             } else {
-                &edge.source_id
+                edge.source_id
             };
-
-            if !seen.insert(neighbor_id.clone()) {
+            if seeds.contains(&neighbor_id) {
                 continue;
             }
-
-            if let Ok(Some(neighbor)) = backend.get_fact(neighbor_id).await {
-                let derived_score = sf.score * edge.confidence * 0.5;
-                expanded.push(ScoredFact {
-                    similarity: derived_score,
-                    score: derived_score,
-                    fact: neighbor,
-                });
-            }
+            let score = result.score * edge.confidence * 0.5;
+            candidates
+                .entry(neighbor_id)
+                .and_modify(|existing| *existing = existing.max(score))
+                .or_insert(score);
         }
     }
-
-    expanded.sort_by(|a, b| {
+    for (neighbor_id, score) in candidates.into_iter().take(MAX_NEIGHBOR_LOADS) {
+        if cancelled() {
+            return None;
+        }
+        if let Ok(Some(fact)) = backend.get_fact(&neighbor_id).await {
+            results.push(ScoredFact {
+                similarity: score,
+                score,
+                fact,
+            });
+        }
+    }
+    results.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.fact.id.cmp(&b.fact.id))
     });
-    expanded.truncate(limit);
-    expanded
+    results.truncate(limit);
+    Some(results)
 }
 
 #[cfg(test)]
@@ -155,5 +196,39 @@ mod tests {
 
         let expanded = expand_edges(backend.as_ref(), "default", vec![a], 1).await;
         assert_eq!(expanded.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn edge_expansion_is_cancellable_and_ties_are_fact_id_ordered() {
+        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
+        let seed = store(&backend, "default", "seed").await;
+        let left = store(&backend, "default", "left").await;
+        let right = store(&backend, "default", "right").await;
+        for neighbor in [&right, &left] {
+            backend
+                .create_edge(CreateEdge {
+                    source_id: seed.fact.id.clone(),
+                    target_id: neighbor.fact.id.clone(),
+                    relation: "related".into(),
+                    description: None,
+                })
+                .await
+                .unwrap();
+        }
+        assert!(
+            expand_edges_cancellable(backend.as_ref(), "default", vec![seed.clone()], 10, &|| {
+                true
+            })
+            .await
+            .is_none()
+        );
+        let expanded = expand_edges(backend.as_ref(), "default", vec![seed], 10).await;
+        let actual = expanded[1..]
+            .iter()
+            .map(|result| result.fact.id.as_str())
+            .collect::<Vec<_>>();
+        let mut expected = vec![left.fact.id.as_str(), right.fact.id.as_str()];
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
     }
 }

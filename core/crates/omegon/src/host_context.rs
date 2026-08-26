@@ -565,7 +565,15 @@ pub async fn try_delegate_to_host(
     ctx: &HostContext,
     tool_name: &str,
     args: &Value,
+    invocation: &omegon_traits::InvocationDispatchMetadata,
+    control: &omegon_traits::InvocationControl,
 ) -> Option<anyhow::Result<ToolResult>> {
+    tracing::debug!(
+        invocation_id = invocation.invocation_id,
+        call_id = invocation.visible_call_id,
+        deduplication_id = invocation.deduplication_id,
+        "attempting host tool delegation"
+    );
     match tool_name {
         "read" if ctx.caps.fs_read => {
             let path_str = args.get("path").and_then(|v| v.as_str())?;
@@ -575,6 +583,9 @@ pub async fn try_delegate_to_host(
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
+            if let Err(error) = control.acknowledge() {
+                return Some(Err(anyhow::anyhow!(error)));
+            }
             Some(delegate_read(ctx, path, path_str, offset, limit).await)
         }
         "write" if ctx.caps.fs_write => {
@@ -584,11 +595,17 @@ pub async fn try_delegate_to_host(
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
+            if let Err(error) = control.acknowledge() {
+                return Some(Err(anyhow::anyhow!(error)));
+            }
             Some(delegate_write(ctx, path, path_str, content).await)
         }
         "bash" if ctx.caps.terminal => {
             let command = args.get("command").and_then(|v| v.as_str())?;
             let timeout_ms = args.get("timeout").and_then(|v| v.as_u64());
+            if let Err(error) = control.acknowledge() {
+                return Some(Err(anyhow::anyhow!(error)));
+            }
             Some(delegate_bash(ctx, command, timeout_ms).await)
         }
         _ => None,
@@ -706,18 +723,12 @@ async fn delegate_write(
         .write_text_file(path.clone(), content.to_string())
         .await;
     if let Err(host_err) = host_result {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|local_err| {
-                anyhow::anyhow!(
-                    "host write failed for {path_str}: {host_err}; local parent creation failed: {local_err}"
-                )
-            })?;
+        return Err(crate::invocation_service::UnknownCompletionError {
+            reason: format!(
+                "host write response failed after mutation handoff for {path_str}: {host_err}"
+            ),
         }
-        std::fs::write(&path, content).map_err(|local_err| {
-            anyhow::anyhow!(
-                "host write failed for {path_str}: {host_err}; local fallback failed: {local_err}"
-            )
-        })?;
+        .into());
     }
 
     let line_count = content.lines().count();
@@ -842,5 +853,24 @@ mod tests {
             &dir.path().join("missing.txt"),
             &anyhow::anyhow!("unsupported")
         ));
+    }
+
+    #[test]
+    fn host_write_transport_failure_is_unknown_and_never_a_local_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("not-written.txt");
+        let error = anyhow::Error::new(crate::invocation_service::UnknownCompletionError {
+            reason: format!(
+                "host write response failed after mutation handoff for {}: channel closed",
+                path.display()
+            ),
+        });
+
+        assert!(
+            error
+                .downcast_ref::<crate::invocation_service::UnknownCompletionError>()
+                .is_some()
+        );
+        assert!(!path.exists());
     }
 }

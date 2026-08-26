@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "maintenance": {
+      "executable": "omegon-maintain",
+      "paths": ["source", "linked", "release"],
+      "absent_optional": ["codescan", "context-compaction", "git", "lifecycle", "memory", "provider-clients", "tui"]
+    },
+    "interactive": {
+      "executable": "omegon",
+      "paths": ["source", "linked", "release"],
+      "runtime_mode": "tui",
+      "surfaces": ["agent-loop", "tui"],
+      "absent_optional": [],
+      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
+    },
+    "headless": {
+      "executable": "omegon",
+      "paths": ["source", "linked", "release"],
+      "runtime_mode": "headless",
+      "surfaces": ["agent-loop", "bounded-task"],
+      "absent_optional": ["tui"],
+      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
+    },
+    "daemon": {
+      "executable": "omegon",
+      "paths": ["source", "linked", "release"],
+      "runtime_mode": "daemon",
+      "surfaces": ["agent-loop", "control-plane"],
+      "absent_optional": ["tui"],
+      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
+    },
+    "full": {
+      "executable": "omegon",
+      "paths": ["source", "linked", "release"],
+      "runtime_mode": "full",
+      "surfaces": ["agent-loop", "bounded-task", "control-plane", "tui"],
+      "absent_optional": [],
+      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
+    }
+  }
+}

@@ -30,6 +30,25 @@ Define the **runtime-owned supervision model** for interactive Omegon sessions s
 
 This document covers the **inner interactive/session runtime**, not outer process supervision. Auspex remains the outer supervisor for multi-instance orchestration.
 
+The in-memory compatibility implementation is compiled from the frontend-neutral
+`runtime_prompt.rs`, `runtime_turn.rs`, and `runtime_supervisor.rs` modules and is
+instantiated once by each interactive session. The coordinator now contains only
+orchestration helpers. The canonical turn state preserves stale-interrupt fencing,
+first-request cancellation identity, busy-until-worker-exit, and exactly-once
+terminal settlement without depending on TUI-owned prompt types.
+
+The durable protocol is defined by [[runtime-session-semantic-protocol]].
+Interactive, ACP, daemon, Web/IPC, and bounded hosts now use this supervisor for
+overlapping prompt, FIFO queue, interruption, and terminal semantics. The
+adjacent authority stream is synced before accepted state is projected, while
+whole-file conversation snapshots remain compatibility projections.
+
+The current loop remains a release-coupled policy driver. A compatibility
+adapter converts each authority-backed loop return into an identity-bearing
+terminal intent (`completed`, `failed`, `revoked`, or `timed_out`) after host
+cleanup. The supervisor alone commits closure; lossy `TurnEnd` and `AgentEnd`
+broadcasts cannot close a session turn.
+
 ---
 
 ## Layering
@@ -201,9 +220,14 @@ struct PromptEnvelope {
 }
 ```
 
+This is the process-local compatibility projection: its numeric ID, paths, and
+`Instant` are not durable protocol identities. Authority-backed sessions bind
+each envelope to stable UUID submission, prompt, and turn identities in the
+adjacent authority stream.
+
 Initial queue policy is deliberately simple:
 - FIFO
-- in-memory only
+- the in-memory queue is rebuilt from durable admission and queue facts for authority-backed sessions
 - no overwrite
 - no dedupe
 - no priority tiers
@@ -344,7 +368,12 @@ The TUI should not:
 ### IPC / Auspex
 IPC should be a transport adapter over runtime commands and runtime snapshots.
 
-Short-term, `submit_prompt` may still reject with `TurnInProgress` while the protocol only supports `AcceptedResponse { accepted }`.
+The v1 `submit_prompt` response remains `AcceptedResponse { accepted }`.
+`accepted: true` means runtime ingress received the command, not that a
+`prompt.admitted` fact has already synced. Prompts received while a turn is
+active proceed to the supervisor queue rather than being rejected as
+`TurnInProgress`; clients observe authoritative admission and active state from
+`runtime.queue_updated`.
 
 Long-term, the IPC submit response should become queue-aware, including fields such as:
 - `queued`
@@ -359,12 +388,10 @@ Web and daemon ingress should use the same runtime command model as TUI and IPC.
 
 ## Snapshot/export guidance
 
-Even if not immediately rendered in the TUI, the runtime should be ready to project:
-- `busy`
-- `queue_depth`
-- active turn phase (`running` / `cancelling`)
-- active turn submitter identity
-- cancel requester identity and timestamp
+`runtime.queue_updated` projects queue depth, queued items, and active-turn
+state to subscribed clients. The legacy attach-time `IpcSessionSnapshot`
+continues to expose only `busy`; it does not yet carry typed queue depth, phase,
+submitter identity, or interruption identity.
 
 This is especially valuable for Auspex’s multi-runtime operator view.
 

@@ -24,8 +24,7 @@ use crate::lifecycle::types::*;
 use std::collections::HashMap;
 
 use crate::features::cleave::CleaveProgress;
-use crate::lifecycle::design;
-use crate::lifecycle::read_model::{DesignTreeSnapshot, SnapshotOptions};
+use crate::lifecycle::read_model::DesignTreeSnapshot;
 use crate::runtime_state::{ChangeSummary, FocusedNodeSummary, RuntimeStateHandles};
 use crate::status::HarnessStatus;
 
@@ -37,43 +36,37 @@ pub trait DashboardHandleExt {
 }
 
 impl DashboardHandleExt for DashboardHandles {
-    /// Rescan filesystem and refresh dashboard in a single lock acquisition.
-    /// Call periodically to pick up changes from external processes
-    /// (other Omegon instances, git pull, manual edits).
-    /// Combines rescan + refresh to avoid double-locking the lifecycle Mutex.
+    /// Reproject the latest immutable managed lifecycle observation.
     fn rescan_and_refresh(&self, state: &mut DashboardState) {
-        if let Some(ref lifecycle) = self.lifecycle
-            && let Ok(snapshot) = lifecycle.design_tree_snapshot(true)
-        {
-            refresh_from_lifecycle(&snapshot, state);
-        }
-        refresh_openspec(self, state);
+        refresh_lifecycle(self, state);
         refresh_non_lifecycle(self, state);
     }
 
     /// Refresh dashboard state from the shared feature handles.
     fn refresh_into(&self, state: &mut DashboardState) {
-        // Lifecycle
-        if let Some(ref lifecycle) = self.lifecycle
-            && let Ok(snapshot) = lifecycle.design_tree_snapshot(false)
-        {
-            refresh_from_lifecycle(&snapshot, state);
-        }
-        refresh_openspec(self, state);
+        refresh_lifecycle(self, state);
         refresh_non_lifecycle(self, state);
     }
 }
 
-fn refresh_openspec(handles: &DashboardHandles, state: &mut DashboardState) {
-    if let Some(ref lifecycle) = handles.lifecycle
-        && let Ok(openspec) = lifecycle.openspec_snapshot(SnapshotOptions::default())
+fn refresh_lifecycle(handles: &DashboardHandles, state: &mut DashboardState) {
+    if let Ok(observation) = handles.lifecycle_service.observe()
+        && let Some(repository) = observation.repository
     {
-        state.active_changes = openspec
+        refresh_from_lifecycle(
+            &repository.design,
+            observation.focus.node_id.as_deref(),
+            &repository.sections,
+            state,
+        );
+        state.active_changes = repository
+            .lifecycle
+            .openspec
             .changes
-            .into_iter()
+            .iter()
             .map(|c| ChangeSummary {
-                name: c.name,
-                stage: c.lifecycle_state,
+                name: c.name.clone(),
+                stage: c.lifecycle_state.clone(),
                 done_tasks: c.done_tasks,
                 total_tasks: c.total_tasks,
             })
@@ -94,19 +87,20 @@ fn refresh_non_lifecycle(handles: &DashboardHandles, state: &mut DashboardState)
     state.harness = handles.observe_harness().ok().flatten();
 }
 
-fn refresh_from_lifecycle(snapshot: &DesignTreeSnapshot, state: &mut DashboardState) {
-    state.focused_node = snapshot.focused_node_id.as_deref().and_then(|id| {
+fn refresh_from_lifecycle(
+    snapshot: &DesignTreeSnapshot,
+    focused_node_id: Option<&str>,
+    sections: &HashMap<String, crate::lifecycle::types::DocumentSections>,
+    state: &mut DashboardState,
+) {
+    state.focused_node = focused_node_id.and_then(|id| {
         snapshot.nodes.get(id).map(|n| {
-            let sections = design::read_node_sections(n);
+            let sections = sections.get(id);
             let assumptions = n.assumption_count();
             let decisions_count = sections
-                .as_ref()
                 .map(|s| s.decisions.iter().filter(|d| d.status == "decided").count())
                 .unwrap_or(0);
-            let readiness = sections
-                .as_ref()
-                .map(|s| s.readiness_score())
-                .unwrap_or(0.0);
+            let readiness = sections.map(|s| s.readiness_score()).unwrap_or(0.0);
             FocusedNodeSummary {
                 id: n.id.clone(),
                 title: n.title.clone(),

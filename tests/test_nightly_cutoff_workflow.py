@@ -17,7 +17,7 @@ class NightlyCutoffWorkflowTests(unittest.TestCase):
 
     def test_new_tag_explicitly_dispatches_standard_release(self) -> None:
         self.assertIn("actions: write", WORKFLOW)
-        self.assertIn("gh workflow run release.yml --ref main -f tag_name=\"$TAG\"", WORKFLOW)
+        self.assertIn("gh workflow run release.yml --ref \"$TAG\" -f tag_name=\"$TAG\"", WORKFLOW)
         self.assertIn("if: steps.exists.outputs.exists == 'false'", WORKFLOW)
 
     def test_existing_tag_is_never_replaced(self) -> None:

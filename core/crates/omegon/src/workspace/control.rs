@@ -13,6 +13,7 @@ pub struct WorkspaceControlContext<'a> {
     pub session_id: &'a str,
     pub instance_id: &'a str,
     pub owner_agent_id: &'a str,
+    pub git: Option<&'a crate::git_service::GitBinding>,
 }
 
 impl<'a> WorkspaceControlContext<'a> {
@@ -22,7 +23,13 @@ impl<'a> WorkspaceControlContext<'a> {
             session_id,
             instance_id,
             owner_agent_id: "omegon-local",
+            git: None,
         }
+    }
+
+    pub fn with_git(mut self, git: &'a crate::git_service::GitBinding) -> Self {
+        self.git = Some(git);
+        self
     }
 
     pub fn with_owner_agent_id(mut self, owner_agent_id: &'a str) -> Self {
@@ -540,7 +547,7 @@ pub fn workspace_prune_response(ctx: &WorkspaceControlContext<'_>) -> SlashComma
     }
 }
 
-pub fn workspace_destroy_response(
+pub async fn workspace_destroy_response(
     ctx: &WorkspaceControlContext<'_>,
     target: &str,
 ) -> SlashCommandResponse {
@@ -594,8 +601,23 @@ pub fn workspace_destroy_response(
     let workspace_path = Path::new(&workspace.path);
     let removal = match workspace.backend_kind {
         WorkspaceBackendKind::GitWorktree | WorkspaceBackendKind::JjCheckout => {
-            omegon_git::worktree::remove_smart(repo_root, &workspace.label, workspace_path)
-                .map_err(|err| format!("Failed to remove workspace backend: {err}"))
+            let Some(git) = ctx.git else {
+                return SlashCommandResponse {
+                    accepted: false,
+                    output: Some(
+                        "Managed Git service is unavailable; workspace was not destroyed.".into(),
+                    ),
+                };
+            };
+            git.invoke(crate::git_service::GitRequest::RemoveWorktree {
+                workspace_path: workspace_path.to_path_buf(),
+                name: workspace.label.clone(),
+                mode: crate::git_service::GitWorktreeMode::Smart,
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await
+            .map(|_| ())
+            .map_err(|err| format!("Failed to remove workspace backend: {err:?}"))
         }
         WorkspaceBackendKind::LocalDir | WorkspaceBackendKind::GitClone => {
             safe_remove_workspace_dir(ctx.cwd, repo_root, workspace_path)
@@ -633,7 +655,7 @@ pub fn workspace_destroy_response(
     }
 }
 
-pub fn workspace_new_response(
+pub async fn workspace_new_response(
     ctx: &WorkspaceControlContext<'_>,
     label: &str,
 ) -> SlashCommandResponse {
@@ -665,17 +687,33 @@ pub fn workspace_new_response(
     }
     let workspace_path = sibling_workspace_path(&project_root, &sanitized);
     let branch = format!("workspace/{}", sanitized);
-    let info = match omegon_git::worktree::create_smart(
-        &project_root,
-        &workspace_path,
-        &sanitized,
-        &branch,
-    ) {
-        Ok(info) => info,
+    let Some(git) = ctx.git else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("Managed Git service is unavailable; workspace was not created.".into()),
+        };
+    };
+    let info = match git
+        .invoke(crate::git_service::GitRequest::CreateWorktree {
+            workspace_path: workspace_path.clone(),
+            name: sanitized.clone(),
+            branch: branch.clone(),
+            mode: crate::git_service::GitWorktreeMode::Smart,
+            cancellation: tokio_util::sync::CancellationToken::new(),
+        })
+        .await
+    {
+        Ok(crate::git_service::GitResponse::Worktree(info)) => info,
+        Ok(_) => {
+            return SlashCommandResponse {
+                accepted: false,
+                output: Some("Managed Git service returned an invalid workspace response.".into()),
+            };
+        }
         Err(err) => {
             return SlashCommandResponse {
                 accepted: false,
-                output: Some(format!("Failed to create sibling workspace: {err}")),
+                output: Some(format!("Failed to create sibling workspace: {err:?}")),
             };
         }
     };
@@ -991,8 +1029,8 @@ mod tests {
         assert!(updated.owner_session_id.is_none());
     }
 
-    #[test]
-    fn destroy_rejects_primary_current_or_unarchived_workspaces() {
+    #[tokio::test]
+    async fn destroy_rejects_primary_current_or_unarchived_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = WorkspaceControlContext::new(dir.path(), "session-1", "test-1");
         let lease = test_lease(dir.path(), None);
@@ -1002,7 +1040,7 @@ mod tests {
         )
         .unwrap();
 
-        let denied = workspace_destroy_response(&ctx, "main");
+        let denied = workspace_destroy_response(&ctx, "main").await;
         assert!(!denied.accepted);
         assert!(denied.output.unwrap().contains("current active workspace"));
     }

@@ -719,14 +719,23 @@ Scroll transcript:
                     SlashResult::Handled
                 } else {
                     // Activate by name (case-insensitive match)
-                    let (personas, _) = crate::plugins::persona_loader::scan_available();
                     let target = args.to_lowercase();
-                    match personas.iter().find(|p| {
-                        p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target)
-                    }) {
-                        Some(available) => {
-                            match crate::plugins::persona_loader::load_persona(&available.path) {
-                                Ok(persona) => {
+                    let cwd = self.cwd().to_path_buf();
+                    let persona = crate::plugins::persona_loader::with_available(
+                        &cwd,
+                        |personas, _| {
+                            personas
+                                .iter()
+                                .find(|p| {
+                                    p.name.to_lowercase() == target
+                                        || p.id.to_lowercase().contains(&target)
+                                })
+                                .and_then(|available| available.persona())
+                                .cloned()
+                        },
+                    );
+                    match persona {
+                        Some(persona) => {
                                     let name = persona.name.clone();
                                     let badge = persona.badge.clone().unwrap_or_else(|| "⚙".into());
                                     let fact_count = persona.mind_facts.len();
@@ -736,11 +745,6 @@ Scroll transcript:
                                     SlashResult::Display(format!(
                                         "{badge} Persona activated: {name} ({fact_count} mind facts)"
                                     ))
-                                }
-                                Err(e) => {
-                                    SlashResult::Display(format!("Failed to load persona: {e}"))
-                                }
-                            }
                         }
                         None => SlashResult::Display(format!(
                             "Persona '{args}' not found. Run /persona list to see available, or /persona create to build one."
@@ -764,22 +768,25 @@ Scroll transcript:
                     self.open_tone_selector();
                     SlashResult::Handled
                 } else {
-                    let (_, tones) = crate::plugins::persona_loader::scan_available();
                     let target = args.to_lowercase();
-                    match tones.iter().find(|t| {
-                        t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target)
-                    }) {
-                        Some(available) => {
-                            match crate::plugins::persona_loader::load_tone(&available.path) {
-                                Ok(tone) => {
+                    let cwd = self.cwd().to_path_buf();
+                    let tone = crate::plugins::persona_loader::with_available(&cwd, |_, tones| {
+                        tones
+                            .iter()
+                            .find(|t| {
+                                t.name.to_lowercase() == target
+                                    || t.id.to_lowercase().contains(&target)
+                            })
+                            .and_then(|available| available.tone())
+                            .cloned()
+                    });
+                    match tone {
+                        Some(tone) => {
                                     let name = tone.name.clone();
                                     if let Some(ref mut registry) = self.augment_registry {
                                         registry.activate_tone(tone);
                                     }
                                     SlashResult::Display(format!("♪ Tone activated: {name}"))
-                                }
-                                Err(e) => SlashResult::Display(format!("Failed to load tone: {e}")),
-                            }
                         }
                         None => SlashResult::Display(format!(
                             "Tone '{args}' not found. Run /tone to list available."
@@ -1395,6 +1402,26 @@ Scroll transcript:
             },
 
             "transcript" => {
+                let allow_suffix = args == "suffix";
+                if !matches!(args, "" | "open" | "file" | "suffix") {
+                    self.conversation.push_system(
+                        "Usage: /transcript [file|open|suffix]\n  file/open: require an exact full-session semantic transcript\n  suffix: export the explicitly labeled exact suffix for mixed lineage",
+                    );
+                } else {
+                    match self.write_exact_semantic_transcript(allow_suffix) {
+                        Ok(path) => self.conversation.push_system(&format!(
+                            "Exact semantic transcript written:\n  {}",
+                            path.display()
+                        )),
+                        Err(error) => self.conversation.push_system(&format!(
+                            "Semantic transcript unavailable: {error}"
+                        )),
+                    }
+                }
+                SlashResult::Handled
+            }
+
+            "session-export" => {
                 match args {
                     "" | "open" | "file" | "md" | "markdown" => {
                         self.export_session_transcript_markdown();
@@ -1402,11 +1429,9 @@ Scroll transcript:
                     "scrollback" | "native" => {
                         self.print_transcript_to_native_scrollback();
                     }
-                    _ => {
-                        self.conversation.push_system(
-                            "Usage: /transcript [file|scrollback]\n  file: write a clickable Markdown transcript\n  scrollback: print transcript to native terminal scrollback",
-                        );
-                    }
+                    _ => self.conversation.push_system(
+                        "Usage: /session-export [file|open|scrollback]\n  Exports the current presentation/evidence view; it does not claim exact transcript semantics.",
+                    ),
                 }
                 SlashResult::Handled
             }

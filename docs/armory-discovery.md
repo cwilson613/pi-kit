@@ -65,3 +65,9 @@ Installed status is computed locally:
 - Plugins: `~/.omegon/plugins/<slug>/plugin.toml`, `.omegon/plugins/<slug>/plugin.toml`, or `~/.omegon/armory/<root>/<slug>/plugin.toml`
 
 This makes the discovery model reusable by terminal UX, Auspex/Flynt UI surfaces, and ACP clients without each caller reimplementing Armory registry parsing.
+
+## Admission and lifecycle
+
+Browse and installed state are inventory, not execution authority. An executable Armory bundle uses `plugin:<directory-name>` and must be listed in `permissions.trustedContributionCode` before Omegon evaluates Pkl, generates dynamic context, runs scripts or OCI tools, sends HTTP requests, or connects plugin MCP services. The host binds that admission to the current bundle snapshot.
+
+Armory context readiness is bounded. Owned script and OCI process groups are killed and reaped on timeout or cancellation, while the contribution boundary reports best-effort cleanup rather than claiming verified confinement. Armory publishes zero automatic restarts and quarantine-on-failure lifecycle policy. `/status` reports accepted composition state, contribution health, cleanup assurance, and coded graph diagnostics.

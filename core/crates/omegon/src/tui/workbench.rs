@@ -1246,7 +1246,7 @@ fn render_delegate_workbench_panel(
     t: &dyn theme::Theme,
     progress: &DelegateProgress,
 ) {
-    let projection = OperationWorkbenchProjection::from_delegate(progress);
+    let projection = crate::features::operation_surface::project_delegate(progress);
     render_operation_workbench_panel(area, frame, t, &projection);
 }
 

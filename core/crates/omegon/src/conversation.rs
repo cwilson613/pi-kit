@@ -833,6 +833,16 @@ impl ConversationState {
         &self.canonical
     }
 
+    pub(crate) fn context_compaction_snapshot(
+        &self,
+    ) -> crate::context_compaction_service::ContextCompactionSnapshotV1 {
+        crate::context_compaction_service::ContextCompactionSnapshotV1 {
+            messages: self.canonical.clone(),
+            current_turn: self.intent.stats.turns,
+            decay_window: self.decay_window as u32,
+        }
+    }
+
     pub fn set_slim_mode(&mut self, slim: bool) {
         self.slim_mode = slim;
     }
@@ -1257,6 +1267,15 @@ impl ConversationState {
         self.invalidate_token_cache();
     }
 
+    pub(crate) fn operator_tool_observations(
+        &self,
+    ) -> impl Iterator<Item = &OperatorToolObservation> {
+        self.canonical.iter().filter_map(|message| match message {
+            AgentMessage::OperatorToolObservation(observation, _) => Some(observation),
+            _ => None,
+        })
+    }
+
     /// Remove the most recent user message when it matches the active prompt.
     ///
     /// This is used when an upstream provider rejects a turn before producing any
@@ -1608,7 +1627,7 @@ impl ConversationState {
             compaction_summary: self.compaction_summary.clone(),
         };
         let json = serde_json::to_string_pretty(&session)?;
-        crate::filelock::atomic_write_locked(path, json.as_bytes())?;
+        crate::filelock::atomic_write_locked_private(path, json.as_bytes())?;
         tracing::info!(path = %path.display(), turns = self.intent.stats.turns, "session saved");
         Ok(())
     }
@@ -1620,10 +1639,14 @@ impl ConversationState {
     /// - keep only a recent tail of messages as canonical history
     /// - fold older messages into `compaction_summary` so they still inform the model
     pub fn load_session(path: &Path) -> anyhow::Result<Self> {
+        let bytes = std::fs::read(path)?;
+        Self::load_session_bytes(path, &bytes)
+    }
+
+    pub(crate) fn load_session_bytes(path: &Path, bytes: &[u8]) -> anyhow::Result<Self> {
         const RESUME_TAIL_MESSAGES: usize = 24;
 
-        let json = std::fs::read_to_string(path)?;
-        let snapshot: SessionSnapshot = serde_json::from_str(&json)?;
+        let snapshot: SessionSnapshot = serde_json::from_slice(bytes)?;
         tracing::info!(
             path = %path.display(),
             turns = snapshot.intent.stats.turns,

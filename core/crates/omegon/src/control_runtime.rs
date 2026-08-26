@@ -20,6 +20,8 @@ pub struct ControlContext<'a> {
     pub login_prompt_tx: &'a std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
     pub events_tx: &'a broadcast::Sender<AgentEvent>,
     pub cli: &'a CliRuntimeView<'a>,
+    pub invocation_scope: crate::invocation_service::InvocationScope,
+    pub supervisor: Option<&'a mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
 }
 
 pub use crate::operator_commands::InterfaceControlRequest as ControlRequest;
@@ -493,7 +495,7 @@ pub(crate) async fn execute_stateless_control(
         ControlRequest::PermissionTrustRemove { path } => {
             permission_trust_remove_response(shared_settings, cwd, path).await
         }
-        ControlRequest::PersonaList => persona_list_response(handles).await,
+        ControlRequest::PersonaList => persona_list_response(handles, cwd).await,
         ControlRequest::PersonaSwitch { name } => persona_switch_response(name).await,
         _ => return None,
     };
@@ -595,6 +597,23 @@ pub async fn execute_active_harness_command(
                     request,
                     respond_to,
                 });
+            };
+            finish_active_harness_response(response, respond_to, events_tx);
+            return ActiveHarnessCommandResult::Handled;
+        }
+        OperatorCommand::ExecuteControlFrom {
+            request,
+            respond_to,
+            surface,
+        } => {
+            let Some(response) = execute_harness_control(ctx, &request).await else {
+                return ActiveHarnessCommandResult::Unsupported(
+                    OperatorCommand::ExecuteControlFrom {
+                        request,
+                        respond_to,
+                        surface,
+                    },
+                );
             };
             finish_active_harness_response(response, respond_to, events_tx);
             return ActiveHarnessCommandResult::Handled;
@@ -810,11 +829,11 @@ pub async fn execute_control(
         }
         ControlRequest::WorkspaceNew { label } => {
             let workspace_ctx = workspace_control_context(ctx.agent);
-            crate::workspace::control::workspace_new_response(&workspace_ctx, &label)
+            crate::workspace::control::workspace_new_response(&workspace_ctx, &label).await
         }
         ControlRequest::WorkspaceDestroy { target } => {
             let workspace_ctx = workspace_control_context(ctx.agent);
-            crate::workspace::control::workspace_destroy_response(&workspace_ctx, &target)
+            crate::workspace::control::workspace_destroy_response(&workspace_ctx, &target).await
         }
         ControlRequest::WorkspaceAdopt => {
             let workspace_ctx = workspace_control_context(ctx.agent);
@@ -874,7 +893,9 @@ pub async fn execute_control(
         ControlRequest::SessionStatsView => {
             session_stats_view_response(ctx.runtime_state, ctx.shared_settings, ctx.agent).await
         }
-        ControlRequest::TreeView { args } => tree_view_response(ctx.runtime_state, &args).await,
+        ControlRequest::TreeView { args } => {
+            tree_view_response(ctx.runtime_state, &args, &ctx.invocation_scope).await
+        }
         ControlRequest::NoteAdd { text } => note_add_response(ctx.agent, &text).await,
         ControlRequest::NotesView => notes_view_response(ctx.agent).await,
         ControlRequest::NotesClear => notes_clear_response(ctx.agent).await,
@@ -889,11 +910,19 @@ pub async fn execute_control(
                 ctx.shared_settings,
                 ctx.bridge,
                 ctx.events_tx,
+                &ctx.invocation_scope,
             )
             .await
         }
         ControlRequest::ContextClear => {
-            context_clear_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx).await
+            context_clear_response(
+                ctx.runtime_state,
+                ctx.agent,
+                ctx.cli,
+                ctx.events_tx,
+                ctx.supervisor.as_deref_mut(),
+            )
+            .await
         }
         ControlRequest::ContextRequest { kind, query } => {
             context_request_response(ctx.runtime_state, &kind, &query).await
@@ -927,11 +956,26 @@ pub async fn execute_control(
             }
         },
         ControlRequest::NewSession => {
-            new_session_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx).await
+            new_session_response(
+                ctx.runtime_state,
+                ctx.agent,
+                ctx.cli,
+                ctx.events_tx,
+                ctx.supervisor.as_deref_mut(),
+            )
+            .await
         }
         ControlRequest::ListSessions => list_sessions_response(ctx.agent).await,
         ControlRequest::ResumeSession { id } => {
-            resume_session_response(ctx.runtime_state, ctx.agent, ctx.cli, ctx.events_tx, &id).await
+            resume_session_response(
+                ctx.runtime_state,
+                ctx.agent,
+                ctx.cli,
+                ctx.events_tx,
+                &id,
+                ctx.supervisor.as_deref_mut(),
+            )
+            .await
         }
         ControlRequest::AuthLogin { provider } => {
             auth_login_response(
@@ -946,7 +990,9 @@ pub async fn execute_control(
             .await
         }
         ControlRequest::VaultStatus => vault_status_response(ctx.agent).await,
-        ControlRequest::CleaveStatus => cleave_status_response(ctx.runtime_state).await,
+        ControlRequest::CleaveStatus => {
+            cleave_status_response(ctx.runtime_state, &ctx.invocation_scope).await
+        }
         ControlRequest::Smoke(crate::smoke_surface::SmokeCommand::List) => SlashCommandResponse {
             accepted: true,
             output: Some(crate::smoke_surface::smoke_list_text()),
@@ -960,9 +1006,11 @@ pub async fn execute_control(
             )
         }
         ControlRequest::CleaveCancelChild { label } => {
-            cleave_cancel_child_response(ctx.runtime_state, &label).await
+            cleave_cancel_child_response(ctx.runtime_state, &label, &ctx.invocation_scope).await
         }
-        ControlRequest::DelegateStatus => delegate_status_response(ctx.runtime_state).await,
+        ControlRequest::DelegateStatus => {
+            delegate_status_response(ctx.runtime_state, &ctx.invocation_scope).await
+        }
         // Stateless variants already handled above; catch remaining
         other => SlashCommandResponse {
             accepted: false,
@@ -1367,15 +1415,6 @@ pub async fn set_model_response(
     .map(|route| route.qualified_model)
     .ok()
     .unwrap_or_else(|| requested_model.to_string());
-    let effective_model = if crate::providers::explicit_provider_id(&effective_model).as_deref()
-        == Some("github-copilot")
-    {
-        effective_model
-    } else {
-        providers::resolve_execution_model_spec(&effective_model)
-            .await
-            .unwrap_or(effective_model)
-    };
     let (old_model, old_provider) = shared_settings
         .lock()
         .ok()
@@ -1388,7 +1427,10 @@ pub async fn set_model_response(
         .unwrap_or_else(|| (String::new(), String::new()));
     let new_provider = crate::providers::infer_provider_id(&effective_model);
     if let Some(controller) = route_controller {
-        let new_bridge = providers::auto_detect_bridge(&effective_model).await;
+        let new_bridge = crate::session_execution::boot_execution_binding()
+            .resolve_exact_provider_route(&effective_model, None)
+            .await
+            .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge);
         let snapshot = match controller
             .switch_model(
                 effective_model.clone(),
@@ -1534,9 +1576,7 @@ pub async fn switch_dispatcher_response(
             format!("{current_provider}:{tier_model}")
         }
     });
-    let effective_model = providers::resolve_execution_model_spec(&requested_model_spec)
-        .await
-        .unwrap_or_else(|| requested_model_spec.clone());
+    let effective_model = requested_model_spec.clone();
 
     if let Ok(mut s) = shared_settings.lock() {
         if !effective_model.is_empty() {
@@ -1557,7 +1597,7 @@ pub async fn switch_dispatcher_response(
         }
     }
 
-    let mut status = crate::status::HarnessStatus::assemble();
+    let mut status = crate::status::HarnessStatus::assemble(&agent.cwd);
     let settings_snapshot = shared_settings.lock().ok().map(|s| s.clone());
     let (
         context_class,
@@ -1779,7 +1819,7 @@ pub async fn set_runtime_mode_response(
         .bus
         .apply_operator_tool_profile(slim, &posture_disabled, &posture_enabled);
 
-    let mut status = crate::status::HarnessStatus::assemble();
+    let mut status = crate::status::HarnessStatus::assemble(runtime_state.bus.project_root());
     let settings = shared_settings.lock().unwrap().clone();
     let operating_profile = settings.operating_profile();
     let operating_profile_label = operating_profile.summary();
@@ -1931,7 +1971,7 @@ pub async fn runtime_substrate_refresh_response(
 }
 
 pub async fn status_view_response(
-    _runtime_state: &InteractiveAgentState,
+    runtime_state: &mut InteractiveAgentState,
     agent: &InteractiveAgentHost,
     shared_settings: &settings::SharedSettings,
 ) -> SlashCommandResponse {
@@ -1940,7 +1980,7 @@ pub async fn status_view_response(
         .observe_harness()
         .ok()
         .flatten()
-        .unwrap_or_else(crate::status::HarnessStatus::assemble);
+        .unwrap_or_else(|| crate::status::HarnessStatus::assemble(&agent.cwd));
     let settings = shared_settings
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1974,15 +2014,20 @@ pub async fn status_view_response(
         &session_kind,
         &authorization,
     );
+    let bootstrap_markdown = crate::bootstrap_projection::render_bootstrap(&status, false);
     let projection = crate::surfaces::diagnostics::HarnessStatusProjection::new(
-        status,
+        serde_json::to_value(status).unwrap_or(serde_json::Value::Null),
         agent.runtime_generation,
         agent.session_id.clone(),
         agent.instance_id.clone(),
         settings.automation_level.as_str(),
         settings.automation_level.summary(),
+        bootstrap_markdown,
     );
-    let panel = projection.render_markdown();
+    let mut panel = projection.render_markdown();
+    if let Some(composition) = runtime_state.bus.composition_diagnostic_projection() {
+        panel.push_str(&composition.render_markdown());
+    }
     SlashCommandResponse {
         accepted: true,
         output: Some(panel),
@@ -1997,6 +2042,7 @@ fn workspace_control_context(
         &agent.session_id,
         &agent.instance_id,
     )
+    .with_git(&agent.git_binding)
 }
 
 pub async fn workspace_status_view_response(agent: &InteractiveAgentHost) -> SlashCommandResponse {
@@ -2014,7 +2060,7 @@ pub async fn workspace_new_response(
     label: &str,
 ) -> SlashCommandResponse {
     let ctx = workspace_control_context(agent);
-    crate::workspace::control::workspace_new_response(&ctx, label)
+    crate::workspace::control::workspace_new_response(&ctx, label).await
 }
 
 pub async fn workspace_destroy_response(
@@ -2022,7 +2068,7 @@ pub async fn workspace_destroy_response(
     target: &str,
 ) -> SlashCommandResponse {
     let ctx = workspace_control_context(agent);
-    crate::workspace::control::workspace_destroy_response(&ctx, target)
+    crate::workspace::control::workspace_destroy_response(&ctx, target).await
 }
 
 pub async fn workspace_adopt_response(agent: &InteractiveAgentHost) -> SlashCommandResponse {
@@ -2124,7 +2170,7 @@ pub async fn session_stats_view_response(
         .observe_harness()
         .ok()
         .flatten()
-        .unwrap_or_else(crate::status::HarnessStatus::assemble);
+        .unwrap_or_else(|| crate::status::HarnessStatus::assemble(&agent.cwd));
     let persona = live_harness
         .active_persona
         .as_ref()
@@ -2172,8 +2218,10 @@ pub async fn session_stats_view_response(
 pub async fn tree_view_response(
     runtime_state: &mut InteractiveAgentState,
     args: &str,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
-    match runtime_state.bus.dispatch_command("design", args) {
+    match dispatch_control_feature_command(&mut runtime_state.bus, "design", args, invocation_scope)
+    {
         omegon_traits::CommandResult::Display(msg) => SlashCommandResponse {
             accepted: true,
             output: Some(msg),
@@ -2308,20 +2356,17 @@ pub async fn checkin_view_response(
         ));
     }
 
-    let opsx_dir = agent.cwd.join("openspec").join("changes");
-    if opsx_dir.exists()
-        && let Ok(entries) = std::fs::read_dir(&opsx_dir)
+    if let Ok(observation) = agent.dashboard_handles.lifecycle_service.observe()
+        && let Some(repository) = observation.repository
     {
-        let active: Vec<String> = entries
-            .filter_map(|e| {
-                let e = e.ok()?;
-                if e.file_type().ok()?.is_dir() {
-                    Some(e.file_name().to_string_lossy().to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut active = repository
+            .lifecycle
+            .openspec
+            .changes
+            .iter()
+            .map(|change| change.name.clone())
+            .collect::<Vec<_>>();
+        active.sort();
         if !active.is_empty() {
             sections.push(format!(
                 "📋 {} OpenSpec change{}: {}",
@@ -2332,8 +2377,10 @@ pub async fn checkin_view_response(
         }
     }
 
-    let facts = crate::status::HarnessStatus::assemble().memory.total_facts;
-    let working = crate::status::HarnessStatus::assemble()
+    let facts = crate::status::HarnessStatus::assemble(&agent.cwd)
+        .memory
+        .total_facts;
+    let working = crate::status::HarnessStatus::assemble(&agent.cwd)
         .memory
         .working_facts;
     if facts > 0 {
@@ -2479,14 +2526,13 @@ fn context_status_projection(
         ))
 }
 
-const MANUAL_COMPACTION_KEEP_RECENT_TURNS: u32 = 2;
-
 pub async fn context_compact_response(
     runtime_state: &mut InteractiveAgentState,
     agent: &mut InteractiveAgentHost,
     shared_settings: &settings::SharedSettings,
     bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
     events_tx: &broadcast::Sender<AgentEvent>,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
     let bridge_guard = bridge.read().await;
     let stream_options = {
@@ -2499,10 +2545,65 @@ pub async fn context_compact_response(
         }
     };
     let before_tokens = runtime_state.conversation.estimate_tokens() as u64;
-    if let Some((payload, evict_count)) = runtime_state
-        .conversation
-        .build_compaction_payload_keeping_recent(MANUAL_COMPACTION_KEEP_RECENT_TURNS)
-    {
+    let planning = runtime_state
+        .context_compaction
+        .plan(
+            runtime_state.conversation.context_compaction_snapshot(),
+            crate::context_compaction_service::ContextCompactionModeV1::Manual,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+    let plan = match planning {
+        Ok(plan) => plan,
+        Err(error) => {
+            return SlashCommandResponse {
+                accepted: false,
+                output: Some(format!("Compression unavailable: {error:?}")),
+            };
+        }
+    };
+    if let Some(plan) = plan {
+        let payload = plan.payload;
+        let evict_count = plan.evict_count;
+        let authority_compaction = match (
+            invocation_scope.authority.clone(),
+            invocation_scope.turn_id,
+            invocation_scope.session_id.as_deref(),
+        ) {
+            (Some(authority), None, Some(session_id)) if authority.session_id() == session_id => {
+                match crate::session_compaction::SessionCompaction::begin_idle(
+                    authority,
+                    evict_count,
+                ) {
+                    Ok(Some(compaction)) => Some(compaction),
+                    Ok(None) => {
+                        return SlashCommandResponse {
+                            accepted: false,
+                            output: Some(
+                                "Compression failed: exact authority compaction input is unavailable"
+                                    .into(),
+                            ),
+                        };
+                    }
+                    Err(error) => {
+                        return SlashCommandResponse {
+                            accepted: false,
+                            output: Some(format!("Compression failed: {error}")),
+                        };
+                    }
+                }
+            }
+            (None, None, None) => None,
+            _ => {
+                return SlashCommandResponse {
+                    accepted: false,
+                    output: Some(
+                        "Compression failed: manual compaction requires an idle complete session scope"
+                            .into(),
+                    ),
+                };
+            }
+        };
         let _ = events_tx.send(AgentEvent::ContextCompaction(
             omegon_traits::ContextCompactionEvent {
                 trigger: omegon_traits::ContextCompactionTrigger::Manual,
@@ -2514,13 +2615,28 @@ pub async fn context_compact_response(
                 reason: None,
             },
         ));
-        match crate::r#loop::compact_via_llm(bridge_guard.as_ref(), &payload, &stream_options).await
-        {
+        let compact_result = if let Some(authority) = authority_compaction.as_ref() {
+            crate::session_execution::boot_execution_binding()
+                .compact_scoped(
+                    bridge_guard.as_ref(),
+                    &payload,
+                    &stream_options,
+                    invocation_scope,
+                    authority,
+                )
+                .await
+        } else {
+            crate::session_execution::boot_execution_binding()
+                .compact(bridge_guard.as_ref(), &payload, &stream_options)
+                .await
+        };
+        match compact_result {
             Ok(summary) => {
                 let summary_chars = summary.chars().count();
-                runtime_state
-                    .conversation
-                    .apply_compaction_keeping_recent(summary, MANUAL_COMPACTION_KEEP_RECENT_TURNS);
+                runtime_state.conversation.apply_compaction_keeping_recent(
+                    summary,
+                    crate::context_compaction_service::MANUAL_KEEP_RECENT_TURNS,
+                );
                 let est = runtime_state.conversation.estimate_tokens();
                 let settings = shared_settings.lock().unwrap();
                 if let Ok(mut metrics) = agent.context_metrics.lock() {
@@ -2592,17 +2708,21 @@ pub async fn context_clear_response(
     agent: &mut InteractiveAgentHost,
     cli: &CliRuntimeView<'_>,
     events_tx: &broadcast::Sender<AgentEvent>,
+    supervisor: Option<&mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
 ) -> SlashCommandResponse {
-    if !cli.no_session {
-        let _ = session::save_session(
-            &runtime_state.conversation,
+    let response = replace_interactive_session(
+        runtime_state,
+        agent,
+        cli,
+        supervisor,
+        crate::session_replacement::fresh_request(
+            crate::session_replacement::SessionReplacementKind::ContextClear,
             &agent.cwd,
-            Some(agent.session_id.as_str()),
-        );
+        ),
+    );
+    if let Err(error) = response {
+        return replacement_failure(error);
     }
-    runtime_state.conversation = crate::conversation::ConversationState::new();
-    agent.session_id = crate::session::allocate_session_id();
-    agent.resume_info = None;
     let context_window = if let Ok(mut metrics) = agent.context_metrics.lock() {
         let context_window = metrics.context_window;
         metrics.update(0, context_window, "Compact", "off");
@@ -2635,16 +2755,7 @@ pub async fn context_request_response(
             "reason": "Operator-requested direct context inspection from slash command"
         }]
     });
-    match runtime_state
-        .bus
-        .execute_tool(
-            crate::tool_registry::context::REQUEST_CONTEXT,
-            "slash-context-request",
-            args,
-            tokio_util::sync::CancellationToken::new(),
-        )
-        .await
-    {
+    match runtime_state.context_service.request_context(args).await {
         Ok(result) => {
             let text = result
                 .content
@@ -2673,16 +2784,7 @@ pub async fn context_request_json_response(
 ) -> SlashCommandResponse {
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(args) if args.get("requests").and_then(|v| v.as_array()).is_some() => {
-            match runtime_state
-                .bus
-                .execute_tool(
-                    crate::tool_registry::context::REQUEST_CONTEXT,
-                    "slash-context-request",
-                    args,
-                    tokio_util::sync::CancellationToken::new(),
-                )
-                .await
-            {
+            match runtime_state.context_service.request_context(args).await {
                 Ok(result) => {
                     let text = result
                         .content
@@ -2737,17 +2839,21 @@ pub async fn new_session_response(
     agent: &mut InteractiveAgentHost,
     cli: &CliRuntimeView<'_>,
     events_tx: &broadcast::Sender<AgentEvent>,
+    supervisor: Option<&mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
 ) -> SlashCommandResponse {
-    if !cli.no_session {
-        let _ = session::save_session(
-            &runtime_state.conversation,
+    let response = replace_interactive_session(
+        runtime_state,
+        agent,
+        cli,
+        supervisor,
+        crate::session_replacement::fresh_request(
+            crate::session_replacement::SessionReplacementKind::New,
             &agent.cwd,
-            Some(agent.session_id.as_str()),
-        );
+        ),
+    );
+    if let Err(error) = response {
+        return replacement_failure(error);
     }
-    runtime_state.conversation = crate::conversation::ConversationState::new();
-    agent.session_id = crate::session::allocate_session_id();
-    agent.resume_info = None;
     let _ = events_tx.send(AgentEvent::SessionReset);
     SlashCommandResponse {
         accepted: true,
@@ -2768,6 +2874,7 @@ pub async fn resume_session_response(
     cli: &CliRuntimeView<'_>,
     events_tx: &broadcast::Sender<AgentEvent>,
     id: &str,
+    supervisor: Option<&mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
 ) -> SlashCommandResponse {
     let id = id.trim();
     if id.is_empty() {
@@ -2775,13 +2882,6 @@ pub async fn resume_session_response(
             accepted: false,
             output: Some("Usage: /resume <session-id>".to_string()),
         };
-    }
-    if !cli.no_session {
-        let _ = session::save_session(
-            &runtime_state.conversation,
-            &agent.cwd,
-            Some(agent.session_id.as_str()),
-        );
     }
     let Some(path) = session::find_session(&agent.cwd, Some(id)) else {
         return SlashCommandResponse {
@@ -2791,38 +2891,23 @@ pub async fn resume_session_response(
             )),
         };
     };
-    match crate::conversation::ConversationState::load_session(&path) {
-        Ok(conversation) => {
-            let meta_path = path.with_extension("meta.json");
-            let meta = std::fs::read_to_string(&meta_path)
-                .ok()
-                .and_then(|j| serde_json::from_str::<session::SessionMeta>(&j).ok());
-            let session_id = meta
-                .as_ref()
-                .map(|m| m.session_id.clone())
-                .or_else(|| {
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .map(str::to_string)
-                })
-                .unwrap_or_else(|| id.to_string());
-            let description = meta
-                .as_ref()
-                .map(session::session_display_description)
-                .unwrap_or_else(|| format!("Session {session_id}"));
-            agent.resume_info = meta.as_ref().map(|m| crate::setup::ResumeInfo {
-                session_id: m.session_id.clone(),
-                turns: m.turns,
-                description: description.clone(),
-                last_prompt_snippet: m.last_prompt_snippet.clone(),
-                created_at: m.created_at.clone(),
-            });
-            agent.session_id = session_id.clone();
-            runtime_state.conversation = conversation;
+    match crate::session_replacement::resume_request(&agent.cwd, &path).and_then(|request| {
+        let description = request
+            .resume_info
+            .as_ref()
+            .map(|info| info.description.clone())
+            .unwrap_or_default();
+        replace_interactive_session(runtime_state, agent, cli, supervisor, Ok(request))
+            .map(|outcome| (outcome, description))
+    }) {
+        Ok((outcome, description)) => {
             let _ = events_tx.send(AgentEvent::SessionReset);
             SlashCommandResponse {
                 accepted: true,
-                output: Some(format!("Resumed session {session_id}: {description}")),
+                output: Some(format!(
+                    "Resumed session {}: {description}",
+                    outcome.session_id
+                )),
             }
         }
         Err(error) => SlashCommandResponse {
@@ -2832,6 +2917,118 @@ pub async fn resume_session_response(
                 path.display()
             )),
         },
+    }
+}
+
+fn replace_interactive_session(
+    runtime_state: &mut InteractiveAgentState,
+    agent: &mut InteractiveAgentHost,
+    cli: &CliRuntimeView<'_>,
+    supervisor: Option<&mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
+    request: Result<
+        crate::session_replacement::SessionReplacementRequest,
+        crate::session_replacement::SessionReplacementError,
+    >,
+) -> Result<
+    crate::session_replacement::SessionReplacementOutcome,
+    crate::session_replacement::SessionReplacementError,
+> {
+    let request = request?;
+    if cli.no_session {
+        let outcome = crate::session_replacement::replace_sessionless(
+            &mut runtime_state.conversation,
+            &mut agent.session_id,
+            &mut agent.resume_info,
+            request,
+        );
+        publish_session_view_binding(agent, &outcome);
+        crate::session_replacement::emit_canonical_session_start(
+            &mut runtime_state.bus,
+            &agent.cwd,
+            &outcome,
+        );
+        return Ok(outcome);
+    }
+    let supervisor = supervisor.ok_or_else(|| {
+        crate::session_replacement::SessionReplacementError::Target(
+            "host session owner is unavailable".into(),
+        )
+    })?;
+    let runtime_generation_id = runtime_state
+        .bus
+        .composition_generation_id()
+        .ok_or_else(|| {
+            crate::session_replacement::SessionReplacementError::Target(
+                "runtime composition has no generation".into(),
+            )
+        })?
+        .as_str()
+        .to_string();
+    let outcome = crate::session_replacement::replace(
+        crate::session_replacement::HostSessionPublication {
+            supervisor,
+            conversation: &mut runtime_state.conversation,
+            displayed_session_id: &mut agent.session_id,
+            resume_info: &mut agent.resume_info,
+        },
+        request,
+        crate::session_replacement::SessionReplacementEnvironment {
+            cwd: &agent.cwd,
+            persist_current: true,
+            workspace_identity: &agent.workspace_state.lease.workspace_id,
+            runtime_generation_id: &runtime_generation_id,
+            actor: crate::session_authority::ActorIdentity {
+                principal: "local-operator".into(),
+                ingress: "interactive".into(),
+            },
+        },
+    )?;
+    publish_session_view_binding(agent, &outcome);
+    crate::session_replacement::emit_canonical_session_start(
+        &mut runtime_state.bus,
+        &agent.cwd,
+        &outcome,
+    );
+    Ok(outcome)
+}
+
+fn publish_session_view_binding(
+    agent: &InteractiveAgentHost,
+    outcome: &crate::session_replacement::SessionReplacementOutcome,
+) {
+    let Some(snapshot) = crate::session_consumers::snapshot_path(&agent.cwd, &outcome.session_id)
+    else {
+        return;
+    };
+    let kind = match outcome.kind {
+        crate::session_replacement::SessionReplacementKind::Resume => {
+            crate::session_consumers::SessionViewKind::Resume
+        }
+        crate::session_replacement::SessionReplacementKind::New => {
+            crate::session_consumers::SessionViewKind::New
+        }
+        crate::session_replacement::SessionReplacementKind::ContextClear => {
+            crate::session_consumers::SessionViewKind::ContextClear
+        }
+    };
+    agent
+        .session_view_binding
+        .replace(crate::session_consumers::SessionViewTarget {
+            snapshot,
+            session_id: outcome.session_id.clone(),
+            stream_id: (outcome.projection.stream_id != uuid::Uuid::nil())
+                .then_some(outcome.projection.stream_id),
+            generation: outcome.host_generation,
+            kind,
+        });
+}
+
+fn replacement_failure(
+    error: crate::session_replacement::SessionReplacementError,
+) -> SlashCommandResponse {
+    SlashCommandResponse {
+        accepted: false,
+        output: Some(format!("Session was not replaced: {error}")),
     }
 }
 
@@ -2978,10 +3175,12 @@ pub async fn auth_login_response(
             // model setting (which may reference a different provider entirely).
             let login_provider_model = providers::default_model_for_provider(&provider_clone)
                 .unwrap_or(model_for_redetect.clone());
-            let effective_model = providers::resolve_execution_model_spec(&login_provider_model)
+            let effective_model = login_provider_model;
+            if let Some(new_bridge) = crate::session_execution::boot_execution_binding()
+                .resolve_exact_provider_route(&effective_model, None)
                 .await
-                .unwrap_or(login_provider_model);
-            if let Some(new_bridge) = providers::auto_detect_bridge(&effective_model).await {
+                .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
+            {
                 let mut guard = bridge_clone.write().await;
                 *guard = new_bridge;
                 if let Ok(mut s) = settings_for_login.lock() {
@@ -3128,9 +3327,7 @@ pub async fn set_model_daemon_response(
     cwd: &Path,
     requested_model: &str,
 ) -> SlashCommandResponse {
-    let effective = providers::resolve_execution_model_spec(requested_model)
-        .await
-        .unwrap_or_else(|| requested_model.to_string());
+    let effective = requested_model.to_string();
     let Ok(mut s) = shared_settings.lock() else {
         return SlashCommandResponse {
             accepted: false,
@@ -3520,29 +3717,33 @@ pub async fn profile_apply_response(
         .bus
         .apply_operator_tool_profile(slim, &posture_disabled, &posture_enabled);
     if let Some(persona) = profile.persona.as_deref() {
+        let call_id = format!("profile-apply-persona:{}", uuid::Uuid::new_v4());
         let _ = runtime_state
             .bus
-            .execute_tool(
+            .invoke_internal(
                 crate::tool_registry::persona::SWITCH_PERSONA,
-                "profile-apply-persona",
+                &call_id,
                 serde_json::json!({ "name": persona, "reason": "profile apply" }),
                 tokio_util::sync::CancellationToken::new(),
+                internal_control_scope("kernel:profile-apply-persona"),
             )
             .await;
     }
     if let Some(tone) = profile.tone.as_deref() {
+        let call_id = format!("profile-apply-tone:{}", uuid::Uuid::new_v4());
         let _ = runtime_state
             .bus
-            .execute_tool(
+            .invoke_internal(
                 crate::tool_registry::persona::SWITCH_TONE,
-                "profile-apply-tone",
+                &call_id,
                 serde_json::json!({ "name": tone, "reason": "profile apply" }),
                 tokio_util::sync::CancellationToken::new(),
+                internal_control_scope("kernel:profile-apply-tone"),
             )
             .await;
     }
 
-    let mut status = crate::status::HarnessStatus::assemble();
+    let mut status = crate::status::HarnessStatus::assemble(runtime_state.bus.project_root());
     if let Ok(settings) = shared_settings.lock().map(|s| s.clone()) {
         let operating_profile = settings.operating_profile();
         status.update_routing(
@@ -3579,6 +3780,15 @@ pub async fn profile_apply_response(
             "Profile applied to live runtime. Integration and extension load policy changes take effect on next startup."
                 .into(),
         ),
+    }
+}
+
+fn internal_control_scope(principal: &str) -> crate::invocation_service::InvocationScope {
+    crate::invocation_service::InvocationScope {
+        principal: principal.into(),
+        principal_class: omegon_traits::RuntimePrincipalClass::Internal,
+        surface: omegon_traits::RuntimeSurface::Internal,
+        ..Default::default()
     }
 }
 
@@ -4059,41 +4269,40 @@ fn render_profile_export(
 
 pub async fn persona_list_response(
     handles: &crate::runtime_state::RuntimeStateHandles,
+    cwd: &Path,
 ) -> SlashCommandResponse {
-    let (personas, tones) = crate::plugins::persona_loader::scan_available();
-
     let active_id = handles
         .observe_harness()
         .ok()
         .flatten()
         .and_then(|h| h.active_persona.map(|p| p.id));
 
-    let persona_list: Vec<serde_json::Value> = personas
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "id": p.id,
-                "name": p.name,
-                "description": p.description,
-                "active": active_id.as_deref() == Some(&p.id),
+    let output = crate::plugins::persona_loader::with_available(cwd, |personas, tones| {
+        let persona_list: Vec<serde_json::Value> = personas
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id,
+                    "name": p.name,
+                    "description": p.description,
+                    "active": active_id.as_deref() == Some(&p.id),
+                })
             })
-        })
-        .collect();
-
-    let tone_list: Vec<serde_json::Value> = tones
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "id": t.id,
-                "name": t.name,
-                "description": t.description,
+            .collect();
+        let tone_list: Vec<serde_json::Value> = tones
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "name": t.name,
+                    "description": t.description,
+                })
             })
+            .collect();
+        serde_json::json!({
+            "personas": persona_list,
+            "tones": tone_list,
         })
-        .collect();
-
-    let output = serde_json::json!({
-        "personas": persona_list,
-        "tones": tone_list,
     });
 
     SlashCommandResponse {
@@ -4925,7 +5134,15 @@ pub async fn catalog_view_response() -> SlashCommandResponse {
             };
         }
     };
-    let entries = crate::catalog::list(&home);
+    let entries = match crate::catalog::list(&home) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return SlashCommandResponse {
+                accepted: false,
+                output: Some(format!("Catalog discovery failed: {error}")),
+            };
+        }
+    };
     if entries.is_empty() {
         return SlashCommandResponse {
             accepted: true,
@@ -4935,7 +5152,7 @@ pub async fn catalog_view_response() -> SlashCommandResponse {
         };
     }
     let mut out = format!("Catalog agents ({}):\n\n", entries.len());
-    for entry in &entries {
+    for entry in entries.iter() {
         out.push_str(&format!(
             "  {:<32} {}\n    {}\n\n",
             entry.id, entry.domain, entry.description
@@ -4961,12 +5178,6 @@ pub async fn catalog_install_response() -> SlashCommandResponse {
 }
 
 pub async fn catalog_remove_response(id: &str) -> SlashCommandResponse {
-    if id.contains('/') || id.contains('\\') || id.contains("..") || id.contains('\0') {
-        return SlashCommandResponse {
-            accepted: false,
-            output: Some("Invalid agent ID: path traversal rejected".into()),
-        };
-    }
     let home = match crate::paths::omegon_home() {
         Ok(h) => h,
         Err(e) => {
@@ -4976,30 +5187,14 @@ pub async fn catalog_remove_response(id: &str) -> SlashCommandResponse {
             };
         }
     };
-    let catalog_dir = home.join("catalog");
-    let entries = crate::catalog::list(&home);
-    match entries.iter().find(|e| e.id == id) {
-        Some(entry) => {
-            if !entry.bundle_dir.starts_with(&catalog_dir) {
-                return SlashCommandResponse {
-                    accepted: false,
-                    output: Some("Refusing to remove agent outside catalog directory".into()),
-                };
-            }
-            match std::fs::remove_dir_all(&entry.bundle_dir) {
-                Ok(()) => SlashCommandResponse {
-                    accepted: true,
-                    output: Some(format!("Removed catalog agent '{id}'")),
-                },
-                Err(e) => SlashCommandResponse {
-                    accepted: false,
-                    output: Some(format!("Failed to remove: {e}")),
-                },
-            }
-        }
-        None => SlashCommandResponse {
+    match crate::catalog::remove(&home, id) {
+        Ok(()) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!("Removed catalog agent '{id}'")),
+        },
+        Err(error) => SlashCommandResponse {
             accepted: false,
-            output: Some(format!("Catalog agent '{id}' not found")),
+            output: Some(format!("Failed to remove catalog agent: {error}")),
         },
     }
 }
@@ -5121,8 +5316,14 @@ pub async fn vault_init_policy_response() -> SlashCommandResponse {
 
 pub async fn cleave_status_response(
     runtime_state: &mut InteractiveAgentState,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
-    match runtime_state.bus.dispatch_command("cleave", "status") {
+    match dispatch_control_feature_command(
+        &mut runtime_state.bus,
+        "cleave",
+        "status",
+        invocation_scope,
+    ) {
         omegon_traits::CommandResult::Display(text) => SlashCommandResponse {
             accepted: true,
             output: Some(text),
@@ -5141,11 +5342,14 @@ pub async fn cleave_status_response(
 pub async fn cleave_cancel_child_response(
     runtime_state: &mut InteractiveAgentState,
     label: &str,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
-    match runtime_state
-        .bus
-        .dispatch_command("cleave", &format!("cancel {label}"))
-    {
+    match dispatch_control_feature_command(
+        &mut runtime_state.bus,
+        "cleave",
+        &format!("cancel {label}"),
+        invocation_scope,
+    ) {
         omegon_traits::CommandResult::Display(text) => SlashCommandResponse {
             accepted: true,
             output: Some(text),
@@ -5163,8 +5367,14 @@ pub async fn cleave_cancel_child_response(
 
 pub async fn delegate_status_response(
     runtime_state: &mut InteractiveAgentState,
+    invocation_scope: &crate::invocation_service::InvocationScope,
 ) -> SlashCommandResponse {
-    match runtime_state.bus.dispatch_command("delegate", "status") {
+    match dispatch_control_feature_command(
+        &mut runtime_state.bus,
+        "delegate",
+        "status",
+        invocation_scope,
+    ) {
         omegon_traits::CommandResult::Display(text) => SlashCommandResponse {
             accepted: true,
             output: Some(text),
@@ -5178,6 +5388,23 @@ pub async fn delegate_status_response(
             output: Some("Delegate feature is unavailable.".to_string()),
         },
     }
+}
+
+fn dispatch_control_feature_command(
+    bus: &mut crate::bus::EventBus,
+    name: &str,
+    args: &str,
+    invocation_scope: &crate::invocation_service::InvocationScope,
+) -> omegon_traits::CommandResult {
+    let call_id = format!("control-command:{}", uuid::Uuid::new_v4());
+    bus.invoke_command(name, &call_id, args, invocation_scope.clone(), None)
+        .unwrap_or_else(|denial| {
+            omegon_traits::CommandResult::Display(format!(
+                "{}: {}",
+                denial.code.as_str(),
+                denial.message
+            ))
+        })
 }
 
 pub(crate) fn format_auth_status(status: &auth::AuthStatus) -> String {
@@ -5252,6 +5479,74 @@ pub(crate) fn format_auth_status(status: &auth::AuthStatus) -> String {
 mod tests {
     use super::*;
 
+    struct ControlCommandFeature;
+
+    #[async_trait::async_trait]
+    impl omegon_traits::Feature for ControlCommandFeature {
+        fn name(&self) -> &str {
+            "control-command-test"
+        }
+
+        fn commands(&self) -> Vec<omegon_traits::CommandDefinition> {
+            vec![omegon_traits::CommandDefinition {
+                name: "control_test".into(),
+                description: "control command lease test".into(),
+                subcommands: vec![],
+                availability: omegon_traits::CommandAvailability::ALL,
+                safety: omegon_traits::CommandSafety::READ_ONLY,
+                surface: Default::default(),
+            }]
+        }
+
+        fn handle_command(&mut self, name: &str, _args: &str) -> omegon_traits::CommandResult {
+            if name == "control_test" {
+                omegon_traits::CommandResult::Handled
+            } else {
+                omegon_traits::CommandResult::NotHandled
+            }
+        }
+    }
+
+    #[test]
+    fn tui_control_feature_bridge_enforces_operator_lease_admission() {
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(ControlCommandFeature));
+        bus.finalize();
+        let model_scope = crate::invocation_service::InvocationScope {
+            surface: omegon_traits::RuntimeSurface::Tui,
+            ..Default::default()
+        };
+        let denied = dispatch_control_feature_command(&mut bus, "control_test", "", &model_scope);
+        assert!(matches!(
+            denied,
+            omegon_traits::CommandResult::Display(message)
+                if message.starts_with("invocation:rbac_denied:")
+        ));
+
+        let operator_scope = crate::invocation_service::InvocationScope {
+            principal: "tui-operator".into(),
+            principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+            surface: omegon_traits::RuntimeSurface::Tui,
+            ..Default::default()
+        };
+        assert!(matches!(
+            dispatch_control_feature_command(&mut bus, "control_test", "", &operator_scope,),
+            omegon_traits::CommandResult::Handled
+        ));
+
+        let web_scope = crate::invocation_service::InvocationScope {
+            principal: "web-operator".into(),
+            principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+            surface: omegon_traits::RuntimeSurface::Web,
+            ..Default::default()
+        };
+        assert!(matches!(
+            dispatch_control_feature_command(&mut bus, "control_test", "", &web_scope),
+            omegon_traits::CommandResult::Display(message)
+                if message.starts_with("invocation:unsupported_surface:")
+        ));
+    }
+
     #[tokio::test]
     async fn active_harness_dispatch_responds_without_waiting_for_inference() {
         let temp = tempfile::tempdir().unwrap();
@@ -5296,6 +5591,46 @@ mod tests {
             settings::ThinkingLevel::High
         );
         blocked_worker.abort();
+    }
+
+    #[tokio::test]
+    async fn active_harness_preserves_non_tui_control_surface_on_handoff() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(temp.path()).unwrap());
+        let handles = crate::runtime_state::RuntimeStateHandles::default();
+        let context = HarnessControlContext {
+            shared_settings: &settings,
+            secrets: &secrets,
+            cwd: temp.path(),
+            dashboard_handles: &handles,
+            route_controller: None,
+        };
+        let (events_tx, _) = broadcast::channel(8);
+
+        let result = execute_active_harness_command(
+            &context,
+            crate::operator_commands::OperatorCommand::ExecuteControlFrom {
+                request: ControlRequest::TreeView {
+                    args: "status".into(),
+                },
+                respond_to: None,
+                surface: omegon_traits::RuntimeSurface::Ipc,
+            },
+            &events_tx,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            ActiveHarnessCommandResult::Unsupported(
+                crate::operator_commands::OperatorCommand::ExecuteControlFrom {
+                    surface: omegon_traits::RuntimeSurface::Ipc,
+                    ..
+                }
+            )
+        ));
     }
 
     #[test]
@@ -5991,11 +6326,20 @@ mod context_compaction_tests {
         conversation.intent.stats.turns = 99;
         InteractiveAgentState {
             bus: crate::bus::EventBus::new(),
+            context_service: Arc::new(crate::features::context::ContextProvider::new(
+                crate::features::context::SharedContextMetrics::new(),
+                crate::features::context::new_shared_command_tx(),
+            )),
             context_manager: crate::context::ContextManager::new(String::new(), Vec::new()),
             conversation,
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(
                 std::path::Path::new("."),
             ),
+            work_snapshot: None,
+            behavior_policy: None,
+            memory_binding: Default::default(),
+            context_compaction:
+                crate::context_compaction_service::ContextCompactionBinding::direct_for_test(),
         }
     }
 
@@ -6007,9 +6351,15 @@ mod context_compaction_tests {
         let cwd = tempfile::tempdir().unwrap().keep();
         let secrets =
             std::sync::Arc::new(omegon_secrets::SecretsManager::new(&cwd.join("secrets")).unwrap());
+        let session_id = crate::session::allocate_session_id();
         InteractiveAgentHost {
-            session_id: crate::session::allocate_session_id(),
+            session_view_binding: crate::session_consumers::SessionViewBinding::new(
+                cwd.join(format!("{session_id}.json")),
+                session_id.clone(),
+            ),
+            session_id,
             instance_id: "test-instance".into(),
+            runtime_ownership: None,
             context_metrics: crate::features::context::SharedContextMetrics::new(),
             cwd: cwd.clone(),
             secrets,
@@ -6042,6 +6392,7 @@ mod context_compaction_tests {
                 admission: crate::workspace::types::AdmissionOutcome::GrantedMutable,
             },
             runtime_generation: 1,
+            git_binding: Default::default(),
         }
     }
 
@@ -6058,14 +6409,40 @@ mod context_compaction_tests {
     }
 
     #[tokio::test]
+    async fn context_request_uses_typed_read_only_service() {
+        let mut state = test_runtime_state_with_evictable_context();
+
+        let response = context_request_response(&mut state, "session_state", "current work").await;
+
+        assert!(response.accepted);
+        let output = response.output.expect("context response");
+        assert!(output.contains("Retrieved 1 supported context pack"));
+        assert!(output.contains("Session State"));
+        assert!(
+            !state
+                .bus
+                .has_tool(crate::tool_registry::context::REQUEST_CONTEXT)
+        );
+    }
+
+    #[tokio::test]
     async fn manual_context_compact_emits_no_payload_diagnostic() {
         let mut state = InteractiveAgentState {
             bus: crate::bus::EventBus::new(),
+            context_service: Arc::new(crate::features::context::ContextProvider::new(
+                crate::features::context::SharedContextMetrics::new(),
+                crate::features::context::new_shared_command_tx(),
+            )),
             context_manager: crate::context::ContextManager::new(String::new(), Vec::new()),
             conversation: crate::conversation::ConversationState::new(),
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(
                 std::path::Path::new("."),
             ),
+            work_snapshot: None,
+            behavior_policy: None,
+            memory_binding: Default::default(),
+            context_compaction:
+                crate::context_compaction_service::ContextCompactionBinding::direct_for_test(),
         };
         let mut agent = test_agent();
         let settings = crate::settings::shared("test:model");
@@ -6074,8 +6451,15 @@ mod context_compaction_tests {
         ));
         let (events_tx, mut events_rx) = broadcast::channel(8);
 
-        let response =
-            context_compact_response(&mut state, &mut agent, &settings, &bridge, &events_tx).await;
+        let response = context_compact_response(
+            &mut state,
+            &mut agent,
+            &settings,
+            &bridge,
+            &events_tx,
+            &crate::invocation_service::InvocationScope::default(),
+        )
+        .await;
 
         assert!(response.accepted);
         let event = events_rx.recv().await.unwrap();
@@ -6117,8 +6501,15 @@ mod context_compaction_tests {
         }) as Box<dyn LlmBridge>));
         let (events_tx, mut events_rx) = broadcast::channel(8);
 
-        let response =
-            context_compact_response(&mut state, &mut agent, &settings, &bridge, &events_tx).await;
+        let response = context_compact_response(
+            &mut state,
+            &mut agent,
+            &settings,
+            &bridge,
+            &events_tx,
+            &crate::invocation_service::InvocationScope::default(),
+        )
+        .await;
 
         assert!(response.accepted, "{response:?}");
         let first = events_rx.recv().await.unwrap();

@@ -1,0 +1,99 @@
+schema_version = 1
+
+kernel_sources = [
+  "core/crates/omegon/src/capability_admission.rs",
+  "core/crates/omegon/src/contribution_graph.rs",
+  "core/crates/omegon/src/invocation_service.rs",
+  "core/crates/omegon/src/service_generation.rs",
+  "core/crates/omegon/src/session_authority.rs",
+]
+
+[[domains]]
+id = "plans-work"
+composition = "no-resource in-process service"
+maintenance_packages = ["styrene-work-model", "styrene-work-runtime"]
+kernel_tokens = ["work_aggregation", "styrene_work_model", "styrene_work_runtime"]
+architecture = { path = "docs/selective-kernel-decomposition.md", marker = "service:work-snapshot" }
+absence = { path = "core/crates/omegon/src/plan.rs", test = "absent_work_service_keeps_session_plan_without_scanning_repository" }
+degradation = { path = "core/crates/omegon/src/features/work_aggregation.rs", test = "absent_repository_sources_publish_an_empty_degraded_snapshot" }
+public = { status = "not-applicable", reason = "Repository-work aggregation preserves existing plan commands and wire shapes; absence changes no public syntax or durable contract." }
+
+[[domains]]
+id = "behavior-policy"
+composition = "no-resource in-process service"
+maintenance_packages = []
+kernel_tokens = ["behavior_policy", "BehaviorPolicyBinding", "DefaultBehaviorPolicy"]
+architecture = { path = "docs/selective-kernel-decomposition.md", marker = "stateless behavior-policy service" }
+absence = { path = "core/crates/omegon/src/features/behavior_policy.rs", test = "behavior_policy_absence_is_none_without_fabricated_identity" }
+degradation = { path = "core/crates/omegon/src/contribution_graph.rs", test = "optional_dependency_warning_preserves_graph_and_errors_still_reject" }
+public = { status = "not-applicable", reason = "Behavior policy is advisory internal loop policy; the lane preserves commands, configuration, schemas, and frontend wire shapes." }
+
+[[domains]]
+id = "codescan"
+composition = "managed in-process service"
+maintenance_packages = ["omegon-codescan"]
+kernel_tokens = ["codescan_service", "omegon_codescan", "ScanCache", "Indexer"]
+architecture = { path = "docs/codebase-search.md", marker = "optional managed codescan service" }
+absence = { path = "core/crates/omegon/src/codescan_service.rs", test = "optional_absence_finalizes_and_captures_no_handle" }
+degradation = { path = "core/crates/omegon/src/tools/codebase_search.rs", test = "unavailable_service_keeps_tools_declared_and_returns_typed_evidence" }
+public = { status = "documented", path = "site/src/pages/docs/index.astro", marker = "typed unavailability if its optional managed service cannot start" }
+
+[[domains]]
+id = "lifecycle-openspec"
+composition = "managed in-process service"
+maintenance_packages = ["omegon-opsx"]
+kernel_tokens = ["lifecycle_service", "omegon_opsx", "OpenSpecRepository", "JsonFileStore"]
+architecture = { path = "docs/selective-kernel-decomposition.md", marker = "lifecycle/OpenSpec as one revisioned managed repository" }
+absence = { path = "core/crates/omegon/src/lifecycle_campaign.rs", test = "lifecycle_campaign_absence_is_typed_and_unrelated_event_bus_continues" }
+degradation = { path = "core/crates/omegon/src/lifecycle_service.rs", test = "conflicting_openspec_roots_reject_readiness" }
+public = { status = "documented", path = "site/src/pages/docs/openspec.astro", marker = "optional managed lifecycle service" }
+
+[[domains]]
+id = "memory"
+composition = "managed in-process service"
+maintenance_packages = ["omegon-memory"]
+kernel_tokens = ["memory_service", "omegon_memory", "MemoryBackend"]
+architecture = { path = "docs/project-memory.md", marker = "Managed production consumers" }
+absence = { path = "core/crates/omegon/src/memory_campaign.rs", test = "memory_campaign_typed_absence_preserves_tools_context_and_events" }
+degradation = { path = "core/crates/omegon/src/memory_service.rs", test = "a_missing_global_path_degrades_locally_without_creation" }
+public = { status = "documented", path = "site/src/pages/docs/memory.astro", marker = "Memory is an optional managed service" }
+
+[[domains]]
+id = "context-compaction"
+composition = "managed in-process service"
+maintenance_packages = []
+kernel_tokens = ["context_compaction_service", "ContextCompactionBinding"]
+architecture = { path = "docs/selective-kernel-decomposition.md", marker = "context/compaction planning as an optional managed" }
+absence = { path = "core/crates/omegon/src/context_compaction_service.rs", test = "absent_binding_is_typed_unavailable" }
+degradation = { path = "core/crates/omegon/src/context_compaction_service.rs", test = "published_handle_keeps_generation_and_settles_strict_worker" }
+public = { status = "documented", path = "site/src/pages/docs/memory.astro", marker = "managed context/compaction planner" }
+
+[[domains]]
+id = "git"
+composition = "managed in-process service"
+maintenance_packages = ["omegon-git"]
+kernel_tokens = ["git_service", "omegon_git", "RepoModel"]
+architecture = { path = "docs/selective-kernel-decomposition.md", marker = "Git as the final task-6.1 managed service" }
+absence = { path = "core/crates/omegon/src/git_service.rs", test = "absence_is_typed_and_does_not_discover" }
+degradation = { path = "core/crates/omegon/src/git_service.rs", test = "exact_generation_commits_and_stale_handle_is_denied" }
+public = { status = "documented", path = "site/src/pages/docs/cleave.astro", marker = "managed Git service" }
+
+[[domains]]
+id = "dynamic-contributions"
+composition = "out-of-process contribution adapters"
+maintenance_packages = ["omegon-extension", "rmcp"]
+kernel_tokens = ["contribution_lifecycle", "ExtensionPollingHandle", "RunningService"]
+architecture = { path = "docs/selective-kernel-decomposition.md", marker = "metadata-only candidate inventory and generation owner" }
+absence = { path = "core/crates/omegon/src/contribution_lifecycle.rs", test = "publication_rejection_stale_generation_and_optional_absence_are_local" }
+degradation = { path = "core/crates/omegon/src/contribution_lifecycle.rs", test = "dynamic_transport_matrix_rejects_before_probe_without_trust" }
+public = { status = "documented", path = "site/src/pages/docs/extensions.astro", marker = "failure preserves the previously accepted graph" }
+
+[[domains]]
+id = "shipped-content"
+composition = "boot-only content pack"
+maintenance_packages = ["omegon-skills"]
+kernel_tokens = ["content_pack", "omegon_skills", "ContentPack"]
+architecture = { path = "docs/binary-composition-and-kernel-admission.md", marker = "Shipped content-pack boundary" }
+absence = { path = "core/crates/omegon/src/prompt.rs", test = "absent_pack_retains_only_constitutional_lex" }
+degradation = { path = "core/crates/omegon/src/content_pack.rs", test = "corruption_and_incompatibility_are_pack_local_failures" }
+public = { status = "documented", path = "site/src/pages/docs/plugins.astro", marker = "retains its six constitutional host axioms" }

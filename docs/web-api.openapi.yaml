@@ -275,7 +275,10 @@ paths:
         Submit a renderer-neutral action against the live session. The response
         is always a `UiActionOutcomeEnvelope`; the HTTP status reflects the
         disposition. Only `schema_version: 1` and `session_id: "default"` are
-        currently accepted.
+        currently accepted. Acceptance means Web/runtime ingress received the
+        action; it does not prove that prompt admission or interruption is
+        already durable, and cancellation is not terminal closure. Clients
+        reconcile from streamed runtime queue and lifecycle state.
       requestBody:
         required: true
         content:
@@ -284,7 +287,7 @@ paths:
               $ref: "#/components/schemas/WebActionRequest"
       responses:
         "202":
-          description: Action accepted and queued.
+          description: Action accepted into Web/runtime ingress for subsequent admission.
           content:
             application/json:
               schema:

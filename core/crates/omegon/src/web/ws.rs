@@ -75,6 +75,7 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Send initial state snapshot
+    super::api::refresh_lifecycle(&state.handles).await;
     let snapshot = build_snapshot(&state);
     let init_msg = snapshot_message(snapshot);
     let snapshot_json = init_msg.to_string();
@@ -93,6 +94,7 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
     let mut events_rx = state.events_tx.subscribe();
     let command_tx = state.command_tx.clone();
     let state_for_cmds = state.clone();
+    let state_for_events = state.clone();
 
     // Channel for request_snapshot → send_task
     let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel::<Value>(4);
@@ -111,10 +113,22 @@ async fn handle_socket(socket: WebSocket, state: WebState) {
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            // Slow client — skip missed events, send a notification
                             tracing::debug!("WebSocket client lagged by {n} events");
-                            let warning = json!({"type": "system_notification", "message": format!("Skipped {n} events (slow connection)")});
-                            let _ = ws_tx.send(Message::Text(warning.to_string().into())).await;
+                            while events_rx.try_recv().is_ok() {}
+                            state_for_events.reconcile_semantic_session();
+                            super::api::refresh_lifecycle(&state_for_events.handles).await;
+                            let reconciliation = snapshot_message(build_snapshot(&state_for_events));
+                            if ws_tx.send(Message::Text(reconciliation.to_string().into())).await.is_err() {
+                                break;
+                            }
+                            let surfaces = json!({
+                                "type": "surface_snapshot",
+                                "event_name": "surface.snapshot",
+                                "data": super::surfaces::project_web_surfaces(&state_for_events),
+                            });
+                            if ws_tx.send(Message::Text(surfaces.to_string().into())).await.is_err() {
+                                break;
+                            }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
@@ -484,33 +498,40 @@ async fn handle_client_command(
                     .await;
                 return;
             }
+            let cwd = state.workspace_root.as_path();
             let response = match cmd_type {
                 "prompts_list" => serde_json::json!({
                     "type": "control_result",
                     "method": cmd_type,
                     "accepted": true,
-                    "prompts": crate::prompts::list_structured().unwrap_or_default(),
+                    "prompts": crate::prompts::with_list_for_project(cwd, |prompts| prompts.to_vec()),
                 }),
                 "prompts_get" => match cmd
                     .get("name")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                 {
-                    Some(name) => match crate::prompts::get_prompt(name) {
-                        Ok((manifest, body, path)) => serde_json::json!({
-                            "type": "control_result",
-                            "method": cmd_type,
-                            "accepted": true,
-                            "name": name,
-                            "id": manifest.id,
-                            "title": manifest.title,
-                            "description": manifest.description,
-                            "tags": manifest.tags,
-                            "aliases": manifest.aliases,
-                            "safety": crate::prompts::safety_verdict(&body),
-                            "body": body,
-                            "path": path.display().to_string(),
-                        }),
+                    Some(name) => match crate::prompts::with_prompt_for_project(
+                        cwd,
+                        name,
+                        |manifest, body, path| {
+                            serde_json::json!({
+                                "type": "control_result",
+                                "method": cmd_type,
+                                "accepted": true,
+                                "name": name,
+                                "id": &manifest.id,
+                                "title": &manifest.title,
+                                "description": &manifest.description,
+                                "tags": &manifest.tags,
+                                "aliases": &manifest.aliases,
+                                "safety": crate::prompts::safety_verdict(body),
+                                "body": body,
+                                "path": path.display().to_string(),
+                            })
+                        },
+                    ) {
+                        Ok(response) => response,
                         Err(err) => serde_json::json!({
                             "type": "control_result",
                             "method": cmd_type,
@@ -530,16 +551,22 @@ async fn handle_client_command(
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                 {
-                    Some(name) => match crate::prompts::get_prompt(name) {
-                        Ok((_manifest, body, path)) => serde_json::json!({
-                            "type": "control_result",
-                            "method": cmd_type,
-                            "accepted": true,
-                            "action": "preview",
-                            "safety": crate::prompts::safety_verdict(&body),
-                            "prompt": body,
-                            "path": path.display().to_string(),
-                        }),
+                    Some(name) => match crate::prompts::with_prompt_for_project(
+                        cwd,
+                        name,
+                        |_manifest, body, path| {
+                            serde_json::json!({
+                                "type": "control_result",
+                                "method": cmd_type,
+                                "accepted": true,
+                                "action": "preview",
+                                "safety": crate::prompts::safety_verdict(body),
+                                "prompt": body,
+                                "path": path.display().to_string(),
+                            })
+                        },
+                    ) {
+                        Ok(response) => response,
                         Err(err) => serde_json::json!({
                             "type": "control_result",
                             "method": cmd_type,
@@ -2156,6 +2183,7 @@ async fn handle_client_command(
             }
         }
         "request_snapshot" => {
+            super::api::refresh_lifecycle(&state.handles).await;
             let snapshot = build_snapshot(state);
             let _ = snapshot_tx.send(snapshot_message(snapshot)).await;
         }

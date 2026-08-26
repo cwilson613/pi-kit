@@ -75,7 +75,10 @@ The `details` field includes `"native": true` when dispatch handles the command.
 ### tools/codebase_search.rs
 | Binary | Call | When | Status |
 |--------|------|------|--------|
-| *(none)* | HEAD check uses libgit2 `Repository::discover()` | Background reindex | Native |
+| *(none)* | HEAD freshness uses libgit2 `Repository::discover()` | Managed search/index/context request | Native |
+
+The generation-owned worker in `codescan_service.rs` performs freshness checks synchronously.
+Codescan does not launch a detached reindex task.
 
 ### tools/view.rs
 | Binary | Call | When | Status |

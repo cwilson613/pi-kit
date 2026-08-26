@@ -13,7 +13,19 @@ related:
 
 ## Overview
 
+This document records the historical schema-v1 snapshot hardening. The current
+semantic persistence and one-way import contract is
+[[runtime-session-semantic-protocol]]; full and materialized-mixed sessions no
+longer require or rewrite this pair.
+
 Improve upgrade/restart continuity by making session persistence crash-safe and version-aware. Current session save writes metadata and snapshot JSON with plain fs::write and snapshots lack explicit schema/version metadata, so interrupted updates or schema drift can cause resume failure and fresh-session fallback. This node tracks the 0.23.9 design for atomic session/meta writes and compatible snapshot metadata.
+
+This whole-file snapshot remains an LLM-facing compatibility projection, not
+durable queue, turn, cancellation, invocation, or terminal authority. Slice 1
+adds a separate adjacent append-only stream and reducer cache under
+[[runtime-session-semantic-protocol]]. Existing snapshot history is not converted
+into fictional semantic facts, and the current snapshot schema remains stable
+for normal and maintenance readers during that migration.
 
 ## Research
 

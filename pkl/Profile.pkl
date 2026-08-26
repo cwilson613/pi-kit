@@ -40,6 +40,13 @@ fallbackProviders: Listing<String>?
 defaultPosture: ("explorator"|"fabricator"|"architect"|"devastator")?
 
 class Permissions {
+  /// Stable dynamic contribution IDs explicitly trusted to execute with host authority.
+  /// Forms include extension:<manifest-name>, plugin:<directory-name>, mcp:project,
+  /// and mcp:acp-client. This is separate from trustedDirectories and does not
+  /// grant tool capabilities or verified confinement. The identity grant persists
+  /// across source updates; each runtime permit is separately source-digest-bound.
+  trustedContributionCode: Listing<String>?
+
   /// Directories outside the workspace the agent can access without
   /// per-operation confirmation. Paths are expanded at runtime (~ → $HOME).
   trustedDirectories: Listing<String>?

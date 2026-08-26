@@ -7,6 +7,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::contribution_loading::GuardedContributionDirectory;
+
+const MAX_WORKFLOW_BYTES: usize = 1024 * 1024;
+const MAX_WORKFLOW_ENTRIES: usize = 10_000;
+
 /// A parsed workflow template.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkflowTemplate {
@@ -44,10 +49,9 @@ pub struct PhaseConfig {
 }
 
 impl WorkflowTemplate {
-    /// Parse a workflow template from a TOML file.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let template: Self = toml::from_str(&content)?;
+    fn parse(bytes: &[u8]) -> anyhow::Result<Self> {
+        let content = std::str::from_utf8(bytes)?;
+        let template: Self = toml::from_str(content)?;
         Ok(template)
     }
 
@@ -67,37 +71,125 @@ impl WorkflowTemplate {
 
 /// Scan `.omegon/workflows/` for TOML templates. Returns the first valid one found
 /// (sorted alphabetically by filename).
-pub fn discover_workflow(cwd: &Path) -> Option<WorkflowTemplate> {
-    let workflows_dir = cwd.join(".omegon").join("workflows");
-    if !workflows_dir.is_dir() {
-        return None;
+pub fn with_discovered_workflow<R>(
+    cwd: &Path,
+    publish: impl FnOnce(Option<WorkflowTemplate>) -> R,
+) -> R {
+    let home = crate::paths::omegon_home();
+    let admitted = match home.and_then(|home| discover_workflow_with_home(cwd, &home)) {
+        Ok(template) => template,
+        Err(error) => {
+            tracing::warn!(error = %error, "workflow discovery failed closed");
+            None
+        }
+    };
+    match admitted {
+        Some(admitted) => admitted.publish(|template| publish(Some(template))),
+        None => publish(None),
     }
-    let mut entries: Vec<_> = std::fs::read_dir(&workflows_dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "toml"))
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
-        match WorkflowTemplate::load(&entry.path()) {
+}
+
+struct AdmittedWorkflow {
+    template: WorkflowTemplate,
+    _admission: Option<GuardedContributionDirectory>,
+}
+
+impl AdmittedWorkflow {
+    fn publish<R>(self, publish: impl FnOnce(WorkflowTemplate) -> R) -> R {
+        let Self {
+            template,
+            _admission,
+        } = self;
+        publish(template)
+    }
+}
+
+#[cfg(unix)]
+fn discover_workflow_with_home(
+    cwd: &Path,
+    home_path: &Path,
+) -> anyhow::Result<Option<AdmittedWorkflow>> {
+    let Some(admission) = GuardedContributionDirectory::open(
+        cwd,
+        &[b".omegon", b"workflows"],
+        home_path,
+        omegon_maintenance_contracts::ContributionKind::Workflow,
+        "project",
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut entries = admission.entry_names(MAX_WORKFLOW_ENTRIES)?;
+    entries.retain(|name| name.ends_with(b".toml"));
+    entries.sort();
+    for raw_name in entries {
+        if !admission.allows(&raw_name)? {
+            tracing::info!(path = %display_workflow_path(cwd, &raw_name), "excluded denied workflow template");
+            continue;
+        }
+        let display_path = display_workflow_path(cwd, &raw_name);
+        let Some(bytes) = admission.read_file(&raw_name, MAX_WORKFLOW_BYTES)? else {
+            continue;
+        };
+        match WorkflowTemplate::parse(&bytes) {
             Ok(t) => {
                 tracing::info!(
                     workflow = %t.workflow.name,
-                    path = %entry.path().display(),
+                    path = %display_path,
                     "loaded workflow template"
                 );
-                return Some(t);
+                return Ok(Some(AdmittedWorkflow {
+                    template: t,
+                    _admission: Some(admission),
+                }));
             }
             Err(e) => {
                 tracing::warn!(
-                    path = %entry.path().display(),
+                    path = %display_path,
                     error = %e,
                     "skipping invalid workflow template"
                 );
             }
         }
     }
+    Ok(discover_packed_workflow())
+}
+
+#[cfg(not(unix))]
+fn discover_workflow_with_home(
+    _cwd: &Path,
+    _home_path: &Path,
+) -> anyhow::Result<Option<AdmittedWorkflow>> {
+    Ok(discover_packed_workflow())
+}
+
+fn discover_packed_workflow() -> Option<AdmittedWorkflow> {
+    let pack = crate::content_pack::boot_pack()?;
+    for asset in pack.assets("workflow") {
+        match WorkflowTemplate::parse(&asset.bytes) {
+            Ok(template) => {
+                return Some(AdmittedWorkflow {
+                    template,
+                    _admission: None,
+                });
+            }
+            Err(error) => {
+                tracing::warn!(path = %asset.manifest.path, error = %error, "skipping invalid packed workflow template")
+            }
+        }
+    }
     None
+}
+
+#[cfg(unix)]
+fn display_workflow_path(cwd: &Path, raw_name: &[u8]) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    cwd.join(".omegon")
+        .join("workflows")
+        .join(std::ffi::OsStr::from_bytes(raw_name))
+        .display()
+        .to_string()
 }
 
 /// A design-tree node that is ready for autonomous dispatch.
@@ -108,32 +200,28 @@ pub struct ReadyNode {
     pub priority: Option<u8>,
 }
 
-/// Query the design tree for nodes that are ready to implement:
-/// status == Decided, all dependencies Implemented, not archived.
-/// Reads directly from filesystem — no bus or Feature access required.
-pub fn query_ready_nodes(cwd: &Path) -> Vec<ReadyNode> {
-    use crate::lifecycle::{design, types::NodeStatus};
-
-    let docs_dir = cwd.join("docs");
-    if !docs_dir.is_dir() {
-        return Vec::new();
-    }
-    let nodes = design::scan_design_docs(&docs_dir);
-    nodes
-        .values()
-        .filter(|n| !matches!(n.status, NodeStatus::Archived))
-        .filter(|n| matches!(n.status, NodeStatus::Decided))
-        .filter(|n| {
-            n.dependencies.iter().all(|dep_id| {
-                nodes
-                    .get(dep_id)
-                    .is_some_and(|d| matches!(d.status, NodeStatus::Implemented))
-            })
+/// Query the managed design repository for nodes ready for autonomous dispatch.
+pub async fn query_ready_nodes(
+    lifecycle: &crate::lifecycle_service::LifecycleBinding,
+) -> Vec<ReadyNode> {
+    let Ok(response) = lifecycle
+        .invoke(crate::lifecycle_service::LifecycleRequestV1::QueryDesign {
+            query: crate::lifecycle_service::LifecycleReadQueryV1::Ready,
+            cancellation: tokio_util::sync::CancellationToken::new(),
         })
-        .map(|n| ReadyNode {
-            id: n.id.clone(),
-            title: n.title.clone(),
-            priority: n.priority,
+        .await
+    else {
+        return Vec::new();
+    };
+    let crate::lifecycle_service::LifecyclePayloadV1::Ready(nodes) = response.payload else {
+        return Vec::new();
+    };
+    nodes
+        .into_iter()
+        .map(|node| ReadyNode {
+            id: node.id,
+            title: node.title,
+            priority: node.priority,
         })
         .collect()
 }
@@ -172,6 +260,8 @@ pub fn apply_phase_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::fs::File;
 
     const EXAMPLE_TOML: &str = r#"
 [workflow]
@@ -260,5 +350,199 @@ model = "ollama:llama3"
         assert_eq!(template.workflow.name, "bare");
         assert!(template.phases.implementing.is_some());
         assert!(template.phases.exploring.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_discovery_loads_first_valid_workflow() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        write_workflow(project.path(), "b.toml", "second");
+        write_workflow(project.path(), "a.toml", "first");
+
+        let workflow = discover_workflow_with_home(project.path(), home.path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(workflow.template.workflow.name, "first");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_discovery_excludes_exact_denied_basename() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        write_workflow(project.path(), "a.toml", "denied");
+        write_workflow(project.path(), "b.toml", "allowed");
+        deny_workflow(project.path(), home.path(), b"a.toml");
+
+        let workflow = discover_workflow_with_home(project.path(), home.path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(workflow.template.workflow.name, "allowed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_discovery_fails_closed_on_malformed_deny_state() {
+        use std::io::Write;
+
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        write_workflow(project.path(), "a.toml", "must-not-load");
+        let authority = initialize_workflow_scope(project.path(), home.path());
+        let state_path = home
+            .path()
+            .join("maintain/v1/deny")
+            .join(authority.to_hex())
+            .join("state.json");
+        let mut state = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(state_path)
+            .unwrap();
+        state.write_all(b"{not-json").unwrap();
+        state.sync_all().unwrap();
+
+        assert!(discover_workflow_with_home(project.path(), home.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_discovery_holds_lock_through_publication() {
+        use omegon_maintenance_contracts::{LockMode, MaintenanceStateV1, ProtocolLock};
+
+        let project = tempfile::tempdir().unwrap();
+        let home_path = tempfile::tempdir().unwrap();
+        write_workflow(project.path(), "a.toml", "published");
+        let admitted = discover_workflow_with_home(project.path(), home_path.path())
+            .unwrap()
+            .unwrap();
+        let authority = admitted._admission.as_ref().unwrap().scope_key();
+        let home = omegon_maintenance_contracts::open_secure_root(home_path.path()).unwrap();
+        let state = MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let lock_name = format!("contribution-{authority}.lock");
+
+        let template = admitted.publish(|template| {
+            assert!(
+                ProtocolLock::acquire_at(
+                    &state.locks,
+                    lock_name.as_bytes(),
+                    LockMode::Exclusive,
+                    false,
+                    true,
+                )
+                .is_err()
+            );
+            template
+        });
+        assert_eq!(template.workflow.name, "published");
+        assert!(
+            ProtocolLock::acquire_at(
+                &state.locks,
+                lock_name.as_bytes(),
+                LockMode::Exclusive,
+                false,
+                true,
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(unix)]
+    fn write_workflow(project: &Path, name: &str, workflow_name: &str) {
+        let directory = project.join(".omegon/workflows");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join(name),
+            format!("[workflow]\nname = \"{workflow_name}\"\n"),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn initialize_workflow_scope(
+        project: &Path,
+        home_path: &Path,
+    ) -> omegon_maintenance_contracts::AuthorityKey {
+        let home = omegon_maintenance_contracts::open_secure_root(home_path).unwrap();
+        let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let workflows = File::open(project.join(".omegon/workflows")).unwrap();
+        let parent = omegon_maintenance_contracts::path_identity(&workflows).unwrap();
+        state
+            .admit_contribution_scope(
+                omegon_maintenance_contracts::ContributionKind::Workflow,
+                "project",
+                &parent,
+                "initialize-test",
+                false,
+            )
+            .unwrap()
+            .scope_key
+    }
+
+    #[cfg(unix)]
+    fn deny_workflow(project: &Path, home_path: &Path, raw_name: &[u8]) {
+        use omegon_maintenance_contracts::{
+            AuthorityKey, ContributionKind, DenyRecordV1, DenyState, DenyStateV1, SCHEMA_VERSION,
+            derive_key, entry_key, open_secure_dir_at, replace_record_at,
+        };
+        use sha2::{Digest, Sha256};
+
+        let authority = initialize_workflow_scope(project, home_path);
+        let home = omegon_maintenance_contracts::open_secure_root(home_path).unwrap();
+        let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let deny_directory = open_secure_dir_at(&state.deny, authority.to_hex().as_bytes())
+            .unwrap()
+            .unwrap();
+        let kind = ContributionKind::Workflow;
+        let entry = entry_key(kind.as_str(), authority, raw_name);
+        let request_id = "00000000-0000-0000-0000-000000000001";
+        let record = DenyRecordV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny".into(),
+            record_id: derive_key(
+                "deny",
+                &[
+                    authority.as_bytes(),
+                    entry.as_bytes(),
+                    request_id.as_bytes(),
+                ],
+            ),
+            scope_key: authority,
+            contribution_kind: kind,
+            entry_key: entry,
+            raw_name_digest: AuthorityKey::from_bytes(Sha256::digest(raw_name).into()),
+            generation: 1,
+            state: DenyState::Denied,
+            request_id: request_id.into(),
+            created_at: "2026-08-17T00:00:00Z".into(),
+        };
+        let deny = DenyStateV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny_state".into(),
+            record_id: derive_key("deny-state", &[authority.as_bytes(), &1_u64.to_be_bytes()]),
+            scope_key: authority,
+            generation: 1,
+            entries: [(entry.to_hex(), record)].into(),
+        };
+        replace_record_at(&deny_directory, b"state.json", &deny, "deny-test").unwrap();
     }
 }

@@ -13,27 +13,35 @@
 //! Only one client may be connected at a time. A second connection while one
 //! is active is rejected with `IpcErrorCode::Busy`.
 
+#[cfg(unix)]
 pub mod connection;
 pub mod snapshot;
 pub mod wire;
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 
+#[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
+#[cfg(unix)]
 use tracing::{debug, info, warn};
 
-use omegon_traits::{AgentEvent, IpcEnvelope, IpcErrorCode};
+use omegon_traits::AgentEvent;
+#[cfg(unix)]
+use omegon_traits::{IpcEnvelope, IpcErrorCode};
 
-use crate::operator_commands::{OperatorCommand as TuiCommand, SharedCancel};
+use crate::operator_commands::OperatorCommand as TuiCommand;
 use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
 
+#[cfg(unix)]
 use connection::{ConnectionConfig, IpcConnection};
+#[cfg(unix)]
 use wire::encode_envelope;
 
 /// Configuration for the IPC server.
@@ -44,12 +52,16 @@ pub struct IpcServerConfig {
     pub cwd: String,
     pub started_at: String,
     pub server_instance_id: String,
-    pub session_id: String,
+    pub session_view_binding: crate::session_consumers::SessionViewBinding,
 }
 
 impl IpcServerConfig {
     /// Build from a project root directory. Socket lives at `{cwd}/.omegon/ipc.sock`.
-    pub fn from_cwd(cwd: &Path, omegon_version: &str, session_id: &str) -> Self {
+    pub fn from_cwd(
+        cwd: &Path,
+        omegon_version: &str,
+        session_view_binding: crate::session_consumers::SessionViewBinding,
+    ) -> Self {
         let socket_path = cwd.join(".omegon").join("ipc.sock");
         let started_at = chrono::Utc::now().to_rfc3339();
         let server_instance_id =
@@ -60,7 +72,7 @@ impl IpcServerConfig {
             cwd: cwd.to_string_lossy().to_string(),
             started_at,
             server_instance_id,
-            session_id: session_id.to_string(),
+            session_view_binding,
         }
     }
 }
@@ -74,30 +86,20 @@ pub fn start_ipc_server(
     events_tx: broadcast::Sender<AgentEvent>,
     command_tx: mpsc::Sender<TuiCommand>,
     shared_settings: crate::settings::SharedSettings,
-    shared_cancel: SharedCancel,
     cancel: CancellationToken,
 ) {
     crate::task_spawn::spawn_infra("ipc-server", async move {
-        run_server(
-            cfg,
-            handles,
-            events_tx,
-            command_tx,
-            shared_settings,
-            shared_cancel,
-            cancel,
-        )
-        .await
+        run_server(cfg, handles, events_tx, command_tx, shared_settings, cancel).await
     });
 }
 
+#[cfg(unix)]
 async fn run_server(
     cfg: IpcServerConfig,
     handles: DashboardHandles,
     events_tx: broadcast::Sender<AgentEvent>,
     command_tx: mpsc::Sender<TuiCommand>,
     shared_settings: crate::settings::SharedSettings,
-    shared_cancel: SharedCancel,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     // Clean up stale socket file from a previous run.
@@ -147,12 +149,11 @@ async fn run_server(
                                     cwd: cfg.cwd.clone(),
                                     started_at: cfg.started_at.clone(),
                                     server_instance_id: cfg.server_instance_id.clone(),
-                                    session_id: cfg.session_id.clone(),
+                                     session_view_binding: cfg.session_view_binding.clone(),
                                     handles: handles.clone(),
                                     events_tx: events_tx.clone(),
                                     command_tx: command_tx.clone(),
                                     shared_settings: shared_settings.clone(),
-                                    shared_cancel: shared_cancel.clone(),
                                     has_controller: has_controller.clone(),
                                 },
                             );
@@ -192,4 +193,16 @@ async fn run_server(
     let _ = std::fs::remove_file(&cfg.socket_path);
     debug!("IPC server stopped");
     Ok(())
+}
+
+#[cfg(not(unix))]
+async fn run_server(
+    _cfg: IpcServerConfig,
+    _handles: DashboardHandles,
+    _events_tx: broadcast::Sender<AgentEvent>,
+    _command_tx: mpsc::Sender<TuiCommand>,
+    _shared_settings: crate::settings::SharedSettings,
+    _cancel: CancellationToken,
+) -> anyhow::Result<()> {
+    anyhow::bail!("native IPC requires Unix domain sockets")
 }

@@ -363,6 +363,7 @@ fn event_name(ev: &IpcEventPayload) -> &'static str {
         IpcEventPayload::RuntimeQueueUpdated { .. } => "runtime.queue_updated",
         IpcEventPayload::HarnessChanged => "harness.changed",
         IpcEventPayload::StateChanged { .. } => "state.changed",
+        IpcEventPayload::StateReconciled { .. } => "state.reconciled",
         IpcEventPayload::SystemNotification { .. } => "system.notification",
         IpcEventPayload::SessionReset => "session.reset",
     }

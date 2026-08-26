@@ -8,11 +8,19 @@
 use async_trait::async_trait;
 use omegon_traits::{CommandDefinition, CommandResult, CommandSafety, Feature};
 
-pub struct PromptFeature;
+pub struct PromptFeature {
+    workspace_root: std::path::PathBuf,
+}
 
 impl PromptFeature {
     pub fn new() -> Self {
-        Self
+        Self::with_workspace_root(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        )
+    }
+
+    pub fn with_workspace_root(workspace_root: std::path::PathBuf) -> Self {
+        Self { workspace_root }
     }
 
     fn help() -> String {
@@ -32,13 +40,14 @@ impl PromptFeature {
         .join("\n")
     }
 
-    fn list() -> anyhow::Result<String> {
-        let prompts = crate::prompts::list_structured()?;
-        if prompts.is_empty() {
-            return Ok("No prompts found.".into());
-        }
-
-        Ok(Self::list_projection(&prompts).render_markdown())
+    fn list(&self) -> String {
+        crate::prompts::with_list_for_project(&self.workspace_root, |prompts| {
+            if prompts.is_empty() {
+                "No prompts found.".into()
+            } else {
+                Self::list_projection(prompts).render_markdown()
+            }
+        })
     }
 
     fn list_projection(
@@ -130,42 +139,54 @@ impl PromptFeature {
             .with_footer("Prompt IDs are data, not top-level slash commands. Use `/prompt preview <name>` for details.")
     }
 
-    fn get(name: &str, include_body: bool) -> anyhow::Result<String> {
-        let (manifest, body, path) = crate::prompts::get_prompt(name)?;
-        let safety = crate::prompts::safety_verdict(&body);
-        let title = manifest.title.as_deref().unwrap_or(name);
-        let mut out = format!(
-            "Prompt: {title}\nPath: {}\nSafety: {safety:?}\n",
-            path.display()
-        );
-        if let Some(description) = manifest.description.as_deref() {
-            out.push_str(&format!("Description: {description}\n"));
-        }
-        if !manifest.tags.is_empty() {
-            out.push_str(&format!("Tags: {}\n", manifest.tags.join(", ")));
-        }
-        if !manifest.aliases.is_empty() {
-            out.push_str(&format!("Aliases: {}\n", manifest.aliases.join(", ")));
-        }
-        if include_body {
-            out.push('\n');
-            out.push_str(&body);
-        }
-        Ok(out)
+    fn get(&self, name: &str, include_body: bool) -> anyhow::Result<String> {
+        crate::prompts::with_prompt_for_project(
+            &self.workspace_root,
+            name,
+            |manifest, body, path| {
+                let safety = crate::prompts::safety_verdict(body);
+                let title = manifest.title.as_deref().unwrap_or(name);
+                let mut out = format!(
+                    "Prompt: {title}\nPath: {}\nSafety: {safety:?}\n",
+                    path.display()
+                );
+                if let Some(description) = manifest.description.as_deref() {
+                    out.push_str(&format!("Description: {description}\n"));
+                }
+                if !manifest.tags.is_empty() {
+                    out.push_str(&format!("Tags: {}\n", manifest.tags.join(", ")));
+                }
+                if !manifest.aliases.is_empty() {
+                    out.push_str(&format!("Aliases: {}\n", manifest.aliases.join(", ")));
+                }
+                if include_body {
+                    out.push('\n');
+                    out.push_str(body);
+                }
+                out
+            },
+        )
     }
 
-    fn run(name: &str) -> anyhow::Result<String> {
-        let (_manifest, body, path) = crate::prompts::get_prompt(name)?;
-        let safety = crate::prompts::safety_verdict(&body);
-        if safety.is_blocked() {
-            anyhow::bail!("prompt is blocked by safety verdict: {safety:?}");
-        }
-        Ok(format!(
-            "Prompt resolved for preview/queue boundary.\nPath: {}\nSafety: {:?}\n\n{}",
-            path.display(),
-            safety,
-            body
-        ))
+    fn run(&self, name: &str) -> anyhow::Result<String> {
+        crate::prompts::with_prompt_for_project(
+            &self.workspace_root,
+            name,
+            |_manifest, body, path| {
+                let safety = crate::prompts::safety_verdict(body);
+                if safety.is_blocked() {
+                    return Err(anyhow::anyhow!(
+                        "prompt is blocked by safety verdict: {safety:?}"
+                    ));
+                }
+                Ok(format!(
+                    "Prompt resolved for preview/queue boundary.\nPath: {}\nSafety: {:?}\n\n{}",
+                    path.display(),
+                    safety,
+                    body
+                ))
+            },
+        )?
     }
 }
 
@@ -240,15 +261,17 @@ impl Feature for PromptFeature {
             let (subcommand, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
             let rest = rest.trim();
             match subcommand {
-                "list" => Self::list(),
-                "get" | "preview" if !rest.is_empty() => Self::get(rest, true),
-                "run" | "submit" if !rest.is_empty() => Self::run(rest),
-                "delete" if !rest.is_empty() => crate::prompts::delete_prompt(rest)
-                    .map(|scope| format!("Deleted {scope} prompt '{rest}'")),
+                "list" => Ok(self.list()),
+                "get" | "preview" if !rest.is_empty() => self.get(rest, true),
+                "run" | "submit" if !rest.is_empty() => self.run(rest),
+                "delete" if !rest.is_empty() => {
+                    crate::prompts::delete_prompt_for_project(&self.workspace_root, rest)
+                        .map(|scope| format!("Deleted {scope} prompt '{rest}'"))
+                }
                 "get" | "preview" | "run" | "submit" | "delete" => Err(anyhow::anyhow!(
                     "/prompt {subcommand} requires a prompt name"
                 )),
-                name => Self::get(name, true),
+                name => self.get(name, true),
             }
         };
 

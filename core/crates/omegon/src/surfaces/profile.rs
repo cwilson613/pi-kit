@@ -1,13 +1,34 @@
-use crate::settings::{ContextClass, Profile, ProfileSource, Settings, ThinkingLevel};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileDriftProjection {
     pub profile_label: String,
-    pub source: ProfileSource,
+    pub source: ProfileSourceProjection,
     pub dirty: bool,
     pub changed_count: usize,
     pub rows: Vec<ProfileDriftRow>,
     pub actions: Vec<ProfileDriftAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileSourceProjection {
+    pub kind: ProfileSourceKind,
+    pub path: Option<PathBuf>,
+    pub label: String,
+    pub display: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileSourceKind {
+    Project,
+    User,
+    BuiltInDefault,
+}
+
+impl std::fmt::Display for ProfileSourceProjection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.display)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,75 +68,10 @@ pub enum ProfileDriftAction {
     Apply,
 }
 
-impl ProfileDriftProjection {
-    pub fn from_profile_and_settings(
-        profile: &Profile,
-        source: ProfileSource,
-        settings: &Settings,
-    ) -> Self {
-        let mut rows = Vec::new();
-
-        if let Some(profile_thinking) = profile
-            .thinking_level
-            .as_deref()
-            .and_then(ThinkingLevel::parse)
-            && profile_thinking != settings.thinking
-        {
-            rows.push(ProfileDriftRow {
-                key: "thinking",
-                label: "Thinking",
-                profile_value: profile_thinking.as_str().to_string(),
-                runtime_value: settings.thinking.as_str().to_string(),
-                persistence: PersistenceSemantics::LiveOnly,
-                severity: DriftSeverity::Info,
-            });
-        }
-
-        if let Some(profile_class) = profile
-            .requested_context_class
-            .as_deref()
-            .and_then(ContextClass::parse)
-            && settings.requested_context_class != Some(profile_class)
-        {
-            rows.push(ProfileDriftRow {
-                key: "requestedContextClass",
-                label: "Context class",
-                profile_value: profile_class.short().to_lowercase(),
-                runtime_value: settings
-                    .requested_context_class
-                    .map(|class| class.short().to_lowercase())
-                    .unwrap_or_else(|| "track model".to_string()),
-                persistence: PersistenceSemantics::LiveOnly,
-                severity: DriftSeverity::Info,
-            });
-        }
-
-        let dirty = !rows.is_empty();
-        let actions = if dirty {
-            vec![
-                ProfileDriftAction::View,
-                ProfileDriftAction::Save,
-                ProfileDriftAction::Apply,
-            ]
-        } else {
-            vec![ProfileDriftAction::View]
-        };
-        let changed_count = rows.len();
-
-        Self {
-            profile_label: source.label().to_string(),
-            source,
-            dirty,
-            changed_count,
-            rows,
-            actions,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{ContextClass, Profile, ProfileSource, Settings, ThinkingLevel};
 
     fn source() -> ProfileSource {
         ProfileSource::BuiltInDefault

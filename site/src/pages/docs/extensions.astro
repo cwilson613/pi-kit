@@ -6,9 +6,9 @@ import { snippet } from "../../lib/snippets";
   <h1>Extensions</h1>
   <p>
     Extensions add tools, widgets, and integrations to Omegon without modifying
-    the core binary. They run as isolated processes, communicate via JSON-RPC 2.0
-    over stdio, and are crash-safe by design &mdash; an extension failure never takes
-    down Omegon.
+    the core binary. They run as separate processes, communicate via JSON-RPC 2.0
+    over stdio, and are crash-isolated from Omegon. Process separation is not a
+    security sandbox: native and current OCI extensions execute trusted code.
   </p>
   <!-- DIAGRAM:extension-isolation | Block diagram: Omegon core ← stdio JSON-RPC 2.0 → [Extension process]. Show process boundary, crash isolation, secret delivery via RPC handshake (not env vars), and optional TCP widget channel -->
 
@@ -16,8 +16,62 @@ import { snippet } from "../../lib/snippets";
   <pre><code>{snippet("cli.extension_install")}</code></pre>
   <p>
     Git URLs are cloned and built automatically when they contain a Rust project.
-    Local paths are symlinked for development. Registry entries can be discovered with
+    Local bundles are copied into Omegon's guarded extension root; rebuilding the
+    original checkout does not update the installed copy. Registry entries can be discovered with
     <code>omegon extension list --available</code> and <code>omegon extension search &lt;query&gt;</code>.
+  </p>
+
+  <h2>Trust extension code</h2>
+  <p>
+    Installation and enablement do not authorize code execution. Add the stable
+    contribution ID to the project or user profile only after reviewing the
+    extension. Omegon binds each runtime admission to the discovered source snapshot
+    and denies spawn if those bytes change before execution. The profile grant remains
+    identity-based across updates, so review newly installed bytes even when the ID is already trusted.
+  </p>
+  <pre><code>{`{
+  "permissions": {
+    "trustedContributionCode": ["extension:my-extension"]
+  }
+}`}</code></pre>
+  <p>
+    <code>trustedDirectories</code> controls workspace file access and does not trust
+    extension code. Requesting OCI execution also does not prove confinement; the
+    current extension container path still requires explicit trusted-code admission.
+  </p>
+
+  <h2>Readiness and lifecycle</h2>
+  <p>
+    Native extensions, MCP servers, and executable manifests first enter one metadata-only
+    inventory. Static discovery captures identity and a source digest without evaluating Pkl,
+    spawning or connecting, resolving secrets, or publishing tools. After trust admission, a
+    candidate remains unavailable while one absolute manifest deadline covers
+    initialization, tool discovery, configuration, and secret delivery. Omegon publishes a new
+    composition generation only after the complete graph passes readiness and parity checks;
+    failure preserves the previously accepted graph.
+  </p>
+  <p>
+    Transport failures consume a fixed generation-local restart budget with capped backoff.
+    Exhaustion places the extension in terminal quarantine instead of spawning indefinitely.
+    Host-owned Unix native process groups can report strict cleanup; OCI and other unowned
+    boundaries report best-effort cleanup. One generation owner performs rollback and shutdown
+    across extension, MCP, and manifest adapters. Use <code>/status</code> to inspect composition,
+    health, quarantine diagnostics, cleanup assurance, and compatibility-dispatch parity.
+  </p>
+
+  <h2>Invocation and HostActions</h2>
+  <p>
+    Extension tools and generic ACP extension calls execute through generation-bound leases.
+    Generic ACP calls use one conservative extension-owned transport capability because current
+    manifests do not declare effects per RPC method; Omegon does not infer read-only or mutating
+    safety from method names. Ambiguous transport loss after dispatch becomes unknown completion,
+    not an automatic replay.
+  </p>
+  <p>
+    Lease-less imperative HostActions are denied. A declarative HostAction requires a live parent
+    invocation, effects contained by that parent's admitted effects, and an exactly-once child
+    identity. Operator approval cannot replace missing project/runtime policy, trusted-origin, or
+    parent authority.
   </p>
 
   <h2>Available Extensions</h2>
@@ -90,9 +144,9 @@ omegon extension search communication
   </p>
   <pre><code>{snippet("cli.extension_init")}</code></pre>
   <p>
-    See the <a href="https://github.com/styrene-lab/omegon/blob/main/EXTENSION_SDK.md">Extension SDK guide</a>
-    for the full walkthrough, or
-    <a href="https://github.com/styrene-lab/omegon/blob/main/EXTENSIONS.md">EXTENSIONS.md</a>
-    for architecture details.
+    See the standalone <a href="https://github.com/styrene-lab/omegon-extension-rs">Extension SDK repository</a>
+    for the protocol API and the
+    <a href="https://github.com/styrene-lab/omegon/blob/main/docs/extensions.md">host runtime guide</a>
+    for trust, lifecycle, cleanup, and diagnostics.
   </p>
 </Docs>

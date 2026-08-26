@@ -23,6 +23,12 @@ related = ["omega", "model-degradation"]
 
 ## Overview
 
+This early design is superseded for persistence and resume semantics by
+`docs/runtime-session-semantic-protocol.md` and
+`docs/rust-session-persistence.md`. It remains useful as historical motivation
+for harness-owned, provider-agnostic session identity; its snapshot-only resume
+claims are not the current runtime contract.
+
 Omegon sessions are not model sessions. A single Omegon session may span multiple providers (anthropic for the driver, openai for embeddings, copilot for cleave children, local for image generation), multiple cleave worktrees executing in parallel, and tier switches mid-conversation. Claude Code can resume because it owns the entire conversation with one provider. Omegon cannot — it orchestrates across providers, so the session boundary must be defined at the harness level, not the provider level.\n\nThe exit card already serializes key session state (git branch, design tree shape, openspec changes, memory delta). This is the seed of a session manifest — a serializable snapshot that captures enough context to resume work without replaying the conversation.\n\nThis design explores: what IS an Omegon session, what state defines it, how is it saved/restored, and how does this compose with the future orchestration layer (omega).
 
 ## Research

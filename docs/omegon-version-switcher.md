@@ -25,7 +25,7 @@ parent = "release-candidate-system"
 > Parent: [Release candidate system — identifiable pre-release builds with deployment verification](release-candidate-system.md)
 > Spawned from: "How should RC builds be distributed to other machines? Options: GitHub release (pre-release tag), install.sh with channel flag (--rc), scp/direct copy, or cargo install from git ref"
 
-*To be explored.*
+The implemented switcher manages the release-coupled `omegon` and `omegon-maintain` pair as immutable installed generations. A shared activation symlink selects the pair and matching install receipt together, so a crash cannot expose executables from different releases.
 
 ## Research
 
@@ -47,31 +47,32 @@ tfswitch (github.com/warrensbox/terraform-switcher) is a Go CLI that manages mul
 
 ### Omegon version switcher design
 
-**Storage**: `~/.omegon/versions/0.14.1-rc.12/omegon` — directory per version, single binary inside.
+**Storage**: `~/.omegon/versions/0.14.1/` — immutable directory per version containing `omegon`, `omegon-maintain`, and `install-receipt.json`.
 
-**Active version**: `~/.omegon/bin/omegon` symlink pointing into the versions dir. `~/.omegon/bin` is on PATH (install.sh already sets this up, or `/usr/local/bin/omegon` is the symlink target).
+**Active version**: `~/.omegon/current` is one atomic symlink to a complete version directory. Stable launchers for `omegon`, `om`, and `omegon-maintain`, plus `~/.config/omegon/install-receipt.json`, resolve through `current`. Changing one link therefore changes the executable pair and receipt together.
 
-**Download source**: GitHub Releases from `styrene-lab/omegon`. RC tags (`v0.14.1-rc.12`) produce pre-release artifacts. Stable tags (`v0.14.1`) produce release artifacts. Same tarballs, same checksums — just different release flags.
+**Download source**: GitHub Releases from `styrene-lab/omegon`. The switcher verifies the selected platform archive against `checksums.sha256`, requires both executable members, writes the derived receipt, and publishes the complete generation before activation. Stable and nightly releases use the same generation contract.
 
 **CLI surface**:
 - `omegon switch` — interactive TUI picker showing installed + available versions
-- `omegon switch 0.14.1-rc.12` — install (if needed) and switch to exact version  
+- `omegon switch 0.14.1` — install (if needed) and switch to an exact version
 - `omegon switch --latest` — switch to latest stable release
-- `omegon switch --latest-rc` — switch to latest RC
 - `omegon switch --list` — show installed versions, highlight active
 
 **Auto-detection**: `.omegon-version` file in project root. Contains a version string or constraint. When `omegon` starts, if `.omegon-version` exists and the requested version isn't active, it either auto-switches or warns.
 
-**Self-update**: `omegon switch` replaces the current binary. Since the switcher is part of `omegon` itself, any version can switch to any other version. The new binary takes over on next invocation.
+**Self-update**: `/update install`, direct installation, and `omegon switch` share the `versioned-current-v1` activation contract. Candidate publication cannot change the running release. After the pair and receipt validate, one atomic replacement of `current` selects the new generation; the new binary takes over on the next invocation.
 
-**Subcommand, not separate binary**: Unlike tfswitch (standalone Go binary), this is `omegon switch` — a subcommand of the binary itself. The binary knows how to replace itself. No second tool to install or keep updated.
+**Switcher subcommand with independent recovery companion**: Unlike tfswitch, version selection is an `omegon switch` subcommand rather than a separate version-manager program. `omegon-maintain` remains a distinct required recovery executable and is always installed and switched with `omegon`.
+
+**Interruption and rollback**: Download, extraction, receipt creation, and validation happen before activation. Interruption before the activation rename leaves the previous generation active. Published generations are immutable and retained, so switching back selects the prior complete pair rather than reconstructing one in place.
 
 ## Decisions
 
-### Decision: Subcommand, interactive picker, auto-detect — full tfswitch feature set
+### Decision: Subcommand and shared generation activation
 
-**Status:** decided
-**Rationale:** Subcommand (`omegon switch`) keeps distribution simple during rapid development — no second binary. Interactive picker because it's low incremental cost over the download+symlink core. Auto-detect (`.omegon-version`) because it enables pinning across machines for free. Dev machines keep `just update` for source builds; switcher is for operator machines consuming GitHub Release artifacts.
+**Status:** implemented
+**Rationale:** Keeping selection in `omegon switch` avoids another version-manager artifact, while immutable complete generations preserve the independently runnable maintenance boundary. A single shared activation link is the smallest crash-atomic selection primitive: no observer can resolve a new `omegon` with an old maintenance companion or receipt. Dev machines keep `just link` for source builds; the switcher is for installer-managed machines consuming GitHub Release artifacts.
 
 ## Open Questions
 
@@ -81,15 +82,17 @@ tfswitch (github.com/warrensbox/terraform-switcher) is a Go CLI that manages mul
 
 ### File Scope
 
-- `core/crates/omegon/src/switch.rs` (new) — Version switcher module — list releases, download, verify checksum, symlink, interactive picker
-- `core/crates/omegon/src/main.rs` (modified) — Add Switch subcommand to CLI
-- `core/install.sh` (modified) — Align install.sh to use ~/.omegon/versions/ layout so switcher and installer are compatible
+- `core/crates/omegon/src/installed_release.rs` — shared immutable-generation publication and atomic activation
+- `core/crates/omegon/src/switch.rs` — list releases, download and verify complete pairs, publish generations, and select versions
+- `core/crates/omegon/src/update.rs` — migrate managed installs and self-update through the shared layout
+- `core/install.sh` — create and migrate `versioned-current-v1` direct installs
 
 ### Constraints
 
-- Downloads from GitHub Releases API (styrene-lab/omegon-core)
+- Downloads from the `styrene-lab/omegon` GitHub Releases API
 - Platform detection: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 - SHA256 checksum verification from checksums.sha256 artifact
-- Symlink target: the path where omegon is currently running (std::env::current_exe)
+- Every installed generation contains matching `omegon`, `omegon-maintain`, and `install-receipt.json` members.
+- Version selection atomically replaces `~/.omegon/current`; stable launchers are not independently version-selecting links.
 - Interactive picker: simple terminal list with arrow keys, no ratatui dependency (runs outside TUI)
 - .omegon-version auto-detect: read file from cwd ancestors, warn if active version doesn't match

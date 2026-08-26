@@ -143,6 +143,7 @@ pub struct WebStartupInfo {
 fn project_web_instance(
     handles: &DashboardHandles,
     startup: &WebStartupInfo,
+    session_id: Option<&str>,
 ) -> omegon_traits::OmegonInstanceDescriptor {
     let harness = handles.observe_harness().ok().flatten();
     let harness_projection = harness
@@ -262,7 +263,14 @@ fn project_web_instance(
         busy: handles.session().observe().unwrap_or_default().busy,
         git_branch,
         git_detached,
-        session_id: None,
+        session_id: session_id.map(str::to_string),
+        session_generation: None,
+        stream_id: None,
+        projection_status: None,
+        projection_frontier: None,
+        context_revision: None,
+        queue_depth: 0,
+        active_turn: None,
     };
 
     let mut instance = crate::ipc::snapshot::project_instance_descriptor(
@@ -314,6 +322,8 @@ pub struct WebState {
     pub secrets: Option<Arc<omegon_secrets::SecretsManager>>,
     /// Project-local assistant run ledger path.
     pub assistant_runs_db_path: Arc<std::path::PathBuf>,
+    /// Authoritative workspace root for project-scoped control operations.
+    pub workspace_root: Arc<std::path::PathBuf>,
     /// Received daemon/event-ingress envelopes (v1 in-memory queue).
     pub daemon_events: Arc<Mutex<Vec<DaemonEventEnvelope>>>,
     /// Shared queue/worker status for daemon event ingress.
@@ -348,7 +358,9 @@ pub struct WebState {
     /// submission. Served by `GET /api/web/surfaces` so a browser reload
     /// replays prior turns instead of starting blank. Bounded to the most
     /// recent [`CONVERSATION_LOG_CAP`] segments.
-    pub conversation_log: Arc<Mutex<std::collections::VecDeque<surfaces::WebConversationSegment>>>,
+    conversation: Arc<Mutex<WebConversationAccumulator>>,
+    /// Atomically published host-session identity and durable projection target.
+    pub(crate) session_view_binding: Option<crate::session_consumers::SessionViewBinding>,
     /// Latest renderer-neutral plan projection observed from the agent event
     /// bus. Served by `GET /api/web/surfaces` so the browser's Plan rail can
     /// survive reloads instead of relying only on live `plan_updated` pushes.
@@ -367,6 +379,58 @@ pub struct WebState {
 /// evicted; the live stream remains the source of truth for the active turn.
 pub(crate) const CONVERSATION_LOG_CAP: usize = 400;
 pub(crate) const TOOL_RUN_LOG_CAP: usize = 100;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct WebSessionProjection {
+    pub generation: u64,
+    pub stream_id: Option<String>,
+    pub availability: String,
+    pub exactness: String,
+    pub frontier: Option<u64>,
+    pub queue_depth: usize,
+    pub active_turn: String,
+    pub context_revision: Option<u64>,
+    pub context_items: usize,
+    pub stale_reason: Option<String>,
+}
+
+impl Default for WebSessionProjection {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            stream_id: None,
+            availability: "unavailable".into(),
+            exactness: "none".into(),
+            frontier: None,
+            queue_depth: 0,
+            active_turn: "idle".into(),
+            context_revision: None,
+            context_items: 0,
+            stale_reason: Some("semantic session binding unavailable".into()),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct WebConversationAccumulator {
+    session_id: String,
+    durable: Vec<surfaces::WebConversationSegment>,
+    overlay: std::collections::VecDeque<surfaces::WebConversationSegment>,
+    projection: WebSessionProjection,
+    accept_live_events: bool,
+}
+
+impl Default for WebConversationAccumulator {
+    fn default() -> Self {
+        Self {
+            session_id: String::new(),
+            durable: Vec::new(),
+            overlay: std::collections::VecDeque::new(),
+            projection: WebSessionProjection::default(),
+            accept_live_events: true,
+        }
+    }
+}
 
 impl WebState {
     /// Create a new WebState. Generates a random auth token.
@@ -399,6 +463,19 @@ impl WebState {
         self
     }
 
+    pub fn with_workspace_root(mut self, workspace_root: std::path::PathBuf) -> Self {
+        self.workspace_root = Arc::new(crate::setup::find_project_root(&workspace_root));
+        self
+    }
+
+    pub(crate) fn with_session_view_binding(
+        mut self,
+        binding: crate::session_consumers::SessionViewBinding,
+    ) -> Self {
+        self.session_view_binding = Some(binding);
+        self
+    }
+
     pub fn with_auth_state_and_secrets(
         handles: DashboardHandles,
         events_tx: broadcast::Sender<omegon_traits::AgentEvent>,
@@ -417,6 +494,9 @@ impl WebState {
             assistant_runs_db_path: Arc::new(crate::paths::assistant_runs_db(
                 &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             )),
+            workspace_root: Arc::new(crate::setup::find_project_root(
+                &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            )),
             daemon_events: Arc::new(Mutex::new(Vec::new())),
             daemon_status: Arc::new(Mutex::new(WebDaemonStatus {
                 transport_warnings: default_transport_warnings(),
@@ -424,7 +504,8 @@ impl WebState {
             })),
             pending_permissions: Arc::new(Mutex::new(std::collections::HashMap::new())),
             pending_operator_waits: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            conversation_log: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            conversation: Arc::new(Mutex::new(WebConversationAccumulator::default())),
+            session_view_binding: None,
             plan_surface: Arc::new(Mutex::new(omegon_traits::PlanSurfaceProjection::default())),
             tool_runs: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             web_role: styrene_rbac::Role::Admin,
@@ -533,20 +614,23 @@ impl WebState {
     /// preserving correct ordering: the user turn lands before the agent's
     /// `TurnStart` opens the assistant reply.
     pub(crate) fn record_user_segment(&self, text: &str) {
-        if let Ok(mut log) = self.conversation_log.lock() {
-            let index = log.len();
-            log.push_back(surfaces::WebConversationSegment {
-                index,
-                role: "user".to_string(),
-                title: None,
-                summary: None,
-                body: Some(text.to_string()),
-                complete: true,
-                copyable: true,
-                selectable: true,
-            });
-            while log.len() > CONVERSATION_LOG_CAP {
-                log.pop_front();
+        if let Ok(mut conversation) = self.conversation.lock() {
+            conversation.accept_live_events = true;
+            let index = conversation.durable.len() + conversation.overlay.len();
+            conversation
+                .overlay
+                .push_back(surfaces::WebConversationSegment {
+                    index,
+                    role: "user".to_string(),
+                    title: None,
+                    summary: None,
+                    body: Some(text.to_string()),
+                    complete: true,
+                    copyable: true,
+                    selectable: true,
+                });
+            while conversation.durable.len() + conversation.overlay.len() > CONVERSATION_LOG_CAP {
+                conversation.overlay.pop_front();
             }
         }
     }
@@ -558,15 +642,44 @@ impl WebState {
     /// events are ignored.
     pub(crate) fn fold_conversation_event(&self, event: &omegon_traits::AgentEvent) {
         use omegon_traits::AgentEvent;
+        if let AgentEvent::RuntimeQueueUpdated { snapshot_json } = event
+            && let Some(binding) = &self.session_view_binding
+        {
+            binding.update_runtime_queue(snapshot_json.clone());
+        }
+        if let Some(binding) = &self.session_view_binding {
+            let generation = binding.snapshot().generation;
+            let accumulator_generation = self
+                .conversation
+                .lock()
+                .map(|value| value.projection.generation)
+                .unwrap_or_default();
+            if accumulator_generation != generation {
+                self.reconcile_semantic_session();
+                return;
+            }
+        }
+        if let Ok(mut conversation) = self.conversation.lock() {
+            if matches!(
+                event,
+                AgentEvent::TurnStart { .. } | AgentEvent::RuntimePromptStarted { .. }
+            ) {
+                conversation.accept_live_events = true;
+            } else if !conversation.accept_live_events && is_session_ephemeral_event(event) {
+                return;
+            }
+        }
         if let AgentEvent::PlanUpdated { projection } = event
             && let Ok(mut plan) = self.plan_surface.lock()
         {
             *plan = projection.clone();
         }
         self.fold_tool_event(event);
-        let Ok(mut log) = self.conversation_log.lock() else {
+        let Ok(mut conversation) = self.conversation.lock() else {
             return;
         };
+        let durable_len = conversation.durable.len();
+        let log = &mut conversation.overlay;
         let open_assistant = |log: &std::collections::VecDeque<
             surfaces::WebConversationSegment,
         >| {
@@ -574,7 +687,7 @@ impl WebState {
         };
         match event {
             AgentEvent::TurnStart { .. } => {
-                let index = log.len();
+                let index = durable_len + log.len();
                 log.push_back(surfaces::WebConversationSegment {
                     index,
                     role: "assistant".to_string(),
@@ -587,8 +700,8 @@ impl WebState {
                 });
             }
             AgentEvent::MessageChunk { text } => {
-                if !open_assistant(&log) {
-                    let index = log.len();
+                if !open_assistant(log) {
+                    let index = durable_len + log.len();
                     log.push_back(surfaces::WebConversationSegment {
                         index,
                         role: "assistant".to_string(),
@@ -619,7 +732,7 @@ impl WebState {
             }
             _ => {}
         }
-        while log.len() > CONVERSATION_LOG_CAP {
+        while durable_len + log.len() > CONVERSATION_LOG_CAP {
             log.pop_front();
         }
     }
@@ -731,10 +844,13 @@ impl WebState {
     /// Snapshot the current transcript for `GET /api/web/surfaces`, re-indexing
     /// from zero so the browser sees a contiguous list after any eviction.
     pub(crate) fn conversation_segments(&self) -> Vec<surfaces::WebConversationSegment> {
-        self.conversation_log
+        self.conversation
             .lock()
-            .map(|log| {
-                log.iter()
+            .map(|conversation| {
+                conversation
+                    .durable
+                    .iter()
+                    .chain(conversation.overlay.iter())
                     .cloned()
                     .enumerate()
                     .map(|(index, mut seg)| {
@@ -745,6 +861,180 @@ impl WebState {
             })
             .unwrap_or_default()
     }
+
+    pub(crate) fn session_id(&self) -> String {
+        self.session_view_binding
+            .as_ref()
+            .map(|binding| binding.snapshot().session_id)
+            .unwrap_or_else(|| "default".into())
+    }
+
+    pub(crate) fn session_projection(&self) -> WebSessionProjection {
+        self.conversation
+            .lock()
+            .map(|conversation| conversation.projection.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn runtime_queue_snapshot(&self) -> serde_json::Value {
+        self.session_view_binding
+            .as_ref()
+            .map(crate::session_consumers::SessionViewBinding::runtime_queue_snapshot)
+            .unwrap_or_else(|| serde_json::json!({"depth": 0, "active": null, "items": []}))
+    }
+
+    pub(crate) fn reconcile_semantic_session(&self) {
+        let Some(binding) = &self.session_view_binding else {
+            return;
+        };
+        let target = binding.snapshot();
+        let loaded = crate::session_consumers::SemanticSessionView::load(&target);
+        if binding.snapshot().generation != target.generation {
+            return;
+        }
+        let (durable, projection) = match loaded {
+            Ok(view) => {
+                let mut projection = web_projection(&target, &view);
+                let runtime_queue = binding.runtime_queue_snapshot();
+                if let Some(depth) = runtime_queue
+                    .get("depth")
+                    .and_then(serde_json::Value::as_u64)
+                {
+                    projection.queue_depth = depth as usize;
+                }
+                if let Some(active) = runtime_queue.get("active") {
+                    projection.active_turn =
+                        if active.is_null() { "idle" } else { "active" }.into();
+                }
+                (durable_web_segments(&view), projection)
+            }
+            Err(error) => (
+                Vec::new(),
+                WebSessionProjection {
+                    generation: target.generation,
+                    stale_reason: Some(error.to_string()),
+                    ..WebSessionProjection::default()
+                },
+            ),
+        };
+        if let Ok(mut conversation) = self.conversation.lock() {
+            *conversation = WebConversationAccumulator {
+                session_id: target.session_id,
+                durable,
+                overlay: std::collections::VecDeque::new(),
+                projection,
+                accept_live_events: false,
+            };
+        }
+        if let Ok(mut tools) = self.tool_runs.lock() {
+            tools.clear();
+        }
+    }
+}
+
+fn is_session_ephemeral_event(event: &omegon_traits::AgentEvent) -> bool {
+    matches!(
+        event,
+        omegon_traits::AgentEvent::MessageChunk { .. }
+            | omegon_traits::AgentEvent::TurnEnd { .. }
+            | omegon_traits::AgentEvent::ToolStart { .. }
+            | omegon_traits::AgentEvent::ToolUpdate { .. }
+            | omegon_traits::AgentEvent::ToolEnd { .. }
+    )
+}
+
+pub(crate) fn web_projection(
+    target: &crate::session_consumers::SessionViewTarget,
+    view: &crate::session_consumers::SemanticSessionView,
+) -> WebSessionProjection {
+    let frontend = view.frontend.as_ref();
+    let exactness = match view.status {
+        crate::session_consumers::SemanticSessionStatus::ExactFull => "exact_full",
+        crate::session_consumers::SemanticSessionStatus::ExactSuffix => "exact_suffix",
+        crate::session_consumers::SemanticSessionStatus::LegacyUnavailable => "none",
+    };
+    WebSessionProjection {
+        generation: target.generation,
+        stream_id: Some(view.stream_id.to_string()),
+        availability: if frontend.is_some() {
+            "available"
+        } else {
+            "unavailable"
+        }
+        .into(),
+        exactness: exactness.into(),
+        frontier: Some(view.frontier_sequence),
+        queue_depth: frontend.map_or(0, |snapshot| snapshot.queued_prompts.len()),
+        active_turn: frontend
+            .map(crate::session_consumers::active_turn_label)
+            .unwrap_or("idle")
+            .into(),
+        context_revision: frontend.map(|snapshot| snapshot.context.context_revision),
+        context_items: frontend.map_or(0, |snapshot| snapshot.context.items.len()),
+        stale_reason: (frontend.is_none()).then(|| view.status.label().to_string()),
+    }
+}
+
+pub(crate) fn durable_web_segments(
+    view: &crate::session_consumers::SemanticSessionView,
+) -> Vec<surfaces::WebConversationSegment> {
+    use crate::session_authority::AssistantContentKind;
+    use crate::surfaces::session::{FrontendConversationKindV1, TranscriptContentV1};
+
+    let Some(snapshot) = view.frontend.as_ref() else {
+        return Vec::new();
+    };
+    let mut segments = Vec::new();
+    for item in &snapshot.conversation {
+        let (role, body, complete) = match item.kind {
+            FrontendConversationKindV1::CommittedMessage => {
+                let Some(message) = item.transcript_message.as_ref() else {
+                    continue;
+                };
+                match &message.content {
+                    TranscriptContentV1::Prompt { prompt_content } => {
+                        ("user", prompt_content.text.clone(), true)
+                    }
+                    TranscriptContentV1::Assistant { assistant_channels } => {
+                        let body = assistant_channels
+                            .iter()
+                            .filter(|channel| channel.content_kind == AssistantContentKind::Text)
+                            .flat_map(|channel| &channel.chunk_refs)
+                            .filter_map(|content_ref| view.content_text(content_ref).ok())
+                            .collect::<String>();
+                        ("assistant", body, true)
+                    }
+                    TranscriptContentV1::ToolResult { .. } => continue,
+                }
+            }
+            FrontendConversationKindV1::AssistantEvidence => {
+                if item.content_kind != Some(AssistantContentKind::Text) {
+                    continue;
+                }
+                let Some(content_ref) = item.content_ref.as_ref() else {
+                    continue;
+                };
+                let Ok(body) = view.content_text(content_ref) else {
+                    continue;
+                };
+                ("assistant", body, false)
+            }
+        };
+        if body.is_empty() {
+            continue;
+        }
+        segments.push(surfaces::WebConversationSegment {
+            index: segments.len(),
+            role: role.into(),
+            title: None,
+            summary: None,
+            body: Some(body),
+            complete,
+            copyable: true,
+            selectable: true,
+        });
+    }
+    segments
 }
 
 /// Spawn the single-writer conversation accumulator: subscribes to the agent
@@ -753,14 +1043,38 @@ impl WebState {
 /// can drop events and leave a gap; the live stream remains authoritative for
 /// the active turn, and the next `TurnStart` reopens a clean segment.
 fn start_conversation_accumulator(state: &WebState) {
+    state.reconcile_semantic_session();
     let mut rx = state.events_tx.subscribe();
+    let mut generation_rx = state
+        .session_view_binding
+        .as_ref()
+        .map(crate::session_consumers::SessionViewBinding::subscribe_generation);
     let state = state.clone();
     crate::task_spawn::spawn_best_effort_result("web-conversation-accumulator", async move {
         loop {
-            match rx.recv().await {
-                Ok(event) => state.fold_conversation_event(&event),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            tokio::select! {
+                biased;
+                changed = async {
+                    match generation_rx.as_mut() {
+                        Some(receiver) => receiver.changed().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if changed.is_err() {
+                        generation_rx = None;
+                    } else {
+                        while rx.try_recv().is_ok() {}
+                        state.reconcile_semantic_session();
+                    }
+                }
+                event = rx.recv() => match event {
+                    Ok(event) => state.fold_conversation_event(&event),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        while rx.try_recv().is_ok() {}
+                        state.reconcile_semantic_session();
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
             }
         }
         Ok(())
@@ -889,6 +1203,10 @@ pub async fn start_server_with_options(
         .route(
             "/api/web/attachments",
             axum::routing::post(api::post_web_attachment),
+        )
+        .route(
+            "/api/web/sessions/{session_id}/surfaces",
+            axum::routing::get(api::get_web_session_surfaces),
         )
         .route(
             "/api/web/sessions/{session_id}",
@@ -1037,7 +1355,12 @@ pub async fn start_server_with_options(
             .unwrap_or_default(),
         instance_descriptor: None,
     };
-    startup.instance_descriptor = Some(project_web_instance(&app_state_handles, &startup));
+    let bound_session_id = state.session_id();
+    startup.instance_descriptor = Some(project_web_instance(
+        &app_state_handles,
+        &startup,
+        Some(&bound_session_id),
+    ));
     if let Ok(mut slot) = startup_info.lock() {
         *slot = Some(startup.clone());
     }
@@ -1557,6 +1880,31 @@ pub(crate) fn generate_token() -> String {
 mod tests {
     use super::*;
 
+    fn semantic_binding() -> (
+        tempfile::TempDir,
+        crate::session_consumers::SessionViewBinding,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("session.json");
+        let stream_id = crate::session_consumers::publish_test_projection(
+            &snapshot,
+            "full-spine-crash-prefix.authority.jsonl",
+            "fixture-session",
+        );
+        let binding = crate::session_consumers::SessionViewBinding::new(
+            snapshot.clone(),
+            "fixture-session".into(),
+        );
+        binding.replace(crate::session_consumers::SessionViewTarget {
+            snapshot,
+            session_id: "fixture-session".into(),
+            stream_id: Some(stream_id),
+            generation: 7,
+            kind: crate::session_consumers::SessionViewKind::Resume,
+        });
+        (directory, binding)
+    }
+
     #[tokio::test]
     async fn bind_with_fallback_succeeds() {
         let listener = bind_with_fallback(18000).await.unwrap();
@@ -1646,7 +1994,7 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("insecure bootstrap"))
         );
-        let descriptor = project_web_instance(&state.handles, &startup);
+        let descriptor = project_web_instance(&state.handles, &startup, None);
         assert_eq!(
             descriptor.control_plane.http_transport_security,
             Some(OmegonTransportSecurity::InsecureBootstrap)
@@ -1682,7 +2030,7 @@ mod tests {
             instance_descriptor: None,
         };
 
-        let descriptor = project_web_instance(&state.handles, &startup);
+        let descriptor = project_web_instance(&state.handles, &startup, None);
         assert_eq!(
             descriptor.control_plane.http_transport_security,
             Some(OmegonTransportSecurity::Secure)
@@ -1844,6 +2192,46 @@ mod tests {
         state.fold_conversation_event(&AgentEvent::TurnStart { turn: 1 });
         state.fold_conversation_event(&test_turn_end());
         assert!(state.conversation_segments().is_empty());
+    }
+
+    #[test]
+    fn web_reconcile_seeds_once_and_fences_old_generation_events() {
+        use omegon_traits::AgentEvent;
+        let (_directory, binding) = semantic_binding();
+        let state = WebState::new(
+            DashboardHandles::default(),
+            tokio::sync::broadcast::channel(8).0,
+        )
+        .with_session_view_binding(binding.clone());
+
+        state.reconcile_semantic_session();
+        let seeded = state.conversation_segments();
+        let frontier = state.session_projection().frontier;
+        binding.update_runtime_queue(serde_json::json!({"depth": 0, "active": null, "items": []}));
+        state.reconcile_semantic_session();
+        assert_eq!(state.conversation_segments().len(), seeded.len());
+        assert_eq!(state.session_projection().frontier, frontier);
+        assert_eq!(state.session_projection().active_turn, "idle");
+        assert_eq!(state.session_projection().queue_depth, 0);
+
+        state.record_user_segment("old overlay");
+        let mut replacement = binding.snapshot();
+        replacement.generation += 1;
+        replacement.kind = crate::session_consumers::SessionViewKind::ContextClear;
+        binding.replace(replacement);
+        state.reconcile_semantic_session();
+        state.fold_conversation_event(&AgentEvent::MessageChunk {
+            text: "late old-session chunk".into(),
+        });
+
+        assert_eq!(state.conversation_segments().len(), seeded.len());
+        assert!(
+            !state
+                .conversation_segments()
+                .iter()
+                .any(|segment| segment.body.as_deref() == Some("late old-session chunk"))
+        );
+        assert_eq!(state.session_projection().generation, 8);
     }
 
     #[tokio::test]

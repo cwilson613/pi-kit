@@ -4,6 +4,97 @@
 //! transformations separate from `main.rs` makes startup wiring testable without
 //! constructing providers, terminals, or an agent loop.
 
+use std::collections::BTreeMap;
+
+use serde::Serialize;
+
+const NORMAL_RESIDENT_CONTRIBUTIONS: &[&str] = &[
+    "system:constitutional-kernel",
+    "system:default-loop",
+    "system:host-effects",
+    "feature:codescan",
+    "feature:context-compaction",
+    "feature:git",
+    "feature:lifecycle",
+    "feature:memory",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct CompositionInspectionV1 {
+    pub(crate) schema_version: u32,
+    pub(crate) profile: String,
+    pub(crate) runtime_mode: String,
+    pub(crate) surfaces: Vec<String>,
+    pub(crate) absent_optional: Vec<String>,
+    pub(crate) startup_tasks: CountedOwnersV1,
+    pub(crate) model_schema: CountedOwnersV1,
+    pub(crate) resident_capabilities: Vec<String>,
+    pub(crate) callable_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct CountedOwnersV1 {
+    pub(crate) count: usize,
+    pub(crate) owners: BTreeMap<String, usize>,
+}
+
+pub(crate) fn inspect_runtime_composition(
+    profile: &str,
+    bus: &crate::bus::EventBus,
+) -> anyhow::Result<CompositionInspectionV1> {
+    let (runtime_mode, surfaces, absent_optional) = profile_state(profile)?;
+    let definitions = bus.callable_tool_definitions_by_owner();
+    let callable_capabilities = definitions
+        .iter()
+        .map(|(_, definition)| format!("tool:{}", definition.name))
+        .collect::<Vec<_>>();
+    let mut schema_owners = BTreeMap::new();
+    for (owner, definition) in &definitions {
+        let tokens =
+            crate::loop_context::estimate_tool_schema_tokens(std::slice::from_ref(definition));
+        *schema_owners.entry(owner.clone()).or_default() += tokens;
+    }
+    let mut startup_owners = bus.active_startup_resource_owners();
+    startup_owners.insert("system:inference-discovery".to_string(), 1);
+
+    Ok(CompositionInspectionV1 {
+        schema_version: 1,
+        profile: profile.to_string(),
+        runtime_mode: runtime_mode.to_string(),
+        surfaces: surfaces.into_iter().map(str::to_string).collect(),
+        absent_optional: absent_optional.into_iter().map(str::to_string).collect(),
+        startup_tasks: CountedOwnersV1 {
+            count: startup_owners.values().sum(),
+            owners: startup_owners,
+        },
+        model_schema: CountedOwnersV1 {
+            count: schema_owners.values().sum(),
+            owners: schema_owners,
+        },
+        resident_capabilities: NORMAL_RESIDENT_CONTRIBUTIONS
+            .iter()
+            .map(|identity| (*identity).to_string())
+            .collect(),
+        callable_capabilities,
+    })
+}
+
+fn profile_state(
+    profile: &str,
+) -> anyhow::Result<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
+    match profile {
+        "interactive" => Ok(("tui", vec!["agent-loop", "tui"], vec![])),
+        "headless" => Ok(("headless", vec!["agent-loop", "bounded-task"], vec!["tui"])),
+        "daemon" => Ok(("daemon", vec!["agent-loop", "control-plane"], vec!["tui"])),
+        "full" => Ok((
+            "full",
+            vec!["agent-loop", "bounded-task", "control-plane", "tui"],
+            vec![],
+        )),
+        _ => anyhow::bail!("unknown composition profile: {profile}"),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InteractiveStartupModelDecision {
     pub(crate) selected_model: String,
@@ -105,5 +196,18 @@ mod tests {
         let decision = decide_interactive_startup_model("selected", "resolved", false);
         assert!(!decision.provider_connected);
         assert!(decision.use_null_bridge);
+    }
+
+    #[test]
+    fn profile_states_are_distinct_and_explicit() {
+        let interactive = profile_state("interactive").unwrap();
+        let headless = profile_state("headless").unwrap();
+        let daemon = profile_state("daemon").unwrap();
+        let full = profile_state("full").unwrap();
+        assert_ne!(interactive.0, headless.0);
+        assert_ne!(headless.1, daemon.1);
+        assert!(headless.2.contains(&"tui"));
+        assert!(full.1.contains(&"tui"));
+        assert!(profile_state("unknown").is_err());
     }
 }

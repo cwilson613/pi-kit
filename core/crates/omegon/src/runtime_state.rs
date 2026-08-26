@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::features::cleave::CleaveProgress;
 use crate::features::delegate::{DelegateProgress, DelegateResultStore};
-use crate::lifecycle::read_model::LifecycleReadHandle;
+use crate::lifecycle::read_model::{DesignTreeSnapshot, LifecycleSnapshot};
 use crate::lifecycle::types::NodeStatus;
 use crate::status::HarnessStatus;
 
@@ -52,11 +52,117 @@ pub enum ObservationDomain {
     Delegate,
     Harness,
     RuntimeLifecycle,
+    Lifecycle,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObserveError {
     Poisoned(ObservationDomain),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LifecycleRepositoryObservation {
+    pub revision: crate::lifecycle_service::LifecycleRepositoryRevisionV1,
+    pub design: DesignTreeSnapshot,
+    pub lifecycle: LifecycleSnapshot,
+    pub sections: std::collections::HashMap<String, crate::lifecycle::types::DocumentSections>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct LifecycleFocusObservation {
+    pub node_id: Option<String>,
+    pub revision: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LifecycleHostObservation {
+    pub repository: Option<Arc<LifecycleRepositoryObservation>>,
+    pub focus: LifecycleFocusObservation,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct LifecycleHostHandle {
+    binding: crate::lifecycle_service::LifecycleBinding,
+    state: Arc<Mutex<LifecycleHostObservation>>,
+}
+
+impl LifecycleHostHandle {
+    pub(crate) fn new(binding: crate::lifecycle_service::LifecycleBinding) -> Self {
+        Self {
+            binding,
+            state: Arc::default(),
+        }
+    }
+
+    pub(crate) fn observe(&self) -> Result<LifecycleHostObservation, ObserveError> {
+        self.state
+            .lock()
+            .map(|state| state.clone())
+            .map_err(|_| ObserveError::Poisoned(ObservationDomain::Lifecycle))
+    }
+
+    pub(crate) fn set_focus(&self, node_id: Option<String>) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lifecycle host state lock poisoned"))?;
+        if let Some(id) = node_id.as_deref()
+            && !state
+                .repository
+                .as_ref()
+                .is_some_and(|repository| repository.design.nodes.contains_key(id))
+        {
+            anyhow::bail!("design node '{id}' not found in managed lifecycle observation");
+        }
+        if state.focus.node_id != node_id {
+            state.focus.node_id = node_id;
+            state.focus.revision = state.focus.revision.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn refresh(
+        &self,
+        mut options: crate::lifecycle::read_model::SnapshotOptions,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<LifecycleHostObservation> {
+        // Host observations are the immutable source for synchronous context
+        // and frontend projections, so retain complete spec content.
+        options.include_specs = true;
+        let response = self
+            .binding
+            .invoke(
+                crate::lifecycle_service::LifecycleRequestV1::RepositorySnapshot {
+                    options,
+                    cancellation,
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("managed lifecycle refresh failed: {error:?}"))?;
+        let crate::lifecycle_service::LifecyclePayloadV1::RepositorySnapshot {
+            design,
+            lifecycle,
+            sections,
+        } = response.payload
+        else {
+            anyhow::bail!("managed lifecycle returned an unexpected repository snapshot");
+        };
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lifecycle host state lock poisoned"))?;
+        state.repository = Some(Arc::new(LifecycleRepositoryObservation {
+            revision: response.revision,
+            design,
+            lifecycle,
+            sections,
+        }));
+        Ok(state.clone())
+    }
+
+    pub(crate) fn binding(&self) -> &crate::lifecycle_service::LifecycleBinding {
+        &self.binding
+    }
 }
 
 /// Invocation-owned session state. Clones share one invocation's counters;
@@ -159,7 +265,7 @@ impl CleaveStateHandle {
 /// Shared handles to live runtime state.
 #[derive(Clone, Default)]
 pub struct RuntimeStateHandles {
-    pub lifecycle: Option<LifecycleReadHandle>,
+    pub(crate) lifecycle_service: LifecycleHostHandle,
     cleave: CleaveStateHandle,
     pub(crate) delegate: Arc<Mutex<Option<Arc<Mutex<DelegateProgress>>>>>,
     pub delegate_tasks: Option<Arc<DelegateResultStore>>,
@@ -170,14 +276,14 @@ pub struct RuntimeStateHandles {
 
 impl RuntimeStateHandles {
     pub fn new(
-        lifecycle: Option<LifecycleReadHandle>,
+        lifecycle_service: LifecycleHostHandle,
         cleave: Option<Arc<Mutex<CleaveProgress>>>,
         delegate: Option<Arc<Mutex<DelegateProgress>>>,
         delegate_tasks: Option<Arc<DelegateResultStore>>,
         harness: Option<Arc<Mutex<HarnessStatus>>>,
     ) -> Self {
         Self {
-            lifecycle,
+            lifecycle_service,
             cleave: CleaveStateHandle::new(cleave),
             delegate: Arc::new(Mutex::new(delegate)),
             delegate_tasks,
@@ -357,7 +463,14 @@ mod tests {
     #[test]
     fn defaults_are_empty_and_session_state_is_shared_across_clones() {
         let handles = RuntimeStateHandles::default();
-        assert!(handles.lifecycle.is_none());
+        assert!(
+            handles
+                .lifecycle_service
+                .observe()
+                .unwrap()
+                .repository
+                .is_none()
+        );
         assert!(!handles.cleave_available());
         assert!(!handles.delegate_available());
         assert!(handles.delegate_tasks.is_none());
@@ -389,6 +502,43 @@ mod tests {
 
         assert_eq!(first.session.observe().unwrap().turns, 11);
         assert_eq!(second.session.observe().unwrap().turns, 29);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_host_keeps_focus_separate_from_managed_repository_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::write(
+            dir.path().join("docs/focused.md"),
+            "---\nid: focused\ntitle: Focused\nstatus: exploring\ndependencies: []\nopen_questions: []\n---\n\n## Overview\nFocused node.\n",
+        )
+        .unwrap();
+        let (_bus, binding) = crate::lifecycle_service::test_binding(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        let host = LifecycleHostHandle::new(binding);
+        host.refresh(
+            crate::lifecycle::read_model::SnapshotOptions::default(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let repository_revision = host.observe().unwrap().repository.unwrap().revision.clone();
+
+        host.set_focus(Some("focused".into())).unwrap();
+        let clone = host.clone();
+        let focused = clone.observe().unwrap();
+        assert_eq!(focused.focus.node_id.as_deref(), Some("focused"));
+        assert_eq!(focused.focus.revision, 1);
+        assert_eq!(
+            focused.repository.unwrap().revision,
+            repository_revision,
+            "host focus must not mutate repository authority"
+        );
+
+        assert!(host.set_focus(Some("missing".into())).is_err());
+        host.set_focus(None).unwrap();
+        assert_eq!(clone.observe().unwrap().focus.revision, 2);
     }
 
     #[test]

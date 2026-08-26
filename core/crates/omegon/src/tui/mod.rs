@@ -49,6 +49,7 @@ pub mod segment_components;
 pub mod segment_detail;
 pub mod segments;
 pub mod selector;
+mod session_projection;
 pub(crate) mod settings_menu;
 mod settings_menu_projection;
 mod slash_commands;
@@ -615,6 +616,9 @@ struct App {
     runtime_queue_snapshot: Option<serde_json::Value>,
     /// Monotonic identity of the active interactive runtime prompt.
     runtime_turn_id: Option<u64>,
+    session_view_binding: Option<crate::session_consumers::SessionViewBinding>,
+    session_view_generation: u64,
+    session_projection_frontier: Option<u64>,
 }
 
 type LastLeftClick = (u16, u16, std::time::Instant, Option<usize>);
@@ -827,8 +831,12 @@ impl App {
 
     fn auspex_status_text(&self) -> String {
         let cwd = self.cwd().to_path_buf();
+        let binding = crate::session_consumers::SessionViewBinding::new(
+            cwd.join(".omegon/status-probe.json"),
+            "status-probe".into(),
+        );
         let ipc_cfg =
-            crate::ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"), "status-probe");
+            crate::ipc::IpcServerConfig::from_cwd(&cwd, env!("CARGO_PKG_VERSION"), binding);
         let socket_exists = ipc_cfg.socket_path.exists();
         let dash_status = self
             .web_startup
@@ -1007,6 +1015,9 @@ impl App {
             oauth_tos_notice_shown: false,
             runtime_queue_snapshot: None,
             runtime_turn_id: None,
+            session_view_binding: None,
+            session_view_generation: 0,
+            session_projection_frontier: None,
         }
     }
 
@@ -1153,8 +1164,8 @@ impl App {
         let current = self.settings().model.clone();
         let catalog = crate::model_catalog::ModelCatalog::discover();
         let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
-        let projection =
-            crate::surfaces::model_menu::project_model_menu(&catalog, &preferences, &current);
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
+        let projection = crate::surfaces::model_menu::project_model_menu(&snapshot, &current);
         let mut options = Vec::new();
         for group in projection.favorite_groups {
             for model in group.models {
@@ -1199,8 +1210,8 @@ impl App {
         let current = self.settings().model.clone();
         let catalog = crate::model_catalog::ModelCatalog::discover();
         let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
-        let projection =
-            crate::surfaces::model_menu::project_model_menu(&catalog, &preferences, &current);
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
+        let projection = crate::surfaces::model_menu::project_model_menu(&snapshot, &current);
         let options = projection
             .providers
             .into_iter()
@@ -1222,9 +1233,9 @@ impl App {
         let current = self.settings().model.clone();
         let catalog = crate::model_catalog::ModelCatalog::discover();
         let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
         let Some(group) = crate::surfaces::model_menu::project_provider_inventory(
-            &catalog,
-            &preferences,
+            &snapshot,
             &current,
             provider_id,
         ) else {
@@ -1341,8 +1352,23 @@ impl App {
     }
 
     fn open_persona_selector(&mut self) {
-        let (personas, _) = crate::plugins::persona_loader::scan_available();
-        if personas.is_empty() {
+        let cwd = self.cwd().to_path_buf();
+        let active_id = self
+            .augment_registry
+            .as_ref()
+            .and_then(|registry| registry.active_persona().map(|persona| persona.id.clone()));
+        let options = crate::plugins::persona_loader::with_available(&cwd, |personas, _| {
+            personas
+                .iter()
+                .map(|persona| selector::SelectOption {
+                    active: active_id.as_deref() == Some(persona.id.as_str()),
+                    value: persona.id.clone(),
+                    label: persona.name.clone(),
+                    description: persona.description.clone(),
+                })
+                .collect::<Vec<_>>()
+        });
+        if options.is_empty() {
             self.show_toast(
                 "No personas installed — install with omegon plugin install <git-url>",
                 ratatui_toaster::ToastType::Warning,
@@ -1350,26 +1376,28 @@ impl App {
             return;
         }
 
-        let active_id = self
-            .augment_registry
-            .as_ref()
-            .and_then(|registry| registry.active_persona().map(|persona| persona.id.clone()));
-        let options = personas
-            .into_iter()
-            .map(|persona| selector::SelectOption {
-                active: active_id.as_deref() == Some(persona.id.as_str()),
-                value: persona.id,
-                label: persona.name,
-                description: persona.description,
-            })
-            .collect();
         self.selector = Some(selector::Selector::new("Select Persona", options));
         self.selector_kind = Some(SelectorKind::Persona);
     }
 
     fn open_tone_selector(&mut self) {
-        let (_, tones) = crate::plugins::persona_loader::scan_available();
-        if tones.is_empty() {
+        let cwd = self.cwd().to_path_buf();
+        let active_id = self
+            .augment_registry
+            .as_ref()
+            .and_then(|registry| registry.active_tone().map(|tone| tone.id.clone()));
+        let options = crate::plugins::persona_loader::with_available(&cwd, |_, tones| {
+            tones
+                .iter()
+                .map(|tone| selector::SelectOption {
+                    active: active_id.as_deref() == Some(tone.id.as_str()),
+                    value: tone.id.clone(),
+                    label: tone.name.clone(),
+                    description: tone.description.clone(),
+                })
+                .collect::<Vec<_>>()
+        });
+        if options.is_empty() {
             self.show_toast(
                 "No tones installed — install with omegon plugin install <git-url>",
                 ratatui_toaster::ToastType::Warning,
@@ -1377,19 +1405,6 @@ impl App {
             return;
         }
 
-        let active_id = self
-            .augment_registry
-            .as_ref()
-            .and_then(|registry| registry.active_tone().map(|tone| tone.id.clone()));
-        let options = tones
-            .into_iter()
-            .map(|tone| selector::SelectOption {
-                active: active_id.as_deref() == Some(tone.id.as_str()),
-                value: tone.id,
-                label: tone.name,
-                description: tone.description,
-            })
-            .collect();
         self.selector = Some(selector::Selector::new("Select Tone", options));
         self.selector_kind = Some(SelectorKind::Tone);
     }
@@ -3626,14 +3641,28 @@ impl App {
             loaded_profile.source,
             &settings,
         );
-        let source_line = match &drift.source {
-            crate::settings::ProfileSource::Project(path) => {
-                format!("profile: project · file: {}", path.display())
+        let source_line = match drift.source.kind {
+            crate::surfaces::profile::ProfileSourceKind::Project => {
+                format!(
+                    "profile: project · file: {}",
+                    drift
+                        .source
+                        .path
+                        .as_deref()
+                        .map_or("unknown".into(), |path| path.display().to_string())
+                )
             }
-            crate::settings::ProfileSource::User(path) => {
-                format!("profile: user · file: {}", path.display())
+            crate::surfaces::profile::ProfileSourceKind::User => {
+                format!(
+                    "profile: user · file: {}",
+                    drift
+                        .source
+                        .path
+                        .as_deref()
+                        .map_or("unknown".into(), |path| path.display().to_string())
+                )
             }
-            crate::settings::ProfileSource::BuiltInDefault => {
+            crate::surfaces::profile::ProfileSourceKind::BuiltInDefault => {
                 "profile: built-in defaults".to_string()
             }
         };
@@ -3656,17 +3685,7 @@ impl App {
                 entry.source_kind != crate::settings::ProfileRegistrySourceKind::BuiltInDefault
             })
             .map(|entry| {
-                let is_active = entry
-                    .path
-                    .as_ref()
-                    .is_some_and(|path| match &active_source {
-                        crate::settings::ProfileSource::Project(active)
-                        | crate::settings::ProfileSource::User(active) => active == path,
-                        crate::settings::ProfileSource::BuiltInDefault => {
-                            entry.source_kind
-                                == crate::settings::ProfileRegistrySourceKind::BuiltInDefault
-                        }
-                    });
+                let is_active = entry.path.as_ref() == active_source.path.as_ref();
                 let mut badges = vec![MenuBadgeProjection {
                     label: entry.scope.as_str().into(),
                     tone: MenuBadgeTone::Info,
@@ -4134,7 +4153,7 @@ impl App {
             row_prefix,
             provider_ids
                 .into_iter()
-                .map(crate::surfaces::menu::ProviderStatusProjection::from_credential_probe)
+                .map(crate::auth::provider_status_projection)
                 .collect(),
             &self.provider_route_snapshot(),
         )
@@ -4143,7 +4162,7 @@ impl App {
     fn open_auth_menu(&mut self) {
         let providers = crate::auth::operator_auth_provider_ids()
             .into_iter()
-            .map(crate::surfaces::menu::ProviderStatusProjection::from_credential_probe)
+            .map(crate::auth::provider_status_projection)
             .collect();
         let menu = auth_menu_projection::build_authentication_menu(
             auth_menu_projection::AuthenticationMenuInputs {
@@ -4793,39 +4812,44 @@ warning: {warning}"
                 Some(outcome.message())
             }
             SelectorKind::Persona => {
-                let (personas, _) = crate::plugins::persona_loader::scan_available();
-                if let Some(available) = personas.into_iter().find(|persona| persona.id == value) {
-                    match crate::plugins::persona_loader::load_persona(&available.path) {
-                        Ok(persona) => {
-                            let name = persona.name.clone();
-                            let badge = persona.badge.clone().unwrap_or_else(|| "⚙".into());
-                            let fact_count = persona.mind_facts.len();
-                            if let Some(ref mut registry) = self.augment_registry {
-                                registry.activate_persona(persona);
-                            }
-                            Some(format!(
-                                "{badge} Persona activated: {name} ({fact_count} mind facts)"
-                            ))
-                        }
-                        Err(e) => Some(format!("Failed to load persona: {e}")),
+                let cwd = self.cwd().to_path_buf();
+                let persona =
+                    crate::plugins::persona_loader::with_available(&cwd, |personas, _| {
+                        personas
+                            .iter()
+                            .find(|persona| persona.id == value)
+                            .and_then(|available| available.persona())
+                            .cloned()
+                    });
+                if let Some(persona) = persona {
+                    let name = persona.name.clone();
+                    let badge = persona.badge.clone().unwrap_or_else(|| "⚙".into());
+                    let fact_count = persona.mind_facts.len();
+                    if let Some(ref mut registry) = self.augment_registry {
+                        registry.activate_persona(persona);
                     }
+                    Some(format!(
+                        "{badge} Persona activated: {name} ({fact_count} mind facts)"
+                    ))
                 } else {
                     Some(format!("Persona '{value}' no longer available."))
                 }
             }
             SelectorKind::Tone => {
-                let (_, tones) = crate::plugins::persona_loader::scan_available();
-                if let Some(available) = tones.into_iter().find(|tone| tone.id == value) {
-                    match crate::plugins::persona_loader::load_tone(&available.path) {
-                        Ok(tone) => {
-                            let name = tone.name.clone();
-                            if let Some(ref mut registry) = self.augment_registry {
-                                registry.activate_tone(tone);
-                            }
-                            Some(format!("♪ Tone activated: {name}"))
-                        }
-                        Err(e) => Some(format!("Failed to load tone: {e}")),
+                let cwd = self.cwd().to_path_buf();
+                let tone = crate::plugins::persona_loader::with_available(&cwd, |_, tones| {
+                    tones
+                        .iter()
+                        .find(|tone| tone.id == value)
+                        .and_then(|available| available.tone())
+                        .cloned()
+                });
+                if let Some(tone) = tone {
+                    let name = tone.name.clone();
+                    if let Some(ref mut registry) = self.augment_registry {
+                        registry.activate_tone(tone);
                     }
+                    Some(format!("♪ Tone activated: {name}"))
                 } else {
                     Some(format!("Tone '{value}' no longer available."))
                 }
@@ -5719,19 +5743,10 @@ warning: {warning}"
                 SlashResult::Display(out.trim_end().to_string())
             }
             // /milestone doctor — lifecycle drift audit
-            ["doctor"] => {
-                let repo_root = crate::setup::find_project_root(self.cwd());
-                let findings = crate::lifecycle::doctor::audit_repo(&repo_root);
-                if findings.is_empty() {
-                    SlashResult::Display("✓ No suspicious lifecycle drift found.".into())
-                } else {
-                    let mut out = format!("Lifecycle doctor: {} finding(s)\n\n", findings.len());
-                    for f in findings {
-                        out.push_str(&format!("• {} [{}]\n  {}\n  {}\n\n", f.node_id, f.kind.as_str(), f.title, f.detail));
-                    }
-                    SlashResult::Display(out.trim_end().to_string())
-                }
-            }
+            ["doctor"] => SlashResult::Display(
+                "Lifecycle audit is managed by the `lifecycle_doctor` tool; ask the agent to run it."
+                    .into(),
+            ),
             // /milestone <version> — show specific milestone
             [version] => {
                 let milestones = load_milestones(&milestone_file);
@@ -6559,7 +6574,10 @@ warning: {warning}"
         let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
         let path = dir.join(format!("omegon-transcript-{timestamp}.md"));
         let generated_at = chrono::Local::now().to_rfc3339();
-        let body = format!("# Omegon transcript\n\nGenerated: {generated_at}\n\n{transcript}\n");
+        let disclosure = self.session_export_disclosure();
+        let body = format!(
+            "# Omegon session presentation export\n\nGenerated: {generated_at}\n\n{disclosure}\n\n{transcript}\n"
+        );
         std::fs::write(&path, body)?;
         Ok(path)
     }
@@ -6979,7 +6997,8 @@ warning: {warning}"
     /// Palette: matching commands + subcommands for the current editor text.
     fn matching_commands(&self) -> Vec<crate::surfaces::command_menu::CommandMenuRowProjection> {
         let text = self.editor.render_text();
-        self.command_menu_projection().matching(&text)
+        self.command_menu_projection()
+            .matching(&text, &crate::auth::operator_auth_provider_ids())
     }
 
     /// Untyped suffix for the first registry-ranked command match. Keeping this
@@ -7153,6 +7172,7 @@ pub struct TuiConfig {
     pub is_oauth: bool,
     /// Present when a prior session was resumed; retained for runtime context.
     pub resume_info: Option<crate::setup::ResumeInfo>,
+    pub(crate) session_view_binding: crate::session_consumers::SessionViewBinding,
     /// Pre-populated initial state so the first frame isn't empty.
     pub initial: crate::setup::InteractiveInitialState,
     /// Skip the splash animation on startup.
@@ -7819,6 +7839,8 @@ pub async fn run_tui(
     }
     app.history = App::load_history(&config.cwd);
     app.footer_data.cwd = config.cwd.clone();
+    app.session_view_binding = Some(config.session_view_binding.clone());
+    app.refresh_semantic_session_view();
     // Load skills from ~/.omegon/skills/ (bundled) and .omegon/skills/ (project-local).
     if let Some(ref mut registry) = app.augment_registry {
         registry.load_skills(std::path::Path::new(&config.cwd));

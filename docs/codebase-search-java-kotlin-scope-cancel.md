@@ -83,9 +83,13 @@ The first implementation deliberately filters loaded chunks/results instead of n
 
 Scoped indexing remains a future optimization only if cache metadata is partitioned or pruning becomes prefix-aware.
 
-### Cancellation is threaded through index and search
+### Cancellation is threaded through managed index and search
 
-The tool adapter now passes `CancellationToken` through search and index execution. `omegon-codescan` exposes cancelable wrappers for the indexer and BM25 search loop while preserving the existing non-cancelled APIs for other callers.
+The tool adapter passes `CancellationToken` through the boot-captured managed service handle.
+One serial worker owns SQLite, indexing, and BM25 work for search, explicit indexing, and code
+context. The worker checks queued cancellation and active cancellation between files, chunks, and
+ranking steps. One filesystem, parser, SQLite, or tokenization operation can run to its boundary
+before it observes cancellation. `omegon-codescan` preserves non-cancelled APIs for library callers.
 
 Cancellation returns an explicit cancelled error instead of pretending there are no results.
 

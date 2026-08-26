@@ -17,6 +17,8 @@ pub(crate) struct SessionCommandContext<'a> {
     pub(crate) agent: &'a mut InteractiveAgentHost,
     pub(crate) cli: CliRuntimeView<'a>,
     pub(crate) events_tx: &'a broadcast::Sender<AgentEvent>,
+    pub(crate) supervisor:
+        Option<&'a mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
 }
 
 pub(crate) async fn handle(command: crate::tui::TuiCommand, context: SessionCommandContext<'_>) {
@@ -30,6 +32,7 @@ pub(crate) async fn handle(command: crate::tui::TuiCommand, context: SessionComm
                 context.agent,
                 &context.cli,
                 context.events_tx,
+                context.supervisor,
             )
             .await;
             respond(respond_to, response.accepted, response.output);

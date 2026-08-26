@@ -1,100 +1,7 @@
 use crate::runtime_commands::canonical_slash_command;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ControlRole {
-    Read,
-    Edit,
-    Admin,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlIngress {
-    Slash,
-    Cli,
-    Ipc,
-    WebDaemon,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CanonicalAction {
-    ContextView,
-    ContextCompact,
-    ContextClear,
-    ContextRequest,
-    ContextSetClass,
-    SkillsView,
-    SkillsGet,
-    SkillsCreate,
-    SkillsUpdate,
-    SkillsDelete,
-    SkillsInstall,
-    PromptsList,
-    PromptsGet,
-    PromptsCreate,
-    PromptsUpdate,
-    PromptsDelete,
-    PromptsPreview,
-    PromptsSubmit,
-    ModelView,
-    ModelList,
-    ModelSetSameProvider,
-    ProviderSwitch,
-    DispatcherSwitch,
-    ThinkingSet,
-    StatusView,
-    SessionStatsView,
-    TreeView,
-    NoteAdd,
-    NotesView,
-    NotesClear,
-    CheckinView,
-    SessionNew,
-    SessionList,
-    TurnCancel,
-    RuntimeShutdown,
-    RuntimeReload,
-    RuntimeRestart,
-    UpdateInstall,
-    PromptSubmit,
-    AuthStatus,
-    AuthLogin,
-    AuthLogout,
-    AuthUnlock,
-    SecretsView,
-    SecretsSet,
-    SecretsGet,
-    SecretsDelete,
-    VariablesView,
-    VariablesSet,
-    VariablesGet,
-    VariablesDelete,
-    PluginView,
-    PluginInstall,
-    PluginRemove,
-    PluginUpdate,
-    CleaveView,
-    CleaveCancelChild,
-    DelegateStatus,
-    AgentsStatus,
-    MaxTurnsSet,
-    ProfileView,
-    ProfileExport,
-    ProfileEdit,
-    ProfileApply,
-    PersonaList,
-    PersonaSwitch,
-    RuntimeModeSet,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClassifiedAction {
-    pub ingress: ControlIngress,
-    pub action: CanonicalAction,
-    pub role: ControlRole,
-    pub remote_safe: bool,
-}
+pub use crate::surfaces::actions::{
+    CanonicalAction, ClassifiedAction, ControlIngress, ControlRole,
+};
 
 pub fn is_role_sufficient(actual: ControlRole, required: ControlRole) -> bool {
     role_rank(actual) >= role_rank(required)
@@ -520,6 +427,27 @@ pub fn classify_remote_slash_command(name: &str, args: &str) -> ClassifiedAction
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_new_action_has_cross_surface_parity() {
+        let cases = [
+            ("tui", classify_slash_command("new", "")),
+            ("cli", classify_remote_slash_command("new", "")),
+            ("acp", classify_remote_slash_command("new", "")),
+            ("ipc", classify_ipc_method("new_session")),
+            ("web", classify_web_method("new_session")),
+            ("daemon", classify_daemon_trigger("new-session")),
+        ];
+        for (surface, classified) in cases {
+            assert_eq!(classified.action, CanonicalAction::SessionNew, "{surface}");
+            assert_eq!(classified.role, ControlRole::Edit, "{surface}");
+            assert!(classified.remote_safe, "{surface}");
+        }
+        assert_eq!(
+            serde_json::to_string(&ControlRole::Edit).unwrap(),
+            "\"edit\""
+        );
+    }
 
     #[test]
     fn variable_actions_have_precise_non_remote_classification() {

@@ -11,6 +11,8 @@ visibility = "private"
 
 # Omegon Extension SDK
 
+> **Compatibility archive:** The SDK is now owned by the standalone [`omegon-extension-rs`](https://github.com/styrene-lab/omegon-extension-rs) repository. Do not use version, RPC, install, or isolation details below as current authority. Omegon host admission and lifecycle are documented in [`docs/extensions.md`](docs/extensions.md).
+
 The Omegon Extension SDK (`omegon-extension` crate) provides a safe, versioned interface for third-party developers to build extensions for Omegon.
 
 **Core principle:** Extension failures must not crash Omegon. Safety is enforced at install time and runtime.

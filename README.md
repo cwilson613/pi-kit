@@ -173,6 +173,8 @@ Omegon stores durable facts under typed sections:
 This is not “chat history with search.”
 It is a project memory system with recall, persistence, and lifecycle-aware usage. Semantic recall uses Ollama embeddings when available and can fall back to a local ONNX sentence-transformer model in builds compiled with `local-embeddings`; if neither backend is available, memory degrades to FTS5 keyword search instead of failing.
 
+Memory is an optional managed service. If it is unavailable, memory tools and status remain visible with an explicit unavailable result, durable-memory context is omitted, and the rest of the session continues without a direct-storage fallback.
+
 ### 4. Tracks design and specification as first-class work
 
 Omegon ships with two durable lifecycle systems:
@@ -288,20 +290,13 @@ Omegon exposes structured tools for:
 
 ### Inference providers
 
-- Anthropic/Claude
-- OpenAI API
-- OpenAI/Codex
-- OpenRouter
-- Groq
-- xAI (Grok)
-- Mistral AI
-- Cerebras
-- Google Gemini
-- Google Antigravity
-- OpenCode Go
-- Hugging Face
-- Ollama (Local)
-- Ollama Cloud
+Omegon resolves contribution-backed cloud, brokered, and local inference routes.
+The running model and auth views are authoritative for the current installation;
+the repository does not present a static provider list as an exhaustive executable
+inventory. In particular, Google Antigravity authentication and inventory are
+declared, but its current provider contribution is non-executable. See the
+[provider guide](https://omegon.styrene.io/docs/providers) for representative
+authentication postures and routing boundaries.
 
 ### Tutorial that actually does work
 

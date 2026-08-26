@@ -40,7 +40,14 @@ impl Extension for MyExt {
     {
         match method {
             "get_tools" => Ok(json!([/* ToolDefinition array */])),
-            "execute_<tool_name>" => { /* handle tool call */ }
+            "execute_tool" => {
+                let tool_name = params.get("name").and_then(Value::as_str).unwrap_or("");
+                let args = params.get("args").cloned().unwrap_or_default();
+                match tool_name {
+                    "hello" => Ok(json!({"content": [{"type": "text", "text": args}]})),
+                    _ => Err(Error::method_not_found(tool_name)),
+                }
+            }
             _ => Err(Error::method_not_found(method)),
         }
     }
@@ -58,10 +65,10 @@ Omegon calls these methods via JSON-RPC 2.0 over stdin/stdout:
 |--------|------|--------|---------|
 | `get_tools` | Startup handshake | `{}` | `[{name, label, description, parameters}]` |
 | `bootstrap_secrets` | After get_tools | `{"SECRET_NAME": "value"}` | `{}` (ack) |
-| `execute_<tool_name>` | Agent calls tool | Tool args object | `{content: [{type: "text", text: "..."}]}` |
+| `execute_tool` | Agent calls tool | `{name: "tool_name", args: {...}}` | `{content: [{type: "text", text: "..."}]}` |
 | `get_<widget_id>` | TUI renders widget | `{}` | Widget-specific data |
 
-Tool names from `get_tools` are prefixed with `execute_` for dispatch: tool "hello" -> method "execute_hello".
+All tools use the single `execute_tool` method. Dispatch on `params.name`; tool arguments are in `params.args`.
 
 ## manifest.toml Schema
 
@@ -70,15 +77,14 @@ Tool names from `get_tools` are prefixed with `execute_` for dispatch: tool "hel
 name = "my-ext"           # Required: lowercase alphanumeric + hyphens
 version = "0.1.0"         # Required: semver
 description = "..."       # Optional
-sdk_version = "0.15"      # Optional: prefix-matched at install
 
 [runtime]
 type = "native"           # "native" or "oci"
 binary = "target/release/my-ext"  # Relative path to compiled binary
 
 [startup]
-ping_method = "get_tools" # Health check method (default)
-timeout_ms = 5000         # Health check timeout (default)
+ping_method = "get_tools" # Readiness method (default)
+timeout_ms = 5000         # Absolute readiness deadline (default)
 
 [secrets]
 required = ["API_KEY"]    # Must be in omegon vault before spawn
@@ -119,9 +125,16 @@ Each tool in the `get_tools` response:
 
 - Extension processes are spawned with a clean environment (no parent env leakage)
 - Secrets are delivered via `bootstrap_secrets` RPC, never environment variables
-- Extensions cannot access the agent's conversation, credentials, or filesystem outside their directory
+- Native and current OCI extensions are trusted host-authority code, not sandboxed code
+- Installation and enablement do not authorize execution; trust `extension:<manifest name>` through `permissions.trustedContributionCode`
+- Omegon computes and binds each runtime permit to the admitted source snapshot digest; authors do not declare this digest
+- The stable profile grant persists across updates, so review new bytes before reinstalling them
 - Panics in extension code crash only the extension, not the harness
-- Extensions auto-disable after repeated crashes within a session
+- Transport failures consume a generation-local restart budget with capped backoff, then enter terminal quarantine
+- Unix native process groups can provide strict cleanup; OCI and unowned boundaries report best-effort cleanup
+
+Process or container separation provides crash isolation, not verified confinement.
+`--dangerously-bypass-permissions` does not bypass dynamic-contribution preflight or grant code trust.
 
 ## Development Workflow
 
@@ -129,19 +142,20 @@ Each tool in the `get_tools` response:
 # Scaffold
 omegon extension init my-ext && cd my-ext
 
-# Develop (symlink mode — changes apply on restart)
+# Develop (local install copies into Omegon's guarded extension root)
 cargo build --release
-omegon extension install .   # creates symlink
+omegon extension install .
 
 # Test
 omegon                       # start TUI, extension loads automatically
 
-# Iterate
-cargo build --release        # rebuild
-# restart omegon to pick up changes
+# Iterate: rebuild, reinstall/update the copied bundle, then restart Omegon
+cargo build --release
+omegon extension remove my-ext
+omegon extension install .
 
 # Ship
-omegon extension remove my-ext   # remove symlink
+omegon extension remove my-ext
 # push to git, then:
 omegon extension install https://github.com/user/my-ext
 ```
@@ -149,20 +163,14 @@ omegon extension install https://github.com/user/my-ext
 ## Crate Reference
 
 The `omegon-extension` Rust SDK is published separately from the Omegon host.
-Its canonical source lives in the extension ecosystem workspace as
-`omegon-extension-rs/`, and consumers should depend on the crate from crates.io:
+Its canonical source is <https://github.com/styrene-lab/omegon-extension-rs>;
+consumers should follow that repository's current dependency and compatibility guidance.
 
 ```toml
 [dependencies]
-omegon-extension = "0.25"
+omegon-extension = "<current compatible version>"
 ```
 
-Host-owned runtime code remains in the Omegon repository. SDK-owned protocol
-and authoring helpers live in `omegon-extension-rs/`. Key SDK files:
-
-- `omegon-extension-rs/src/lib.rs` — public API and safety docs
-- `omegon-extension-rs/src/extension.rs` — `Extension`, `serve()`, `serve_v2()`, `HostProxy`
-- `omegon-extension-rs/src/rpc.rs` — JSON-RPC message types
-- `omegon-extension-rs/src/manifest.rs` — `ExtensionManifest` struct with validation
-- `omegon-extension-rs/src/error.rs` — error codes (`MethodNotFound`, `InvalidParams`, etc.)
-- `omegon-extension-rs/schema/sdk-contract.json` — cross-language SDK contract artifact
+Host-owned runtime behavior is documented in `docs/extensions.md`. SDK-owned
+protocol types, compatibility versions, and authoring helpers live in the
+standalone SDK repository and must not be inferred from host internals.

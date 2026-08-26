@@ -162,6 +162,7 @@ The release procedure must pass:
 python3 scripts/release_preflight.py --release-version X.Y.Z
 cargo test --workspace --locked
 cargo clippy -p omegon --all-targets -- -D warnings
+just check-source-composition release
 ```
 
 Use the project recipes where they provide these gates. A focused test run is not a substitute for the full release gate.
@@ -183,6 +184,15 @@ Never move a pushed stable tag. If an unpublished tag is defective, supersede it
 Push the release commit first. Then verify that the stable tag's commit is reachable from `origin/main`. Push the tag separately so CI receives an unambiguous tag event.
 
 CI builds and signs distributable artifacts. Local signing is workstation validation, not the source of published binaries.
+
+For each target, CI packages both executables and their resident composition
+locks. It invokes installed channel launchers for the linked-development path
+and extracted executables for the release path. Both paths exercise all
+applicable maintenance, interactive, headless, daemon, and full probes. CI also
+enforces target-aware dependency and executable-size budgets plus runtime-owned
+startup-task, model-schema, resident-capability, and callable-capability budgets
+before signing. The Sigstore bundle signs the package manifest; do not create a
+separate lock key or stamp a verification result without verifying that bundle.
 
 ### 6. Restore the development line
 
@@ -208,6 +218,9 @@ Confirm:
 
 - The GitHub release exists for `vX.Y.Z`.
 - Expected platform artifacts and the release manifest are present.
+- Each package manifest and `.manifest.sigstore.json` bundle passes
+  `omegon-maintain release verify` and reports both resident locks plus the
+  verified workflow identity.
 - Homebrew/site/downstream workflows succeeded where applicable.
 - `origin/main` contains the tag commit and the development-line restoration commit.
 - The public changelog matches the immutable tag's release history.

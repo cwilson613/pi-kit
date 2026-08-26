@@ -35,6 +35,10 @@ impl Feature for ToolAdapter {
         self.provider.tools()
     }
 
+    fn runtime_tool_policy(&self, tool_name: &str) -> Option<omegon_traits::RuntimeToolPolicy> {
+        self.provider.runtime_tool_policy(tool_name)
+    }
+
     async fn execute(
         &self,
         tool_name: &str,
@@ -57,6 +61,20 @@ impl Feature for ToolAdapter {
     ) -> anyhow::Result<ToolResult> {
         self.provider
             .execute_with_sink(tool_name, call_id, args, cancel, sink)
+            .await
+    }
+
+    async fn execute_with_context(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        context: omegon_traits::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        self.provider
+            .execute_with_context(tool_name, call_id, args, cancel, sink, context)
             .await
     }
 }
@@ -118,6 +136,10 @@ impl Feature for ToolContextAdapter {
         self.tool_provider.tools()
     }
 
+    fn runtime_tool_policy(&self, tool_name: &str) -> Option<omegon_traits::RuntimeToolPolicy> {
+        self.tool_provider.runtime_tool_policy(tool_name)
+    }
+
     async fn execute(
         &self,
         tool_name: &str,
@@ -140,6 +162,20 @@ impl Feature for ToolContextAdapter {
     ) -> anyhow::Result<ToolResult> {
         self.tool_provider
             .execute_with_sink(tool_name, call_id, args, cancel, sink)
+            .await
+    }
+
+    async fn execute_with_context(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        context: omegon_traits::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        self.tool_provider
+            .execute_with_context(tool_name, call_id, args, cancel, sink, context)
             .await
     }
 

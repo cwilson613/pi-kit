@@ -1,96 +1,491 @@
-//! Bidirectional sync between Omegon's fact store and a Codex vault directory.
-//!
-//! - `materialize_to_vault` writes facts as markdown files with TOML frontmatter
-//! - `materialize_episodes_to_vault` writes episodes as daily-note markdown files
-//! - `import_from_vault` reads Codex-authored memory facts back into the backend
+//! Contained, retry-convergent synchronization with a configured Codex vault.
 
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result};
-use tracing;
+use sha2::{Digest, Sha256};
 
 use crate::backend::MemoryBackend;
 use crate::types::*;
-use crate::util::now_iso;
 
-// ─── Report types ───────────────────────────────────────────────────────────
+const DEFAULT_SUBDIR: &str = "ai/memory";
+const MAX_VAULT_FILES: usize = 10_000;
+const MAX_VAULT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_VAULT_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_REPORT_PATHS: usize = 256;
+const MAX_REPORT_COUNT: usize = 10_000;
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Result of materializing facts to the vault.
-#[derive(Debug, Clone)]
+#[derive(Debug, thiserror::Error)]
+pub enum VaultSyncError {
+    #[error("invalid vault path: {0}")]
+    InvalidPath(String),
+    #[error("vault input changed or could not be read: {0}")]
+    TransientRead(String),
+    #[error("vault storage operation failed: {0}")]
+    Storage(String),
+    #[error("vault publication completed but directory durability failed for {path}: {error}")]
+    PublishedButDirectorySyncFailed { path: PathBuf, error: String },
+    #[error("memory operation failed: {0}")]
+    Memory(#[from] crate::MemoryError),
+    #[error("vault synchronization cancelled")]
+    Cancelled,
+    #[error("invalid vault input: {0}")]
+    InvalidInput(String),
+}
+
+pub type Result<T> = std::result::Result<T, VaultSyncError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishOutcome {
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializeReport {
     pub sections_written: usize,
     pub facts_written: usize,
+    pub files_changed_total: usize,
+    pub files_truncated: bool,
+    /// Paths are always relative to the validated vault root and bounded.
     pub files_written: Vec<PathBuf>,
 }
 
-/// Result of importing facts from the vault.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportReport {
     pub facts_imported: usize,
     pub facts_skipped: usize,
 }
 
-/// Result of reinforcing facts referenced by vault documents.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReinforcementReport {
     pub facts_reinforced: usize,
     pub references_dangling: usize,
+    pub references_superseded_total: usize,
+    pub references_superseded_truncated: bool,
     pub references_superseded: Vec<SupersededReference>,
 }
 
-/// A note references a fact that has been superseded.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupersededReference {
     pub note_path: PathBuf,
     pub old_fact_id: String,
     pub new_fact_id: String,
 }
 
-// ─── Section helpers ────────────────────────────────────────────────────────
+#[derive(Debug)]
+struct Snapshot {
+    relative_path: PathBuf,
+    content: String,
+    content_hash: String,
+}
 
-/// Map a Section enum variant to a filesystem-safe slug.
-pub fn section_to_slug(section: &Section) -> &'static str {
-    match section {
-        Section::Architecture => "architecture",
-        Section::Decisions => "decisions",
-        Section::Constraints => "constraints",
-        Section::KnownIssues => "known-issues",
-        Section::PatternsConventions => "patterns-conventions",
-        Section::Specs => "specs",
-        Section::RecentWork => "recent-work",
+fn check_cancel(cancelled: &dyn Fn() -> bool) -> Result<()> {
+    if cancelled() {
+        Err(VaultSyncError::Cancelled)
+    } else {
+        Ok(())
     }
 }
 
-/// Map a Section to its human-readable description.
-pub fn section_description(section: &Section) -> &'static str {
-    match section {
-        Section::Architecture => "System structure, component relationships, key abstractions",
-        Section::Decisions => "Choices made and their rationale",
-        Section::Constraints => "Requirements, limitations, environment details",
-        Section::KnownIssues => "Bugs, flaky tests, workarounds",
-        Section::PatternsConventions => "Code style, project conventions, common approaches",
-        Section::Specs => "Active specifications and design contracts",
-        Section::RecentWork => "Recent session activity",
+pub fn validate_vault_root(path: &Path) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| VaultSyncError::InvalidPath(error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(VaultSyncError::InvalidPath(
+            "vault root must be an existing non-symlink directory".into(),
+        ));
+    }
+    fs::canonicalize(path).map_err(|error| VaultSyncError::InvalidPath(error.to_string()))
+}
+
+fn validate_subdir(subdir: &str) -> Result<PathBuf> {
+    let path = Path::new(subdir);
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(VaultSyncError::InvalidPath(
+            "vault subdirectory must contain relative normal components only".into(),
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn validate_existing_path(root: &Path, relative: &Path, directory: bool) -> Result<()> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(VaultSyncError::InvalidPath(
+                "non-normal path component".into(),
+            ));
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(VaultSyncError::InvalidPath(format!(
+                    "symlink traversal rejected: {}",
+                    relative.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(VaultSyncError::TransientRead(error.to_string())),
+        }
+    }
+    let path = root.join(relative);
+    if path.exists() {
+        let canonical = fs::canonicalize(&path)
+            .map_err(|error| VaultSyncError::TransientRead(error.to_string()))?;
+        if !canonical.starts_with(root) {
+            return Err(VaultSyncError::InvalidPath(
+                "path escapes vault root".into(),
+            ));
+        }
+        let metadata = fs::metadata(&path)
+            .map_err(|error| VaultSyncError::TransientRead(error.to_string()))?;
+        if directory != metadata.is_dir() {
+            return Err(VaultSyncError::InvalidPath(format!(
+                "unexpected vault path type: {}",
+                relative.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn snapshot_markdown(
+    root: &Path,
+    relative_dir: Option<&Path>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<Snapshot>> {
+    snapshot_markdown_with_limit(root, relative_dir, cancelled, MAX_VAULT_SNAPSHOT_BYTES)
+}
+
+fn snapshot_markdown_with_limit(
+    root: &Path,
+    relative_dir: Option<&Path>,
+    cancelled: &dyn Fn() -> bool,
+    aggregate_limit: u64,
+) -> Result<Vec<Snapshot>> {
+    check_cancel(cancelled)?;
+    let start_relative = relative_dir.unwrap_or_else(|| Path::new(""));
+    if !start_relative.as_os_str().is_empty() {
+        validate_existing_path(root, start_relative, true)?;
+    }
+    let start = root.join(start_relative);
+    if !start.exists() {
+        return Ok(Vec::new());
+    }
+    let mut pending = vec![start_relative.to_path_buf()];
+    let mut paths = Vec::new();
+    let mut metadata_bytes = 0_u64;
+    while let Some(relative_dir) = pending.pop() {
+        check_cancel(cancelled)?;
+        let directory = root.join(&relative_dir);
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| VaultSyncError::TransientRead(error.to_string()))?;
+        for entry in entries {
+            check_cancel(cancelled)?;
+            let entry = entry.map_err(|error| VaultSyncError::TransientRead(error.to_string()))?;
+            let name = entry.file_name();
+            let relative = relative_dir.join(&name);
+            let metadata = fs::symlink_metadata(entry.path())
+                .map_err(|error| VaultSyncError::TransientRead(error.to_string()))?;
+            if metadata.file_type().is_symlink() {
+                return Err(VaultSyncError::InvalidPath(format!(
+                    "symlink traversal rejected: {}",
+                    relative.display()
+                )));
+            }
+            if metadata.is_dir() {
+                if !name.to_string_lossy().starts_with('.') {
+                    pending.push(relative);
+                }
+            } else if metadata.is_file()
+                && entry.path().extension().and_then(OsStr::to_str) == Some("md")
+            {
+                if metadata.len() > MAX_VAULT_FILE_BYTES {
+                    return Err(VaultSyncError::TransientRead(format!(
+                        "vault input exceeds {MAX_VAULT_FILE_BYTES} bytes: {}",
+                        relative.display()
+                    )));
+                }
+                metadata_bytes = metadata_bytes.checked_add(metadata.len()).ok_or_else(|| {
+                    VaultSyncError::TransientRead("vault snapshot byte count overflowed".into())
+                })?;
+                if metadata_bytes > aggregate_limit {
+                    return Err(VaultSyncError::TransientRead(format!(
+                        "vault snapshot exceeds {aggregate_limit} aggregate bytes"
+                    )));
+                }
+                paths.push(relative);
+                if paths.len() > MAX_VAULT_FILES {
+                    return Err(VaultSyncError::TransientRead(format!(
+                        "vault input exceeds {MAX_VAULT_FILES} files"
+                    )));
+                }
+            }
+        }
+    }
+    paths.sort();
+    let mut snapshots = Vec::with_capacity(paths.len());
+    let mut actual_bytes = 0_u64;
+    for relative_path in paths {
+        check_cancel(cancelled)?;
+        validate_existing_path(root, &relative_path, false)?;
+        let bytes = fs::read(root.join(&relative_path))
+            .map_err(|error| VaultSyncError::TransientRead(error.to_string()))?;
+        if bytes.len() as u64 > MAX_VAULT_FILE_BYTES {
+            return Err(VaultSyncError::TransientRead(format!(
+                "vault input exceeds {MAX_VAULT_FILE_BYTES} bytes: {}",
+                relative_path.display()
+            )));
+        }
+        actual_bytes = actual_bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| {
+                VaultSyncError::TransientRead("vault snapshot byte count overflowed".into())
+            })?;
+        if actual_bytes > aggregate_limit {
+            return Err(VaultSyncError::TransientRead(format!(
+                "vault snapshot exceeds {aggregate_limit} aggregate bytes"
+            )));
+        }
+        let content = String::from_utf8(bytes)
+            .map_err(|error| VaultSyncError::TransientRead(error.to_string()))?;
+        let content_hash = hex::encode(Sha256::digest(content.as_bytes()));
+        snapshots.push(Snapshot {
+            relative_path,
+            content,
+            content_hash,
+        });
+    }
+    Ok(snapshots)
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn ensure_output_dir(root: &Path, relative: &Path) -> Result<()> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(VaultSyncError::InvalidPath("non-normal output path".into()));
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(VaultSyncError::InvalidPath(format!(
+                    "unsafe output directory: {}",
+                    relative.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let parent = current.parent().ok_or_else(|| {
+                    VaultSyncError::InvalidPath("output directory has no parent".into())
+                })?;
+                fs::create_dir(&current)
+                    .map_err(|error| VaultSyncError::Storage(error.to_string()))?;
+                sync_directory(parent)
+                    .map_err(|error| VaultSyncError::Storage(error.to_string()))?;
+            }
+            Err(error) => return Err(VaultSyncError::Storage(error.to_string())),
+        }
+    }
+    Ok(())
+}
+
+fn preflight_output(root: &Path, relative: &Path, max_compare_bytes: u64) -> Result<()> {
+    let parent = relative
+        .parent()
+        .ok_or_else(|| VaultSyncError::InvalidPath("output has no parent".into()))?;
+    ensure_output_dir(root, parent)?;
+    validate_existing_path(root, relative, false)?;
+    let destination = root.join(relative);
+    match fs::metadata(&destination) {
+        Ok(metadata) if metadata.len() <= max_compare_bytes => {
+            fs::read(&destination)
+                .map_err(|error| VaultSyncError::TransientRead(error.to_string()))?;
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(VaultSyncError::TransientRead(error.to_string())),
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_existing(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: both paths are NUL-terminated UTF-16 buffers valid for this call.
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
-/// Map a Section to its display name (matching serde rename).
-fn section_display_name(section: &Section) -> &'static str {
-    match section {
-        Section::Architecture => "Architecture",
-        Section::Decisions => "Decisions",
-        Section::Constraints => "Constraints",
-        Section::KnownIssues => "Known Issues",
-        Section::PatternsConventions => "Patterns & Conventions",
-        Section::Specs => "Specs",
-        Section::RecentWork => "Recent Work",
+pub fn atomic_publish_contained(
+    root: &Path,
+    relative: &Path,
+    content: &[u8],
+    max_compare_bytes: u64,
+) -> Result<PublishOutcome> {
+    let root = validate_vault_root(root)?;
+    if relative
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(VaultSyncError::InvalidPath(
+            "output path must contain relative normal components only".into(),
+        ));
     }
+    let parent = relative
+        .parent()
+        .ok_or_else(|| VaultSyncError::InvalidPath("output has no parent".into()))?;
+    preflight_output(&root, relative, max_compare_bytes)?;
+    let destination = root.join(relative);
+    match fs::metadata(&destination) {
+        Ok(metadata) if metadata.len() <= max_compare_bytes => {
+            let existing = fs::read(&destination)
+                .map_err(|error| VaultSyncError::Storage(error.to_string()))?;
+            if existing == content {
+                return Ok(PublishOutcome { changed: false });
+            }
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(VaultSyncError::Storage(error.to_string())),
+    }
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let name = destination
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| VaultSyncError::InvalidPath("non-UTF-8 output filename".into()))?;
+    let temporary = destination.with_file_name(format!(
+        ".{name}.omegon-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+    let result: Result<()> = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| VaultSyncError::Storage(error.to_string()))?;
+        file.write_all(content)
+            .map_err(|error| VaultSyncError::Storage(error.to_string()))?;
+        file.sync_all()
+            .map_err(|error| VaultSyncError::Storage(error.to_string()))?;
+        drop(file);
+        validate_existing_path(&root, relative, false)?;
+        replace_existing(&temporary, &destination)
+            .map_err(|error| VaultSyncError::Storage(error.to_string()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    sync_directory(&root.join(parent)).map_err(|error| {
+        VaultSyncError::PublishedButDirectorySyncFailed {
+            path: relative.to_path_buf(),
+            error: error.to_string(),
+        }
+    })?;
+    Ok(PublishOutcome { changed: true })
 }
 
-/// Try to map a topic string (from Codex frontmatter) to a Section.
+fn atomic_publish(root: &Path, relative: &Path, content: &[u8]) -> Result<bool> {
+    atomic_publish_contained(root, relative, content, content.len() as u64)
+        .map(|outcome| outcome.changed)
+}
+
+fn parse_frontmatter(content: &str) -> Option<(&str, &str)> {
+    let trimmed = content.trim_start();
+    let after_open = trimmed
+        .strip_prefix("+++")?
+        .trim_start_matches(['\r', '\n']);
+    let close = after_open.find("\n+++")?;
+    let body = after_open[close + 4..].trim_start_matches(['\r', '\n']);
+    Some((&after_open[..close], body))
+}
+
+fn extract_toml_value<'a>(frontmatter: &'a str, key: &str) -> Option<&'a str> {
+    frontmatter.lines().find_map(|line| {
+        let value = line
+            .trim()
+            .strip_prefix(key)?
+            .trim()
+            .strip_prefix('=')?
+            .trim();
+        value
+            .strip_prefix('"')?
+            .split_once('"')
+            .map(|(value, _)| value)
+    })
+}
+
+fn extract_toml_string_array(frontmatter: &str, key: &str) -> Vec<String> {
+    frontmatter
+        .lines()
+        .find_map(|line| {
+            let value = line
+                .trim()
+                .strip_prefix(key)?
+                .trim()
+                .strip_prefix('=')?
+                .trim();
+            value.strip_prefix('[')?.strip_suffix(']')
+        })
+        .map(|values| {
+            values
+                .split(',')
+                .map(|value| value.trim().trim_matches('"'))
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn topic_to_section(topic: &str) -> Option<Section> {
-    let lower = topic.to_lowercase();
-    match lower.as_str() {
+    match topic.to_ascii_lowercase().as_str() {
         "architecture" => Some(Section::Architecture),
         "decisions" => Some(Section::Decisions),
         "constraints" => Some(Section::Constraints),
@@ -104,201 +499,476 @@ fn topic_to_section(topic: &str) -> Option<Section> {
     }
 }
 
-// ─── TOML frontmatter parsing ───────────────────────────────────────────────
-
-/// Parse TOML frontmatter delimited by `+++` lines. Returns (frontmatter, body).
-/// Returns None if the file doesn't have `+++` delimiters.
-fn parse_frontmatter(content: &str) -> Option<(&str, &str)> {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("+++") {
-        return None;
+pub fn section_to_slug(section: &Section) -> &'static str {
+    match section {
+        Section::Architecture => "architecture",
+        Section::Decisions => "decisions",
+        Section::Constraints => "constraints",
+        Section::KnownIssues => "known-issues",
+        Section::PatternsConventions => "patterns-conventions",
+        Section::Specs => "specs",
+        Section::RecentWork => "recent-work",
     }
-    // Find the closing +++
-    let after_open = &trimmed[3..];
-    let after_open = after_open.trim_start_matches(['\r', '\n']);
-    let close_pos = after_open.find("\n+++")?;
-    let frontmatter = &after_open[..close_pos];
-    let body_start = close_pos + 4; // skip "\n+++"
-    let body = if body_start < after_open.len() {
-        after_open[body_start..].trim_start_matches(['\r', '\n'])
-    } else {
-        ""
-    };
-    Some((frontmatter, body))
 }
 
-/// Extract a simple string value from TOML-like frontmatter (without a full TOML parser).
-/// Handles `key = "value"` patterns.
-fn extract_toml_value<'a>(frontmatter: &'a str, key: &str) -> Option<&'a str> {
-    for line in frontmatter.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix(key) {
-            let rest = rest.trim();
-            if let Some(rest) = rest.strip_prefix('=') {
-                let rest = rest.trim();
-                if rest.starts_with('"') && rest.len() > 1 {
-                    // Find closing quote
-                    if let Some(end) = rest[1..].find('"') {
-                        return Some(&rest[1..1 + end]);
+pub fn section_description(section: &Section) -> &'static str {
+    match section {
+        Section::Architecture => "System structure, component relationships, key abstractions",
+        Section::Decisions => "Choices made and their rationale",
+        Section::Constraints => "Requirements, limitations, environment details",
+        Section::KnownIssues => "Bugs, flaky tests, workarounds",
+        Section::PatternsConventions => "Code style, project conventions, common approaches",
+        Section::Specs => "Active specifications and design contracts",
+        Section::RecentWork => "Recent session activity",
+    }
+}
+
+fn section_display_name(section: &Section) -> &'static str {
+    match section {
+        Section::Architecture => "Architecture",
+        Section::Decisions => "Decisions",
+        Section::Constraints => "Constraints",
+        Section::KnownIssues => "Known Issues",
+        Section::PatternsConventions => "Patterns & Conventions",
+        Section::Specs => "Specs",
+        Section::RecentWork => "Recent Work",
+    }
+}
+
+fn declared_note_id(frontmatter: &str) -> Option<&str> {
+    extract_toml_value(frontmatter, "id").filter(|id| !id.is_empty())
+}
+
+fn update_note_identity(hash: &mut Sha256, note: &Snapshot, declared_id: Option<&str>) {
+    match declared_id {
+        Some(id) => {
+            hash.update(b"id");
+            hash.update([0]);
+            hash.update(id.as_bytes());
+        }
+        None => {
+            hash.update(b"path");
+            hash.update([0]);
+            hash.update(note.relative_path.as_os_str().as_encoded_bytes());
+        }
+    }
+}
+
+fn operation_id(
+    kind: &str,
+    note: &Snapshot,
+    declared_id: Option<&str>,
+    mind: &str,
+    fact_id: Option<&str>,
+) -> String {
+    let mut hash = Sha256::new();
+    update_note_identity(&mut hash, note, declared_id);
+    hash.update([0]);
+    hash.update(note.content_hash.as_bytes());
+    hash.update([0]);
+    hash.update(mind.as_bytes());
+    hash.update([0]);
+    hash.update(fact_id.unwrap_or_default().as_bytes());
+    format!("vault-{kind}-{}", hex::encode(hash.finalize()))
+}
+
+fn note_source_identity(note: &Snapshot, declared_id: Option<&str>) -> String {
+    let mut hash = Sha256::new();
+    update_note_identity(&mut hash, note, declared_id);
+    format!("codex-vault:{}", hex::encode(hash.finalize()))
+}
+
+fn report_increment(value: &mut usize) {
+    *value = value.saturating_add(1).min(MAX_REPORT_COUNT);
+}
+
+pub async fn import_from_vault(
+    backend: &dyn MemoryBackend,
+    vault_path: &Path,
+    mind: &str,
+) -> Result<ImportReport> {
+    import_from_vault_cancellable(backend, vault_path, mind, &|| false).await
+}
+
+pub async fn import_from_vault_cancellable(
+    backend: &dyn MemoryBackend,
+    vault_path: &Path,
+    mind: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ImportReport> {
+    let root = validate_vault_root(vault_path)?;
+    let subdir = validate_subdir(DEFAULT_SUBDIR)?;
+    let snapshots = snapshot_markdown(&root, Some(&subdir), cancelled)?;
+    let mut declared_ids = HashMap::new();
+    for note in &snapshots {
+        let Some((frontmatter, _)) = parse_frontmatter(&note.content) else {
+            continue;
+        };
+        if extract_toml_value(frontmatter, "kind") != Some("memory_fact") {
+            continue;
+        }
+        if let Some(id) = declared_note_id(frontmatter)
+            && let Some(previous) = declared_ids.insert(id.to_owned(), note.relative_path.clone())
+        {
+            return Err(VaultSyncError::InvalidInput(format!(
+                "duplicate declared memory-fact id {id:?} in {} and {}",
+                previous.display(),
+                note.relative_path.display()
+            )));
+        }
+    }
+    let mut report = ImportReport {
+        facts_imported: 0,
+        facts_skipped: 0,
+    };
+    for note in snapshots {
+        check_cancel(cancelled)?;
+        let Some((frontmatter, body)) = parse_frontmatter(&note.content) else {
+            report_increment(&mut report.facts_skipped);
+            continue;
+        };
+        if extract_toml_value(frontmatter, "kind") != Some("memory_fact") || body.trim().is_empty()
+        {
+            report_increment(&mut report.facts_skipped);
+            continue;
+        }
+        let section = extract_toml_value(frontmatter, "topic")
+            .or_else(|| extract_toml_value(frontmatter, "title"))
+            .and_then(topic_to_section)
+            .unwrap_or(Section::Architecture);
+        let declared_id = declared_note_id(frontmatter);
+        let source_identity = note_source_identity(&note, declared_id);
+        let active = backend.list_facts(mind, FactFilter::default()).await?;
+        let current = active
+            .iter()
+            .find(|fact| fact.source.as_deref() == Some(source_identity.as_str()))
+            .cloned();
+        if current
+            .as_ref()
+            .is_some_and(|fact| fact.content == body.trim() && fact.section == section)
+        {
+            report_increment(&mut report.facts_skipped);
+            continue;
+        }
+        let content_match = active
+            .into_iter()
+            .find(|fact| fact.content == body.trim() && fact.section == section);
+        if current.is_none() && content_match.is_some() {
+            report_increment(&mut report.facts_skipped);
+            continue;
+        }
+        let request = StoreFact {
+            mind: mind.into(),
+            content: body.trim().into(),
+            section: section.clone(),
+            decay_profile: DecayProfileName::Standard,
+            source: Some(source_identity),
+        };
+        let (operation_id, mutation) = match (current, content_match) {
+            (Some(fact), Some(existing)) => (
+                operation_id(
+                    "reconcile-alias",
+                    &note,
+                    declared_id,
+                    mind,
+                    Some(&format!(
+                        "{}:{}>{}:{}",
+                        fact.id, fact.version, existing.id, existing.version
+                    )),
+                ),
+                MemoryMutation::SupersedeFactWithExisting {
+                    fact: FactPrecondition {
+                        id: fact.id,
+                        expected_version: fact.version,
+                    },
+                    replacement: FactPrecondition {
+                        id: existing.id,
+                        expected_version: existing.version,
+                    },
+                },
+            ),
+            (Some(fact), None) => (
+                operation_id(
+                    "reconcile",
+                    &note,
+                    declared_id,
+                    mind,
+                    Some(&format!("{}:{}", fact.id, fact.version)),
+                ),
+                MemoryMutation::SupersedeFact {
+                    fact: FactPrecondition {
+                        id: fact.id,
+                        expected_version: fact.version,
+                    },
+                    replacement: request,
+                },
+            ),
+            (None, None) => {
+                let superseded = backend
+                    .list_facts(
+                        mind,
+                        FactFilter {
+                            section: Some(section),
+                            status: Some(FactStatus::Superseded),
+                        },
+                    )
+                    .await?
+                    .into_iter()
+                    .filter(|fact| fact.content == body.trim())
+                    .max_by_key(|fact| fact.version);
+                let (kind, predecessor) = superseded
+                    .map(|fact| ("restore", format!("{}:{}", fact.id, fact.version)))
+                    .unwrap_or_else(|| ("import", "new".into()));
+                (
+                    operation_id(kind, &note, declared_id, mind, Some(&predecessor)),
+                    MemoryMutation::StoreFact { request },
+                )
+            }
+            (None, Some(_)) => unreachable!("active content alias handled above"),
+        };
+        let outcome = backend.apply_mutation(&operation_id, mutation).await?;
+        if outcome.replayed {
+            report_increment(&mut report.facts_skipped);
+        } else {
+            report_increment(&mut report.facts_imported);
+        }
+    }
+    Ok(report)
+}
+
+pub async fn reinforce_referenced_facts(
+    backend: &dyn MemoryBackend,
+    vault_path: &Path,
+) -> Result<ReinforcementReport> {
+    reinforce_referenced_facts_cancellable(backend, vault_path, &|| false).await
+}
+
+pub async fn reinforce_referenced_facts_cancellable(
+    backend: &dyn MemoryBackend,
+    vault_path: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ReinforcementReport> {
+    let root = validate_vault_root(vault_path)?;
+    let snapshots = snapshot_markdown(&root, None, cancelled)?;
+    let mut report = ReinforcementReport {
+        facts_reinforced: 0,
+        references_dangling: 0,
+        references_superseded_total: 0,
+        references_superseded_truncated: false,
+        references_superseded: Vec::new(),
+    };
+    for note in snapshots {
+        check_cancel(cancelled)?;
+        let Some((frontmatter, _)) = parse_frontmatter(&note.content) else {
+            continue;
+        };
+        let declared_id = declared_note_id(frontmatter);
+        for fact_id in extract_toml_string_array(frontmatter, "related_facts") {
+            check_cancel(cancelled)?;
+            match backend.get_fact(&fact_id).await? {
+                Some(fact) if fact.status == FactStatus::Active => {
+                    let outcome = backend
+                        .apply_mutation(
+                            &operation_id(
+                                "reinforce",
+                                &note,
+                                declared_id,
+                                &fact.mind,
+                                Some(&fact_id),
+                            ),
+                            MemoryMutation::ReinforceFactOnce { fact_id },
+                        )
+                        .await?;
+                    if !outcome.replayed {
+                        report_increment(&mut report.facts_reinforced);
+                    }
+                }
+                Some(_) => report_increment(&mut report.references_dangling),
+                None => {
+                    if let Some(replacement) = backend.superseding_fact(&fact_id).await? {
+                        report.references_superseded_total += 1;
+                        if report.references_superseded.len() < MAX_REPORT_PATHS {
+                            report.references_superseded.push(SupersededReference {
+                                note_path: note.relative_path.clone(),
+                                old_fact_id: fact_id,
+                                new_fact_id: replacement.id,
+                            });
+                        }
+                    } else {
+                        report_increment(&mut report.references_dangling);
                     }
                 }
             }
         }
     }
-    None
+    report.references_superseded_truncated =
+        report.references_superseded_total > report.references_superseded.len();
+    Ok(report)
 }
 
-// ─── Materialize facts ─────────────────────────────────────────────────────
-
-/// Write all active facts from the backend to the vault as markdown files.
-///
-/// Creates one file per section at `{vault_path}/{subdir}/{slug}.md` plus
-/// an index file at `{vault_path}/{subdir}/_index.md`.
-///
-/// The default subdirectory is `ai/memory` (omegon convention). Pass a
-/// custom value to integrate with a different vault layout.
 pub async fn materialize_to_vault(
     backend: &dyn MemoryBackend,
     vault_path: &Path,
     mind: &str,
 ) -> Result<MaterializeReport> {
-    materialize_to_vault_with_subdir(backend, vault_path, mind, "ai/memory").await
+    materialize_to_vault_cancellable(backend, vault_path, mind, &|| false).await
 }
 
-/// Like [`materialize_to_vault`] but with a configurable subdirectory.
+pub async fn materialize_to_vault_cancellable(
+    backend: &dyn MemoryBackend,
+    vault_path: &Path,
+    mind: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<MaterializeReport> {
+    materialize_to_vault_with_subdir_cancellable(
+        backend,
+        vault_path,
+        mind,
+        DEFAULT_SUBDIR,
+        cancelled,
+    )
+    .await
+}
+
 pub async fn materialize_to_vault_with_subdir(
     backend: &dyn MemoryBackend,
     vault_path: &Path,
     mind: &str,
     subdir: &str,
 ) -> Result<MaterializeReport> {
-    let memory_dir = vault_path.join(subdir);
-    tokio::fs::create_dir_all(&memory_dir)
-        .await
-        .context("creating vault memory directory")?;
+    materialize_to_vault_with_subdir_cancellable(backend, vault_path, mind, subdir, &|| false).await
+}
 
-    let now = now_iso();
-    // Truncate to date for index display: "2026-04-21T18:00:00.000Z" -> "2026-04-21"
-    let today = &now[..10];
-
-    let mut sections_written = 0usize;
-    let mut facts_written = 0usize;
-    let mut files_written = Vec::new();
-
-    // For the index table
-    let mut index_rows: Vec<(String, String, usize)> = Vec::new(); // (slug, display_name, count)
-
+async fn materialize_to_vault_with_subdir_cancellable(
+    backend: &dyn MemoryBackend,
+    vault_path: &Path,
+    mind: &str,
+    subdir: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<MaterializeReport> {
+    check_cancel(cancelled)?;
+    let root = validate_vault_root(vault_path)?;
+    let subdir = validate_subdir(subdir)?;
+    let mut outputs = Vec::new();
+    let mut index_rows = Vec::new();
+    let all_facts = backend
+        .list_facts(
+            mind,
+            FactFilter {
+                section: None,
+                status: Some(FactStatus::Active),
+            },
+        )
+        .await?;
+    check_cancel(cancelled)?;
     for section in Section::all() {
-        let filter = FactFilter {
-            section: Some(section.clone()),
-            status: Some(FactStatus::Active),
-        };
-        let mut facts = backend
-            .list_facts(mind, filter)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-        if facts.is_empty() {
+        check_cancel(cancelled)?;
+        let mut facts: Vec<Fact> = all_facts
+            .iter()
+            .filter(|fact| fact.section == *section)
+            .cloned()
+            .collect();
+        let slug = section_to_slug(section);
+        let relative = subdir.join(format!("{slug}.md"));
+        let previously_materialized = fs::symlink_metadata(root.join(&relative)).is_ok();
+        if facts.is_empty() && !previously_materialized {
             continue;
         }
-
-        // Sort by confidence descending
-        facts.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
+        facts.sort_by(|left, right| {
+            right
+                .confidence
+                .total_cmp(&left.confidence)
+                .then_with(|| left.id.cmp(&right.id))
         });
-
-        let slug = section_to_slug(section);
-        let display_name = section_display_name(section);
-        let desc = section_description(section);
-        let fact_count = facts.len();
-
-        // Build markdown content
-        let mut content = String::new();
-
-        // TOML frontmatter
-        content.push_str("+++\n");
-        content.push_str(&format!("id = \"memory-section-{slug}\"\n"));
-        content.push_str("kind = \"memory_section\"\n");
-        content.push_str(&format!("tags = [\"memory\", \"{slug}\"]\n"));
-        content.push_str("\n[data]\n");
-        content.push_str(&format!("section = \"{display_name}\"\n"));
-        content.push_str(&format!("fact_count = {fact_count}\n"));
-        content.push_str(&format!("last_updated = \"{now}\"\n"));
-        content.push_str(&format!("mind = \"{mind}\"\n"));
-        content.push_str("+++\n\n");
-
-        // Heading and description
-        content.push_str(&format!("# {display_name}\n\n"));
-        content.push_str(&format!("_{desc}_\n\n"));
-
-        // Fact bullets
+        let name = section_display_name(section);
+        let stable_date = facts
+            .iter()
+            .map(|fact| fact.created_at.get(..10).unwrap_or("1970-01-01"))
+            .max()
+            .unwrap_or("1970-01-01");
+        let mut content = format!(
+            "+++\nid = \"memory-section-{slug}\"\nkind = \"memory_section\"\ntags = [\"memory\", \"{slug}\"]\n\n[data]\nsection = \"{name}\"\nfact_count = {}\nlast_updated = \"{stable_date}\"\nmind = \"{mind}\"\n+++\n\n# {name}\n\n_{}_\n\n",
+            facts.len(),
+            section_description(section)
+        );
         for fact in &facts {
             content.push_str(&format!(
                 "- {} [confidence: {:.2}, id: {}]\n",
                 fact.content, fact.confidence, fact.id
             ));
         }
-
-        let file_path = memory_dir.join(format!("{slug}.md"));
-        tokio::fs::write(&file_path, content.as_bytes())
-            .await
-            .with_context(|| format!("writing {}", file_path.display()))?;
-
-        tracing::debug!(
-            section = display_name,
-            facts = fact_count,
-            "materialized section"
-        );
-
-        sections_written += 1;
-        facts_written += fact_count;
-        files_written.push(file_path);
-        index_rows.push((slug.to_string(), display_name.to_string(), fact_count));
-    }
-
-    // Write index file
-    if !index_rows.is_empty() {
-        let mut idx = String::new();
-        idx.push_str("# Project Memory\n\n");
-        idx.push_str("| Section | Facts | Last Updated |\n");
-        idx.push_str("|---------|-------|-------------|\n");
-        for (slug, _display, count) in &index_rows {
-            idx.push_str(&format!("| [[{slug}]] | {count} | {today} |\n"));
+        if !facts.is_empty() {
+            index_rows.push((slug, facts.len(), stable_date.to_string()));
         }
-
-        let index_path = memory_dir.join("_index.md");
-        tokio::fs::write(&index_path, idx.as_bytes())
-            .await
-            .context("writing _index.md")?;
-        files_written.push(index_path);
+        outputs.push((relative, content, facts.len()));
     }
-
+    let index_relative = subdir.join("_index.md");
+    if !index_rows.is_empty() || fs::symlink_metadata(root.join(&index_relative)).is_ok() {
+        let mut index = "# Project Memory\n\n| Section | Facts | Last Updated |\n|---------|-------|-------------|\n".to_string();
+        for (slug, count, date) in index_rows {
+            index.push_str(&format!("| [[{slug}]] | {count} | {date} |\n"));
+        }
+        outputs.push((index_relative, index, 0));
+    }
+    for (relative, content, _) in &outputs {
+        check_cancel(cancelled)?;
+        preflight_output(&root, relative, content.len() as u64)?;
+    }
+    let mut sections_written = 0usize;
+    let mut facts_written = 0usize;
+    let mut files_changed_total = 0usize;
+    let mut files_written = Vec::new();
+    for (relative, content, fact_count) in outputs {
+        check_cancel(cancelled)?;
+        if atomic_publish(&root, &relative, content.as_bytes())? {
+            files_changed_total += 1;
+            if relative.file_name() != Some(OsStr::new("_index.md")) {
+                report_increment(&mut sections_written);
+            }
+            facts_written = facts_written
+                .saturating_add(fact_count)
+                .min(MAX_REPORT_COUNT);
+            if files_written.len() < MAX_REPORT_PATHS {
+                files_written.push(relative);
+            }
+        }
+    }
     Ok(MaterializeReport {
         sections_written,
         facts_written,
+        files_changed_total,
+        files_truncated: files_changed_total > files_written.len(),
         files_written,
     })
 }
 
-// ─── Materialize episodes ───────────────────────────────────────────────────
-
-/// Write recent episodes as daily-note-style markdown files.
-///
-/// Files are written to `{vault_path}/{subdir}/episodes/{date}.md`
-/// where subdir defaults to `ai/memory`.
-/// Returns the number of episodes written.
 pub async fn materialize_episodes_to_vault(
     backend: &dyn MemoryBackend,
     vault_path: &Path,
     mind: &str,
     limit: usize,
 ) -> Result<usize> {
-    materialize_episodes_to_vault_with_subdir(backend, vault_path, mind, limit, "ai/memory").await
+    materialize_episodes_to_vault_cancellable(backend, vault_path, mind, limit, &|| false).await
 }
 
-/// Like [`materialize_episodes_to_vault`] but with a configurable subdirectory.
+pub async fn materialize_episodes_to_vault_cancellable(
+    backend: &dyn MemoryBackend,
+    vault_path: &Path,
+    mind: &str,
+    limit: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<usize> {
+    materialize_episodes_to_vault_with_subdir_cancellable(
+        backend,
+        vault_path,
+        mind,
+        limit,
+        DEFAULT_SUBDIR,
+        cancelled,
+    )
+    .await
+}
+
 pub async fn materialize_episodes_to_vault_with_subdir(
     backend: &dyn MemoryBackend,
     vault_path: &Path,
@@ -306,424 +976,173 @@ pub async fn materialize_episodes_to_vault_with_subdir(
     limit: usize,
     subdir: &str,
 ) -> Result<usize> {
-    let episodes_dir = vault_path.join(subdir).join("episodes");
-    tokio::fs::create_dir_all(&episodes_dir)
-        .await
-        .context("creating episodes directory")?;
-
-    let episodes = backend
-        .list_episodes(mind, limit)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    let mut written = 0usize;
-
-    for ep in &episodes {
-        let date = &ep.date;
-        let tool_calls = ep.tool_calls_count.unwrap_or(0);
-
-        let mut content = String::new();
-        content.push_str("+++\n");
-        content.push_str(&format!("id = \"episode-{date}\"\n"));
-        content.push_str("kind = \"memory_episode\"\n");
-        content.push_str(&format!("tags = [\"memory\", \"episode\", \"{date}\"]\n"));
-        content.push_str("\n[data]\n");
-        content.push_str(&format!("date = \"{date}\"\n"));
-        content.push_str(&format!("mind = \"{mind}\"\n"));
-        content.push_str(&format!("title = \"{}\"\n", ep.title.replace('"', "\\\"")));
-        content.push_str(&format!("tool_calls = {tool_calls}\n"));
-        content.push_str("+++\n\n");
-
-        content.push_str(&ep.narrative);
-        content.push('\n');
-
-        let file_path = episodes_dir.join(format!("{date}.md"));
-        tokio::fs::write(&file_path, content.as_bytes())
-            .await
-            .with_context(|| format!("writing episode {}", file_path.display()))?;
-
-        tracing::debug!(date = date, title = %ep.title, "materialized episode");
-        written += 1;
-    }
-
-    Ok(written)
+    materialize_episodes_to_vault_with_subdir_cancellable(
+        backend,
+        vault_path,
+        mind,
+        limit,
+        subdir,
+        &|| false,
+    )
+    .await
 }
 
-// ─── Import from vault ──────────────────────────────────────────────────────
-
-/// Scan the vault's memory directory for Codex-authored facts and import them.
-///
-/// Only files with `kind = "memory_fact"` in their TOML frontmatter are imported.
-/// Files with `kind = "memory_section"` or `kind = "memory_episode"` (written by
-/// the materializer) are skipped.
-pub async fn import_from_vault(
+async fn materialize_episodes_to_vault_with_subdir_cancellable(
     backend: &dyn MemoryBackend,
     vault_path: &Path,
     mind: &str,
-) -> Result<ImportReport> {
-    let memory_dir = vault_path.join("ai").join("memory");
-
-    if !memory_dir.exists() {
-        return Ok(ImportReport {
-            facts_imported: 0,
-            facts_skipped: 0,
+    limit: usize,
+    subdir: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<usize> {
+    check_cancel(cancelled)?;
+    let root = validate_vault_root(vault_path)?;
+    let subdir = validate_subdir(subdir)?.join("episodes");
+    let episodes = backend.list_episodes(mind, limit).await?;
+    check_cancel(cancelled)?;
+    let mut by_date = std::collections::BTreeMap::<String, Vec<Episode>>::new();
+    for episode in episodes {
+        check_cancel(cancelled)?;
+        by_date
+            .entry(episode.date.clone())
+            .or_default()
+            .push(episode);
+    }
+    let mut outputs = Vec::with_capacity(by_date.len());
+    for (date, mut episodes) in by_date {
+        check_cancel(cancelled)?;
+        episodes.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
         });
+        let tool_calls: u64 = episodes
+            .iter()
+            .map(|episode| u64::from(episode.tool_calls_count.unwrap_or(0)))
+            .sum();
+        let mut content = format!(
+            "+++\nid = \"episode-{date}\"\nkind = \"memory_episode\"\ntags = [\"memory\", \"episode\", \"{date}\"]\n\n[data]\ndate = \"{date}\"\nmind = \"{mind}\"\nepisode_count = {}\ntool_calls = {tool_calls}\n+++\n",
+            episodes.len()
+        );
+        for episode in episodes {
+            content.push_str(&format!(
+                "\n## {}\n\n- id: `{}`\n- created_at: `{}`\n- tool_calls: {}\n\n{}\n",
+                episode.title,
+                episode.id,
+                episode.created_at,
+                episode.tool_calls_count.unwrap_or(0),
+                episode.narrative
+            ));
+        }
+        outputs.push((subdir.join(format!("{date}.md")), content));
     }
-
-    let mut facts_imported = 0usize;
-    let mut facts_skipped = 0usize;
-
-    let mut entries = tokio::fs::read_dir(&memory_dir)
-        .await
-        .context("reading vault memory directory")?;
-
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-
-        // Only process .md files (not directories)
-        if path.is_dir() || path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to read vault file");
-                facts_skipped += 1;
-                continue;
-            }
-        };
-
-        let (frontmatter, body) = match parse_frontmatter(&content) {
-            Some(pair) => pair,
-            None => {
-                facts_skipped += 1;
-                continue;
-            }
-        };
-
-        // Only import files with kind = "memory_fact" (Codex-authored)
-        let kind = extract_toml_value(frontmatter, "kind");
-        if kind != Some("memory_fact") {
-            facts_skipped += 1;
-            continue;
-        }
-
-        // Extract topic/title for section mapping
-        let topic = extract_toml_value(frontmatter, "topic")
-            .or_else(|| extract_toml_value(frontmatter, "title"));
-
-        let section = topic
-            .and_then(topic_to_section)
-            .unwrap_or(Section::Architecture);
-
-        // The body is the fact content. Trim and use non-empty content.
-        let fact_content = body.trim();
-        if fact_content.is_empty() {
-            facts_skipped += 1;
-            continue;
-        }
-
-        let req = StoreFact {
-            mind: mind.to_string(),
-            content: fact_content.to_string(),
-            section,
-            decay_profile: DecayProfileName::Standard,
-            source: Some("codex-vault".to_string()),
-        };
-
-        match backend.store_fact(req).await {
-            Ok(_result) => {
-                tracing::debug!(path = %path.display(), "imported fact from vault");
-                facts_imported += 1;
-            }
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to import fact");
-                facts_skipped += 1;
-            }
-        }
+    for (relative, content) in &outputs {
+        check_cancel(cancelled)?;
+        preflight_output(&root, relative, content.len() as u64)?;
     }
-
-    Ok(ImportReport {
-        facts_imported,
-        facts_skipped,
-    })
+    let mut written = 0;
+    for (relative, content) in outputs {
+        check_cancel(cancelled)?;
+        written += usize::from(atomic_publish(&root, &relative, content.as_bytes())?);
+    }
+    Ok(written)
 }
-
-// ─── Fact reference reinforcement ───────────────────────────────────────────
-
-/// Extract a TOML array of strings from frontmatter.
-/// Handles `key = ["val1", "val2"]` on a single line.
-fn extract_toml_string_array(frontmatter: &str, key: &str) -> Vec<String> {
-    for line in frontmatter.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix(key) {
-            let rest = rest.trim();
-            if let Some(rest) = rest.strip_prefix('=') {
-                let rest = rest.trim();
-                if rest.starts_with('[') && rest.ends_with(']') {
-                    let inner = &rest[1..rest.len() - 1];
-                    return inner
-                        .split(',')
-                        .filter_map(|s| {
-                            let s = s.trim().trim_matches('"');
-                            if s.is_empty() {
-                                None
-                            } else {
-                                Some(s.to_string())
-                            }
-                        })
-                        .collect();
-                }
-            }
-        }
-    }
-    Vec::new()
-}
-
-/// Scan vault documents for `related_facts` references and reinforce those facts.
-///
-/// Any fact referenced by an active vault document gets its decay timer reset
-/// and reinforcement count incremented. Facts that are woven into documentation
-/// should not silently decay away.
-///
-/// Also detects superseded references: if a note references fact A which was
-/// superseded by fact B, the report includes the mapping so the caller can
-/// notify the operator or auto-update the reference.
-pub async fn reinforce_referenced_facts(
-    backend: &dyn MemoryBackend,
-    vault_path: &Path,
-) -> Result<ReinforcementReport> {
-    let mut facts_reinforced = 0usize;
-    let mut references_dangling = 0usize;
-    let mut references_superseded = Vec::new();
-
-    // Walk the entire vault looking for .md files with related_facts in frontmatter
-    let mut dirs_to_visit = vec![vault_path.to_path_buf()];
-
-    while let Some(dir) = dirs_to_visit.pop() {
-        let mut entries = match tokio::fs::read_dir(&dir).await {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-
-            if path.is_dir() {
-                // Skip .codex and .git directories
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !name.starts_with('.') {
-                    dirs_to_visit.push(path);
-                }
-                continue;
-            }
-
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-
-            let content = match tokio::fs::read_to_string(&path).await {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            let (frontmatter, _body) = match parse_frontmatter(&content) {
-                Some(pair) => pair,
-                None => continue,
-            };
-
-            // Check for related_facts in frontmatter or [data] section
-            let fact_ids = extract_toml_string_array(frontmatter, "related_facts");
-            if fact_ids.is_empty() {
-                continue;
-            }
-
-            let rel_path = path.strip_prefix(vault_path).unwrap_or(&path).to_path_buf();
-
-            for fact_id in &fact_ids {
-                match backend.get_fact(fact_id).await {
-                    Ok(Some(fact)) => {
-                        // Fact exists and is active — reinforce it
-                        if fact.status == FactStatus::Active {
-                            match backend.reinforce_fact(fact_id).await {
-                                Ok(_) => {
-                                    tracing::debug!(
-                                        fact_id,
-                                        note = %rel_path.display(),
-                                        "reinforced fact referenced by note"
-                                    );
-                                    facts_reinforced += 1;
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        fact_id,
-                                        error = %e,
-                                        "failed to reinforce referenced fact"
-                                    );
-                                }
-                            }
-                        } else if fact.status == FactStatus::Superseded {
-                            // Fact was superseded — find the replacement
-                            if let Some(ref new_id) = fact.superseded_by {
-                                references_superseded.push(SupersededReference {
-                                    note_path: rel_path.clone(),
-                                    old_fact_id: fact_id.clone(),
-                                    new_fact_id: new_id.clone(),
-                                });
-                            } else {
-                                references_dangling += 1;
-                            }
-                        } else {
-                            // Archived without supersession — dangling
-                            references_dangling += 1;
-                        }
-                    }
-                    Ok(None) => {
-                        // Fact doesn't exist — dangling reference
-                        tracing::debug!(
-                            fact_id,
-                            note = %rel_path.display(),
-                            "dangling fact reference in note"
-                        );
-                        references_dangling += 1;
-                    }
-                    Err(e) => {
-                        tracing::warn!(fact_id, error = %e, "failed to look up referenced fact");
-                        references_dangling += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(ReinforcementReport {
-        facts_reinforced,
-        references_dangling,
-        references_superseded,
-    })
-}
-
-// ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inmemory::InMemoryBackend;
+    use crate::{InMemoryBackend, SqliteBackend};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::tempdir;
 
-    /// Helper: store N facts in a section via the backend.
-    async fn seed_facts(backend: &dyn MemoryBackend, section: Section, count: usize) {
-        for i in 0..count {
-            let req = StoreFact {
+    async fn seed(backend: &dyn MemoryBackend) -> Fact {
+        backend
+            .store_fact(StoreFact {
                 mind: "default".into(),
-                content: format!("Fact {i} for {}", section_display_name(&section)),
-                section: section.clone(),
+                content: "Stable architecture".into(),
+                section: Section::Architecture,
                 decay_profile: DecayProfileName::Standard,
                 source: Some("test".into()),
-            };
-            backend.store_fact(req).await.unwrap();
+            })
+            .await
+            .unwrap()
+            .fact
+    }
+
+    async fn seed_facts(backend: &dyn MemoryBackend, section: Section, count: usize) {
+        for i in 0..count {
+            backend
+                .store_fact(StoreFact {
+                    mind: "default".into(),
+                    content: format!("Fact {i} for {}", section_display_name(&section)),
+                    section: section.clone(),
+                    decay_profile: DecayProfileName::Standard,
+                    source: Some("test".into()),
+                })
+                .await
+                .unwrap();
         }
     }
 
     #[tokio::test]
     async fn materialize_report_counts_correctly() {
         let backend = Arc::new(InMemoryBackend::new());
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = tmp.path();
-
-        // Seed 3 Architecture, 2 Decisions
+        let temp = tempdir().unwrap();
         seed_facts(backend.as_ref(), Section::Architecture, 3).await;
         seed_facts(backend.as_ref(), Section::Decisions, 2).await;
-
-        let report = materialize_to_vault(backend.as_ref(), vault, "default")
+        let report = materialize_to_vault(backend.as_ref(), temp.path(), "default")
             .await
             .unwrap();
-
-        assert_eq!(report.sections_written, 2, "should write 2 sections");
-        assert_eq!(report.facts_written, 5, "should write 5 total facts");
-        // 2 section files + 1 index file
+        assert_eq!(report.sections_written, 2);
+        assert_eq!(report.facts_written, 5);
         assert_eq!(report.files_written.len(), 3);
-
-        // Verify section files exist and have content
-        let arch_path = vault.join("ai/memory/architecture.md");
-        assert!(arch_path.exists(), "architecture.md should exist");
-        let arch_content = std::fs::read_to_string(&arch_path).unwrap();
-        assert!(arch_content.contains("kind = \"memory_section\""));
-        assert!(arch_content.contains("fact_count = 3"));
-        assert!(arch_content.contains("# Architecture"));
-
-        let dec_path = vault.join("ai/memory/decisions.md");
-        assert!(dec_path.exists(), "decisions.md should exist");
-
-        // Verify index file
-        let idx_path = vault.join("ai/memory/_index.md");
-        assert!(idx_path.exists(), "_index.md should exist");
-        let idx_content = std::fs::read_to_string(&idx_path).unwrap();
-        assert!(idx_content.contains("[[architecture]]"));
-        assert!(idx_content.contains("[[decisions]]"));
+        let architecture =
+            fs::read_to_string(temp.path().join("ai/memory/architecture.md")).unwrap();
+        assert!(architecture.contains("kind = \"memory_section\""));
+        assert!(architecture.contains("fact_count = 3"));
+        assert!(architecture.contains("# Architecture"));
+        assert!(temp.path().join("ai/memory/decisions.md").exists());
+        let index = fs::read_to_string(temp.path().join("ai/memory/_index.md")).unwrap();
+        assert!(index.contains("[[architecture]]"));
+        assert!(index.contains("[[decisions]]"));
     }
 
     #[test]
     fn section_slug_roundtrip() {
-        // Every section variant produces a non-empty, filesystem-safe slug
         for section in Section::all() {
             let slug = section_to_slug(section);
-            assert!(!slug.is_empty(), "slug should not be empty for {section:?}");
+            assert!(!slug.is_empty());
             assert!(
-                slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
-                "slug should be filesystem-safe: {slug}"
+                slug.chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
             );
-            // Also verify description is non-empty
-            let desc = section_description(section);
-            assert!(
-                !desc.is_empty(),
-                "description should not be empty for {section:?}"
-            );
+            assert!(!section_description(section).is_empty());
         }
     }
 
     #[tokio::test]
     async fn import_skips_materializer_files() {
         let backend = Arc::new(InMemoryBackend::new());
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = tmp.path();
-
-        let memory_dir = vault.join("ai").join("memory");
-        std::fs::create_dir_all(&memory_dir).unwrap();
-
-        // Write a materializer file (kind = "memory_section") — should be skipped
-        let section_file = memory_dir.join("architecture.md");
-        std::fs::write(
-            &section_file,
-            "+++\nkind = \"memory_section\"\n+++\n\n# Architecture\n- Some fact\n",
+        let temp = tempdir().unwrap();
+        let memory = temp.path().join("ai/memory");
+        fs::create_dir_all(&memory).unwrap();
+        fs::write(
+            memory.join("architecture.md"),
+            "+++\nkind = \"memory_section\"\n+++\nBody\n",
         )
         .unwrap();
-
-        // Write an episode file (kind = "memory_episode") — should be skipped
-        let episode_file = memory_dir.join("episode-2026-04-21.md");
-        std::fs::write(
-            &episode_file,
-            "+++\nkind = \"memory_episode\"\n+++\n\nSome narrative\n",
+        fs::write(
+            memory.join("episode.md"),
+            "+++\nkind = \"memory_episode\"\n+++\nBody\n",
         )
         .unwrap();
-
-        // Write a Codex-authored fact (kind = "memory_fact") — should be imported
-        let codex_file = memory_dir.join("codex-fact-1.md");
-        std::fs::write(
-            &codex_file,
-            "+++\nkind = \"memory_fact\"\ntopic = \"Architecture\"\n+++\n\nThe API uses REST with JSON payloads\n",
-        )
-        .unwrap();
-
-        let report = import_from_vault(backend.as_ref(), vault, "default")
+        fs::write(memory.join("codex.md"), "+++\nkind = \"memory_fact\"\ntopic = \"Architecture\"\n+++\nThe API uses REST with JSON payloads\n").unwrap();
+        let report = import_from_vault(backend.as_ref(), temp.path(), "default")
             .await
             .unwrap();
-
-        assert_eq!(report.facts_imported, 1, "should import the Codex fact");
-        assert_eq!(report.facts_skipped, 2, "should skip materializer files");
-
-        // Verify the fact was actually stored
+        assert_eq!(report.facts_imported, 1);
+        assert_eq!(report.facts_skipped, 2);
         let facts = backend
             .list_facts(
                 "default",
@@ -736,145 +1155,910 @@ mod tests {
             .unwrap();
         assert_eq!(facts.len(), 1);
         assert!(facts[0].content.contains("REST with JSON"));
-        assert_eq!(facts[0].source.as_deref(), Some("codex-vault"));
+        assert!(
+            facts[0]
+                .source
+                .as_deref()
+                .unwrap()
+                .starts_with("codex-vault:")
+        );
     }
 
     #[test]
     fn parse_frontmatter_works() {
-        let input = "+++\nkind = \"memory_fact\"\ntopic = \"Decisions\"\n+++\n\nThe body here\n";
-        let (fm, body) = parse_frontmatter(input).unwrap();
-        assert!(fm.contains("kind = \"memory_fact\""));
+        let (frontmatter, body) = parse_frontmatter(
+            "+++\nkind = \"memory_fact\"\ntopic = \"Decisions\"\n+++\n\nThe body here\n",
+        )
+        .unwrap();
+        assert!(frontmatter.contains("kind = \"memory_fact\""));
         assert!(body.contains("The body here"));
     }
 
     #[test]
     fn parse_frontmatter_returns_none_without_delimiters() {
-        let input = "# Just a regular markdown file\n\nNo frontmatter here.\n";
-        assert!(parse_frontmatter(input).is_none());
+        assert!(parse_frontmatter("# Regular markdown\n").is_none());
     }
 
     #[test]
     fn extract_toml_value_works() {
-        let fm = "kind = \"memory_fact\"\ntopic = \"Architecture\"\nfact_count = 3";
-        assert_eq!(extract_toml_value(fm, "kind"), Some("memory_fact"));
-        assert_eq!(extract_toml_value(fm, "topic"), Some("Architecture"));
-        assert_eq!(extract_toml_value(fm, "missing"), None);
+        let frontmatter = "kind = \"memory_fact\"\ntopic = \"Architecture\"\nfact_count = 3";
+        assert_eq!(extract_toml_value(frontmatter, "kind"), Some("memory_fact"));
+        assert_eq!(
+            extract_toml_value(frontmatter, "topic"),
+            Some("Architecture")
+        );
+        assert_eq!(extract_toml_value(frontmatter, "missing"), None);
     }
 
     #[test]
     fn extract_toml_string_array_works() {
-        let fm = "related_facts = [\"abc123\", \"def456\"]";
-        let result = extract_toml_string_array(fm, "related_facts");
-        assert_eq!(result, vec!["abc123", "def456"]);
+        assert_eq!(
+            extract_toml_string_array("related_facts = [\"abc123\", \"def456\"]", "related_facts"),
+            vec!["abc123", "def456"]
+        );
     }
 
     #[test]
     fn extract_toml_string_array_empty() {
-        let fm = "related_facts = []";
-        let result = extract_toml_string_array(fm, "related_facts");
-        assert!(result.is_empty());
+        assert!(extract_toml_string_array("related_facts = []", "related_facts").is_empty());
     }
 
     #[test]
     fn extract_toml_string_array_missing() {
-        let fm = "kind = \"note\"";
-        let result = extract_toml_string_array(fm, "related_facts");
-        assert!(result.is_empty());
+        assert!(extract_toml_string_array("kind = \"note\"", "related_facts").is_empty());
     }
 
     #[tokio::test]
     async fn reinforce_referenced_facts_reinforces_active() {
         let backend = Arc::new(InMemoryBackend::new());
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = tmp.path();
-
-        // Store a fact
-        let result = backend
-            .store_fact(StoreFact {
-                mind: "default".into(),
-                content: "Important architecture fact".into(),
-                section: Section::Architecture,
-                decay_profile: DecayProfileName::Standard,
-                source: Some("test".into()),
-            })
-            .await
-            .unwrap();
-        let fact_id = result.fact.id.clone();
-        let initial_reinforcement = result.fact.reinforcement_count;
-
-        // Create a note that references this fact
-        let notes_dir = vault.join("notes");
-        std::fs::create_dir_all(&notes_dir).unwrap();
-        std::fs::write(
-            notes_dir.join("design.md"),
+        let temp = tempdir().unwrap();
+        let fact = seed(backend.as_ref()).await;
+        fs::create_dir_all(temp.path().join("notes")).unwrap();
+        fs::write(
+            temp.path().join("notes/design.md"),
             format!(
-                "+++\nkind = \"note\"\nrelated_facts = [\"{fact_id}\"]\n+++\n\n# Design Doc\nReferences the architecture fact.\n"
+                "+++\nkind = \"note\"\nrelated_facts = [\"{}\"]\n+++\nBody\n",
+                fact.id
             ),
         )
         .unwrap();
-
-        let report = reinforce_referenced_facts(backend.as_ref(), vault)
+        let report = reinforce_referenced_facts(backend.as_ref(), temp.path())
             .await
             .unwrap();
-
         assert_eq!(report.facts_reinforced, 1);
         assert_eq!(report.references_dangling, 0);
         assert!(report.references_superseded.is_empty());
-
-        // Verify reinforcement count increased
-        let fact = backend.get_fact(&fact_id).await.unwrap().unwrap();
         assert!(
-            fact.reinforcement_count > initial_reinforcement,
-            "reinforcement count should increase: {} > {}",
-            fact.reinforcement_count,
-            initial_reinforcement
+            backend
+                .get_fact(&fact.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .reinforcement_count
+                > fact.reinforcement_count
         );
     }
 
     #[tokio::test]
     async fn reinforce_referenced_facts_detects_dangling() {
         let backend = Arc::new(InMemoryBackend::new());
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = tmp.path();
-
-        // Create a note referencing a fact that doesn't exist
-        std::fs::create_dir_all(vault.join("notes")).unwrap();
-        std::fs::write(
-            vault.join("notes/orphan.md"),
-            "+++\nrelated_facts = [\"nonexistent123\"]\n+++\n\n# Orphan note\n",
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("notes")).unwrap();
+        fs::write(
+            temp.path().join("notes/orphan.md"),
+            "+++\nrelated_facts = [\"missing\"]\n+++\nBody\n",
         )
         .unwrap();
-
-        let report = reinforce_referenced_facts(backend.as_ref(), vault)
+        let report = reinforce_referenced_facts(backend.as_ref(), temp.path())
             .await
             .unwrap();
-
         assert_eq!(report.facts_reinforced, 0);
         assert_eq!(report.references_dangling, 1);
     }
 
     #[tokio::test]
-    async fn reinforce_skips_dotdirs() {
+    async fn reinforce_referenced_facts_reports_active_superseding_fact() {
         let backend = Arc::new(InMemoryBackend::new());
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = tmp.path();
-
-        // Create a file inside .codex/ — should be skipped
-        std::fs::create_dir_all(vault.join(".codex")).unwrap();
-        std::fs::write(
-            vault.join(".codex/internal.md"),
-            "+++\nrelated_facts = [\"shouldnotprocess\"]\n+++\n\nInternal\n",
-        )
-        .unwrap();
-
-        let report = reinforce_referenced_facts(backend.as_ref(), vault)
+        let temp = tempdir().unwrap();
+        let original = seed(backend.as_ref()).await;
+        let replacement = backend
+            .supersede_fact(
+                &original.id,
+                StoreFact {
+                    mind: "default".into(),
+                    content: "Replacement architecture".into(),
+                    section: Section::Architecture,
+                    decay_profile: DecayProfileName::Standard,
+                    source: Some("test".into()),
+                },
+            )
             .await
             .unwrap();
-
+        fs::write(
+            temp.path().join("reference.md"),
+            format!("+++\nrelated_facts = [\"{}\"]\n+++\nBody\n", original.id),
+        )
+        .unwrap();
+        let report = reinforce_referenced_facts(backend.as_ref(), temp.path())
+            .await
+            .unwrap();
         assert_eq!(report.facts_reinforced, 0);
+        assert_eq!(report.references_dangling, 0);
+        assert_eq!(report.references_superseded_total, 1);
+        assert_eq!(report.references_superseded[0].old_fact_id, original.id);
+        assert_eq!(report.references_superseded[0].new_fact_id, replacement.id);
+    }
+
+    #[tokio::test]
+    async fn reinforce_skips_dotdirs() {
+        let backend = Arc::new(InMemoryBackend::new());
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".codex")).unwrap();
+        fs::write(
+            temp.path().join(".codex/internal.md"),
+            "+++\nrelated_facts = [\"missing\"]\n+++\nBody\n",
+        )
+        .unwrap();
+        let report = reinforce_referenced_facts(backend.as_ref(), temp.path())
+            .await
+            .unwrap();
+        assert_eq!(report.facts_reinforced, 0);
+        assert_eq!(report.references_dangling, 0);
+    }
+
+    #[tokio::test]
+    async fn unchanged_import_and_reinforcement_are_idempotent_across_reopen() {
+        let temp = tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        fs::create_dir_all(vault.join("ai/memory")).unwrap();
+        fs::write(
+            vault.join("ai/memory/import.md"),
+            "+++\nkind = \"memory_fact\"\ntopic = \"Architecture\"\n+++\nImported fact\n",
+        )
+        .unwrap();
+        let database = temp.path().join("facts.db");
+        let fact_id = {
+            let backend = SqliteBackend::open(&database).unwrap();
+            let fact = seed(&backend).await;
+            fs::write(
+                vault.join("note.md"),
+                format!("+++\nrelated_facts = [\"{}\"]\n+++\nNote\n", fact.id),
+            )
+            .unwrap();
+            assert_eq!(
+                import_from_vault(&backend, &vault, "default")
+                    .await
+                    .unwrap()
+                    .facts_imported,
+                1
+            );
+            assert_eq!(
+                reinforce_referenced_facts(&backend, &vault)
+                    .await
+                    .unwrap()
+                    .facts_reinforced,
+                1
+            );
+            fact.id
+        };
+        let backend = SqliteBackend::open(&database).unwrap();
         assert_eq!(
-            report.references_dangling, 0,
-            "should not have scanned .codex/"
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            0
         );
+        assert_eq!(
+            reinforce_referenced_facts(&backend, &vault)
+                .await
+                .unwrap()
+                .facts_reinforced,
+            0
+        );
+        let before = backend
+            .get_fact(&fact_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .reinforcement_count;
+        fs::write(
+            vault.join("note.md"),
+            format!("+++\nrelated_facts = [\"{fact_id}\"]\n+++\nChanged note\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            reinforce_referenced_facts(&backend, &vault)
+                .await
+                .unwrap()
+                .facts_reinforced,
+            1
+        );
+        assert_eq!(
+            backend
+                .get_fact(&fact_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .reinforcement_count,
+            before + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn materialization_is_deterministic_and_does_not_rewrite() {
+        let backend = InMemoryBackend::new();
+        seed(&backend).await;
+        let temp = tempdir().unwrap();
+        let first = materialize_to_vault(&backend, temp.path(), "default")
+            .await
+            .unwrap();
+        assert!(!first.files_written.is_empty());
+        let path = temp.path().join("ai/memory/architecture.md");
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = materialize_to_vault(&backend, temp.path(), "default")
+            .await
+            .unwrap();
+        assert!(second.files_written.is_empty());
+        assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), modified);
+    }
+
+    #[tokio::test]
+    async fn changed_and_changed_back_note_reconcile_with_lineage_across_reopen() {
+        let temp = tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        let note = vault.join("ai/memory/note.md");
+        fs::create_dir_all(note.parent().unwrap()).unwrap();
+        let database = temp.path().join("facts.db");
+        let write_note = |content: &str| {
+            fs::write(
+                &note,
+                format!("+++\nkind = \"memory_fact\"\ntopic = \"Architecture\"\n+++\n{content}\n"),
+            )
+            .unwrap();
+        };
+
+        write_note("version one");
+        let first_id = {
+            let backend = SqliteBackend::open(&database).unwrap();
+            assert_eq!(
+                import_from_vault(&backend, &vault, "default")
+                    .await
+                    .unwrap()
+                    .facts_imported,
+                1
+            );
+            backend
+                .list_facts("default", FactFilter::default())
+                .await
+                .unwrap()[0]
+                .id
+                .clone()
+        };
+        write_note("version two");
+        let second_id = {
+            let backend = SqliteBackend::open(&database).unwrap();
+            assert_eq!(
+                import_from_vault(&backend, &vault, "default")
+                    .await
+                    .unwrap()
+                    .facts_imported,
+                1
+            );
+            let facts = backend
+                .list_facts("default", FactFilter::default())
+                .await
+                .unwrap();
+            assert_eq!(facts.len(), 1);
+            assert_eq!(facts[0].content, "version two");
+            assert_eq!(facts[0].superseded_by.as_deref(), Some(first_id.as_str()));
+            facts[0].id.clone()
+        };
+        write_note("version one");
+        let backend = SqliteBackend::open(&database).unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        let facts = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].content, "version one");
+        assert_ne!(facts[0].id, first_id);
+        assert_eq!(facts[0].superseded_by.as_deref(), Some(second_id.as_str()));
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn same_note_imports_independently_for_multiple_minds() {
+        let backend = InMemoryBackend::new();
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("ai/memory")).unwrap();
+        fs::write(
+            temp.path().join("ai/memory/shared.md"),
+            "+++\nid = \"shared-note\"\nkind = \"memory_fact\"\n+++\nShared content\n",
+        )
+        .unwrap();
+        assert_eq!(
+            import_from_vault(&backend, temp.path(), "mind-a")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        assert_eq!(
+            import_from_vault(&backend, temp.path(), "mind-b")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        assert_eq!(
+            backend
+                .list_facts("mind-a", FactFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            backend
+                .list_facts("mind-b", FactFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_snapshot_does_not_mutate_memory() {
+        let backend = InMemoryBackend::new();
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("ai/memory")).unwrap();
+        for index in 0..4 {
+            fs::write(
+                temp.path().join(format!("ai/memory/{index}.md")),
+                format!(
+                    "+++\nid = \"cancel-{index}\"\nkind = \"memory_fact\"\n+++\nFact {index}\n"
+                ),
+            )
+            .unwrap();
+        }
+        let checks = AtomicUsize::new(0);
+        let result = import_from_vault_cancellable(&backend, temp.path(), "default", &|| {
+            checks.fetch_add(1, Ordering::Relaxed) >= 3
+        })
+        .await;
+        assert!(matches!(result, Err(VaultSyncError::Cancelled)));
+        assert!(
+            backend
+                .list_facts("default", FactFilter::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn snapshot_rejects_aggregate_metadata_before_retaining_contents() {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("ai/memory")).unwrap();
+        for name in ["one.md", "two.md"] {
+            let file = fs::File::create(temp.path().join("ai/memory").join(name)).unwrap();
+            file.set_len(60).unwrap();
+        }
+        let root = validate_vault_root(temp.path()).unwrap();
+        let result =
+            snapshot_markdown_with_limit(&root, Some(Path::new("ai/memory")), &|| false, 100);
+        assert!(matches!(result, Err(VaultSyncError::TransientRead(message))
+            if message.contains("aggregate bytes")));
+    }
+
+    #[tokio::test]
+    async fn duplicate_declared_ids_fail_before_any_import() {
+        let backend = InMemoryBackend::new();
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("ai/memory")).unwrap();
+        for name in ["one.md", "two.md"] {
+            fs::write(
+                temp.path().join("ai/memory").join(name),
+                "+++\nid = \"duplicate\"\nkind = \"memory_fact\"\n+++\nContent\n",
+            )
+            .unwrap();
+        }
+        let result = import_from_vault(&backend, temp.path(), "default").await;
+        assert!(matches!(result, Err(VaultSyncError::InvalidInput(message))
+            if message.contains("duplicate declared memory-fact id")));
+        assert!(
+            backend
+                .list_facts("default", FactFilter::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn declared_id_alias_restores_superseded_content_without_reinforcement() {
+        let temp = tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        let memory = vault.join("ai/memory");
+        fs::create_dir_all(&memory).unwrap();
+        let first = memory.join("a.md");
+        let second = memory.join("b.md");
+        fs::write(
+            &first,
+            "+++\nid = \"alias-a\"\nkind = \"memory_fact\"\n+++\nShared\n",
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            "+++\nid = \"alias-b\"\nkind = \"memory_fact\"\n+++\nShared\n",
+        )
+        .unwrap();
+        let backend = SqliteBackend::open(&temp.path().join("memory.db")).unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        let original = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(original.reinforcement_count, 1);
+
+        fs::write(
+            &first,
+            "+++\nid = \"alias-a\"\nkind = \"memory_fact\"\n+++\nChanged\n",
+        )
+        .unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            2
+        );
+        let active = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 2);
+        let restored = active
+            .iter()
+            .find(|fact| fact.content == "Shared")
+            .unwrap()
+            .clone();
+        let first_change = active
+            .iter()
+            .find(|fact| fact.content == "Changed")
+            .unwrap()
+            .clone();
+        assert_eq!(restored.reinforcement_count, 1);
+        let stable_version = restored.version;
+
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            0
+        );
+        let unchanged = backend.get_fact(&restored.id).await.unwrap().unwrap();
+        assert_eq!(unchanged.version, stable_version);
+        assert_eq!(unchanged.reinforcement_count, 1);
+
+        fs::write(
+            &first,
+            "+++\nid = \"alias-a\"\nkind = \"memory_fact\"\n+++\nShared\n",
+        )
+        .unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        let active = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, restored.id);
+        assert_eq!(active[0].content, "Shared");
+        assert_eq!(active[0].reinforcement_count, 1);
+        assert_eq!(
+            backend
+                .superseding_fact(&original.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            restored.id
+        );
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            0
+        );
+
+        fs::write(
+            &first,
+            "+++\nid = \"alias-a\"\nkind = \"memory_fact\"\n+++\nChanged\n",
+        )
+        .unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        let active = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 2);
+        let second_change = active
+            .iter()
+            .find(|fact| fact.content == "Changed")
+            .unwrap()
+            .clone();
+        assert_eq!(second_change.reinforcement_count, 1);
+
+        fs::write(
+            &first,
+            "+++\nid = \"alias-a\"\nkind = \"memory_fact\"\n+++\nShared\n",
+        )
+        .unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        let active = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, restored.id);
+        assert_eq!(active[0].reinforcement_count, 1);
+        for historical in [&original, &first_change, &second_change] {
+            assert_eq!(
+                backend
+                    .superseding_fact(&historical.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .id,
+                restored.id
+            );
+        }
+        assert!(
+            backend
+                .superseding_fact(&restored.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn declared_id_survives_note_move_and_preserves_lineage_across_reopen() {
+        let temp = tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        let memory = vault.join("ai/memory");
+        fs::create_dir_all(memory.join("moved")).unwrap();
+        let original_path = memory.join("original.md");
+        let moved_path = memory.join("moved/note.md");
+        fs::write(
+            &original_path,
+            "+++\nid = \"stable-note\"\nkind = \"memory_fact\"\n+++\nOriginal\n",
+        )
+        .unwrap();
+        let database = temp.path().join("memory.db");
+        let backend = SqliteBackend::open(&database).unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        let original = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap()
+            .remove(0);
+        drop(backend);
+
+        fs::rename(&original_path, &moved_path).unwrap();
+        let backend = SqliteBackend::open(&database).unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            0
+        );
+        fs::write(
+            &moved_path,
+            "+++\nid = \"stable-note\"\nkind = \"memory_fact\"\n+++\nChanged\n",
+        )
+        .unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        let changed = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            backend
+                .superseding_fact(&original.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            changed.id
+        );
+        drop(backend);
+
+        fs::write(
+            &moved_path,
+            "+++\nid = \"stable-note\"\nkind = \"memory_fact\"\n+++\nOriginal\n",
+        )
+        .unwrap();
+        let backend = SqliteBackend::open(&database).unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        let restored = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(restored.content, "Original");
+        assert_eq!(
+            backend
+                .superseding_fact(&changed.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            restored.id
+        );
+    }
+
+    #[tokio::test]
+    async fn note_without_declared_id_keeps_path_identity() {
+        let backend = InMemoryBackend::new();
+        let temp = tempdir().unwrap();
+        let memory = temp.path().join("ai/memory");
+        fs::create_dir_all(memory.join("moved")).unwrap();
+        let original = memory.join("original.md");
+        fs::write(&original, "+++\nkind = \"memory_fact\"\n+++\nContent\n").unwrap();
+        import_from_vault(&backend, temp.path(), "default")
+            .await
+            .unwrap();
+        let moved = memory.join("moved/note.md");
+        fs::rename(&original, &moved).unwrap();
+        fs::write(moved, "+++\nkind = \"memory_fact\"\n+++\nMoved content\n").unwrap();
+        assert_eq!(
+            import_from_vault(&backend, temp.path(), "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        assert_eq!(
+            backend
+                .list_facts("default", FactFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn note_identity_survives_vault_relocation() {
+        let backend = InMemoryBackend::new();
+        let temp = tempdir().unwrap();
+        let first = temp.path().join("first-vault");
+        let second = temp.path().join("second-vault");
+        fs::create_dir_all(first.join("ai/memory")).unwrap();
+        fs::write(
+            first.join("ai/memory/note.md"),
+            "+++\nid = \"relocatable\"\nkind = \"memory_fact\"\n+++\nBefore move\n",
+        )
+        .unwrap();
+        import_from_vault(&backend, &first, "default")
+            .await
+            .unwrap();
+        fs::rename(&first, &second).unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &second, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            0
+        );
+        fs::write(
+            second.join("ai/memory/note.md"),
+            "+++\nid = \"relocatable\"\nkind = \"memory_fact\"\n+++\nAfter move\n",
+        )
+        .unwrap();
+        assert_eq!(
+            import_from_vault(&backend, &second, "default")
+                .await
+                .unwrap()
+                .facts_imported,
+            1
+        );
+        let facts = backend
+            .list_facts("default", FactFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].content, "After move");
+    }
+
+    #[tokio::test]
+    async fn same_date_episodes_aggregate_deterministically_without_rewrite() {
+        let backend = InMemoryBackend::new();
+        for (title, narrative, calls) in [
+            ("First", "Narrative one", 2),
+            ("Second", "Narrative two", 3),
+        ] {
+            backend
+                .store_episode(StoreEpisode {
+                    mind: "default".into(),
+                    title: title.into(),
+                    narrative: narrative.into(),
+                    date: Some("2026-08-25".into()),
+                    affected_nodes: vec![],
+                    affected_changes: vec![],
+                    files_changed: vec![],
+                    tags: vec![],
+                    tool_calls_count: Some(calls),
+                })
+                .await
+                .unwrap();
+        }
+        let temp = tempdir().unwrap();
+        assert_eq!(
+            materialize_episodes_to_vault(&backend, temp.path(), "default", 20)
+                .await
+                .unwrap(),
+            1
+        );
+        let path = temp.path().join("ai/memory/episodes/2026-08-25.md");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("episode_count = 2"));
+        assert!(content.contains("tool_calls = 5"));
+        assert!(content.contains("Narrative one"));
+        assert!(content.contains("Narrative two"));
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            materialize_episodes_to_vault(&backend, temp.path(), "default", 20)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), modified);
+    }
+
+    #[tokio::test]
+    async fn empty_section_and_index_are_reconciled_without_deletion() {
+        let backend = InMemoryBackend::new();
+        let fact = seed(&backend).await;
+        let temp = tempdir().unwrap();
+        materialize_to_vault(&backend, temp.path(), "default")
+            .await
+            .unwrap();
+        backend.archive_facts(&[&fact.id]).await.unwrap();
+        let report = materialize_to_vault(&backend, temp.path(), "default")
+            .await
+            .unwrap();
+        assert_eq!(report.sections_written, 1);
+        assert_eq!(report.facts_written, 0);
+        let section = fs::read_to_string(temp.path().join("ai/memory/architecture.md")).unwrap();
+        assert!(section.contains("fact_count = 0"));
+        assert!(!section.contains("Stable architecture"));
+        let index = fs::read_to_string(temp.path().join("ai/memory/_index.md")).unwrap();
+        assert!(!index.contains("[[architecture]]"));
+        assert!(
+            materialize_to_vault(&backend, temp.path(), "default")
+                .await
+                .unwrap()
+                .files_written
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn traversal_and_symlink_escape_are_rejected() {
+        let _temp = tempdir().unwrap();
+        assert!(validate_subdir("../escape").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(_temp.path(), _temp.path().join("linked")).unwrap();
+            assert!(validate_vault_root(&_temp.path().join("linked")).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_input_aborts_before_any_import_and_output_escape_is_rejected() {
+        let backend = InMemoryBackend::new();
+        let temp = tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(vault.join("ai/memory")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(
+            vault.join("ai/memory/valid.md"),
+            "+++\nkind = \"memory_fact\"\n+++\nMust not import\n",
+        )
+        .unwrap();
+        fs::write(outside.join("escape.md"), "outside").unwrap();
+        std::os::unix::fs::symlink(outside.join("escape.md"), vault.join("ai/memory/linked.md"))
+            .unwrap();
+        assert!(
+            import_from_vault(&backend, &vault, "default")
+                .await
+                .is_err()
+        );
+        assert!(
+            backend
+                .list_facts("default", FactFilter::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        fs::remove_file(vault.join("ai/memory/linked.md")).unwrap();
+        fs::remove_dir_all(vault.join("ai/memory")).unwrap();
+        std::os::unix::fs::symlink(&outside, vault.join("ai/memory")).unwrap();
+        seed(&backend).await;
+        assert!(
+            materialize_to_vault(&backend, &vault, "default")
+                .await
+                .is_err()
+        );
+        assert!(!outside.join("architecture.md").exists());
     }
 }

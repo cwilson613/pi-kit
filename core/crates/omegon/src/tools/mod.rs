@@ -47,13 +47,10 @@ pub const PLAN_LIST_VISIBLE_ITEM_LIMIT: usize = 5;
 pub const PLAN_LIST_CHANGE_LIMIT: usize = 12;
 pub const PLAN_LIST_GROUP_LIMIT: usize = 4;
 
-#[derive(Debug, Clone)]
-pub struct LifecyclePlanProjection {
-    pub entries: Vec<crate::conversation::PlanRegistryEntry>,
-    pub tasks: Vec<crate::conversation::PlanItemProjection>,
-    pub task_identity_findings: Vec<crate::lifecycle::spec::TaskStableIdFinding>,
-}
+#[cfg(test)]
+pub use crate::surfaces::plans::LifecyclePlanProjection;
 
+#[cfg(test)]
 pub fn lifecycle_plan_projection(repo_root: &Path) -> LifecyclePlanProjection {
     use crate::conversation::{
         PlanBinding, PlanItemProjection, PlanRegistryEntry, PlanScope, PlanSource, PlanStatus,
@@ -153,7 +150,9 @@ pub fn lifecycle_plan_projection(repo_root: &Path) -> LifecyclePlanProjection {
         }
     }
     let design_nodes = crate::lifecycle::design::scan_design_docs(&repo_root.join("docs"));
-    for node in design_nodes.values() {
+    let mut design_nodes = design_nodes.values().collect::<Vec<_>>();
+    design_nodes.sort_by(|left, right| left.id.cmp(&right.id));
+    for node in design_nodes {
         if !matches!(
             node.status,
             crate::lifecycle::types::NodeStatus::Exploring
@@ -254,7 +253,15 @@ pub fn lifecycle_plan_projection(repo_root: &Path) -> LifecyclePlanProjection {
     LifecyclePlanProjection {
         entries,
         tasks,
-        task_identity_findings,
+        task_identity_findings: task_identity_findings
+            .into_iter()
+            .map(|finding| crate::surfaces::plans::TaskIdentityFinding {
+                line: finding.line,
+                task_id: finding.task_id,
+                stable_id: finding.stable_id,
+                message: finding.message,
+            })
+            .collect(),
     }
 }
 
@@ -282,6 +289,7 @@ pub(crate) fn lenient_usize_arg(args: &serde_json::Value, key: &str) -> Option<u
     }
 }
 
+#[cfg(test)]
 fn stable_hash(input: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -289,6 +297,7 @@ fn stable_hash(input: &str) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
+#[cfg(test)]
 fn repo_relative_path(repo_root: &Path, path: &Path) -> String {
     path.strip_prefix(repo_root)
         .unwrap_or(path)
@@ -296,6 +305,7 @@ fn repo_relative_path(repo_root: &Path, path: &Path) -> String {
         .to_string()
 }
 
+#[cfg(test)]
 pub fn render_lifecycle_plan_list(repo_root: &Path) -> String {
     let changes = crate::lifecycle::spec::list_changes(repo_root);
     let mut lines = vec!["OpenSpec".to_string()];
@@ -334,6 +344,83 @@ pub fn render_lifecycle_plan_list(repo_root: &Path) -> String {
         lines.push(format!(
             "- … and {} more OpenSpec changes",
             change_total - PLAN_LIST_CHANGE_LIMIT
+        ));
+    }
+    lines.join("\n")
+}
+
+fn render_lifecycle_plan_list_from_snapshot(
+    snapshot: &styrene_work_runtime::WorkSnapshot,
+) -> String {
+    let mut changes = snapshot
+        .items
+        .iter()
+        .filter(|item| item.lifecycle.workflow.as_deref() == Some("openspec"))
+        .collect::<Vec<_>>();
+    changes.sort_by(|left, right| left.title.cmp(&right.title));
+    let mut lines = vec!["OpenSpec".to_string()];
+    if changes.is_empty() {
+        lines.push("- none".into());
+        return lines.join("\n");
+    }
+    for change in changes.iter().take(PLAN_LIST_CHANGE_LIMIT) {
+        let facet = change.facets.openspec.as_ref();
+        let done = facet
+            .and_then(|value| value.get("done_tasks"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let total = facet
+            .and_then(|value| value.get("total_tasks"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        lines.push(format!(
+            "- {} · {} · {done}/{total}",
+            change.title, change.lifecycle.native_state
+        ));
+        let mut groups = std::collections::BTreeMap::<(usize, String), (usize, usize)>::new();
+        for task in snapshot.items.iter().filter(|item| {
+            item.lifecycle.workflow.as_deref() == Some("openspec_task")
+                && item
+                    .facets
+                    .openspec
+                    .as_ref()
+                    .and_then(|value| value.get("change_name"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(change.title.as_str())
+        }) {
+            let Some(facet) = task.facets.openspec.as_ref() else {
+                continue;
+            };
+            let Some(group) = facet.get("group").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let group_index = facet
+                .get("group_index")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(u64::MAX) as usize;
+            let entry = groups.entry((group_index, group.to_string())).or_default();
+            entry.1 += 1;
+            entry.0 += usize::from(
+                facet
+                    .get("done")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            );
+        }
+        for ((_, group), (done, total)) in groups.iter().take(PLAN_LIST_GROUP_LIMIT) {
+            lines.push(format!("  - {group} · {done}/{total}"));
+        }
+        if groups.len() > PLAN_LIST_GROUP_LIMIT {
+            lines.push(format!(
+                "  - … and {} more groups",
+                groups.len() - PLAN_LIST_GROUP_LIMIT
+            ));
+        }
+    }
+    if changes.len() > PLAN_LIST_CHANGE_LIMIT {
+        lines.push(format!(
+            "- … and {} more OpenSpec changes",
+            changes.len() - PLAN_LIST_CHANGE_LIMIT
         ));
     }
     lines.join("\n")
@@ -627,13 +714,14 @@ fn expand_tilde(path_str: &str) -> PathBuf {
 /// Core tool provider — registers the primitive tools.
 pub struct CoreTools {
     cwd: PathBuf,
-    /// Repository model — tracks branch, dirty files, submodules.
-    /// None if not inside a git repo.
-    repo_model: Option<std::sync::Arc<omegon_git::RepoModel>>,
+    /// Boot-captured managed repository owner.
+    git: crate::git_service::GitBinding,
     /// Workspace boundary enforcer — shared with other tool providers.
     boundary: WorkspaceBoundary,
     terminal_tool_enabled: bool,
     secrets: Option<std::sync::Arc<omegon_secrets::SecretsManager>>,
+    work_snapshot:
+        std::sync::Arc<std::sync::OnceLock<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>>,
 }
 
 impl CoreTools {
@@ -641,25 +729,24 @@ impl CoreTools {
         let boundary = WorkspaceBoundary::new(cwd.clone());
         Self {
             cwd,
-            repo_model: None,
+            git: Default::default(),
             boundary,
             terminal_tool_enabled: true,
             secrets: None,
+            work_snapshot: Default::default(),
         }
     }
 
-    /// Create with a RepoModel for git-aware operations.
-    pub fn with_repo_model(
-        cwd: PathBuf,
-        repo_model: std::sync::Arc<omegon_git::RepoModel>,
-    ) -> Self {
+    /// Create with the boot-captured managed Git binding.
+    pub fn with_git(cwd: PathBuf, git: crate::git_service::GitBinding) -> Self {
         let boundary = WorkspaceBoundary::new(cwd.clone());
         Self {
             cwd,
-            repo_model: Some(repo_model),
+            git,
             boundary,
             terminal_tool_enabled: true,
             secrets: None,
+            work_snapshot: Default::default(),
         }
     }
 
@@ -672,6 +759,24 @@ impl CoreTools {
 
     pub fn with_secrets(mut self, secrets: std::sync::Arc<omegon_secrets::SecretsManager>) -> Self {
         self.secrets = Some(secrets);
+        self
+    }
+
+    pub fn with_work_snapshot(
+        mut self,
+        snapshot: std::sync::Arc<styrene_work_runtime::WorkSnapshot>,
+    ) -> Self {
+        self.work_snapshot = std::sync::Arc::new(std::sync::OnceLock::from(snapshot));
+        self
+    }
+
+    pub fn with_work_snapshot_slot(
+        mut self,
+        slot: std::sync::Arc<
+            std::sync::OnceLock<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+        >,
+    ) -> Self {
+        self.work_snapshot = slot;
         self
     }
 
@@ -742,6 +847,106 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 
 #[async_trait]
 impl ToolProvider for CoreTools {
+    fn runtime_tool_policy(&self, tool_name: &str) -> Option<omegon_traits::RuntimeToolPolicy> {
+        use omegon_traits::{
+            RuntimeDeduplication, RuntimeEffect, RuntimeExecutionPolicy, RuntimeIdempotency,
+            RuntimeMutationDomainId, RuntimeMutationFence, RuntimeMutationFenceKey,
+            RuntimeParallelism, RuntimePrincipalClass, RuntimeRetryClass, RuntimeTimeoutClass,
+            RuntimeToolPolicy, RuntimeTransactionBehavior, runtime_effects_mutate,
+        };
+
+        let policy =
+            |effects: Vec<RuntimeEffect>, timeout_class, parallelism, transaction, idempotent| {
+                let mutates = runtime_effects_mutate(&effects);
+                RuntimeToolPolicy {
+                    effects,
+                    execution: RuntimeExecutionPolicy {
+                        principals: vec![RuntimePrincipalClass::Model],
+                        timeout_class,
+                        retry_class: if idempotent {
+                            RuntimeRetryClass::IdempotentFailure
+                        } else {
+                            RuntimeRetryClass::Never
+                        },
+                        idempotency: if idempotent {
+                            RuntimeIdempotency::Idempotent
+                        } else {
+                            RuntimeIdempotency::NonIdempotent
+                        },
+                        deduplication: RuntimeDeduplication::Unsupported,
+                        parallelism,
+                        transaction,
+                        mutation_fence: mutates.then(|| {
+                            Box::new(RuntimeMutationFence {
+                                domain: RuntimeMutationDomainId::new("workspace:runtime")
+                                    .expect("static mutation domain is valid"),
+                                key: RuntimeMutationFenceKey::new(format!(
+                                    "capability:{tool_name}"
+                                ))
+                                .expect("core tool name is a valid fence key"),
+                            })
+                        }),
+                        max_attempts: idempotent.then_some(2),
+                    },
+                }
+            };
+        match tool_name {
+            reg::BASH => Some(policy(
+                vec![
+                    RuntimeEffect::FilesystemRead,
+                    RuntimeEffect::FilesystemWrite,
+                    RuntimeEffect::ProcessSpawn,
+                    RuntimeEffect::NetworkAccess,
+                    RuntimeEffect::SecretDelivery,
+                    RuntimeEffect::TerminalAccess,
+                    RuntimeEffect::DurableStateWrite,
+                    RuntimeEffect::RuntimeControl,
+                ],
+                RuntimeTimeoutClass::LongRunning,
+                RuntimeParallelism::Serial,
+                RuntimeTransactionBehavior::IndependentMutation,
+                false,
+            )),
+            reg::PLAN => Some(policy(
+                vec![
+                    RuntimeEffect::DurableStateWrite,
+                    RuntimeEffect::RuntimeControl,
+                ],
+                RuntimeTimeoutClass::Immediate,
+                RuntimeParallelism::Serial,
+                RuntimeTransactionBehavior::IndependentMutation,
+                false,
+            )),
+            reg::WAIT_FOR_OPERATOR => Some(policy(
+                vec![RuntimeEffect::RuntimeControl],
+                RuntimeTimeoutClass::LongRunning,
+                RuntimeParallelism::Serial,
+                RuntimeTransactionBehavior::IndependentMutation,
+                false,
+            )),
+            reg::WHOAMI => Some(policy(
+                vec![
+                    RuntimeEffect::FilesystemRead,
+                    RuntimeEffect::ProcessSpawn,
+                    RuntimeEffect::NetworkAccess,
+                    RuntimeEffect::SecretDelivery,
+                ],
+                RuntimeTimeoutClass::Interactive,
+                RuntimeParallelism::ParallelSafe,
+                RuntimeTransactionBehavior::None,
+                true,
+            )),
+            reg::CHRONOS => Some(policy(
+                vec![],
+                RuntimeTimeoutClass::Immediate,
+                RuntimeParallelism::ParallelSafe,
+                RuntimeTransactionBehavior::None,
+                true,
+            )),
+            _ => None,
+        }
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
@@ -1177,7 +1382,7 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'command' argument"))?;
                 let timeout = parse_bash_timeout_secs(&args)?;
 
-                warn_git_mutation_via_bash(self.repo_model.is_some(), command);
+                warn_git_mutation_via_bash(self.git.handle().is_some(), command);
 
                 bash::execute_with_boundary(
                     command,
@@ -1206,10 +1411,14 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'content' argument"))?;
                 let path = self.resolve_path(path_str)?;
                 let result = write::execute(&path, content).await;
-                if result.is_ok()
-                    && let Some(ref model) = self.repo_model
-                {
-                    model.record_edit(path_str);
+                if result.is_ok() {
+                    let _ = self
+                        .git
+                        .invoke(crate::git_service::GitRequest::RecordEdits {
+                            paths: vec![path_str.to_string()],
+                            cancellation: cancel.clone(),
+                        })
+                        .await;
                 }
                 result
             }
@@ -1225,10 +1434,14 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'newText' argument"))?;
                 let path = self.resolve_path(path_str)?;
                 let result = edit::execute(&path, old_text, new_text).await;
-                if result.is_ok()
-                    && let Some(ref model) = self.repo_model
-                {
-                    model.record_edit(path_str);
+                if result.is_ok() {
+                    let _ = self
+                        .git
+                        .invoke(crate::git_service::GitRequest::RecordEdits {
+                            paths: vec![path_str.to_string()],
+                            cancellation: cancel.clone(),
+                        })
+                        .await;
                 }
                 result
             }
@@ -1250,12 +1463,14 @@ impl ToolProvider for CoreTools {
                 })
                 .await;
                 // Track all edited files in the working set
-                if result.is_ok()
-                    && let Some(ref model) = self.repo_model
-                {
-                    for edit in &edits {
-                        model.record_edit(&edit.file);
-                    }
+                if result.is_ok() {
+                    let _ = self
+                        .git
+                        .invoke(crate::git_service::GitRequest::RecordEdits {
+                            paths: edits.iter().map(|edit| edit.file.clone()).collect(),
+                            cancellation: cancel.clone(),
+                        })
+                        .await;
                 }
                 result
             }
@@ -1282,57 +1497,6 @@ impl ToolProvider for CoreTools {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'message' argument"))?;
 
-                // ── jj path: describe + new ─────────────────────────────
-                // In jj, the working copy is already a mutable change.
-                // "Committing" means: describe it, then create a new empty
-                // change on top (`jj new`). No staging, no index, no dance.
-                if self.repo_model.as_ref().is_some_and(|m| m.is_jj()) {
-                    omegon_git::jj::describe(&self.cwd, message)?;
-                    omegon_git::jj::new_change(&self.cwd, "")?;
-                    omegon_git::jj::sync_to_git_main(&self.cwd)?;
-
-                    // Get the change ID of the just-committed change (parent of @)
-                    let committed_id = std::process::Command::new("jj")
-                        .args(["log", "-r", "@-", "--no-graph", "-T", "change_id.short()"])
-                        .current_dir(&self.cwd)
-                        .output()
-                        .ok()
-                        .and_then(|o| {
-                            if o.status.success() {
-                                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_default();
-
-                    // Refresh model state
-                    if let Some(ref model) = self.repo_model {
-                        model.clear_working_set();
-                        let _ = model.refresh();
-                    }
-
-                    let summary = format!("Committed (jj): {committed_id}\n{message}");
-                    let branch = git2::Repository::discover(&self.cwd)
-                        .ok()
-                        .and_then(|r| {
-                            r.head()
-                                .ok()
-                                .and_then(|h| h.shorthand().map(|s| s.to_string()))
-                        })
-                        .unwrap_or_default();
-                    return Ok(ToolResult {
-                        content: vec![omegon_traits::ContentBlock::Text { text: summary }],
-                        details: json!({
-                            "jj_change_id": committed_id,
-                            "message": message,
-                            "backend": "jj",
-                            "git_branch": if branch.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(branch) },
-                        }),
-                    });
-                }
-
-                // ── git path: stage + commit ────────────────────────────
                 let paths: Vec<String> = args
                     .get("paths")
                     .and_then(|v| v.as_array())
@@ -1343,78 +1507,43 @@ impl ToolProvider for CoreTools {
                     })
                     .unwrap_or_default();
 
-                let lifecycle_paths: Vec<String> = self
-                    .repo_model
-                    .as_ref()
-                    .map(|m| m.pending_lifecycle_files().into_iter().collect())
-                    .unwrap_or_default();
-
-                let sub_paths = self
-                    .repo_model
-                    .as_ref()
-                    .map(|m| {
-                        m.submodules()
-                            .into_iter()
-                            .map(|s| s.path)
-                            .collect::<Vec<_>>()
+                let result = self
+                    .git
+                    .invoke(crate::git_service::GitRequest::Commit {
+                        path: self.cwd.clone(),
+                        message: message.to_string(),
+                        paths,
+                        cancellation: cancel,
                     })
-                    .unwrap_or_else(|| {
-                        omegon_git::submodule::list_submodule_paths(&self.cwd).unwrap_or_default()
-                    });
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+                let crate::git_service::GitResponse::Commit {
+                    revision,
+                    files_staged,
+                    submodule_commits,
+                    backend,
+                    branch,
+                } = result
+                else {
+                    anyhow::bail!("managed Git service returned an invalid commit response");
+                };
 
-                let mut submodule_commits = 0;
-                for sub_path in &sub_paths {
-                    let sub_prefix = format!("{}/", sub_path);
-                    let touches_sub =
-                        paths.is_empty() || paths.iter().any(|p| p.starts_with(&sub_prefix));
-                    if touches_sub
-                        && let Ok(n) =
-                            omegon_git::commit::commit_in_submodule(&self.cwd, sub_path, message)
-                    {
-                        submodule_commits += n;
-                    }
-                }
-
-                let include_lifecycle = !lifecycle_paths.is_empty();
-                let result = omegon_git::commit::create_commit(
-                    &self.cwd,
-                    &omegon_git::commit::CommitOptions {
-                        message,
-                        paths: &paths,
-                        include_lifecycle,
-                        lifecycle_paths: &lifecycle_paths,
-                    },
-                )?;
-
-                if let Some(ref model) = self.repo_model {
-                    model.clear_working_set();
-                    if let Err(e) = model.refresh() {
-                        tracing::warn!("failed to refresh repo model after commit: {e}");
-                    }
-                }
-
-                let mut summary =
-                    format!("Committed {} file(s): {}", result.files_staged, result.sha);
+                let mut summary = format!("Committed {} file(s): {}", files_staged, revision);
                 if submodule_commits > 0 {
                     summary.push_str(&format!(
                         "\n({} file(s) committed inside submodule(s) first)",
                         submodule_commits
                     ));
                 }
-                if include_lifecycle {
-                    summary.push_str(&format!(
-                        "\n({} lifecycle file(s) included)",
-                        lifecycle_paths.len()
-                    ));
-                }
 
                 Ok(ToolResult {
                     content: vec![omegon_traits::ContentBlock::Text { text: summary }],
                     details: json!({
-                        "sha": result.sha,
-                        "files_staged": result.files_staged,
+                        "sha": revision,
+                        "files_staged": files_staged,
                         "submodule_commits": submodule_commits,
-                        "lifecycle_files": lifecycle_paths.len(),
+                        "backend": backend,
+                        "git_branch": branch,
                     }),
                 })
             }
@@ -1457,7 +1586,12 @@ impl ToolProvider for CoreTools {
                     "skip" => "Skipped current work item.".into(),
                     "clear" => "Cleared the active work plan.".into(),
                     "status" => "Work plan status rendered in context.".into(),
-                    "list" => render_lifecycle_plan_list(&self.cwd),
+                    "list" => self
+                        .work_snapshot
+                        .get()
+                        .map(std::sync::Arc::as_ref)
+                        .map(render_lifecycle_plan_list_from_snapshot)
+                        .unwrap_or_else(|| "OpenSpec\n- none".into()),
                     other => format!("Unknown plan action: {other}"),
                 };
                 Ok(ToolResult {
@@ -1593,7 +1727,7 @@ impl ToolProvider for CoreTools {
                 .ok_or_else(|| anyhow::anyhow!("missing 'command' argument"))?;
             let timeout = parse_bash_timeout_secs(&args)?;
 
-            warn_git_mutation_via_bash(self.repo_model.is_some(), command);
+            warn_git_mutation_via_bash(self.git.handle().is_some(), command);
 
             return bash::execute_streaming(
                 command,
@@ -1791,6 +1925,38 @@ open_questions:
             .expect("design task");
         assert_eq!(task.intent, crate::conversation::TaskIntent::Design);
         assert_eq!(task.label, "What evidence is needed?");
+    }
+
+    #[tokio::test]
+    async fn plan_list_owner_uses_captured_snapshot_without_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let change = dir.path().join("openspec/changes/demo");
+        std::fs::create_dir_all(&change).unwrap();
+        std::fs::write(change.join("proposal.md"), "# Demo\n").unwrap();
+        std::fs::write(
+            change.join("tasks.md"),
+            "## 1. Group\n\n- [ ] 1.1 Pending <!-- task-id: stable -->\n",
+        )
+        .unwrap();
+        let feature =
+            crate::features::work_aggregation::WorkAggregationFeature::from_repository(dir.path())
+                .await;
+        let tools = CoreTools::new(dir.path().to_path_buf()).with_work_snapshot(feature.snapshot());
+
+        let result = tools
+            .execute(
+                crate::tool_registry::core::PLAN,
+                "plan-list",
+                serde_json::json!({"action": "list"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = result.content[0].as_text().unwrap();
+        assert_eq!(text, render_lifecycle_plan_list(dir.path()));
+        assert!(text.contains("OpenSpec"), "{text}");
+        assert!(text.contains("demo"), "{text}");
+        assert!(!text.contains("supplied by the session"), "{text}");
     }
 
     #[test]

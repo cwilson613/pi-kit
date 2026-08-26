@@ -77,6 +77,7 @@
             pkg-config
             perl       # required by openssl-sys build script
             cmake      # for libgit2-sys
+            python3    # deterministic shipped content-pack installation
           ];
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
         };
@@ -85,11 +86,19 @@
 
         omegon = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
-          cargoExtraArgs = "-p omegon";
+          cargoExtraArgs = "-p omegon -p omegon-maintain";
           # Tests run in CI, not during nix build — the sandbox lacks
           # network access, home directories, and git repos that many
           # tests require.
           doCheck = false;
+          postInstall = ''
+            python3 scripts/content_pack_manifest.py --check
+            python3 scripts/content_pack_manifest.py \
+              --install-root $out/share/omegon/content-packs/omegon-shipped
+            python3 scripts/package_release.py --binary-dir $out/bin \
+              --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget} \
+              --lock-dir $out/share/omegon/composition
+          '';
         });
 
         # Toolset profiles for container images
@@ -107,6 +116,7 @@
         packages = {
           default = omegon;
           omegon = omegon;
+          omegon-maintain = omegon;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           oci-chat = images.oci-chat;
           oci-coding = images.oci-coding;
@@ -115,6 +125,17 @@
           oci-coding-rust = images.oci-coding-rust;
           oci-infra = images.oci-infra;
           oci-full = images.oci-full;
+        };
+
+        apps = {
+          omegon = {
+            type = "app";
+            program = "${omegon}/bin/omegon";
+          };
+          omegon-maintain = {
+            type = "app";
+            program = "${omegon}/bin/omegon-maintain";
+          };
         };
 
         # mkOmegonImage for custom compositions:

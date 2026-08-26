@@ -1,0 +1,38 @@
+{
+  "corpus_version": 1,
+  "session_id": "fixture-session",
+  "stream_id": "10000000-0000-4000-8000-000000000001",
+  "builder_recipe_file": "builder-recipes.json",
+  "checked_vectors": [
+    {"name":"slice-1-closed","file":"slice-1-closed.authority.jsonl","outcome":"legacy","sequence":4},
+    {"name":"legacy-open-recovery","file":"legacy-open-recovery.authority.jsonl","outcome":"legacy_open","sequence":3},
+    {"name":"legacy-route-only","file":"legacy-route-only.authority.jsonl","outcome":"legacy_route_only","sequence":4},
+    {"name":"mixed-legacy-full","file":"mixed-legacy-full.authority.jsonl","outcome":"mixed","sequence":8,"full_spine_boundary":8},
+    {"name":"full-spine-crash-prefix","file":"full-spine-crash-prefix.authority.jsonl","outcome":"full_spine_open","sequence":4,"full_spine_boundary":4},
+    {"name":"unsupported-event","file":"unsupported-event.authority.jsonl","failure":"unsupported authority event type context.future_required"},
+    {"name":"unsupported-version","file":"unsupported-version.authority.jsonl","failure":"unsupported session.created event version 2"},
+    {"name":"sequence-conflict","file":"sequence-conflict.authority.jsonl","failure":"expected sequence 2, got 3"},
+    {"name":"event-conflict","file":"event-conflict.authority.jsonl","failure":"duplicate event ID"},
+    {"name":"command-conflict","file":"command-conflict.authority.jsonl","failure":"duplicate command ID"},
+    {"name":"truncated-prefix","file":"truncated-prefix.authority.jsonl","failure":"authority JSON"}
+  ],
+  "builder_vectors": [
+    "text-response",
+    "denied-tool-result",
+    "unknown-linkage",
+    "two-request-repair",
+    "zero-content-retry-attempt",
+    "request-step-turn-crash-prefixes",
+    "missing-blob",
+    "tampered-blob",
+    "default-vs-restricted-blob",
+    "turn-compaction-success",
+    "idle-compaction-success",
+    "compaction-committed-recovery",
+    "compaction-open-recovery"
+  ],
+  "blob_vectors": [
+    {"digest":"36f5211e9b196ea1059f1a0a2df4911c951830a042e74d77e91df91f2c72a37c","projection_class":"default","media_type":"text/plain","byte_length":13},
+    {"digest":"f759398a26aba43305a3bfcdb7cf58cb97d65b323580e61b57eb1e2323bbebe8","projection_class":"restricted_continuity","media_type":"application/octet-stream","byte_length":13}
+  ]
+}

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "astro dev",
     "build": "node scripts/load-snippets.mjs && node scripts/fetch-releases.mjs && node scripts/collect-stats.mjs && node scripts/build-design-tree.mjs && astro build",
+    "test": "node --test tests/docs-content.test.mjs",
     "preview": "astro preview"
   },
   "dependencies": {

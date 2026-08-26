@@ -89,12 +89,12 @@ fn install_local_extension() {
         "expected extension name in output, got: {text}"
     );
 
-    // Verify symlink was created (local install uses symlink)
+    // Local sources publish an immutable copy inside the guarded extension root.
     let ext_dir = home.path().join("extensions/mock-extension");
-    assert!(ext_dir.exists(), "extension dir should exist");
+    assert!(ext_dir.is_dir(), "extension dir should exist");
     assert!(
-        ext_dir.is_symlink(),
-        "local install should create a symlink"
+        !ext_dir.is_symlink(),
+        "local install must not publish a symlink"
     );
 }
 

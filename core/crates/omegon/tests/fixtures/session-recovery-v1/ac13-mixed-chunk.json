@@ -1,0 +1,8 @@
+{
+  "fixture_version": 1,
+  "authority_seed": "mixed-chunk-bearing.authority.jsonl",
+  "projector": "session.transcript",
+  "lineage": "mixed",
+  "scope": "exact_suffix",
+  "minimum_chunk_bytes": 1
+}

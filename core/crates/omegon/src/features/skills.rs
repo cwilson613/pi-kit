@@ -9,17 +9,32 @@ use crate::features::persona::SharedAugmentRegistry;
 
 pub struct SkillsFeature {
     registry: SharedAugmentRegistry,
+    cwd: PathBuf,
+    home: PathBuf,
+    allowed_skills: Vec<String>,
 }
 
 impl SkillsFeature {
-    pub fn new(registry: SharedAugmentRegistry) -> Self {
-        Self { registry }
+    pub fn new(
+        registry: SharedAugmentRegistry,
+        cwd: PathBuf,
+        home: PathBuf,
+        allowed_skills: Vec<String>,
+    ) -> Self {
+        Self {
+            registry,
+            cwd,
+            home,
+            allowed_skills,
+        }
     }
 
     fn reload_skills(&self) {
-        if let Ok(cwd) = std::env::current_dir() {
-            self.registry.lock().load_skills(&cwd);
-        }
+        self.registry.lock().load_skills_subset_with_home(
+            &self.cwd,
+            &self.home,
+            &self.allowed_skills,
+        );
     }
 }
 
@@ -34,14 +49,14 @@ impl Feature for SkillsFeature {
             ToolDefinition {
                 name: crate::tool_registry::skills::SKILLS_LIST.into(),
                 label: "skills_list".into(),
-                description: "List resolved Omegon skills with source, editability, reloadability, shadow, and conflict metadata.".into(),
+                description: "List active Omegon skills from the current session's admitted snapshot with source and manifest metadata.".into(),
                 parameters: json!({ "type": "object", "properties": {} }),
                 capabilities: vec![omegon_traits::ToolCapability::Orientation],
             },
             ToolDefinition {
                 name: crate::tool_registry::skills::SKILLS_GET.into(),
                 label: "skills_get".into(),
-                description: "Read one resolved skill's manifest, body, path, and source metadata.".into(),
+                description: "Read one active skill's admitted manifest, body, path, and source metadata from the current session snapshot.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -135,46 +150,50 @@ impl Feature for SkillsFeature {
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
             crate::tool_registry::skills::SKILLS_LIST => {
-                let entries = crate::skills::list_structured()?;
+                let registry = self.registry.lock();
+                let entries = registry.skill_snapshots();
                 let mut out = String::from("# Skills\n\n");
-                for entry in &entries {
+                let mut details = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let (manifest, _) = omegon_skills::parse_skill_file(&entry.content);
                     out.push_str(&format!(
-                        "- **{}** [{}]{}{}: {}\n",
-                        entry.name,
-                        entry.source,
-                        if entry.editable { " editable" } else { "" },
-                        if entry.reloadable { " reloadable" } else { "" },
-                        entry.description
+                        "- **{}** [{}]: {}\n",
+                        entry.name, entry.source, manifest.description
                     ));
+                    details.push(json!({
+                        "name": entry.name,
+                        "source": entry.source,
+                        "path": entry.path,
+                        "description": manifest.description,
+                        "manifest": manifest,
+                    }));
                 }
-                Ok(text_result_with_details(
-                    &out,
-                    serde_json::to_value(entries)?,
-                ))
+                Ok(text_result_with_details(&out, Value::Array(details)))
             }
             crate::tool_registry::skills::SKILLS_GET => {
                 let name = required_str(&args, "name")?;
-                let details = crate::skills::get_skill_details(name)?;
+                let registry = self.registry.lock();
+                let snapshot = registry
+                    .skill_snapshots()
+                    .iter()
+                    .find(|skill| skill.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("active skill '{name}' not found"))?;
+                let (manifest, body) = omegon_skills::parse_skill_file(&snapshot.content);
                 let mut out = format!(
                     "# Skill: {}\n\nPath: {}\n\nDescription: {}\n",
-                    details.manifest.name,
-                    details.path.display(),
-                    details.manifest.description
+                    manifest.name,
+                    snapshot.path.display(),
+                    manifest.description
                 );
-                if let Some(entry) = &details.entry {
-                    out.push_str(&format!(
-                        "Source: {}\nEditable: {}\nReloadable: {}\n",
-                        entry.source, entry.editable, entry.reloadable
-                    ));
-                }
+                out.push_str(&format!("Source: {}\n", snapshot.source));
                 out.push_str("\n## Body\n\n");
-                out.push_str(&details.body);
+                out.push_str(&body);
                 Ok(text_result_with_details(
                     &out,
                     json!({
-                        "manifest": details.manifest,
-                        "path": details.path,
-                        "entry": details.entry,
+                        "manifest": manifest,
+                        "path": snapshot.path,
+                        "source": snapshot.source,
                     }),
                 ))
             }
@@ -185,16 +204,26 @@ impl Feature for SkillsFeature {
                 ))
             }
             crate::tool_registry::skills::SKILLS_CREATE => {
-                let result = create_skill_file(&args)?;
+                let result = create_skill_file(&args, &self.cwd, &self.home)?;
                 self.reload_skills();
                 Ok(result)
             }
             crate::tool_registry::skills::SKILLS_IMPORT => {
-                let path = PathBuf::from(required_str(&args, "path")?);
+                let requested = PathBuf::from(required_str(&args, "path")?);
+                let path = if requested.is_absolute() {
+                    requested
+                } else {
+                    self.cwd.join(requested)
+                };
                 let scope = skill_scope(&args);
                 let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
-                let summary =
-                    crate::skills::import_skill(&path, scope == SkillToolScope::Project, force)?;
+                let summary = if scope == SkillToolScope::Project {
+                    crate::skills::import_project_skill_guarded(
+                        &path, &self.cwd, &self.home, force,
+                    )?
+                } else {
+                    crate::skills::import_skill_at_root(&path, None, force)?
+                };
                 self.reload_skills();
                 Ok(text_result_with_details(
                     &format!(
@@ -213,8 +242,7 @@ impl Feature for SkillsFeature {
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
                 let result = if let Some(name) = name {
-                    let cwd = std::env::current_dir().unwrap_or_default();
-                    crate::armory::install(name, crate::armory::ArmoryInstallKind::Skill, &cwd)
+                    crate::armory::install(name, crate::armory::ArmoryInstallKind::Skill, &self.cwd)
                         .await
                         .map(|summary| {
                             text_result_with_details(
@@ -248,7 +276,12 @@ impl Feature for SkillsFeature {
             }
             crate::tool_registry::skills::SKILLS_DELETE => {
                 let name = required_str(&args, "name")?;
-                let summary = crate::skills::delete_external_skill(name)?;
+                let summary =
+                    match crate::skills::delete_project_skill_guarded(name, &self.cwd, &self.home)?
+                    {
+                        Some(summary) => summary,
+                        None => crate::skills::delete_user_skill_at_home(name, &self.home)?,
+                    };
                 self.reload_skills();
                 Ok(text_result_with_details(
                     &format!(
@@ -293,29 +326,17 @@ fn string_vec(args: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn create_skill_file(args: &Value) -> anyhow::Result<ToolResult> {
+fn create_skill_file(
+    args: &Value,
+    cwd: &std::path::Path,
+    home: &std::path::Path,
+) -> anyhow::Result<ToolResult> {
     let name = required_str(args, "name")?;
     let description = required_str(args, "description")?;
     let body = required_str(args, "body")?;
     let slug = crate::skills::validate_skill_name(name)?;
     let scope = skill_scope(args);
-    let base = match scope {
-        SkillToolScope::Project => std::env::current_dir()?.join(".omegon/skills"),
-        SkillToolScope::User => crate::paths::omegon_home()?.join("skills"),
-    };
-    let destination = base.join(&slug);
     let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
-    if destination.exists() {
-        if !force {
-            anyhow::bail!(
-                "skill '{}' already exists at {}; pass force=true to overwrite",
-                slug,
-                destination.display()
-            );
-        }
-        std::fs::remove_dir_all(&destination)?;
-    }
-
     let manifest = omegon_skills::SkillManifest {
         name: slug.clone(),
         description: description.to_string(),
@@ -347,9 +368,42 @@ fn create_skill_file(args: &Value) -> anyhow::Result<ToolResult> {
             .map(ToOwned::to_owned),
         provenance: None,
     };
-
-    std::fs::create_dir_all(&destination)?;
-    std::fs::write(destination.join("SKILL.md"), manifest.to_skill_file(body))?;
+    let content = manifest.to_skill_file(body);
+    let destination = match scope {
+        SkillToolScope::Project => {
+            let directory =
+                crate::contribution_loading::GuardedContributionMutationDirectory::open_or_create(
+                    cwd,
+                    &[b".omegon", b"skills"],
+                    home,
+                    omegon_maintenance_contracts::ContributionKind::Skill,
+                    "project",
+                )?;
+            directory.write_single_file_directory(
+                slug.as_bytes(),
+                b"SKILL.md",
+                content.as_bytes(),
+                force,
+            )?;
+            cwd.join(".omegon/skills").join(&slug)
+        }
+        SkillToolScope::User => {
+            let destination = home.join("skills").join(&slug);
+            if destination.exists() {
+                if !force {
+                    anyhow::bail!(
+                        "skill '{}' already exists at {}; pass force=true to overwrite",
+                        slug,
+                        destination.display()
+                    );
+                }
+                std::fs::remove_dir_all(&destination)?;
+            }
+            std::fs::create_dir_all(&destination)?;
+            std::fs::write(destination.join("SKILL.md"), content)?;
+            destination
+        }
+    };
 
     let details = json!({
         "name": slug,
@@ -394,9 +448,14 @@ mod tests {
     use super::*;
 
     fn feature() -> SkillsFeature {
-        SkillsFeature::new(SharedAugmentRegistry::new(
-            crate::plugins::registry::AugmentRegistry::new("Test Lex Imperialis.".into()),
-        ))
+        SkillsFeature::new(
+            SharedAugmentRegistry::new(crate::plugins::registry::AugmentRegistry::new(
+                "Test Lex Imperialis.".into(),
+            )),
+            std::env::current_dir().unwrap(),
+            crate::paths::omegon_home().unwrap(),
+            Vec::new(),
+        )
     }
 
     #[test]
@@ -409,5 +468,223 @@ mod tests {
         assert!(tools.iter().any(|tool| tool.name == "skills_install"));
         assert!(tools.iter().any(|tool| tool.name == "skills_delete"));
         assert!(tools.iter().any(|tool| tool.name == "skills_reload"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reload_preserves_workspace_and_explicit_skill_subset() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        for (name, marker) in [
+            ("allowed", "ALLOWED_MARKER"),
+            ("excluded", "EXCLUDED_MARKER"),
+        ] {
+            let directory = project.path().join(".omegon/skills").join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: Test skill\nactivation: intent_detected\ntriggers: [{name}]\n---\n\n{marker}"
+                ),
+            )
+            .unwrap();
+        }
+        let registry = SharedAugmentRegistry::new(crate::plugins::registry::AugmentRegistry::new(
+            "Test Lex Imperialis.".into(),
+        ));
+        let feature = SkillsFeature::new(
+            registry.clone(),
+            project.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec!["allowed".into()],
+        );
+
+        feature.reload_skills();
+
+        {
+            let registry = registry.lock();
+            let prompt = registry.build_system_prompt();
+            let disclosed = registry.build_system_prompt_disclosed(project.path(), None);
+            assert_eq!(registry.skill_count(), 1);
+            assert!(prompt.contains("ALLOWED_MARKER"));
+            assert!(!prompt.contains("EXCLUDED_MARKER"));
+            assert!(disclosed.contains("ALLOWED_MARKER"));
+        }
+        assert!(
+            feature
+                .execute(
+                    crate::tool_registry::skills::SKILLS_GET,
+                    "test",
+                    json!({ "name": "excluded" }),
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                .is_err()
+        );
+        let listed = feature
+            .execute(
+                crate::tool_registry::skills::SKILLS_LIST,
+                "test",
+                json!({}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.details.as_array().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_create_rejects_symlinked_contribution_root() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), project.path().join(".omegon")).unwrap();
+        let args = json!({
+            "name": "escaped",
+            "description": "must not escape",
+            "body": "ESCAPE_MARKER",
+            "scope": "project",
+        });
+
+        assert!(create_skill_file(&args, project.path(), home.path()).is_err());
+        assert!(!outside.path().join("skills/escaped/SKILL.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_create_is_atomic_and_requires_force_to_replace() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let initial = json!({
+            "name": "atomic",
+            "description": "initial",
+            "body": "INITIAL_MARKER",
+            "scope": "project",
+        });
+        create_skill_file(&initial, project.path(), home.path()).unwrap();
+        let replacement = json!({
+            "name": "atomic",
+            "description": "replacement",
+            "body": "REPLACEMENT_MARKER",
+            "scope": "project",
+        });
+        assert!(create_skill_file(&replacement, project.path(), home.path()).is_err());
+        let path = project.path().join(".omegon/skills/atomic/SKILL.md");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("INITIAL_MARKER")
+        );
+        let stale = project
+            .path()
+            .join(".omegon/skills/atomic/scripts/stale.sh");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(&stale, "#!/bin/sh\nexit 1\n").unwrap();
+
+        let mut forced = replacement;
+        forced["force"] = Value::Bool(true);
+        create_skill_file(&forced, project.path(), home.path()).unwrap();
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("REPLACEMENT_MARKER"));
+        assert!(!content.contains("INITIAL_MARKER"));
+        assert!(!stale.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_import_replaces_bundle_and_skips_source_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(
+            source.path().join("SKILL.md"),
+            "---\nname: imported\ndescription: Imported skill\n---\n\nIMPORTED_MARKER",
+        )
+        .unwrap();
+        let scripts = source.path().join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let script = scripts.join("run.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        symlink(outside.path(), scripts.join("outside-link")).unwrap();
+
+        crate::skills::import_project_skill_guarded(
+            source.path(),
+            project.path(),
+            home.path(),
+            false,
+        )
+        .unwrap();
+        let destination = project.path().join(".omegon/skills/imported");
+        std::fs::write(destination.join("stale.txt"), "stale").unwrap();
+        crate::skills::import_project_skill_guarded(
+            source.path(),
+            project.path(),
+            home.path(),
+            true,
+        )
+        .unwrap();
+
+        assert!(!destination.join("stale.txt").exists());
+        assert!(!destination.join("scripts/outside-link").exists());
+        assert_ne!(
+            std::fs::metadata(destination.join("scripts/run.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o100,
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_delete_unlinks_nested_symlinks_without_following_them() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let skill = project.path().join(".omegon/skills/removable");
+        std::fs::create_dir_all(skill.join("nested")).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "REMOVABLE").unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        symlink(outside.path(), skill.join("nested/outside-link")).unwrap();
+
+        let summary =
+            crate::skills::delete_project_skill_guarded("removable", project.path(), home.path())
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(summary.scope, "project");
+        assert!(!skill.exists());
+        assert!(outside.path().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_skill_delete_rejects_symlinked_contribution_root() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_skill = outside.path().join("skills/escaped");
+        std::fs::create_dir_all(&outside_skill).unwrap();
+        std::fs::write(outside_skill.join("SKILL.md"), "OUTSIDE").unwrap();
+        symlink(outside.path(), project.path().join(".omegon")).unwrap();
+
+        assert!(
+            crate::skills::delete_project_skill_guarded("escaped", project.path(), home.path(),)
+                .is_err()
+        );
+        assert!(outside_skill.join("SKILL.md").exists());
     }
 }

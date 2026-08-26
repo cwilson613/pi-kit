@@ -5,13 +5,56 @@
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
 
-/// Shared set of disabled tool names.
-pub type DisabledTools = Arc<Mutex<HashSet<String>>>;
+/// Capability-ID policy used by every model tool projection and invocation
+/// boundary. Legacy `disabled_tools` inputs are translated at the boundary.
+#[derive(Clone, Debug, Default)]
+pub struct ToolAdmissionPolicy {
+    denied: BTreeSet<omegon_traits::RuntimeCapabilityId>,
+}
+
+impl ToolAdmissionPolicy {
+    pub fn from_tool_names(names: impl IntoIterator<Item = String>) -> Self {
+        let mut policy = Self::default();
+        for name in names {
+            policy.insert(name);
+        }
+        policy
+    }
+
+    pub fn clear(&mut self) {
+        self.denied.clear();
+    }
+
+    pub fn insert(&mut self, tool_name: String) -> bool {
+        self.denied
+            .insert(omegon_traits::RuntimeCapabilityId::tool(&tool_name))
+    }
+
+    pub fn remove(&mut self, tool_name: &str) -> bool {
+        self.denied
+            .remove(&omegon_traits::RuntimeCapabilityId::tool(tool_name))
+    }
+
+    pub fn contains(&self, tool_name: &str) -> bool {
+        self.denied
+            .contains(&omegon_traits::RuntimeCapabilityId::tool(tool_name))
+    }
+
+    pub fn len(&self) -> usize {
+        self.denied.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.denied.is_empty()
+    }
+}
+
+pub type SharedToolAdmissionPolicy = Arc<Mutex<ToolAdmissionPolicy>>;
 
 /// Shared snapshot of registered and currently callable model-visible tool names.
 ///
@@ -68,7 +111,7 @@ pub static TOOL_GROUPS: &[(&str, &[&str])] = &[
 ];
 
 pub struct ManageTools {
-    disabled: DisabledTools,
+    admission: SharedToolAdmissionPolicy,
     /// Snapshot of all tool names (set during init).
     all_tools: ToolInventory,
 }
@@ -82,14 +125,14 @@ impl Default for ManageTools {
 impl ManageTools {
     pub fn new() -> Self {
         Self {
-            disabled: Arc::new(Mutex::new(HashSet::new())),
+            admission: Arc::new(Mutex::new(ToolAdmissionPolicy::default())),
             all_tools: Arc::new(Mutex::new(ToolInventorySnapshot::default())),
         }
     }
 
     /// Get a handle to the disabled set for the bus to check.
-    pub fn disabled_handle(&self) -> DisabledTools {
-        self.disabled.clone()
+    pub fn admission_handle(&self) -> SharedToolAdmissionPolicy {
+        self.admission.clone()
     }
 
     /// Get a handle to the registered tool inventory for the bus to populate.
@@ -166,7 +209,7 @@ impl Feature for ManageTools {
                 let inventory = self.all_tools.lock().unwrap().clone();
                 let callable: HashSet<&str> =
                     inventory.callable.iter().map(String::as_str).collect();
-                let disabled = self.disabled.lock().unwrap();
+                let disabled = self.admission.lock().unwrap();
                 let mut lines = Vec::new();
                 for name in &inventory.registered {
                     let status = if disabled.contains(name) {
@@ -193,7 +236,7 @@ impl Feature for ManageTools {
             }
             "enable" => {
                 let tools = extract_tool_names(&args);
-                let mut disabled = self.disabled.lock().unwrap();
+                let mut disabled = self.admission.lock().unwrap();
                 let mut enabled = Vec::new();
                 for name in &tools {
                     if disabled.remove(name) {
@@ -213,7 +256,7 @@ impl Feature for ManageTools {
             }
             "disable" => {
                 let tools = extract_tool_names(&args);
-                let mut disabled = self.disabled.lock().unwrap();
+                let mut disabled = self.admission.lock().unwrap();
                 let mut newly_disabled = Vec::new();
                 for name in &tools {
                     // Never allow disabling manage_tools itself
@@ -250,11 +293,11 @@ impl Feature for ManageTools {
                             available.join(", ")
                         )
                     })?;
-                let mut disabled = self.disabled.lock().unwrap();
+                let mut disabled = self.admission.lock().unwrap();
                 let mut changed = Vec::new();
                 if action == "enable_group" {
                     for name in tools {
-                        if disabled.remove(*name) {
+                        if disabled.remove(name) {
                             changed.push(*name);
                         }
                     }
@@ -287,10 +330,10 @@ impl Feature for ManageTools {
                 }
             }
             "list_groups" => {
-                let disabled = self.disabled.lock().unwrap();
+                let disabled = self.admission.lock().unwrap();
                 let mut lines = vec!["**Tool Groups**".to_string(), String::new()];
                 for (group_name, tools) in TOOL_GROUPS {
-                    let enabled_count = tools.iter().filter(|t| !disabled.contains(**t)).count();
+                    let enabled_count = tools.iter().filter(|t| !disabled.contains(t)).count();
                     let state = if enabled_count == tools.len() {
                         "all enabled"
                     } else if enabled_count == 0 {

@@ -269,28 +269,9 @@ fn resolve_api_key(provider: &str) -> Option<String> {
 }
 
 fn is_known_provider_id(provider_id: &str) -> bool {
-    matches!(
-        provider_id,
-        "anthropic"
-            | "openai"
-            | "openai-codex"
-            | "openrouter"
-            | "opencode-go"
-            | "perplexity"
-            | "groq"
-            | "xai"
-            | "mistral"
-            | "cerebras"
-            | "moonshot"
-            | "google"
-            | "google-antigravity"
-            | "huggingface"
-            | "ollama"
-            | "ollama-cloud"
-            | "github-copilot"
-            | "dwarfstar"
-            | "local"
-    )
+    crate::provider_contributions::registry()
+        .get(provider_id)
+        .is_some()
 }
 
 /// Infer the concrete provider from a model spec.
@@ -308,7 +289,7 @@ pub fn infer_provider_id(model_spec: &str) -> String {
         return "github-copilot".to_string();
     }
     if let Some(head) = provider_chain.first().copied() {
-        return if head == "local" { "ollama" } else { head }.to_string();
+        return head.to_string();
     }
 
     let lower = trimmed.to_ascii_lowercase();
@@ -378,7 +359,7 @@ pub fn infer_provider_id_strict(model_spec: &str) -> Option<String> {
             return Some("github-copilot".to_string());
         }
         if let Some(head) = provider_chain.first().copied() {
-            return Some(if head == "local" { "ollama" } else { head }.to_string());
+            return Some(head.to_string());
         }
         return None;
     }
@@ -386,12 +367,12 @@ pub fn infer_provider_id_strict(model_spec: &str) -> Option<String> {
     Some(infer_provider_id(trimmed))
 }
 
-fn leading_provider_chain(model_spec: &str) -> Vec<&str> {
+fn leading_provider_chain(model_spec: &str) -> Vec<&'static str> {
     let mut providers = Vec::new();
     let mut current = model_spec.trim();
     while let Some((head, tail)) = current.split_once(':') {
-        if is_known_provider_id(head) {
-            providers.push(head);
+        if let Some(provider) = crate::provider_contributions::registry().get(head) {
+            providers.push(provider.provider_id.as_str());
             current = tail;
         } else {
             break;
@@ -406,7 +387,7 @@ pub fn explicit_provider_id(model_spec: &str) -> Option<String> {
         return Some("github-copilot".to_string());
     }
     let head = providers.first().copied()?;
-    Some(if head == "local" { "ollama" } else { head }.to_string())
+    Some(head.to_string())
 }
 
 pub(crate) fn model_id_from_spec(model_spec: &str) -> &str {
@@ -442,38 +423,13 @@ pub(crate) fn canonical_model_spec(model_spec: &str) -> String {
     trimmed.to_string()
 }
 
-fn is_openai_family_model(model_spec: &str) -> bool {
-    let model_id = model_id_from_spec(model_spec).to_ascii_lowercase();
-    model_id.starts_with("gpt-")
-        || model_id == "o1"
-        || model_id == "o3"
-        || model_id == "o4"
-        || model_id.starts_with("o1-")
-        || model_id.starts_with("o3-")
-        || model_id.starts_with("o4-")
-}
-
-/// Providers that can serve the same model family through alternate auth or
-/// hosting surfaces. This is intentionally narrow: fallbacks here should be
-/// credential/protocol alternates for the same provider family, not arbitrary
-/// model substitution.
-fn alternate_provider_family(provider: &str) -> &'static [&'static str] {
-    match provider {
-        "openai" => &["openai-codex"],
-        "openai-codex" => &["openai"],
-        "google" => &["google-antigravity"],
-        "google-antigravity" => &["google"],
-        _ => &[],
-    }
-}
-
 fn push_unique<'a>(order: &mut Vec<&'a str>, provider: &'a str) {
     if !order.contains(&provider) {
         order.push(provider);
     }
 }
 
-fn fallback_order_for_model(model_spec: &str) -> Vec<&'static str> {
+pub(crate) fn fallback_order_for_model(model_spec: &str) -> Vec<&'static str> {
     let requested = infer_provider_id(model_spec);
     let Some(requested_provider) =
         crate::auth::provider_by_id(&requested).map(|provider| provider.id)
@@ -484,36 +440,27 @@ fn fallback_order_for_model(model_spec: &str) -> Vec<&'static str> {
     let mut order = Vec::new();
     push_unique(&mut order, requested_provider);
 
-    let allow_family_fallback = match requested_provider {
-        "openai" | "openai-codex" => is_openai_family_model(model_spec),
-        "google" | "google-antigravity" => true,
-        _ => false,
-    };
-    if allow_family_fallback {
-        for alternate in alternate_provider_family(requested_provider) {
-            push_unique(&mut order, alternate);
-        }
+    for alternate in crate::provider_contributions::registry()
+        .fallback_targets(requested_provider, model_id_from_spec(model_spec))
+    {
+        push_unique(&mut order, alternate);
     }
 
     order
 }
 
 pub async fn resolve_execution_provider(model_spec: &str) -> Option<String> {
-    for provider in fallback_order_for_model(model_spec) {
-        if let Some(_bridge) = resolve_provider(provider).await {
-            return Some(provider.to_string());
-        }
-    }
-    None
+    let route = crate::session_execution::boot_execution_binding()
+        .resolve_provider_route(model_spec, None)
+        .await?;
+    Some(infer_provider_id(route.serving_model()))
 }
 
 pub async fn resolve_execution_model_spec(model_spec: &str) -> Option<String> {
-    let resolved_provider = resolve_execution_provider(model_spec).await?;
-    Some(format!(
-        "{}:{}",
-        resolved_provider,
-        model_id_from_spec(model_spec)
-    ))
+    crate::session_execution::boot_execution_binding()
+        .resolve_provider_route(model_spec, None)
+        .await
+        .map(|route| route.serving_model().to_string())
 }
 
 pub async fn delegate_default_model() -> String {
@@ -560,14 +507,61 @@ pub async fn delegate_default_model() -> String {
     "ollama:qwen3:32b".to_string()
 }
 
-/// Resolve a single provider by ID. Returns a bridge if the provider
-/// has credentials and a native client implementation.
-///
-/// Providers without native clients (groq, xai, mistral, cerebras)
-/// return None here — they need an OpenAI-compatible client layer
-/// which is tracked for re-implementation.
+/// Resolve a single validated provider contribution. Returns a bridge when its
+/// factory is executable and the required credential or local endpoint exists.
 pub async fn resolve_provider(provider_id: &str) -> Option<Box<dyn LlmBridge>> {
     resolve_provider_with_secrets(provider_id, None).await
+}
+
+pub(crate) struct ProviderBridgeResolution {
+    pub(crate) bridge: Box<dyn LlmBridge>,
+    pub(crate) credential_source_class: String,
+}
+
+fn credential_source_class(provider_id: &str) -> Option<String> {
+    let env_keys = crate::auth::provider_env_vars(provider_id);
+    let endpoint_refs = crate::auth::endpoint_secret_refs(provider_id);
+    let env_value = |oauth: bool| {
+        env_keys
+            .iter()
+            .copied()
+            .chain(endpoint_refs.iter().map(String::as_str))
+            .filter(|key| key.contains("OAUTH") == oauth)
+            .any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()))
+    };
+    if env_value(false) {
+        return Some("environment_api_key".into());
+    }
+    let auth_key = crate::auth::auth_json_key(provider_id);
+    if let Some(credentials) = crate::auth::read_credentials(auth_key) {
+        if credentials.cred_type != "oauth" {
+            return Some("stored_api_key".into());
+        }
+        if !credentials.is_expired() {
+            return Some("stored_oauth".into());
+        }
+    }
+    if let Some(credentials) = crate::auth::read_external_credentials(auth_key) {
+        if credentials.cred_type != "oauth" {
+            return Some("external_api_key".into());
+        }
+        if !credentials.is_expired() {
+            return Some("external_oauth".into());
+        }
+    }
+    env_value(true).then(|| "environment_oauth".into())
+}
+
+fn resolved_provider_bridge(
+    provider_id: &str,
+    bridge: Box<dyn LlmBridge>,
+    default_source: &str,
+) -> ProviderBridgeResolution {
+    ProviderBridgeResolution {
+        bridge,
+        credential_source_class: credential_source_class(provider_id)
+            .unwrap_or_else(|| default_source.to_string()),
+    }
 }
 
 /// Resolve a provider at an explicit execution boundary. When a secrets manager
@@ -578,24 +572,51 @@ pub async fn resolve_provider_with_secrets(
     provider_id: &str,
     secrets: Option<&omegon_secrets::SecretsManager>,
 ) -> Option<Box<dyn LlmBridge>> {
-    match provider_id {
-        "anthropic" => {
+    resolve_provider_binding_with_secrets(provider_id, secrets)
+        .await
+        .map(|resolution| resolution.bridge)
+}
+
+pub(crate) async fn resolve_provider_binding_with_secrets(
+    provider_id: &str,
+    secrets: Option<&omegon_secrets::SecretsManager>,
+) -> Option<ProviderBridgeResolution> {
+    use crate::provider_contributions::ProviderBridgeFactoryBinding as Factory;
+
+    let contribution = crate::provider_contributions::registry().get(provider_id)?;
+    if !contribution.executable {
+        tracing::warn!(provider = %contribution.provider_id, "provider contribution is not executable");
+        return None;
+    }
+    let provider_id = contribution.provider_id.as_str();
+    match contribution.bridge_factory {
+        Factory::AnthropicMessages => {
             if let Some(client) = AnthropicClient::from_env() {
-                return Some(Box::new(client));
+                return Some(resolved_provider_bridge(
+                    provider_id,
+                    Box::new(client),
+                    "api_key_or_oauth",
+                ));
             }
             AnthropicClient::from_env_async()
                 .await
-                .map(|c| Box::new(c) as Box<dyn LlmBridge>)
+                .map(|client| resolved_provider_bridge(provider_id, Box::new(client), "oauth"))
         }
-        "openai" => OpenAIClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
-        "openrouter" => OpenRouterClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
-        "github-copilot" => Some(Box::new(GithubCopilotClient::new()) as Box<dyn LlmBridge>),
+        Factory::OpenAiApi => OpenAIClient::from_env()
+            .map(|client| resolved_provider_bridge(provider_id, Box::new(client), "api_key")),
+        Factory::OpenRouter => OpenRouterClient::from_env()
+            .map(|client| resolved_provider_bridge(provider_id, Box::new(client), "api_key")),
+        Factory::GithubCopilot => Some(resolved_provider_bridge(
+            provider_id,
+            Box::new(GithubCopilotClient::new()),
+            "oauth_token_exchange",
+        )),
         // Google Antigravity — Gemini CLI OAuth via Cloud Code Assist internal API.
         // Requires a GCP project with Cloud AI Companion API enabled. Google Workspace
         // accounts on the "standard-tier" must link a project; the free tier that
         // auto-provisions is blocked for Workspace/DASHER accounts.
         // Until project provisioning is implemented, surface a clear error.
-        "google-antigravity" => {
+        Factory::GoogleAntigravity => {
             tracing::warn!(
                 "Google Antigravity (Gemini CLI OAuth) requires a GCP project with \
                  Cloud AI Companion API enabled. This is not yet automated. \
@@ -605,10 +626,13 @@ pub async fn resolve_provider_with_secrets(
             None
         }
         // OpenAI-compatible providers — all use the Chat Completions protocol
-        "groq" | "xai" | "mistral" | "cerebras" | "moonshot" | "google" | "huggingface"
-        | "ollama" | "opencode-go" | "perplexity" | "dwarfstar" => {
+        Factory::OpenAiChatCompletions => {
             if let Some(client) = OpenAICompatClient::from_env(provider_id) {
-                return Some(Box::new(client));
+                return Some(resolved_provider_bridge(
+                    provider_id,
+                    Box::new(client),
+                    contribution.authentication.as_str(),
+                ));
             }
             let endpoint_refs = crate::auth::endpoint_secret_refs(provider_id);
             let secret_name = crate::auth::provider_env_vars(provider_id)
@@ -617,23 +641,30 @@ pub async fn resolve_provider_with_secrets(
                 .or_else(|| endpoint_refs.first().map(String::as_str))?;
             let api_key = secrets?.resolve_async(secret_name).await?;
             let base_url = compat_base_url(provider_id)?;
-            Some(Box::new(OpenAICompatClient::new(
-                api_key,
-                base_url.to_string(),
-                provider_id.to_string(),
-            )))
+            Some(ProviderBridgeResolution {
+                bridge: Box::new(OpenAICompatClient::new(
+                    api_key,
+                    base_url.to_string(),
+                    provider_id.to_string(),
+                )),
+                credential_source_class: "secrets_manager".into(),
+            })
         }
-        "ollama-cloud" => OllamaCloudClient::from_env().map(|c| Box::new(c) as Box<dyn LlmBridge>),
+        Factory::OllamaCloud => OllamaCloudClient::from_env()
+            .map(|client| resolved_provider_bridge(provider_id, Box::new(client), "api_key")),
         // Codex uses the Responses API (not Chat Completions) with OAuth JWT tokens
-        "openai-codex" => {
+        Factory::OpenAiResponses => {
             if let Some(client) = CodexClient::from_env() {
-                return Some(Box::new(client));
+                return Some(resolved_provider_bridge(
+                    provider_id,
+                    Box::new(client),
+                    "oauth",
+                ));
             }
             CodexClient::from_env_async()
                 .await
-                .map(|c| Box::new(c) as Box<dyn LlmBridge>)
+                .map(|client| resolved_provider_bridge(provider_id, Box::new(client), "oauth"))
         }
-        _ => None,
     }
 }
 
@@ -647,20 +678,10 @@ pub async fn auto_detect_bridge_with_secrets(
     model_spec: &str,
     secrets: Option<&omegon_secrets::SecretsManager>,
 ) -> Option<Box<dyn LlmBridge>> {
-    let requested = infer_provider_id(model_spec);
-    let attempts = fallback_order_for_model(model_spec);
-
-    for provider in attempts {
-        if let Some(bridge) = resolve_provider_with_secrets(provider, secrets).await {
-            if provider != requested {
-                tracing::info!(requested = %requested, resolved = provider, model_spec, "falling back to alternate executable provider");
-            }
-            return Some(bridge);
-        }
-    }
-
-    tracing::warn!(requested = %requested, model_spec, "no executable provider available");
-    None
+    crate::session_execution::boot_execution_binding()
+        .resolve_provider_route(model_spec, secrets)
+        .await
+        .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
 }
 
 /// Single-turn text completion with no tools, no streaming aggregation,
@@ -673,9 +694,13 @@ pub async fn quick_completion(
     model_spec: &str,
     prompt: &str,
 ) -> anyhow::Result<QuickCompletionResult> {
-    let bridge = auto_detect_bridge(model_spec)
+    let route = crate::session_execution::boot_execution_binding()
+        .resolve_provider_route(model_spec, None)
         .await
         .ok_or_else(|| anyhow::anyhow!("no provider available for {model_spec}"))?;
+    let recorder = crate::provider_route_service::StepRouteLeaseRecorder::for_ephemeral_step(
+        uuid::Uuid::new_v4(),
+    )?;
 
     let messages = vec![crate::bridge::LlmMessage::User {
         content: prompt.to_string(),
@@ -683,14 +708,15 @@ pub async fn quick_completion(
     }];
 
     let options = crate::bridge::StreamOptions {
-        model: Some(model_spec.to_string()),
+        model: Some(route.serving_model().to_string()),
         reasoning: None,
         extended_context: false,
         extra_body: std::collections::HashMap::new(),
     };
 
-    let mut rx = bridge
+    let mut rx = route
         .stream(
+            crate::provider_route_service::RouteLeaseOwner::Step(&recorder),
             "You are a concise classification assistant.",
             &messages,
             &[],
@@ -936,6 +962,14 @@ fn openai_function_parameters(value: &Value) -> Value {
     }
 
     normalized
+}
+
+fn provider_function_parameters(provider_id: &str, value: &Value) -> Option<Value> {
+    let dialect = crate::tool_schema::dialect_for_provider(provider_id)?;
+    Some(match dialect {
+        crate::tool_schema::SchemaDialect::OpenAI => openai_function_parameters(value),
+        _ => crate::tool_schema::normalize(value, dialect),
+    })
 }
 
 /// Map tool names to Claude Code PascalCase canonical names for OAuth.
@@ -1326,16 +1360,12 @@ impl AnthropicClient {
                 // Strip parameter-level descriptions to save tokens.
                 // The model infers parameter semantics from names + the tool
                 // description. Full descriptions cost ~50 tokens/tool × 31 tools.
-                let properties = t.parameters.get("properties").cloned().unwrap_or(json!({}));
-                let compact_props = strip_parameter_descriptions(&properties);
+                let input_schema = provider_function_parameters("anthropic", &t.parameters)
+                    .expect("validated Anthropic contribution supports tools");
                 let mut tool_json = json!({
                     "name": name,
                     "description": t.description,
-                    "input_schema": {
-                        "type": "object",
-                        "properties": compact_props,
-                        "required": t.parameters.get("required").cloned().unwrap_or(json!([])),
-                    },
+                    "input_schema": input_schema,
                 });
                 // Mark the last tool with cache_control so the entire tools
                 // array is included in the Anthropic prompt cache prefix.
@@ -1895,18 +1925,18 @@ impl LlmBridge for OpenAIClient {
 
         let wire_msgs = Self::build_wire_messages(system_prompt, messages);
 
+        let tool_dialect = crate::tool_schema::dialect_for_provider(&self.endpoint_id);
+        if !tools.is_empty() && tool_dialect.is_none() {
+            anyhow::bail!(
+                "provider {} does not support tool declarations",
+                self.endpoint_id
+            );
+        }
         let wire_tools: Vec<Value> = tools
             .iter()
             .map(|t| {
-                let params = if self.endpoint_id == "moonshot" {
-                    // Kimi's published tool contract accepts standard JSON Schema
-                    // verbatim, including descriptions and properties literally
-                    // named `description`. Do not run Omegon's lossy OpenAI schema
-                    // compactor over Moonshot tool definitions.
-                    t.parameters.clone()
-                } else {
-                    openai_function_parameters(&t.parameters)
-                };
+                let params = provider_function_parameters(&self.endpoint_id, &t.parameters)
+                    .expect("validated provider contribution supports tools");
                 json!({
                     "type": "function",
                     "function": {"name": t.name, "description": t.description, "parameters": params},
@@ -2193,7 +2223,8 @@ impl LlmBridge for GithubCopilotClient {
         let wire_tools: Vec<Value> = tools
             .iter()
             .map(|t| {
-                let params = openai_function_parameters(&t.parameters);
+                let params = provider_function_parameters("github-copilot", &t.parameters)
+                    .expect("validated GitHub Copilot contribution supports tools");
                 json!({
                     "type": "function",
                     "function": {"name": t.name, "description": t.description, "parameters": params},
@@ -2982,7 +3013,8 @@ impl CodexClient {
         tools
             .iter()
             .map(|t| {
-                let params = openai_function_parameters(&t.parameters);
+                let params = provider_function_parameters("openai-codex", &t.parameters)
+                    .expect("validated Codex contribution supports tools");
                 json!({
                     "type": "function", "name": t.name, "description": t.description,
                     "parameters": params,
@@ -3973,9 +4005,12 @@ impl LlmBridge for OllamaCloudClient {
         &self,
         system_prompt: &str,
         messages: &[LlmMessage],
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
         options: &StreamOptions,
     ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
+        if !tools.is_empty() {
+            anyhow::bail!("provider ollama-cloud does not support tool declarations");
+        }
         let (tx, rx) = mpsc::channel(256);
         let model = options
             .model
@@ -4283,7 +4318,8 @@ impl AntigravityClient {
         if tools.is_empty() {
             return None;
         }
-        let dialect = crate::tool_schema::SchemaDialect::Gemini;
+        let dialect = crate::tool_schema::dialect_for_provider("google-antigravity")
+            .expect("validated Antigravity contribution supports tools");
         let decls: Vec<Value> = tools
             .iter()
             .map(|t| {
@@ -6204,11 +6240,34 @@ mod tests {
     }
 
     #[test]
-    fn resolve_execution_model_spec_reprefixes_openai_family_models() {
+    fn provider_contribution_aliases_canonicalize_route_identity() {
+        for (alias, provider) in [
+            ("claude", "anthropic"),
+            ("chatgpt", "openai-codex"),
+            ("codex", "openai-codex"),
+            ("copilot", "github-copilot"),
+            ("kimi", "moonshot"),
+            ("gemini", "google"),
+            ("antigravity", "google-antigravity"),
+            ("local", "ollama"),
+        ] {
+            let spec = format!("{alias}:example-model");
+            assert_eq!(infer_provider_id(&spec), provider);
+            assert_eq!(explicit_provider_id(&spec).as_deref(), Some(provider));
+            assert_eq!(
+                canonical_model_spec(&spec),
+                format!("{provider}:example-model")
+            );
+        }
+    }
+
+    #[test]
+    fn openai_fallback_uses_native_model_family_declaration() {
         assert_eq!(model_id_from_spec("openai:gpt-5.4"), "gpt-5.4");
-        assert!(is_openai_family_model("openai:gpt-5.4"));
-        assert!(is_openai_family_model("gpt-5.4"));
-        assert!(is_openai_family_model("gpt-5.4-mini"));
+        assert_eq!(
+            fallback_order_for_model("openai:gpt-5.4-mini"),
+            vec!["openai", "openai-codex"]
+        );
     }
 
     // ── CodexClient tests ───────────────────────────────────────

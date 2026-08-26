@@ -8,10 +8,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::cache::ScanCache;
+use crate::cache::{FileKind, ScanCache};
 use crate::code::{CodeScanner, is_supported_code_extension};
 use crate::knowledge::{KnowledgeDirs, KnowledgeScanner};
 
@@ -36,6 +36,46 @@ impl Indexer {
         cache: &mut ScanCache,
         is_cancelled: impl Fn() -> bool,
     ) -> Result<IndexStats> {
+        let full_rebuild = cache.full_rebuild_active();
+        let result = Self::run_inner(repo_path, cache, &is_cancelled);
+        if !full_rebuild {
+            return result;
+        }
+
+        match result {
+            Ok(stats) if !is_cancelled() => {
+                if let Err(error) = cache.commit_full_rebuild() {
+                    if cache.full_rebuild_active() {
+                        cache
+                            .rollback_full_rebuild()
+                            .context("failed to roll back failed full codescan commit")?;
+                    }
+                    return Err(error).context("failed to commit full codescan rebuild");
+                }
+                Ok(stats)
+            }
+            Ok(_) => {
+                if cache.full_rebuild_active() {
+                    cache.rollback_full_rebuild()?;
+                }
+                anyhow::bail!("codebase index cancelled");
+            }
+            Err(error) => {
+                if cache.full_rebuild_active() {
+                    cache
+                        .rollback_full_rebuild()
+                        .context("failed to roll back full codescan rebuild")?;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn run_inner(
+        repo_path: &Path,
+        cache: &ScanCache,
+        is_cancelled: &impl Fn() -> bool,
+    ) -> Result<IndexStats> {
         let started = Instant::now();
         if is_cancelled() {
             anyhow::bail!("codebase index cancelled");
@@ -45,13 +85,13 @@ impl Indexer {
         // has no relevant dirty files that could make cached chunks stale.
         let current_head = git_head(repo_path);
         if let Some(ref head) = current_head
-            && cache.get_meta("last_head").as_deref() == Some(head.as_str())
+            && cache.try_get_meta("last_head")?.as_deref() == Some(head.as_str())
             && !has_relevant_worktree_changes(repo_path)
         {
             // Already up to date — return cached counts without touching the filesystem
-            let code_chunks = cache.code_chunk_count();
-            let knowledge_chunks = cache.knowledge_chunk_count();
-            if code_chunks > 0 || knowledge_chunks > 0 {
+            let code_chunks = cache.try_code_chunk_count()?;
+            let knowledge_chunks = cache.try_knowledge_chunk_count()?;
+            if cache.try_file_state_count()? > 0 {
                 tracing::debug!(head = %head, "codescan fast-path: HEAD unchanged");
                 return Ok(IndexStats {
                     code_files: 0, // unknown without walk; 0 = "not re-scanned"
@@ -74,80 +114,86 @@ impl Indexer {
         }
 
         // Compute content hashes
-        let code_hashes: Vec<(PathBuf, String)> = code_files
-            .iter()
-            .filter_map(|p| std::fs::read(p).ok().map(|c| (p.clone(), sha256(&c))))
-            .collect();
-        let knowledge_hashes: Vec<(PathBuf, String)> = knowledge_files
-            .iter()
-            .filter_map(|p| std::fs::read(p).ok().map(|c| (p.clone(), sha256(&c))))
-            .collect();
+        let mut code_hashes = Vec::with_capacity(code_files.len());
+        for path in &code_files {
+            if is_cancelled() {
+                anyhow::bail!("codebase index cancelled");
+            }
+            let content = std::fs::read(repo_path.join(path))
+                .with_context(|| format!("failed to hash {}", path.display()))?;
+            code_hashes.push((path.clone(), sha256(&content)));
+        }
+        let mut knowledge_hashes = Vec::with_capacity(knowledge_files.len());
+        for path in &knowledge_files {
+            if is_cancelled() {
+                anyhow::bail!("codebase index cancelled");
+            }
+            let content = std::fs::read(repo_path.join(path))
+                .with_context(|| format!("failed to hash {}", path.display()))?;
+            knowledge_hashes.push((path.clone(), sha256(&content)));
+        }
 
-        // Batch-compare with cached hashes (2 queries, not N)
-        let all_hashes: Vec<(PathBuf, String)> = code_hashes
-            .iter()
-            .chain(knowledge_hashes.iter())
-            .cloned()
+        let stale_code: HashSet<PathBuf> = cache
+            .stale_paths_for_kind(FileKind::Code, &code_hashes)?
+            .into_iter()
             .collect();
-        let stale: HashSet<PathBuf> = cache.stale_paths(&all_hashes).into_iter().collect();
-        let live_paths: HashSet<PathBuf> =
-            all_hashes.iter().map(|(path, _)| path.clone()).collect();
-        cache.prune_missing_paths(&live_paths)?;
+        let stale_knowledge: HashSet<PathBuf> = cache
+            .stale_paths_for_kind(FileKind::Knowledge, &knowledge_hashes)?
+            .into_iter()
+            .collect();
+        let live_files: HashSet<(PathBuf, FileKind)> = code_hashes
+            .iter()
+            .map(|(path, _)| (path.clone(), FileKind::Code))
+            .chain(
+                knowledge_hashes
+                    .iter()
+                    .map(|(path, _)| (path.clone(), FileKind::Knowledge)),
+            )
+            .collect();
 
         for (path, hash) in &code_hashes {
             if is_cancelled() {
                 anyhow::bail!("codebase index cancelled");
             }
-            if !stale.contains(path) {
+            if !stale_code.contains(path) {
                 continue;
             }
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), "read error: {e}");
-                    continue;
-                }
-            };
-            let rel = path.strip_prefix(repo_path).unwrap_or(path);
-            let mut chunks = CodeScanner::scan_file(rel, &content);
+            let content = std::fs::read_to_string(repo_path.join(path))
+                .with_context(|| format!("failed to read indexed code path {}", path.display()))?;
+            let mut chunks = CodeScanner::scan_file(path, &content);
             for c in &mut chunks {
-                c.path = rel.to_path_buf();
+                c.path = path.clone();
             }
-            cache.upsert_code_chunks(rel, hash, &chunks)?;
+            cache.upsert_code_chunks_with_cancel(path, hash, &chunks, is_cancelled)?;
         }
 
         for (path, hash) in &knowledge_hashes {
-            if !stale.contains(path) {
+            if is_cancelled() {
+                anyhow::bail!("codebase index cancelled");
+            }
+            if !stale_knowledge.contains(path) {
                 continue;
             }
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), "read error: {e}");
-                    continue;
-                }
-            };
-            let rel = path.strip_prefix(repo_path).unwrap_or(path);
-            let mut chunks = KnowledgeScanner::scan_file(rel, &content);
+            let content = std::fs::read_to_string(repo_path.join(path)).with_context(|| {
+                format!("failed to read indexed knowledge path {}", path.display())
+            })?;
+            let mut chunks = KnowledgeScanner::scan_file(path, &content);
             for c in &mut chunks {
-                c.path = rel.to_path_buf();
+                c.path = path.clone();
             }
-            cache.upsert_knowledge_chunks(rel, hash, &chunks)?;
+            cache.upsert_knowledge_chunks_with_cancel(path, hash, &chunks, is_cancelled)?;
         }
 
-        // Record HEAD so next call can use the fast path
-        if let Some(ref head) = current_head {
-            let _ = cache.set_meta("last_head", head);
-        }
+        cache.publish_successful_run(&live_files, current_head.as_deref(), is_cancelled)?;
 
-        let code_chunks = cache.code_chunk_count();
-        let knowledge_chunks = cache.knowledge_chunk_count();
+        let code_chunks = cache.try_code_chunk_count()?;
+        let knowledge_chunks = cache.try_knowledge_chunk_count()?;
         let duration_ms = started.elapsed().as_millis() as u64;
 
         tracing::info!(
             code_files = code_files.len(),
             knowledge_files = knowledge_files.len(),
-            stale = stale.len(),
+            stale = stale_code.len() + stale_knowledge.len(),
             code_chunks,
             knowledge_chunks,
             duration_ms,
@@ -239,9 +285,13 @@ fn should_skip_path(path: &Path) -> bool {
     })
 }
 
+fn normalized_relative_path(path: &Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().replace('\\', "/"))
+}
+
 fn discover_code_files(repo_path: &Path) -> Vec<PathBuf> {
     use walkdir::WalkDir;
-    WalkDir::new(repo_path)
+    let mut files = WalkDir::new(repo_path)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| !should_skip_path(e.path()))
@@ -254,8 +304,15 @@ fn discover_code_files(repo_path: &Path) -> Vec<PathBuf> {
                 .map(is_supported_code_extension)
                 .unwrap_or(false)
         })
-        .map(|e| e.path().to_path_buf())
-        .collect()
+        .filter_map(|e| {
+            e.path()
+                .strip_prefix(repo_path)
+                .ok()
+                .map(normalized_relative_path)
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
 }
 
 fn discover_knowledge_files(repo_path: &Path, dirs: &KnowledgeDirs) -> Vec<PathBuf> {
@@ -264,8 +321,10 @@ fn discover_knowledge_files(repo_path: &Path, dirs: &KnowledgeDirs) -> Vec<PathB
         let full = format!("{}/{}", repo_path.to_string_lossy(), pattern);
         if let Ok(paths) = glob::glob(&full) {
             for p in paths.filter_map(|p| p.ok()) {
-                if p.is_file() {
-                    files.push(p);
+                if p.is_file()
+                    && let Ok(relative) = p.strip_prefix(repo_path)
+                {
+                    files.push(normalized_relative_path(relative));
                 }
             }
         }
@@ -278,6 +337,9 @@ fn discover_knowledge_files(repo_path: &Path, dirs: &KnowledgeDirs) -> Vec<PathB
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    use crate::{BM25Index, SearchScope};
 
     #[test]
     fn runs_on_small_repo() {
@@ -316,6 +378,32 @@ mod tests {
         assert_eq!(
             s1.code_chunks, s2.code_chunks,
             "chunk count should be stable"
+        );
+    }
+
+    #[test]
+    fn non_git_runs_keep_paths_relative_and_replace_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn first() {}\n").unwrap();
+        let mut cache = ScanCache::open(&repo.join(".omegon/codescan.db")).unwrap();
+
+        Indexer::run(repo, &mut cache).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn second() {}\n").unwrap();
+        Indexer::run(repo, &mut cache).unwrap();
+
+        let chunks = cache.all_code_chunks().unwrap();
+        assert_eq!(
+            chunks.len(),
+            1,
+            "changed path should be replaced: {chunks:?}"
+        );
+        assert_eq!(chunks[0].path, Path::new("src/lib.rs"));
+        assert_eq!(chunks[0].item_name, "second");
+        assert_eq!(
+            cache.all_hashes().keys().collect::<Vec<_>>(),
+            vec!["src/lib.rs"]
         );
     }
 
@@ -359,6 +447,171 @@ mod tests {
             .map(|chunk| chunk.item_name.as_str())
             .collect::<Vec<_>>();
         assert!(names.contains(&"dirty_added"), "chunks: {names:?}");
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.path == Path::new("src/lib.rs"))
+        );
+        assert!(cache.all_hashes().contains_key("src/lib.rs"));
+        assert!(
+            !cache
+                .all_hashes()
+                .contains_key(&repo.join("src/lib.rs").display().to_string())
+        );
+    }
+
+    #[test]
+    fn cancelled_incremental_run_keeps_commits_but_defers_pruning_and_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "pub fn a() {}\n").unwrap();
+        std::fs::write(repo.join("src/b.rs"), "pub fn b() {}\n").unwrap();
+        let mut cache = ScanCache::open(&repo.join(".omegon/codescan.db")).unwrap();
+        cache
+            .upsert_code_chunks(
+                Path::new("src/missing.rs"),
+                "missing-hash",
+                &[crate::code::CodeChunk {
+                    path: PathBuf::from("src/missing.rs"),
+                    start_line: 1,
+                    end_line: 1,
+                    item_name: "missing".into(),
+                    item_kind: "fn".into(),
+                    text: "fn missing() {}".into(),
+                    parent_scope: None,
+                    language: "rust".into(),
+                    strategy: crate::code::ExtractionStrategy::TreeSitter,
+                    confidence: crate::code::ExtractionConfidence::Extracted,
+                }],
+            )
+            .unwrap();
+        cache.set_meta("last_head", "prior-head").unwrap();
+
+        let checks = Cell::new(0);
+        let result = Indexer::run_with_cancel(repo, &mut cache, || {
+            let next = checks.get() + 1;
+            checks.set(next);
+            next == 8
+        });
+        assert!(result.is_err());
+
+        let names = cache
+            .all_code_chunks()
+            .unwrap()
+            .into_iter()
+            .map(|chunk| chunk.item_name)
+            .collect::<Vec<_>>();
+        assert!(
+            names.iter().any(|name| name == "a"),
+            "first path should remain committed: {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name == "missing"),
+            "pruning must be deferred: {names:?}"
+        );
+        assert_eq!(cache.get_meta("last_head").as_deref(), Some("prior-head"));
+    }
+
+    #[test]
+    fn cancelled_full_invalidation_preserves_prior_index_and_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(repo.join("docs")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn retained_symbol() {}\n").unwrap();
+        std::fs::write(repo.join("docs/design.md"), "# Retained knowledge\n").unwrap();
+        let mut cache = ScanCache::open(&repo.join(".omegon/codescan.db")).unwrap();
+        Indexer::run(repo, &mut cache).unwrap();
+        cache.set_meta("last_head", "prior-head").unwrap();
+        let old_hashes = cache.all_hashes();
+        let old_code = cache.all_code_chunks().unwrap();
+        let old_knowledge = cache.all_knowledge_chunks().unwrap();
+        assert!(
+            !BM25Index::build(&old_code, &old_knowledge)
+                .search("retained_symbol", SearchScope::All, 5)
+                .is_empty()
+        );
+
+        std::fs::write(repo.join("src/lib.rs"), "pub fn replacement_symbol() {}\n").unwrap();
+        cache.begin_full_rebuild().unwrap();
+        cache.set_meta("last_head", "").unwrap();
+        let checks = Cell::new(0);
+        let result = Indexer::run_with_cancel(repo, &mut cache, || {
+            let next = checks.get() + 1;
+            checks.set(next);
+            next == 5
+        });
+        assert!(result.is_err());
+
+        assert_eq!(cache.all_hashes(), old_hashes);
+        assert_eq!(cache.get_meta("last_head").as_deref(), Some("prior-head"));
+        let code = cache.all_code_chunks().unwrap();
+        let knowledge = cache.all_knowledge_chunks().unwrap();
+        let results =
+            BM25Index::build(&code, &knowledge).search("retained_symbol", SearchScope::All, 5);
+        assert!(!results.is_empty(), "prior searchable index must survive");
+        assert!(
+            code.iter()
+                .any(|chunk| chunk.item_name == "retained_symbol")
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|chunk| chunk.item_name == "replacement_symbol")
+        );
+    }
+
+    #[test]
+    fn failed_full_invalidation_rolls_back_prior_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn retained_symbol() {}\n").unwrap();
+        let db_path = repo.join(".omegon/codescan.db");
+        let mut cache = ScanCache::open(&db_path).unwrap();
+        Indexer::run(repo, &mut cache).unwrap();
+        cache.set_meta("last_head", "prior-head").unwrap();
+
+        std::fs::write(repo.join("src/lib.rs"), [0xff, 0xfe]).unwrap();
+        cache.begin_full_rebuild().unwrap();
+        cache.set_meta("last_head", "").unwrap();
+        assert!(Indexer::run(repo, &mut cache).is_err());
+
+        assert_eq!(cache.get_meta("last_head").as_deref(), Some("prior-head"));
+        assert!(
+            cache
+                .all_code_chunks()
+                .unwrap()
+                .iter()
+                .any(|chunk| chunk.item_name == "retained_symbol")
+        );
+    }
+
+    #[test]
+    fn successful_full_invalidation_commits_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn prior_symbol() {}\n").unwrap();
+        let db_path = repo.join(".omegon/codescan.db");
+        let mut cache = ScanCache::open(&db_path).unwrap();
+        Indexer::run(repo, &mut cache).unwrap();
+
+        std::fs::write(repo.join("src/lib.rs"), "pub fn replacement_symbol() {}\n").unwrap();
+        cache.begin_full_rebuild().unwrap();
+        cache.set_meta("last_head", "").unwrap();
+        Indexer::run(repo, &mut cache).unwrap();
+        drop(cache);
+
+        let reopened = ScanCache::open(&db_path).unwrap();
+        let chunks = reopened.all_code_chunks().unwrap();
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.item_name == "replacement_symbol")
+        );
+        assert!(!chunks.iter().any(|chunk| chunk.item_name == "prior_symbol"));
     }
 
     #[test]

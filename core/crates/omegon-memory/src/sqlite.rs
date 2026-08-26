@@ -5,14 +5,15 @@
 //! Bundled sqlite via rusqlite's `bundled` feature.
 
 use async_trait::async_trait;
-use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-pub const MEMORY_SCHEMA_VERSION: i64 = 7;
+pub const MEMORY_SCHEMA_VERSION: i64 = 8;
 pub const PRIMENSUS_MIND: &str = "primensus";
 pub const LEGACY_MIND: &str = "legacy";
-pub const LEGACY_MEMORY_SCHEMA_VERSIONS: std::ops::RangeInclusive<i64> = 5..=6;
+pub const LEGACY_MEMORY_SCHEMA_VERSIONS: std::ops::RangeInclusive<i64> = 5..=7;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -24,6 +25,7 @@ pub struct MemoryMigrationPlan {
     pub mind_count: u64,
     pub edge_count: u64,
     pub episode_count: u64,
+    pub fact_version_hwm: u64,
     pub integrity_check: String,
     pub foreign_key_violations: u64,
     pub backup: PathBuf,
@@ -92,7 +94,7 @@ impl SqliteBackend {
         )?;
         if !LEGACY_MEMORY_SCHEMA_VERSIONS.contains(&source_version) {
             anyhow::bail!(
-                "memory migration only supports schema v5 or v6 sources; found v{source_version}"
+                "memory migration only supports schema v5 through v7 sources; found v{source_version}"
             );
         }
         let integrity_check: String =
@@ -119,22 +121,37 @@ impl SqliteBackend {
             mind_count: count("minds")?,
             edge_count: count("edges")?,
             episode_count: count("episodes")?,
+            fact_version_hwm: conn.query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM facts",
+                [],
+                |row| row.get(0),
+            )?,
             integrity_check,
             foreign_key_violations,
             backup,
-            statements: vec![
-                format!(
-                    "INSERT OR IGNORE INTO minds (name, description, created_at) VALUES ('{PRIMENSUS_MIND}', 'Authoritative ambient memory', datetime('now'))"
-                ),
-                format!(
-                    "INSERT OR IGNORE INTO minds (name, description, status, created_at) VALUES ('{LEGACY_MIND}', 'Quarantined pre-v7 memory', 'quarantined', datetime('now'))"
-                ),
-                format!("UPDATE facts SET mind = '{LEGACY_MIND}' WHERE mind = 'default'"),
-                format!("UPDATE episodes SET mind = '{LEGACY_MIND}' WHERE mind = 'default'"),
-                format!(
-                    "INSERT INTO schema_version (version, applied_at) VALUES ({MEMORY_SCHEMA_VERSION}, datetime('now'))"
-                ),
-            ],
+            statements: if source_version < 7 {
+                vec![
+                    format!(
+                        "INSERT OR IGNORE INTO minds (name, description, created_at) VALUES ('{PRIMENSUS_MIND}', 'Authoritative ambient memory', datetime('now'))"
+                    ),
+                    format!(
+                        "INSERT OR IGNORE INTO minds (name, description, status, created_at) VALUES ('{LEGACY_MIND}', 'Quarantined pre-v7 memory', 'quarantined', datetime('now'))"
+                    ),
+                    format!("UPDATE facts SET mind = '{LEGACY_MIND}' WHERE mind = 'default'"),
+                    format!("UPDATE episodes SET mind = '{LEGACY_MIND}' WHERE mind = 'default'"),
+                    format!(
+                        "INSERT INTO schema_version (version, applied_at) VALUES ({MEMORY_SCHEMA_VERSION}, datetime('now'))"
+                    ),
+                ]
+            } else {
+                vec![
+                    format!("UPDATE facts SET mind = '{PRIMENSUS_MIND}' WHERE mind = 'default'"),
+                    format!("UPDATE episodes SET mind = '{PRIMENSUS_MIND}' WHERE mind = 'default'"),
+                    format!(
+                        "INSERT INTO schema_version (version, applied_at) VALUES ({MEMORY_SCHEMA_VERSION}, datetime('now'))"
+                    ),
+                ]
+            },
         })
     }
 
@@ -144,7 +161,7 @@ impl SqliteBackend {
     /// Legacy records are moved to `legacy` during migration. Therefore any
     /// `default` records present in an established v7 store are post-migration
     /// writes and belong to the authoritative `primensus` mind.
-    pub fn reconcile_v7_default_mind(path: &Path) -> anyhow::Result<u64> {
+    pub fn reconcile_current_default_mind(path: &Path) -> anyhow::Result<u64> {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let transaction =
@@ -208,7 +225,7 @@ impl SqliteBackend {
         let backup = Self::inspect_current(backup_path)?;
         if !LEGACY_MEMORY_SCHEMA_VERSIONS.contains(&backup.source_version) {
             anyhow::bail!(
-                "memory rollback backup must be schema v5 or v6; found v{}",
+                "memory rollback backup must be schema v5 through v7; found v{}",
                 backup.source_version
             );
         }
@@ -278,23 +295,56 @@ impl SqliteBackend {
                 plan.backup.display()
             );
         }
+        let backup_temp = plan.backup.with_extension(format!(
+            "{}.{}.tmp",
+            plan.backup
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("db"),
+            gen_id()
+        ));
+        let backup_claim = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&backup_temp)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "memory migration temporary backup cannot be claimed at {}: {error}",
+                    backup_temp.display()
+                )
+            })?;
+        drop(backup_claim);
 
-        let source = Connection::open_with_flags(
-            &plan.source,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        source.busy_timeout(std::time::Duration::from_secs(5))?;
-        source.backup(DatabaseName::Main, &plan.backup, None)?;
-        drop(source);
-
+        let mut backup_created = false;
+        let mut source_committed = false;
         let result = (|| -> anyhow::Result<MemoryMigrationResult> {
-            let backup_plan = Self::plan_migration(&plan.backup)?;
-            Self::verify_migration_counts(plan, &backup_plan)?;
+            let mut source = Connection::open_with_flags(
+                &plan.source,
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            source.busy_timeout(std::time::Duration::from_secs(5))?;
+            source.execute_batch("PRAGMA foreign_keys=ON;")?;
+            let data_version_before: i64 =
+                source.query_row("PRAGMA data_version", [], |row| row.get(0))?;
+            source.backup(DatabaseName::Main, &backup_temp, None)?;
+            let backup_plan = Self::plan_migration(&backup_temp)?;
+            Self::verify_source_snapshot(plan, &backup_plan)?;
+            std::fs::hard_link(&backup_temp, &plan.backup).map_err(|error| {
+                anyhow::anyhow!(
+                    "memory migration backup cannot be published at {}; refusing to overwrite it: {error}",
+                    plan.backup.display()
+                )
+            })?;
+            backup_created = true;
+            std::fs::remove_file(&backup_temp)?;
 
-            let mut target = Connection::open(&plan.source)?;
-            target.busy_timeout(std::time::Duration::from_secs(5))?;
             let transaction =
-                target.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                source.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;
+            let data_version_after: i64 =
+                transaction.query_row("PRAGMA data_version", [], |row| row.get(0))?;
+            if data_version_after != data_version_before {
+                anyhow::bail!("memory store changed while the migration backup was created");
+            }
             let current: i64 = transaction.query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_version",
                 [],
@@ -306,27 +356,105 @@ impl SqliteBackend {
                     plan.source_version
                 );
             }
+            let current_snapshot = (
+                transaction.query_row("SELECT COUNT(*) FROM facts", [], |row| row.get(0))?,
+                transaction.query_row("SELECT COUNT(*) FROM minds", [], |row| row.get(0))?,
+                transaction.query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?,
+                transaction.query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))?,
+                transaction.query_row(
+                    "SELECT COALESCE(MAX(version), 0) FROM facts",
+                    [],
+                    |row| row.get(0),
+                )?,
+            );
+            let backup_snapshot = (
+                backup_plan.fact_count,
+                backup_plan.mind_count,
+                backup_plan.edge_count,
+                backup_plan.episode_count,
+                backup_plan.fact_version_hwm,
+            );
+            if current_snapshot != backup_snapshot {
+                anyhow::bail!(
+                    "memory store changed after backup: expected {backup_snapshot:?}, found {current_snapshot:?}"
+                );
+            }
+
             transaction.execute(
                 "INSERT OR IGNORE INTO minds (name, description, created_at) VALUES (?1, 'Authoritative ambient memory', datetime('now'))",
                 params![PRIMENSUS_MIND],
             )?;
-            transaction.execute(
-                "INSERT OR IGNORE INTO minds (name, description, status, created_at) VALUES (?1, 'Quarantined pre-v7 memory', 'quarantined', datetime('now'))",
-                params![LEGACY_MIND],
+            if plan.source_version < 7 {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO minds (name, description, status, created_at) VALUES (?1, 'Quarantined pre-v7 memory', 'quarantined', datetime('now'))",
+                    params![LEGACY_MIND],
+                )?;
+                transaction.execute(
+                    "UPDATE facts SET mind = ?1 WHERE mind = 'default'",
+                    params![LEGACY_MIND],
+                )?;
+                transaction.execute(
+                    "UPDATE episodes SET mind = ?1 WHERE mind = 'default'",
+                    params![LEGACY_MIND],
+                )?;
+            } else {
+                transaction.execute(
+                    "UPDATE facts SET mind = ?1 WHERE mind = 'default'",
+                    params![PRIMENSUS_MIND],
+                )?;
+                transaction.execute(
+                    "UPDATE episodes SET mind = ?1 WHERE mind = 'default'",
+                    params![PRIMENSUS_MIND],
+                )?;
+            }
+            Self::add_column_if_missing(&transaction, "facts", "persona_id", "TEXT")?;
+            Self::add_column_if_missing(
+                &transaction,
+                "facts",
+                "layer",
+                "TEXT NOT NULL DEFAULT 'project'",
             )?;
-            transaction.execute(
-                "UPDATE facts SET mind = ?1 WHERE mind = 'default'",
-                params![LEGACY_MIND],
+            Self::add_column_if_missing(&transaction, "facts", "tags", "TEXT")?;
+            Self::add_column_if_missing(&transaction, "episodes", "jj_change_id", "TEXT")?;
+            Self::add_column_if_missing(
+                &transaction,
+                "episodes",
+                "affected_nodes",
+                "TEXT NOT NULL DEFAULT '[]'",
             )?;
-            transaction.execute(
-                "UPDATE episodes SET mind = ?1 WHERE mind = 'default'",
-                params![LEGACY_MIND],
+            Self::add_column_if_missing(
+                &transaction,
+                "episodes",
+                "affected_changes",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )?;
+            Self::add_column_if_missing(
+                &transaction,
+                "episodes",
+                "files_changed",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )?;
+            Self::add_column_if_missing(
+                &transaction,
+                "episodes",
+                "tags",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )?;
+            Self::add_column_if_missing(&transaction, "episodes", "tool_calls_count", "INTEGER")?;
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS memory_operation_receipts (
+                    operation_id TEXT PRIMARY KEY,
+                    payload_hash TEXT NOT NULL,
+                    effect_json TEXT NOT NULL,
+                    committed_at TEXT NOT NULL
+                );",
             )?;
             transaction.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?1, datetime('now'))",
                 params![MEMORY_SCHEMA_VERSION],
             )?;
             transaction.commit()?;
+            source_committed = true;
 
             let verified = Self::inspect_current(&plan.source)?;
             Self::verify_migration_counts(plan, &verified)?;
@@ -361,7 +489,8 @@ impl SqliteBackend {
             })
         })();
 
-        if result.is_err() {
+        let _ = std::fs::remove_file(&backup_temp);
+        if result.is_err() && backup_created && !source_committed {
             let _ = std::fs::remove_file(&plan.backup);
         }
         result
@@ -397,11 +526,35 @@ impl SqliteBackend {
             mind_count: count("minds")?,
             edge_count: count("edges")?,
             episode_count: count("episodes")?,
+            fact_version_hwm: conn.query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM facts",
+                [],
+                |row| row.get(0),
+            )?,
             integrity_check,
             foreign_key_violations,
             backup: path.with_extension(format!("v{source_version}.backup.db")),
             statements: Vec::new(),
         })
+    }
+
+    fn add_column_if_missing(
+        transaction: &Transaction<'_>,
+        table: &str,
+        column: &str,
+        declaration: &str,
+    ) -> anyhow::Result<()> {
+        let mut statement = transaction.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        if !columns.iter().any(|existing| existing == column) {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {declaration};"
+            ))?;
+        }
+        Ok(())
     }
 
     fn verify_migration_counts(
@@ -419,11 +572,36 @@ impl SqliteBackend {
             expected.fact_count,
             expected.edge_count,
             expected.episode_count,
+            expected.fact_version_hwm,
         );
-        let actual_counts = (actual.fact_count, actual.edge_count, actual.episode_count);
+        let actual_counts = (
+            actual.fact_count,
+            actual.edge_count,
+            actual.episode_count,
+            actual.fact_version_hwm,
+        );
         if expected_counts != actual_counts {
             anyhow::bail!(
                 "memory migration fact/edge/episode counts changed: expected {expected_counts:?}, found {actual_counts:?}"
+            );
+        }
+        Ok(())
+    }
+
+    fn verify_source_snapshot(
+        expected: &MemoryMigrationPlan,
+        actual: &MemoryMigrationPlan,
+    ) -> anyhow::Result<()> {
+        Self::verify_migration_counts(expected, actual)?;
+        if expected.mind_count != actual.mind_count
+            || expected.source_version != actual.source_version
+        {
+            anyhow::bail!(
+                "memory migration source changed: expected schema v{} with {} minds, found v{} with {} minds",
+                expected.source_version,
+                expected.mind_count,
+                actual.source_version,
+                actual.mind_count
             );
         }
         Ok(())
@@ -446,6 +624,27 @@ impl SqliteBackend {
         Ok(backend)
     }
 
+    /// Open an existing sqlite DB without granting SQLite permission to create it.
+    pub fn open_existing(path: &Path) -> anyhow::Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let has_schema_version: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_schema_version {
+            anyhow::bail!("existing file is not an initialized memory store");
+        }
+        let backend = Self {
+            conn: Mutex::new(conn),
+        };
+        backend.init_schema(true)?;
+        Ok(backend)
+    }
+
     /// Create an in-memory sqlite DB (for testing).
     pub fn in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
@@ -463,6 +662,26 @@ impl SqliteBackend {
         // busy_timeout: wait up to 5s for write lock instead of failing immediately.
         // Critical for multi-process access (cleave children share the same DB file).
         conn.execute_batch("PRAGMA busy_timeout=5000;")?;
+
+        if existed {
+            let has_schema_version: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version')",
+                [],
+                |row| row.get(0),
+            )?;
+            if has_schema_version {
+                let current: i64 = conn.query_row(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if current != MEMORY_SCHEMA_VERSION {
+                    anyhow::bail!(
+                        "unsupported memory schema version {current}; Omegon requires exactly v{MEMORY_SCHEMA_VERSION}. Run the documented memory migration workflow before opening this store"
+                    );
+                }
+            }
+        }
 
         conn.execute_batch("
             CREATE TABLE IF NOT EXISTS minds (
@@ -559,6 +778,11 @@ impl SqliteBackend {
                 session_id  TEXT,
                 created_at  TEXT NOT NULL,
                 jj_change_id TEXT,
+                affected_nodes TEXT NOT NULL DEFAULT '[]',
+                affected_changes TEXT NOT NULL DEFAULT '[]',
+                files_changed TEXT NOT NULL DEFAULT '[]',
+                tags TEXT NOT NULL DEFAULT '[]',
+                tool_calls_count INTEGER,
                 FOREIGN KEY (mind) REFERENCES minds(name) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_episodes_mind ON episodes(mind, date DESC);
@@ -578,6 +802,13 @@ impl SqliteBackend {
                 dims       INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_operation_receipts (
+                operation_id TEXT PRIMARY KEY,
+                payload_hash TEXT NOT NULL,
+                effect_json TEXT NOT NULL,
+                committed_at TEXT NOT NULL
             );
 
             -- FTS5 for full-text search on facts
@@ -643,24 +874,25 @@ impl SqliteBackend {
         Ok(())
     }
 
-    fn ensure_mind(&self, conn: &Connection, mind: &str) {
-        let _ = conn.execute(
+    fn ensure_mind(&self, conn: &Connection, mind: &str) -> rusqlite::Result<()> {
+        conn.execute(
             "INSERT OR IGNORE INTO minds (name, created_at) VALUES (?1, ?2)",
             params![mind, now_iso()],
-        );
+        )?;
+        Ok(())
     }
 
-    fn next_version(&self, conn: &Connection) -> u64 {
-        Self::next_version_static(conn)
-    }
-
-    fn next_version_static(conn: &Connection) -> u64 {
-        let max: u64 = conn
+    fn next_version_static(conn: &Connection) -> Result<u64> {
+        let max: i64 = conn
             .query_row("SELECT COALESCE(MAX(version), 0) FROM facts", [], |r| {
                 r.get(0)
             })
-            .unwrap_or(0);
-        max + 1
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        max.checked_add(1)
+            .map(|version| version as u64)
+            .ok_or_else(|| {
+                MemoryError::InvalidMutation("Lamport version space is exhausted".into())
+            })
     }
 
     fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Fact> {
@@ -714,13 +946,530 @@ impl SqliteBackend {
                 .unwrap_or_default(),
         })
     }
+
+    fn row_to_episode(row: &rusqlite::Row<'_>) -> rusqlite::Result<Episode> {
+        fn json_vec(row: &rusqlite::Row<'_>, column: &str) -> rusqlite::Result<Vec<String>> {
+            let value: String = row.get(column)?;
+            Ok(serde_json::from_str(&value).unwrap_or_default())
+        }
+
+        Ok(Episode {
+            id: row.get("id")?,
+            mind: row.get("mind")?,
+            date: row.get("date")?,
+            title: row.get("title")?,
+            narrative: row.get("narrative")?,
+            created_at: row.get("created_at")?,
+            affected_nodes: json_vec(row, "affected_nodes")?,
+            affected_changes: json_vec(row, "affected_changes")?,
+            files_changed: json_vec(row, "files_changed")?,
+            tags: json_vec(row, "tags")?,
+            tool_calls_count: row.get("tool_calls_count")?,
+            jj_change_id: row.get("jj_change_id")?,
+        })
+    }
+
+    fn check_fact_precondition(conn: &Connection, fact: &FactPrecondition) -> Result<Fact> {
+        let existing = conn
+            .query_row(
+                "SELECT * FROM facts WHERE id = ?1",
+                params![fact.id],
+                Self::row_to_fact,
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?
+            .ok_or_else(|| MemoryError::FactNotFound(fact.id.clone()))?;
+        if existing.version != fact.expected_version {
+            return Err(MemoryError::FactVersionConflict {
+                id: fact.id.clone(),
+                expected: fact.expected_version,
+                actual: existing.version,
+            });
+        }
+        Ok(existing)
+    }
+
+    fn import_jsonl_transaction(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        jsonl: &str,
+    ) -> Result<ImportStats> {
+        let mut stats = ImportStats::default();
+        for line in jsonl.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<JsonlRecord>(trimmed) {
+                Ok(JsonlRecord::Fact(jf)) => {
+                    let incoming_version = persisted_lamport_version(jf.version)?;
+                    self.ensure_mind(tx, &jf.mind)
+                        .map_err(|error| MemoryError::Storage(error.into()))?;
+                    let existing_version: Option<i64> = tx
+                        .query_row(
+                            "SELECT version FROM facts WHERE id = ?1",
+                            params![jf.id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(|error| MemoryError::Storage(error.into()))?
+                        .flatten();
+                    if existing_version.is_some_and(|version| incoming_version <= version) {
+                        stats.skipped += 1;
+                        continue;
+                    }
+                    let section = serde_json::to_string(&jf.section)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    let profile = serde_json::to_string(&jf.decay_profile)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    let status = serde_json::to_string(&jf.status)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    let tags = serde_json::to_string(&jf.tags)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    let content_hash = jf
+                        .content_hash
+                        .unwrap_or_else(|| hash::content_hash(&jf.content));
+                    if existing_version.is_some() {
+                        tx.execute(
+                            "UPDATE facts SET mind = ?1, content = ?2, section = ?3, status = ?4, source = ?5, content_hash = ?6, supersedes = ?7, decay_profile = ?8, version = ?9, persona_id = ?10, layer = ?11, tags = ?12 WHERE id = ?13",
+                            params![jf.mind, jf.content, section.trim_matches('"'),
+                                status.trim_matches('"'), jf.source.as_deref().unwrap_or("manual"),
+                                content_hash, jf.supersedes, profile.trim_matches('"'), incoming_version,
+                                jf.persona_id, jf.layer, tags, jf.id],
+                        ).map_err(|error| MemoryError::Storage(error.into()))?;
+                        stats.reinforced += 1;
+                    } else {
+                        tx.execute(
+                            "INSERT INTO facts (id, mind, section, content, status, created_at, source, content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, decay_profile, version, supersedes, persona_id, layer, tags) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1.0,?6,1,0.05,?9,?10,?11,?12,?13,?14)",
+                            params![jf.id, jf.mind, section.trim_matches('"'), jf.content,
+                                status.trim_matches('"'), jf.created_at,
+                                jf.source.as_deref().unwrap_or("manual"), content_hash,
+                                profile.trim_matches('"'), incoming_version, jf.supersedes,
+                                jf.persona_id, jf.layer, tags],
+                        ).map_err(|error| MemoryError::Storage(error.into()))?;
+                        stats.imported += 1;
+                    }
+                }
+                Ok(JsonlRecord::Episode(episode)) => {
+                    self.ensure_mind(tx, &episode.mind)
+                        .map_err(|error| MemoryError::Storage(error.into()))?;
+                    let inserted = tx.execute(
+                        "INSERT OR IGNORE INTO episodes (id, mind, title, narrative, date, created_at, jj_change_id, affected_nodes, affected_changes, files_changed, tags, tool_calls_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                        params![episode.id, episode.mind, episode.title, episode.narrative,
+                            episode.date, episode.created_at, episode.jj_change_id,
+                            serde_json::to_string(&episode.affected_nodes).unwrap_or_else(|_| "[]".into()),
+                            serde_json::to_string(&episode.affected_changes).unwrap_or_else(|_| "[]".into()),
+                            serde_json::to_string(&episode.files_changed).unwrap_or_else(|_| "[]".into()),
+                            serde_json::to_string(&episode.tags).unwrap_or_else(|_| "[]".into()),
+                            episode.tool_calls_count],
+                    ).map_err(|error| MemoryError::Storage(error.into()))?;
+                    stats.imported += inserted;
+                    stats.skipped += usize::from(inserted == 0);
+                }
+                Ok(JsonlRecord::Edge(edge)) => {
+                    let inserted = tx.execute(
+                        "INSERT OR IGNORE INTO edges (id, source_fact_id, target_fact_id, relation, description, confidence, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                        params![edge.id, edge.source_id, edge.target_id, edge.relation,
+                            edge.description, edge.confidence, edge.created_at],
+                    ).map_err(|error| MemoryError::Storage(error.into()))?;
+                    stats.imported += inserted;
+                    stats.skipped += usize::from(inserted == 0);
+                }
+                Ok(JsonlRecord::Mind(_)) => stats.skipped += 1,
+                Err(_) => stats.errors += 1,
+            }
+        }
+        Ok(stats)
+    }
 }
 
 #[async_trait]
 impl MemoryBackend for SqliteBackend {
-    async fn store_fact(&self, req: StoreFact) -> Result<StoreResult> {
+    async fn mutation_receipt(
+        &self,
+        operation_id: &str,
+        payload_hash: &str,
+    ) -> Result<Option<MemoryMutationOutcome>> {
+        if operation_id.trim().is_empty() || payload_hash.trim().is_empty() {
+            return Err(MemoryError::InvalidMutation(
+                "operation identity and payload hash must not be empty".into(),
+            ));
+        }
         let conn = self.conn.lock().unwrap();
-        self.ensure_mind(&conn, &req.mind);
+        let receipt: Option<(String, String)> = conn
+            .query_row(
+                "SELECT payload_hash, effect_json FROM memory_operation_receipts WHERE operation_id = ?1",
+                params![operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let Some((recorded_hash, effect_json)) = receipt else {
+            return Ok(None);
+        };
+        if recorded_hash != payload_hash {
+            return Err(MemoryError::OperationConflict(operation_id.into()));
+        }
+        let effect = serde_json::from_str(&effect_json)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        Ok(Some(MemoryMutationOutcome {
+            effect,
+            replayed: true,
+        }))
+    }
+
+    async fn apply_mutation_bound(
+        &self,
+        operation_id: &str,
+        payload_hash: &str,
+        mutation: MemoryMutation,
+    ) -> Result<MemoryMutationOutcome> {
+        if operation_id.trim().is_empty() {
+            return Err(MemoryError::InvalidMutation(
+                "operation identity must not be empty".into(),
+            ));
+        }
+        let _ = mutation_payload_hash(&mutation)?;
+        if payload_hash.trim().is_empty() {
+            return Err(MemoryError::InvalidMutation(
+                "operation payload hash must not be empty".into(),
+            ));
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+
+        let receipt: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT payload_hash, effect_json FROM memory_operation_receipts WHERE operation_id = ?1",
+                params![operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        if let Some((recorded_hash, effect_json)) = receipt {
+            if recorded_hash != payload_hash {
+                return Err(MemoryError::OperationConflict(operation_id.into()));
+            }
+            let effect = serde_json::from_str(&effect_json)
+                .map_err(|error| MemoryError::Storage(error.into()))?;
+            return Ok(MemoryMutationOutcome {
+                effect,
+                replayed: true,
+            });
+        }
+
+        let effect = match mutation {
+            MemoryMutation::ImportJsonl { jsonl } => {
+                jsonl_import_effect(self.import_jsonl_transaction(&transaction, &jsonl)?)
+            }
+            MemoryMutation::StoreFact { request } => {
+                self.ensure_mind(&transaction, &request.mind)
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                let content_hash = hash::content_hash(&request.content);
+                let existing_id: Option<String> = transaction
+                    .query_row(
+                        "SELECT id FROM facts WHERE mind = ?1 AND content_hash = ?2 AND status = 'active'",
+                        params![request.mind, content_hash],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                let version = Self::next_version_static(&transaction)?;
+                if let Some(fact_id) = existing_id {
+                    transaction.execute(
+                        "UPDATE facts SET reinforcement_count = reinforcement_count + 1, last_reinforced = ?1, version = ?2 WHERE id = ?3",
+                        params![now_iso(), version as i64, fact_id],
+                    ).map_err(|error| MemoryError::Storage(error.into()))?;
+                    MemoryMutationEffect::FactStored {
+                        fact_id,
+                        version,
+                        action: StoreAction::Reinforced,
+                    }
+                } else {
+                    let fact_id = gen_id();
+                    let timestamp = now_iso();
+                    let section = serde_json::to_string(&request.section)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    let profile = serde_json::to_string(&request.decay_profile)
+                        .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                    transaction.execute(
+                        "INSERT INTO facts (id, mind, section, content, status, created_at, source, content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, decay_profile, version) VALUES (?1,?2,?3,?4,'active',?5,?6,?7,1.0,?5,1,0.05,?8,?9)",
+                        params![fact_id, request.mind, section.trim_matches('"'), request.content,
+                            timestamp, request.source.as_deref().unwrap_or("manual"), content_hash,
+                            profile.trim_matches('"'), version as i64],
+                    ).map_err(|error| MemoryError::Storage(error.into()))?;
+                    MemoryMutationEffect::FactStored {
+                        fact_id,
+                        version,
+                        action: StoreAction::Stored,
+                    }
+                }
+            }
+            MemoryMutation::ReinforceFact { fact } => {
+                let existing = Self::check_fact_precondition(&transaction, &fact)?;
+                if existing.status != FactStatus::Active {
+                    return Err(MemoryError::FactNotFound(fact.id));
+                }
+                let version = Self::next_version_static(&transaction)?;
+                transaction.execute(
+                    "UPDATE facts SET reinforcement_count = reinforcement_count + 1, last_reinforced = ?1, version = ?2 WHERE id = ?3",
+                    params![now_iso(), version as i64, fact.id],
+                ).map_err(|error| MemoryError::Storage(error.into()))?;
+                MemoryMutationEffect::FactReinforced {
+                    fact_id: fact.id,
+                    version,
+                    reinforcement_count: existing.reinforcement_count + 1,
+                }
+            }
+            MemoryMutation::ReinforceFactOnce { fact_id } => {
+                let existing = transaction
+                    .query_row(
+                        "SELECT * FROM facts WHERE id = ?1",
+                        params![fact_id],
+                        Self::row_to_fact,
+                    )
+                    .optional()
+                    .map_err(|error| MemoryError::Storage(error.into()))?
+                    .ok_or_else(|| MemoryError::FactNotFound(fact_id.clone()))?;
+                if existing.status != FactStatus::Active {
+                    return Err(MemoryError::FactNotFound(fact_id));
+                }
+                let version = Self::next_version_static(&transaction)?;
+                transaction.execute(
+                    "UPDATE facts SET reinforcement_count = reinforcement_count + 1, last_reinforced = ?1, version = ?2 WHERE id = ?3",
+                    params![now_iso(), version as i64, fact_id],
+                ).map_err(|error| MemoryError::Storage(error.into()))?;
+                MemoryMutationEffect::FactReinforced {
+                    fact_id,
+                    version,
+                    reinforcement_count: existing.reinforcement_count + 1,
+                }
+            }
+            MemoryMutation::TransitionFacts { facts, status } => {
+                if !matches!(status, FactStatus::Dormant | FactStatus::Archived) {
+                    return Err(MemoryError::InvalidMutation(
+                        "transition target must be dormant or archived".into(),
+                    ));
+                }
+                validate_unique_fact_preconditions(&facts)?;
+                let mut existing = Vec::with_capacity(facts.len());
+                for fact in &facts {
+                    existing.push(Self::check_fact_precondition(&transaction, fact)?);
+                }
+                let status_json = serde_json::to_string(&status)
+                    .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                let mut transitioned = Vec::new();
+                for (fact, current) in facts.into_iter().zip(existing) {
+                    if current.status != FactStatus::Active {
+                        continue;
+                    }
+                    let version = Self::next_version_static(&transaction)?;
+                    transaction
+                        .execute(
+                            "UPDATE facts SET status = ?1, version = ?2 WHERE id = ?3",
+                            params![status_json.trim_matches('"'), version as i64, fact.id],
+                        )
+                        .map_err(|error| MemoryError::Storage(error.into()))?;
+                    transitioned.push(FactPrecondition {
+                        id: fact.id,
+                        expected_version: version,
+                    });
+                }
+                MemoryMutationEffect::FactsTransitioned {
+                    facts: transitioned,
+                    status,
+                }
+            }
+            MemoryMutation::SupersedeFact { fact, replacement } => {
+                let existing = Self::check_fact_precondition(&transaction, &fact)?;
+                if existing.status != FactStatus::Active {
+                    return Err(MemoryError::FactNotFound(fact.id));
+                }
+                self.ensure_mind(&transaction, &replacement.mind)
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                let original_version = Self::next_version_static(&transaction)?;
+                transaction
+                    .execute(
+                        "UPDATE facts SET status = 'superseded', version = ?1 WHERE id = ?2",
+                        params![original_version as i64, fact.id],
+                    )
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                let replacement_version = original_version + 1;
+                let replacement_version_sql = persisted_lamport_version(replacement_version)?;
+                let replacement_id = gen_id();
+                let timestamp = now_iso();
+                let section = serde_json::to_string(&replacement.section)
+                    .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                let profile = serde_json::to_string(&replacement.decay_profile)
+                    .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
+                let content_hash = hash::content_hash(&replacement.content);
+                transaction.execute(
+                    "INSERT INTO facts (id, mind, section, content, status, created_at, source, content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, decay_profile, version, supersedes) VALUES (?1,?2,?3,?4,'active',?5,?6,?7,1.0,?5,1,0.05,?8,?9,?10)",
+                    params![replacement_id, replacement.mind, section.trim_matches('"'), replacement.content,
+                        timestamp, replacement.source.as_deref().unwrap_or("manual"), content_hash,
+                        profile.trim_matches('"'), replacement_version_sql, fact.id],
+                ).map_err(|error| MemoryError::Storage(error.into()))?;
+                MemoryMutationEffect::FactSuperseded {
+                    original: FactPrecondition {
+                        id: fact.id,
+                        expected_version: original_version,
+                    },
+                    replacement: FactPrecondition {
+                        id: replacement_id,
+                        expected_version: replacement_version,
+                    },
+                }
+            }
+            MemoryMutation::SupersedeFactWithExisting { fact, replacement } => {
+                if fact.id == replacement.id {
+                    return Err(MemoryError::InvalidMutation(
+                        "a fact cannot supersede itself".into(),
+                    ));
+                }
+                let original = Self::check_fact_precondition(&transaction, &fact)?;
+                let existing = Self::check_fact_precondition(&transaction, &replacement)?;
+                if original.status != FactStatus::Active
+                    || existing.status != FactStatus::Active
+                    || original.mind != existing.mind
+                {
+                    return Err(MemoryError::InvalidMutation(
+                        "supersession requires distinct active facts in the same mind".into(),
+                    ));
+                }
+                let original_version = Self::next_version_static(&transaction)?;
+                transaction
+                    .execute(
+                        "UPDATE facts SET status = 'superseded', version = ?1 WHERE id = ?2",
+                        params![original_version as i64, fact.id],
+                    )
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                let replacement_version = original_version + 1;
+                let replacement_version_sql = persisted_lamport_version(replacement_version)?;
+                transaction
+                    .execute(
+                        "UPDATE facts SET supersedes = ?1, version = ?2 WHERE id = ?3",
+                        params![fact.id, replacement_version_sql, replacement.id],
+                    )
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                MemoryMutationEffect::FactSuperseded {
+                    original: FactPrecondition {
+                        id: fact.id,
+                        expected_version: original_version,
+                    },
+                    replacement: FactPrecondition {
+                        id: replacement.id,
+                        expected_version: replacement_version,
+                    },
+                }
+            }
+            MemoryMutation::StoreEmbedding {
+                fact,
+                model_name,
+                embedding,
+            } => {
+                Self::check_fact_precondition(&transaction, &fact)?;
+                let dims = embedding.len() as u32;
+                let recorded_dims: Option<u32> = transaction
+                    .query_row(
+                        "SELECT dims FROM embedding_metadata WHERE model_name = ?1",
+                        params![model_name],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                if let Some(expected) = recorded_dims
+                    && expected != dims
+                {
+                    return Err(MemoryError::EmbeddingDimensionMismatch {
+                        expected,
+                        got: dims,
+                        stored_model: model_name,
+                    });
+                }
+                let timestamp = now_iso();
+                transaction.execute(
+                    "INSERT OR REPLACE INTO facts_vec (fact_id, embedding, model_name, dims, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![fact.id, vectors::vector_to_blob(&embedding), model_name, dims, timestamp],
+                ).map_err(|error| MemoryError::Storage(error.into()))?;
+                transaction.execute(
+                    "INSERT OR IGNORE INTO embedding_metadata (model_name, dims, inserted_at) VALUES (?1, ?2, ?3)",
+                    params![model_name, dims, timestamp],
+                ).map_err(|error| MemoryError::Storage(error.into()))?;
+                MemoryMutationEffect::EmbeddingStored {
+                    fact_id: fact.id,
+                    model_name,
+                    dims,
+                }
+            }
+            MemoryMutation::CreateEdge { mind, request } => {
+                for fact_id in [&request.source_id, &request.target_id] {
+                    let endpoint: Option<(String, String)> = transaction
+                        .query_row(
+                            "SELECT mind, status FROM facts WHERE id = ?1",
+                            params![fact_id],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()
+                        .map_err(|error| MemoryError::Storage(error.into()))?;
+                    let Some((endpoint_mind, status)) = endpoint else {
+                        return Err(MemoryError::FactNotFound(fact_id.clone()));
+                    };
+                    if endpoint_mind != mind || status != "active" {
+                        return Err(MemoryError::InvalidMutation(format!(
+                            "edge endpoint {fact_id} is outside active mind {mind}"
+                        )));
+                    }
+                }
+                let edge_id = gen_id();
+                transaction.execute(
+                    "INSERT INTO edges (id, source_fact_id, target_fact_id, relation, description, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6)",
+                    params![edge_id, request.source_id, request.target_id, request.relation, request.description, now_iso()],
+                ).map_err(|error| MemoryError::Storage(error.into()))?;
+                MemoryMutationEffect::EdgeCreated { edge_id }
+            }
+            MemoryMutation::StoreEpisode { request } => {
+                self.ensure_mind(&transaction, &request.mind)
+                    .map_err(|error| MemoryError::Storage(error.into()))?;
+                let episode_id = gen_id();
+                let timestamp = now_iso();
+                let date = request.date.unwrap_or_else(|| timestamp[..10].to_string());
+                transaction.execute(
+                    "INSERT INTO episodes (id, mind, title, narrative, date, created_at, affected_nodes, affected_changes, files_changed, tags, tool_calls_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                    params![episode_id, request.mind, request.title, request.narrative, date, timestamp,
+                        serde_json::to_string(&request.affected_nodes).unwrap_or_else(|_| "[]".into()),
+                        serde_json::to_string(&request.affected_changes).unwrap_or_else(|_| "[]".into()),
+                        serde_json::to_string(&request.files_changed).unwrap_or_else(|_| "[]".into()),
+                        serde_json::to_string(&request.tags).unwrap_or_else(|_| "[]".into()),
+                        request.tool_calls_count],
+                ).map_err(|error| MemoryError::Storage(error.into()))?;
+                MemoryMutationEffect::EpisodeStored { episode_id }
+            }
+        };
+
+        let effect_json =
+            serde_json::to_string(&effect).map_err(|error| MemoryError::Storage(error.into()))?;
+        transaction.execute(
+            "INSERT INTO memory_operation_receipts (operation_id, payload_hash, effect_json, committed_at) VALUES (?1, ?2, ?3, ?4)",
+            params![operation_id, payload_hash, effect_json, now_iso()],
+        ).map_err(|error| MemoryError::Storage(error.into()))?;
+        transaction
+            .commit()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        Ok(MemoryMutationOutcome {
+            effect,
+            replayed: false,
+        })
+    }
+
+    async fn store_fact(&self, req: StoreFact) -> Result<StoreResult> {
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        self.ensure_mind(&transaction, &req.mind)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
         let ch = hash::content_hash(&req.content);
         let section_str = serde_json::to_string(&req.section).unwrap_or_default();
         let section_str = section_str.trim_matches('"');
@@ -728,7 +1477,7 @@ impl MemoryBackend for SqliteBackend {
         let profile_str = profile_str.trim_matches('"');
 
         // Check dedup
-        let existing: Option<String> = conn
+        let existing: Option<String> = transaction
             .query_row(
                 "SELECT id FROM facts WHERE mind = ?1 AND content_hash = ?2 AND status = 'active'",
                 params![req.mind, ch],
@@ -738,22 +1487,26 @@ impl MemoryBackend for SqliteBackend {
             .map_err(|e| MemoryError::Storage(e.into()))?;
 
         if let Some(id) = existing {
-            let version = self.next_version(&conn);
+            let version = Self::next_version_static(&transaction)?;
             let ts = now_iso();
-            conn.execute(
-                "UPDATE facts SET reinforcement_count = reinforcement_count + 1, \
+            transaction
+                .execute(
+                    "UPDATE facts SET reinforcement_count = reinforcement_count + 1, \
                  last_reinforced = ?1, version = ?2 WHERE id = ?3",
-                params![ts, version as i64, id],
-            )
-            .map_err(|e| MemoryError::Storage(e.into()))?;
+                    params![ts, version as i64, id],
+                )
+                .map_err(|e| MemoryError::Storage(e.into()))?;
 
-            let fact = conn
+            let fact = transaction
                 .query_row(
                     "SELECT * FROM facts WHERE id = ?1",
                     params![id],
                     Self::row_to_fact,
                 )
                 .map_err(|e| MemoryError::Storage(e.into()))?;
+            transaction
+                .commit()
+                .map_err(|error| MemoryError::Storage(error.into()))?;
             return Ok(StoreResult {
                 fact,
                 action: StoreAction::Reinforced,
@@ -762,32 +1515,36 @@ impl MemoryBackend for SqliteBackend {
 
         let id = gen_id();
         let ts = now_iso();
-        let version = self.next_version(&conn);
-        conn.execute(
-            "INSERT INTO facts (id, mind, section, content, status, created_at, source, \
+        let version = Self::next_version_static(&transaction)?;
+        transaction
+            .execute(
+                "INSERT INTO facts (id, mind, section, content, status, created_at, source, \
              content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, \
              decay_profile, version) VALUES (?1,?2,?3,?4,'active',?5,?6,?7,1.0,?5,1,0.05,?8,?9)",
-            params![
-                id,
-                req.mind,
-                section_str,
-                req.content,
-                ts,
-                req.source.as_deref().unwrap_or("manual"),
-                ch,
-                profile_str,
-                version as i64
-            ],
-        )
-        .map_err(|e| MemoryError::Storage(e.into()))?;
+                params![
+                    id,
+                    req.mind,
+                    section_str,
+                    req.content,
+                    ts,
+                    req.source.as_deref().unwrap_or("manual"),
+                    ch,
+                    profile_str,
+                    version as i64
+                ],
+            )
+            .map_err(|e| MemoryError::Storage(e.into()))?;
 
-        let fact = conn
+        let fact = transaction
             .query_row(
                 "SELECT * FROM facts WHERE id = ?1",
                 params![id],
                 Self::row_to_fact,
             )
             .map_err(|e| MemoryError::Storage(e.into()))?;
+        transaction
+            .commit()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
         Ok(StoreResult {
             fact,
             action: StoreAction::Stored,
@@ -848,11 +1605,92 @@ impl MemoryBackend for SqliteBackend {
         }
     }
 
-    async fn reinforce_fact(&self, id: &str) -> Result<Fact> {
+    async fn list_facts_page(
+        &self,
+        mind: &str,
+        filter: FactFilter,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<FactPage> {
         let conn = self.conn.lock().unwrap();
-        let version = self.next_version(&conn);
+        let (watermark, after) = match cursor {
+            Some(cursor) => {
+                let (version, id) = cursor.split_once(':').ok_or_else(|| {
+                    MemoryError::InvalidMutation("invalid fact-page cursor".into())
+                })?;
+                let rowid = version
+                    .parse::<u64>()
+                    .map_err(|_| MemoryError::InvalidMutation("invalid fact-page cursor".into()))?;
+                (rowid, id)
+            }
+            None => {
+                let watermark = conn
+                    .query_row("SELECT COALESCE(MAX(rowid), 0) FROM facts", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(|error| MemoryError::Storage(error.into()))?
+                    as u64;
+                (watermark, "")
+            }
+        };
+        let status = filter.status.unwrap_or(FactStatus::Active);
+        let status = serde_json::to_string(&status)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string();
+        let section = filter.section.map(|section| {
+            serde_json::to_string(&section)
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string()
+        });
+        let total = conn
+            .query_row(
+                "SELECT COUNT(*) FROM facts WHERE mind = ?1 AND status = ?2 AND rowid <= ?3 AND (?4 IS NULL OR section = ?4)",
+                params![mind, status, watermark as i64, section],
+                |row| row.get(0),
+            )
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let mut statement = conn
+            .prepare(
+                "SELECT * FROM facts WHERE mind = ?1 AND status = ?2 AND rowid <= ?3 AND id > ?4 AND (?5 IS NULL OR section = ?5) ORDER BY id ASC LIMIT ?6",
+            )
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let facts = statement
+            .query_map(
+                params![
+                    mind,
+                    status,
+                    watermark as i64,
+                    after,
+                    section,
+                    limit.saturating_add(1) as i64
+                ],
+                Self::row_to_fact,
+            )
+            .map_err(|error| MemoryError::Storage(error.into()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let has_more = facts.len() > limit;
+        let facts = facts.into_iter().take(limit).collect::<Vec<_>>();
+        let next_cursor = has_more
+            .then(|| facts.last().map(|fact| format!("{watermark}:{}", fact.id)))
+            .flatten();
+        Ok(FactPage {
+            facts,
+            next_cursor,
+            total,
+        })
+    }
+
+    async fn reinforce_fact(&self, id: &str) -> Result<Fact> {
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let version = Self::next_version_static(&transaction)?;
         let ts = now_iso();
-        let updated = conn
+        let updated = transaction
             .execute(
                 "UPDATE facts SET reinforcement_count = reinforcement_count + 1, \
              last_reinforced = ?1, version = ?2 WHERE id = ?3 AND status = 'active'",
@@ -862,48 +1700,70 @@ impl MemoryBackend for SqliteBackend {
         if updated == 0 {
             return Err(MemoryError::FactNotFound(id.into()));
         }
-        conn.query_row(
-            "SELECT * FROM facts WHERE id = ?1",
-            params![id],
-            Self::row_to_fact,
-        )
-        .map_err(|e| MemoryError::Storage(e.into()))
+        let fact = transaction
+            .query_row(
+                "SELECT * FROM facts WHERE id = ?1",
+                params![id],
+                Self::row_to_fact,
+            )
+            .map_err(|e| MemoryError::Storage(e.into()))?;
+        transaction
+            .commit()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        Ok(fact)
     }
 
     async fn dormancy_facts(&self, ids: &[&str]) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
         let mut transitioned = 0;
         for id in ids {
-            transitioned += conn
+            let version = Self::next_version_static(&transaction)?;
+            transitioned += transaction
                 .execute(
-                    "UPDATE facts SET status = 'dormant' WHERE id = ?1 AND status = 'active'",
-                    params![id],
+                    "UPDATE facts SET status = 'dormant', version = ?1 WHERE id = ?2 AND status = 'active'",
+                    params![version as i64, id],
                 )
                 .map_err(|error| MemoryError::Storage(error.into()))?;
         }
+        transaction
+            .commit()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
         Ok(transitioned)
     }
 
     async fn archive_facts(&self, ids: &[&str]) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
         let mut count = 0usize;
         for id in ids {
-            let version = self.next_version(&conn);
-            let n = conn.execute(
+            let version = Self::next_version_static(&transaction)?;
+            let n = transaction.execute(
                 "UPDATE facts SET status = 'archived', version = ?1 WHERE id = ?2 AND status = 'active'",
                 params![version as i64, id],
             ).map_err(|e| MemoryError::Storage(e.into()))?;
             count += n;
         }
+        transaction
+            .commit()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
         Ok(count)
     }
 
     async fn supersede_fact(&self, id: &str, replacement: StoreFact) -> Result<Fact> {
         let mut conn = self.conn.lock().unwrap();
-        self.ensure_mind(&conn, &replacement.mind);
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| MemoryError::Storage(e.into()))?;
+        self.ensure_mind(&tx, &replacement.mind)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
 
-        // Check original exists
-        let exists: bool = conn
+        // Check original exists inside the write transaction.
+        let exists: bool = tx
             .query_row(
                 "SELECT 1 FROM facts WHERE id = ?1 AND status = 'active'",
                 params![id],
@@ -917,12 +1777,7 @@ impl MemoryBackend for SqliteBackend {
         }
 
         let new_id = gen_id();
-        let version = Self::next_version_static(&conn);
-
-        // Transaction: archive original + insert replacement atomically
-        let tx = conn
-            .transaction()
-            .map_err(|e| MemoryError::Storage(e.into()))?;
+        let version = Self::next_version_static(&tx)?;
 
         // Archive original — matches TS behavior
         tx.execute(
@@ -939,13 +1794,14 @@ impl MemoryBackend for SqliteBackend {
         let ch = hash::content_hash(&replacement.content);
         let ts = now_iso();
         let version2 = version + 1;
+        let version2_sql = persisted_lamport_version(version2)?;
 
         tx.execute(
             "INSERT INTO facts (id, mind, section, content, status, created_at, source, \
              content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, \
              decay_profile, version, supersedes) VALUES (?1,?2,?3,?4,'active',?5,?6,?7,1.0,?5,1,0.05,?8,?9,?10)",
             params![new_id, replacement.mind, section_str, replacement.content, ts,
-                    replacement.source.as_deref().unwrap_or("manual"), ch, profile_str, version2 as i64, id],
+                    replacement.source.as_deref().unwrap_or("manual"), ch, profile_str, version2_sql, id],
         ).map_err(|e| MemoryError::Storage(e.into()))?;
 
         let fact = tx
@@ -958,6 +1814,84 @@ impl MemoryBackend for SqliteBackend {
 
         tx.commit().map_err(|e| MemoryError::Storage(e.into()))?;
         Ok(fact)
+    }
+
+    async fn superseding_fact(&self, old_id: &str) -> Result<Option<Fact>> {
+        let conn = self.conn.lock().unwrap();
+        let original: Option<Fact> = conn
+            .query_row(
+                "SELECT * FROM facts WHERE id = ?1",
+                params![old_id],
+                Self::row_to_fact,
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let Some(original) = original else {
+            return Ok(None);
+        };
+        if original.status != FactStatus::Superseded {
+            return Ok(None);
+        }
+        let mut predecessor = old_id.to_owned();
+        let mut visited = HashSet::new();
+        visited.insert(predecessor.clone());
+        loop {
+            let replacement: Option<Fact> = conn
+                .query_row(
+                    "SELECT * FROM facts WHERE supersedes = ?1 ORDER BY version DESC, id DESC LIMIT 1",
+                    params![predecessor],
+                    Self::row_to_fact,
+                )
+                .optional()
+                .map_err(|error| MemoryError::Storage(error.into()))?;
+            let Some(replacement) = replacement else {
+                break;
+            };
+            if !visited.insert(replacement.id.clone()) {
+                return Err(MemoryError::Storage(anyhow::anyhow!(
+                    "supersession cycle detected"
+                )));
+            }
+            if replacement.status == FactStatus::Active {
+                return Ok(Some(replacement));
+            }
+            if replacement.status != FactStatus::Superseded {
+                break;
+            }
+            predecessor = replacement.id;
+        }
+
+        let Some(source) = original
+            .source
+            .as_deref()
+            .filter(|source| source.starts_with("codex-vault:"))
+        else {
+            return Ok(None);
+        };
+        let latest: Option<Fact> = conn
+            .query_row(
+                "SELECT * FROM facts WHERE source = ?1 ORDER BY version DESC, id DESC LIMIT 1",
+                params![source],
+                Self::row_to_fact,
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let Some(latest) = latest else {
+            return Ok(None);
+        };
+        if latest.status == FactStatus::Active {
+            return Ok(Some(latest));
+        }
+        if latest.status != FactStatus::Superseded {
+            return Ok(None);
+        }
+        conn.query_row(
+            "SELECT * FROM facts WHERE supersedes = ?1 AND status = 'active' ORDER BY version DESC, id DESC LIMIT 1",
+            params![latest.id],
+            Self::row_to_fact,
+        )
+        .optional()
+        .map_err(|error| MemoryError::Storage(error.into()))
     }
 
     async fn fts_search(&self, mind: &str, query: &str, k: usize) -> Result<Vec<ScoredFact>> {
@@ -974,7 +1908,7 @@ impl MemoryBackend for SqliteBackend {
                 "SELECT f.*, rank FROM facts_fts fts \
              JOIN facts f ON f.id = fts.id \
              WHERE facts_fts MATCH ?1 AND fts.mind = ?2 AND f.status = 'active' \
-             ORDER BY rank LIMIT ?3",
+             ORDER BY rank, f.id LIMIT ?3",
             )
             .map_err(|e| MemoryError::Storage(e.into()))?;
 
@@ -1002,6 +1936,7 @@ impl MemoryBackend for SqliteBackend {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.fact.id.cmp(&b.fact.id))
         });
         results.truncate(k);
 
@@ -1082,6 +2017,80 @@ impl MemoryBackend for SqliteBackend {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.fact.id.cmp(&b.fact.id))
+        });
+        results.truncate(k);
+        Ok(results)
+    }
+
+    async fn vector_search_cancellable(
+        &self,
+        mind: &str,
+        embedding: &[f32],
+        k: usize,
+        min_similarity: f32,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<Vec<ScoredFact>> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT fv.embedding, fv.model_name, fv.dims, f.* FROM facts_vec fv \
+                 JOIN facts f ON f.id = fv.fact_id \
+                 WHERE f.mind = ?1 AND f.status = 'active' ORDER BY fv.fact_id",
+            )
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let mut rows = statement
+            .query(params![mind])
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let mut found = false;
+        let mut results = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| MemoryError::Storage(error.into()))?
+        {
+            if cancelled() {
+                return Err(MemoryError::Cancelled);
+            }
+            found = true;
+            let dimensions = row
+                .get::<_, u32>("dims")
+                .map_err(|error| MemoryError::Storage(error.into()))?;
+            if dimensions != embedding.len() as u32 {
+                return Err(MemoryError::EmbeddingDimensionMismatch {
+                    expected: dimensions,
+                    got: embedding.len() as u32,
+                    stored_model: row
+                        .get("model_name")
+                        .map_err(|error| MemoryError::Storage(error.into()))?,
+                });
+            }
+            let blob: Vec<u8> = row
+                .get("embedding")
+                .map_err(|error| MemoryError::Storage(error.into()))?;
+            let fact =
+                Self::row_to_fact(row).map_err(|error| MemoryError::Storage(error.into()))?;
+            let similarity = vectors::cosine_similarity(&vectors::blob_to_vector(&blob), embedding);
+            if similarity < min_similarity {
+                continue;
+            }
+            let Some(score) = crate::decay::ambient_score(similarity as f64, &fact) else {
+                continue;
+            };
+            results.push(ScoredFact {
+                fact,
+                similarity: similarity as f64,
+                score,
+            });
+        }
+        if !found {
+            return Err(MemoryError::NoEmbeddings);
+        }
+        results.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.fact.id.cmp(&right.fact.id))
         });
         results.truncate(k);
         Ok(results)
@@ -1093,23 +2102,58 @@ impl MemoryBackend for SqliteBackend {
         model_name: &str,
         embedding: &[f32],
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        validate_embedding(embedding)?;
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
         let blob = vectors::vector_to_blob(embedding);
         let ts = now_iso();
         let dims = embedding.len() as i64;
 
-        conn.execute(
+        let fact_exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM facts WHERE id = ?1)",
+                params![fact_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        if !fact_exists {
+            return Err(MemoryError::FactNotFound(fact_id.into()));
+        }
+        let recorded_dims: Option<u32> = transaction
+            .query_row(
+                "SELECT dims FROM embedding_metadata WHERE model_name = ?1",
+                params![model_name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        if let Some(expected) = recorded_dims
+            && expected != embedding.len() as u32
+        {
+            return Err(MemoryError::EmbeddingDimensionMismatch {
+                expected,
+                got: embedding.len() as u32,
+                stored_model: model_name.into(),
+            });
+        }
+
+        transaction.execute(
             "INSERT OR REPLACE INTO facts_vec (fact_id, embedding, model_name, dims, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![fact_id, blob, model_name, dims, ts],
         )
         .map_err(|e| MemoryError::Storage(e.into()))?;
 
-        conn.execute(
+        transaction.execute(
             "INSERT OR IGNORE INTO embedding_metadata (model_name, dims, inserted_at) VALUES (?1, ?2, ?3)",
             params![model_name, dims, ts],
         ).map_err(|e| MemoryError::Storage(e.into()))?;
 
+        transaction
+            .commit()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
         Ok(())
     }
 
@@ -1135,6 +2179,23 @@ impl MemoryBackend for SqliteBackend {
 
     async fn create_edge(&self, req: CreateEdge) -> Result<Edge> {
         let conn = self.conn.lock().unwrap();
+        let endpoint = |id: &str| {
+            conn.query_row(
+                "SELECT mind, status FROM facts WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?
+            .ok_or_else(|| MemoryError::FactNotFound(id.into()))
+        };
+        let source = endpoint(&req.source_id)?;
+        let target = endpoint(&req.target_id)?;
+        if source.0 != target.0 || source.1 != "active" || target.1 != "active" {
+            return Err(MemoryError::InvalidMutation(
+                "edge endpoints must be active facts in the same mind".into(),
+            ));
+        }
         let id = gen_id();
         let ts = now_iso();
         conn.execute(
@@ -1154,14 +2215,22 @@ impl MemoryBackend for SqliteBackend {
         })
     }
 
-    async fn get_edges(&self, _mind: &str, fact_id: &str) -> Result<Vec<Edge>> {
+    async fn get_edges(&self, mind: &str, fact_id: &str) -> Result<Vec<Edge>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT * FROM edges WHERE source_fact_id = ?1 OR target_fact_id = ?1")
+            .prepare(
+                "SELECT edges.* FROM edges \
+                 JOIN facts source ON source.id = source_fact_id \
+                 JOIN facts target ON target.id = target_fact_id \
+                 WHERE (source_fact_id = ?1 OR target_fact_id = ?1) \
+                 AND edges.status = 'active' \
+                 AND source.status = 'active' AND target.status = 'active' \
+                 AND source.mind = ?2 AND target.mind = ?2 ORDER BY edges.id",
+            )
             .map_err(|e| MemoryError::Storage(e.into()))?;
 
         let edges = stmt
-            .query_map(params![fact_id], |row| {
+            .query_map(params![fact_id, mind], |row| {
                 Ok(Edge {
                     id: row.get("id")?,
                     source_id: row.get("source_fact_id")?,
@@ -1179,18 +2248,27 @@ impl MemoryBackend for SqliteBackend {
     }
 
     async fn store_episode(&self, req: StoreEpisode) -> Result<Episode> {
-        let conn = self.conn.lock().unwrap();
-        self.ensure_mind(&conn, &req.mind);
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        self.ensure_mind(&transaction, &req.mind)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
         let id = gen_id();
         let ts = now_iso();
         let date = req.date.unwrap_or_else(|| ts[..10].to_string());
 
-        conn.execute(
-            "INSERT INTO episodes (id, mind, title, narrative, date, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![id, req.mind, req.title, req.narrative, date, ts],
+        transaction.execute(
+            "INSERT INTO episodes (id, mind, title, narrative, date, created_at, affected_nodes, affected_changes, files_changed, tags, tool_calls_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![id, req.mind, req.title, req.narrative, date, ts,
+                serde_json::to_string(&req.affected_nodes).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&req.affected_changes).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&req.files_changed).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&req.tags).unwrap_or_else(|_| "[]".into()),
+                req.tool_calls_count],
         ).map_err(|e| MemoryError::Storage(e.into()))?;
 
-        Ok(Episode {
+        let episode = Episode {
             id,
             mind: req.mind,
             date,
@@ -1203,32 +2281,21 @@ impl MemoryBackend for SqliteBackend {
             tags: req.tags,
             tool_calls_count: req.tool_calls_count,
             jj_change_id: None,
-        })
+        };
+        transaction
+            .commit()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        Ok(episode)
     }
 
     async fn list_episodes(&self, mind: &str, k: usize) -> Result<Vec<Episode>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT * FROM episodes WHERE mind = ?1 ORDER BY date DESC, created_at DESC LIMIT ?2"
+            "SELECT * FROM episodes WHERE mind = ?1 ORDER BY date DESC, created_at DESC, id LIMIT ?2"
         ).map_err(|e| MemoryError::Storage(e.into()))?;
 
         let episodes = stmt
-            .query_map(params![mind, k as i64], |row| {
-                Ok(Episode {
-                    id: row.get("id")?,
-                    mind: row.get("mind")?,
-                    date: row.get("date")?,
-                    title: row.get("title")?,
-                    narrative: row.get("narrative")?,
-                    created_at: row.get("created_at")?,
-                    affected_nodes: vec![],
-                    affected_changes: vec![],
-                    files_changed: vec![],
-                    tags: vec![],
-                    tool_calls_count: None,
-                    jj_change_id: None,
-                })
-            })
+            .query_map(params![mind, k as i64], Self::row_to_episode)
             .map_err(|e| MemoryError::Storage(e.into()))?
             .filter_map(|r| r.map_err(|e| tracing::debug!("row deser: {e}")).ok())
             .collect();
@@ -1248,27 +2315,12 @@ impl MemoryBackend for SqliteBackend {
                 "SELECT e.* FROM episodes_fts efts \
              JOIN episodes e ON e.id = efts.id \
              WHERE episodes_fts MATCH ?1 AND efts.mind = ?2 \
-             ORDER BY rank LIMIT ?3",
+              ORDER BY rank, e.id LIMIT ?3",
             )
             .map_err(|e| MemoryError::Storage(e.into()))?;
 
         let episodes = stmt
-            .query_map(params![fts_query, mind, k as i64], |row| {
-                Ok(Episode {
-                    id: row.get("id")?,
-                    mind: row.get("mind")?,
-                    date: row.get("date")?,
-                    title: row.get("title")?,
-                    narrative: row.get("narrative")?,
-                    created_at: row.get("created_at")?,
-                    affected_nodes: vec![],
-                    affected_changes: vec![],
-                    files_changed: vec![],
-                    tags: vec![],
-                    tool_calls_count: None,
-                    jj_change_id: None,
-                })
-            })
+            .query_map(params![fts_query, mind, k as i64], Self::row_to_episode)
             .map_err(|e| MemoryError::Storage(e.into()))?
             .filter_map(|r| r.map_err(|e| tracing::debug!("row deser: {e}")).ok())
             .collect();
@@ -1280,9 +2332,9 @@ impl MemoryBackend for SqliteBackend {
         let mut lines = Vec::new();
 
         // Facts
-        let mut stmt = conn.prepare(
-            "SELECT * FROM facts WHERE mind = ?1 AND status = 'active' ORDER BY section, created_at, id"
-        ).map_err(|e| MemoryError::Storage(e.into()))?;
+        let mut stmt = conn
+            .prepare("SELECT * FROM facts WHERE mind = ?1 AND status = 'active' ORDER BY id")
+            .map_err(|e| MemoryError::Storage(e.into()))?;
         let facts: Vec<Fact> = stmt
             .query_map(params![mind], Self::row_to_fact)
             .map_err(|e| MemoryError::Storage(e.into()))?
@@ -1298,7 +2350,7 @@ impl MemoryBackend for SqliteBackend {
                 created_at: f.created_at.clone(),
                 source: f.source.clone(),
                 content_hash: f.content_hash.clone(),
-                supersedes: None,
+                supersedes: f.superseded_by.clone(),
                 version: f.version,
                 decay_profile: f.decay_profile.clone(),
                 persona_id: f.persona_id.clone(),
@@ -1336,22 +2388,7 @@ impl MemoryBackend for SqliteBackend {
             .prepare("SELECT * FROM episodes WHERE mind = ?1 ORDER BY id")
             .map_err(|e| MemoryError::Storage(e.into()))?;
         let episodes: Vec<Episode> = stmt
-            .query_map(params![mind], |row| {
-                Ok(Episode {
-                    id: row.get("id")?,
-                    mind: row.get("mind")?,
-                    date: row.get("date")?,
-                    title: row.get("title")?,
-                    narrative: row.get("narrative")?,
-                    created_at: row.get("created_at")?,
-                    affected_nodes: vec![],
-                    affected_changes: vec![],
-                    files_changed: vec![],
-                    tags: vec![],
-                    tool_calls_count: None,
-                    jj_change_id: None,
-                })
-            })
+            .query_map(params![mind], Self::row_to_episode)
             .map_err(|e| MemoryError::Storage(e.into()))?
             .filter_map(|r| r.map_err(|e| tracing::debug!("row deser: {e}")).ok())
             .collect();
@@ -1363,90 +2400,12 @@ impl MemoryBackend for SqliteBackend {
     }
 
     async fn import_jsonl(&self, jsonl: &str) -> Result<ImportStats> {
-        let mut stats = ImportStats::default();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| MemoryError::Storage(e.into()))?;
 
-        for line in jsonl.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<JsonlRecord>(trimmed) {
-                Ok(JsonlRecord::Fact(jf)) => {
-                    self.ensure_mind(&tx, &jf.mind);
-                    let existing_version: Option<i64> = tx
-                        .query_row(
-                            "SELECT version FROM facts WHERE id = ?1",
-                            params![jf.id],
-                            |r| r.get(0),
-                        )
-                        .optional()
-                        .map_err(|e| MemoryError::Storage(e.into()))?
-                        .flatten();
-
-                    if let Some(ev) = existing_version {
-                        if (jf.version as i64) > ev {
-                            let section_str =
-                                serde_json::to_string(&jf.section).unwrap_or_default();
-                            let section_str = section_str.trim_matches('"');
-                            tx.execute(
-                                "UPDATE facts SET content = ?1, section = ?2, version = ?3 WHERE id = ?4",
-                                params![jf.content, section_str, jf.version as i64, jf.id],
-                            ).map_err(|e| MemoryError::Storage(e.into()))?;
-                            stats.reinforced += 1;
-                        } else {
-                            stats.skipped += 1;
-                        }
-                    } else {
-                        let section_str = serde_json::to_string(&jf.section).unwrap_or_default();
-                        let section_str = section_str.trim_matches('"');
-                        let profile_str =
-                            serde_json::to_string(&jf.decay_profile).unwrap_or_default();
-                        let profile_str = profile_str.trim_matches('"');
-                        let ch = jf
-                            .content_hash
-                            .unwrap_or_else(|| hash::content_hash(&jf.content));
-                        tx.execute(
-                            "INSERT INTO facts (id, mind, section, content, status, created_at, source, \
-                             content_hash, confidence, last_reinforced, reinforcement_count, decay_rate, \
-                             decay_profile, version) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1.0,?6,1,0.05,?9,?10)",
-                            params![jf.id, jf.mind, section_str, jf.content,
-                                    serde_json::to_string(&jf.status).unwrap_or_default().trim_matches('"'),
-                                    jf.created_at, jf.source.as_deref().unwrap_or("manual"),
-                                    ch, profile_str, jf.version as i64],
-                        ).map_err(|e| MemoryError::Storage(e.into()))?;
-                        stats.imported += 1;
-                    }
-                }
-                Ok(JsonlRecord::Episode(ep)) => {
-                    self.ensure_mind(&tx, &ep.mind);
-                    tx.execute(
-                        "INSERT OR IGNORE INTO episodes (id, mind, title, narrative, date, created_at) \
-                         VALUES (?1,?2,?3,?4,?5,?6)",
-                        params![ep.id, ep.mind, ep.title, ep.narrative, ep.date, ep.created_at],
-                    ).map_err(|e| MemoryError::Storage(e.into()))?;
-                    stats.imported += 1;
-                }
-                Ok(JsonlRecord::Edge(edge)) => {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO edges (id, source_fact_id, target_fact_id, relation, description, confidence, created_at) \
-                         VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                        params![edge.id, edge.source_id, edge.target_id, edge.relation,
-                                edge.description, edge.confidence, edge.created_at],
-                    ).map_err(|e| MemoryError::Storage(e.into()))?;
-                    stats.imported += 1;
-                }
-                Ok(JsonlRecord::Mind(_)) => {
-                    stats.skipped += 1;
-                }
-                Err(_) => {
-                    stats.errors += 1;
-                }
-            }
-        }
+        let stats = self.import_jsonl_transaction(&tx, jsonl)?;
         tx.commit().map_err(|e| MemoryError::Storage(e.into()))?;
         Ok(stats)
     }
@@ -1529,6 +2488,39 @@ impl MemoryBackend for SqliteBackend {
             version_hwm,
         })
     }
+
+    async fn inventory_stats(&self) -> Result<MemoryInventoryStats> {
+        let conn = self.conn.lock().unwrap();
+        let count = |sql: &str| {
+            conn.query_row(sql, [], |row| row.get::<_, usize>(0))
+                .map_err(|error| MemoryError::Storage(error.into()))
+        };
+        let active_persona_mind = conn
+            .query_row(
+                "SELECT mind FROM facts WHERE status = 'active' AND layer = 'persona' \
+                 GROUP BY mind ORDER BY COUNT(*) DESC, mind ASC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        Ok(MemoryInventoryStats {
+            total_facts: count("SELECT COUNT(*) FROM facts")?,
+            active_facts: count("SELECT COUNT(*) FROM facts WHERE status = 'active'")?,
+            project_facts: count(
+                "SELECT COUNT(*) FROM facts WHERE status = 'active' AND layer = 'project'",
+            )?,
+            persona_facts: count(
+                "SELECT COUNT(*) FROM facts WHERE status = 'active' AND layer = 'persona'",
+            )?,
+            working_facts: count(
+                "SELECT COUNT(*) FROM facts WHERE status = 'active' AND layer = 'working'",
+            )?,
+            episodes: count("SELECT COUNT(*) FROM episodes")?,
+            edges: count("SELECT COUNT(*) FROM edges")?,
+            active_persona_mind,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1567,10 +2559,30 @@ mod tests {
             params![version],
         )
         .unwrap();
+        conn.execute_batch(
+            "DROP TABLE memory_operation_receipts;
+             ALTER TABLE episodes DROP COLUMN affected_nodes;
+             ALTER TABLE episodes DROP COLUMN affected_changes;
+             ALTER TABLE episodes DROP COLUMN files_changed;
+             ALTER TABLE episodes DROP COLUMN tags;
+             ALTER TABLE episodes DROP COLUMN tool_calls_count;",
+        )
+        .unwrap();
+        if version == 5 {
+            conn.execute_batch(
+                "DROP INDEX idx_facts_persona;
+                 DROP INDEX idx_facts_layer;
+                 ALTER TABLE facts DROP COLUMN persona_id;
+                 ALTER TABLE facts DROP COLUMN layer;
+                 ALTER TABLE facts DROP COLUMN tags;
+                 ALTER TABLE episodes DROP COLUMN jj_change_id;",
+            )
+            .unwrap();
+        }
     }
 
     #[test]
-    fn migrates_representative_v5_and_v6_stores_with_rollback_backup() {
+    fn migrates_representative_v5_through_v7_stores_with_rollback_backup() {
         for version in LEGACY_MEMORY_SCHEMA_VERSIONS {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(format!("facts-v{version}.db"));
@@ -1596,8 +2608,213 @@ mod tests {
                     .source_version,
                 MEMORY_SCHEMA_VERSION
             );
+            let migrated = Connection::open(&path).unwrap();
+            let receipt_table: bool = migrated
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_operation_receipts')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(receipt_table);
+            let episode_columns = {
+                let mut statement = migrated.prepare("PRAGMA table_info(episodes)").unwrap();
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap()
+            };
+            assert!(episode_columns.contains(&"affected_nodes".to_string()));
+            assert!(episode_columns.contains(&"tool_calls_count".to_string()));
+            let migrated_mind: String = migrated
+                .query_row(
+                    "SELECT mind FROM facts WHERE id = 'legacy-fact'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                migrated_mind,
+                if version < 7 {
+                    LEGACY_MIND
+                } else {
+                    PRIMENSUS_MIND
+                }
+            );
             drop(SqliteBackend::open(&path).unwrap());
         }
+    }
+
+    #[tokio::test]
+    async fn operation_replay_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts.db");
+        let backend = SqliteBackend::open(&path).unwrap();
+        let stored = backend
+            .store_fact(StoreFact {
+                mind: "reopen".into(),
+                content: "Original".into(),
+                section: Section::Architecture,
+                decay_profile: DecayProfileName::Standard,
+                source: Some("test".into()),
+            })
+            .await
+            .unwrap();
+        let mutation = MemoryMutation::SupersedeFact {
+            fact: FactPrecondition {
+                id: stored.fact.id,
+                expected_version: stored.fact.version,
+            },
+            replacement: StoreFact {
+                mind: "reopen".into(),
+                content: "Replacement".into(),
+                section: Section::Architecture,
+                decay_profile: DecayProfileName::Standard,
+                source: Some("test".into()),
+            },
+        };
+        let committed = backend
+            .apply_mutation("reopen-supersede", mutation.clone())
+            .await
+            .unwrap();
+        drop(backend);
+
+        let reopened = SqliteBackend::open(&path).unwrap();
+        let replayed = reopened
+            .apply_mutation("reopen-supersede", mutation)
+            .await
+            .unwrap();
+        assert!(replayed.replayed);
+        assert_eq!(committed.effect, replayed.effect);
+        assert_eq!(
+            reopened
+                .list_facts("reopen", FactFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn compound_mutations_roll_back_on_second_write_failure() {
+        let backend = SqliteBackend::in_memory().unwrap();
+        let first = backend
+            .store_fact(StoreFact {
+                mind: "rollback".into(),
+                content: "First".into(),
+                section: Section::Architecture,
+                decay_profile: DecayProfileName::Standard,
+                source: None,
+            })
+            .await
+            .unwrap();
+        let second = backend
+            .store_fact(StoreFact {
+                mind: "rollback".into(),
+                content: "Second".into(),
+                section: Section::Architecture,
+                decay_profile: DecayProfileName::Standard,
+                source: None,
+            })
+            .await
+            .unwrap();
+        {
+            let conn = backend.conn.lock().unwrap();
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER fail_second_archive BEFORE UPDATE OF status ON facts
+                 WHEN OLD.id = '{}' AND NEW.status = 'archived'
+                 BEGIN SELECT RAISE(ABORT, 'injected archive failure'); END;",
+                second.fact.id
+            ))
+            .unwrap();
+        }
+        assert!(
+            backend
+                .archive_facts(&[&first.fact.id, &second.fact.id])
+                .await
+                .is_err()
+        );
+        assert!(backend.get_fact(&first.fact.id).await.unwrap().is_some());
+        assert!(backend.get_fact(&second.fact.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_supersede_and_embedding_leave_no_partial_effect() {
+        let backend = SqliteBackend::in_memory().unwrap();
+        let stored = backend
+            .store_fact(StoreFact {
+                mind: "rollback".into(),
+                content: "Stable original".into(),
+                section: Section::Architecture,
+                decay_profile: DecayProfileName::Standard,
+                source: None,
+            })
+            .await
+            .unwrap();
+        {
+            let conn = backend.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER fail_replacement BEFORE INSERT ON facts
+                 WHEN NEW.content = 'Injected replacement failure'
+                 BEGIN SELECT RAISE(ABORT, 'injected replacement failure'); END;
+                 CREATE TRIGGER fail_embedding_metadata BEFORE INSERT ON embedding_metadata
+                 WHEN NEW.model_name = 'fail-model'
+                 BEGIN SELECT RAISE(ABORT, 'injected metadata failure'); END;",
+            )
+            .unwrap();
+        }
+        let mutation = MemoryMutation::SupersedeFact {
+            fact: FactPrecondition {
+                id: stored.fact.id.clone(),
+                expected_version: stored.fact.version,
+            },
+            replacement: StoreFact {
+                mind: "rollback".into(),
+                content: "Injected replacement failure".into(),
+                section: Section::Architecture,
+                decay_profile: DecayProfileName::Standard,
+                source: None,
+            },
+        };
+        assert!(
+            backend
+                .apply_mutation("failed-supersede", mutation)
+                .await
+                .is_err()
+        );
+        let original = backend.get_fact(&stored.fact.id).await.unwrap().unwrap();
+        assert_eq!(original.status, FactStatus::Active);
+        let receipt_count: i64 = backend
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM memory_operation_receipts WHERE operation_id = 'failed-supersede'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt_count, 0);
+
+        assert!(
+            backend
+                .store_embedding(&stored.fact.id, "fail-model", &[1.0, 0.0])
+                .await
+                .is_err()
+        );
+        let vector_count: i64 = backend
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM facts_vec WHERE fact_id = ?1",
+                params![stored.fact.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(vector_count, 0);
     }
 
     #[test]
@@ -1624,8 +2841,14 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        assert_eq!(SqliteBackend::reconcile_v7_default_mind(&path).unwrap(), 2);
-        assert_eq!(SqliteBackend::reconcile_v7_default_mind(&path).unwrap(), 0);
+        assert_eq!(
+            SqliteBackend::reconcile_current_default_mind(&path).unwrap(),
+            2
+        );
+        assert_eq!(
+            SqliteBackend::reconcile_current_default_mind(&path).unwrap(),
+            0
+        );
 
         let conn = Connection::open(&path).unwrap();
         let default_facts: i64 = conn
@@ -1683,13 +2906,44 @@ mod tests {
         drop(conn);
 
         let error = SqliteBackend::apply_migration(&plan).unwrap_err();
-        assert!(error.to_string().contains("counts changed"));
+        assert!(
+            error.to_string().contains("counts changed"),
+            "unexpected migration error: {error:#}"
+        );
         assert!(!plan.backup.exists());
         assert_eq!(
             SqliteBackend::inspect_current(&path)
                 .unwrap()
                 .source_version,
             6
+        );
+    }
+
+    #[test]
+    fn migration_preserves_backup_after_post_commit_admission_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts-v7.db");
+        create_legacy_fixture(&path, 7);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute("DROP INDEX idx_facts_persona", []).unwrap();
+        conn.execute("CREATE TABLE idx_facts_persona (id TEXT)", [])
+            .unwrap();
+        drop(conn);
+
+        let plan = SqliteBackend::plan_migration(&path).unwrap();
+        let error = SqliteBackend::apply_migration(&plan).unwrap_err();
+        assert!(error.to_string().contains("already a table"));
+        assert!(
+            plan.backup.exists(),
+            "committed migration must retain backup"
+        );
+        assert_eq!(
+            SqliteBackend::status(&path).unwrap().schema_version,
+            MEMORY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            SqliteBackend::status(&plan.backup).unwrap().schema_version,
+            7
         );
     }
 
@@ -1746,8 +3000,8 @@ mod tests {
         let generated = generate_schema_contract(&conn);
 
         assert_eq!(
-            on_disk.trim(),
-            generated.trim(),
+            on_disk.replace("\r\n", "\n").trim(),
+            generated.replace("\r\n", "\n").trim(),
             "schema-contract.json is stale. Regenerate with:\n  cargo test -p omegon-memory schema_contract_generate -- --ignored"
         );
     }

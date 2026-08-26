@@ -9,6 +9,8 @@ use tokio::sync::broadcast;
 use crate::AgentEvent;
 use crate::runtime_prompt::{ControlSurface, PromptEnvelope, RuntimeActor};
 
+static NEXT_SESSION_EPOCH: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ActiveTurnPhase {
     Running,
@@ -16,6 +18,42 @@ pub(crate) enum ActiveTurnPhase {
         requested_by: RuntimeActor,
         via: ControlSurface,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimeTurnIdentity {
+    pub(crate) session_epoch: u64,
+    pub(crate) runtime_turn_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InterruptAdmission {
+    Admitted,
+    Duplicate,
+    Stale,
+    Idle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeTurnOutcome {
+    Completed,
+    Revoked,
+    Failed,
+    TimedOut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LoopTerminalIntent {
+    pub(crate) identity: RuntimeTurnIdentity,
+    pub(crate) outcome: RuntimeTurnOutcome,
+    pub(crate) reason_code: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalSubmission {
+    Committed { outcome: RuntimeTurnOutcome },
+    Duplicate,
+    Stale,
 }
 
 impl ActiveTurnPhase {
@@ -30,6 +68,7 @@ impl ActiveTurnPhase {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ActiveTurnMeta {
     pub(crate) runtime_turn_id: u64,
+    pub(crate) authority_turn_id: Option<uuid::Uuid>,
     pub(crate) prompt: PromptEnvelope,
     pub(crate) phase: ActiveTurnPhase,
     pub(crate) started_at: Instant,
@@ -121,10 +160,21 @@ impl RuntimeTurnLifecycle {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ActiveTurnState {
     active: Option<ActiveTurnMeta>,
+    session_epoch: u64,
     next_runtime_turn_id: u64,
+}
+
+impl Default for ActiveTurnState {
+    fn default() -> Self {
+        Self {
+            active: None,
+            session_epoch: NEXT_SESSION_EPOCH.fetch_add(1, Ordering::Relaxed),
+            next_runtime_turn_id: 0,
+        }
+    }
 }
 
 impl ActiveTurnState {
@@ -136,13 +186,22 @@ impl ActiveTurnState {
         self.active.is_some()
     }
 
-    pub(crate) fn start(&mut self, prompt: PromptEnvelope) -> Option<ActiveTurnMeta> {
+    pub(crate) fn session_epoch(&self) -> u64 {
+        self.session_epoch
+    }
+
+    pub(crate) fn start(
+        &mut self,
+        prompt: PromptEnvelope,
+        authority_turn_id: Option<uuid::Uuid>,
+    ) -> Option<ActiveTurnMeta> {
         if self.active.is_some() {
             return None;
         }
         self.next_runtime_turn_id = self.next_runtime_turn_id.saturating_add(1);
         let active = ActiveTurnMeta {
             runtime_turn_id: self.next_runtime_turn_id,
+            authority_turn_id,
             prompt,
             phase: ActiveTurnPhase::Running,
             started_at: Instant::now(),
@@ -156,18 +215,74 @@ impl ActiveTurnState {
         actor: RuntimeActor,
         via: ControlSurface,
     ) -> Option<&ActiveTurnMeta> {
-        let active = self.active.as_mut()?;
-        if matches!(active.phase, ActiveTurnPhase::Running) {
-            active.phase = ActiveTurnPhase::Cancelling {
-                requested_by: actor,
-                via,
-            };
-        }
+        let identity = self.current_identity()?;
+        let _ = self.admit_interrupt(identity, actor, via);
         self.active.as_ref()
     }
 
-    pub(crate) fn complete(&mut self) -> Option<ActiveTurnMeta> {
+    pub(crate) fn current_identity(&self) -> Option<RuntimeTurnIdentity> {
+        self.active.as_ref().map(|active| RuntimeTurnIdentity {
+            session_epoch: self.session_epoch,
+            runtime_turn_id: active.runtime_turn_id,
+        })
+    }
+
+    pub(crate) fn admit_interrupt(
+        &mut self,
+        identity: RuntimeTurnIdentity,
+        actor: RuntimeActor,
+        via: ControlSurface,
+    ) -> InterruptAdmission {
+        let Some(active) = self.active.as_mut() else {
+            return InterruptAdmission::Idle;
+        };
+        if identity.session_epoch != self.session_epoch
+            || identity.runtime_turn_id != active.runtime_turn_id
+        {
+            return InterruptAdmission::Stale;
+        }
+        if matches!(active.phase, ActiveTurnPhase::Cancelling { .. }) {
+            return InterruptAdmission::Duplicate;
+        }
+        active.phase = ActiveTurnPhase::Cancelling {
+            requested_by: actor,
+            via,
+        };
+        InterruptAdmission::Admitted
+    }
+
+    pub(crate) fn finish(
+        &mut self,
+        runtime_turn_id: u64,
+        outcome: RuntimeTurnOutcome,
+    ) -> Option<ActiveTurnMeta> {
+        let active = self.active.as_ref()?;
+        if active.runtime_turn_id != runtime_turn_id {
+            return None;
+        }
+        if outcome == RuntimeTurnOutcome::Completed
+            && matches!(active.phase, ActiveTurnPhase::Cancelling { .. })
+        {
+            return None;
+        }
         self.active.take()
+    }
+
+    pub(crate) fn settle_worker(&mut self) -> Option<(ActiveTurnMeta, RuntimeTurnOutcome)> {
+        let active = self.active.as_ref()?;
+        let runtime_turn_id = active.runtime_turn_id;
+        let outcome = if matches!(active.phase, ActiveTurnPhase::Cancelling { .. }) {
+            RuntimeTurnOutcome::Revoked
+        } else {
+            RuntimeTurnOutcome::Completed
+        };
+        self.finish(runtime_turn_id, outcome)
+            .map(|active| (active, outcome))
+    }
+
+    pub(crate) fn complete(&mut self) -> Option<ActiveTurnMeta> {
+        let runtime_turn_id = self.active.as_ref()?.runtime_turn_id;
+        self.finish(runtime_turn_id, RuntimeTurnOutcome::Completed)
     }
 }
 
@@ -180,11 +295,12 @@ mod tests {
     fn prompt(id: u64) -> PromptEnvelope {
         PromptEnvelope {
             id,
+            authority_prompt_id: None,
             text: format!("prompt-{id}"),
             image_paths: Vec::<PathBuf>::new(),
             submitted_by: RuntimeActor::tui(),
             via: ControlSurface::Tui,
-            metadata: crate::tui::PromptMetadata::default(),
+            metadata: crate::operator_commands::PromptMetadata::default(),
             queue_mode: QueueMode::UntilReady,
             queued_at: Instant::now(),
         }
@@ -193,16 +309,16 @@ mod tests {
     #[test]
     fn start_allocates_monotonic_turn_ids_and_blocks_overlap() {
         let mut state = ActiveTurnState::default();
-        assert_eq!(state.start(prompt(1)).unwrap().runtime_turn_id, 1);
-        assert!(state.start(prompt(2)).is_none());
+        assert_eq!(state.start(prompt(1), None).unwrap().runtime_turn_id, 1);
+        assert!(state.start(prompt(2), None).is_none());
         assert_eq!(state.complete().unwrap().prompt.id, 1);
-        assert_eq!(state.start(prompt(2)).unwrap().runtime_turn_id, 2);
+        assert_eq!(state.start(prompt(2), None).unwrap().runtime_turn_id, 2);
     }
 
     #[test]
     fn cancel_is_idempotent_and_preserves_first_requester() {
         let mut state = ActiveTurnState::default();
-        state.start(prompt(1)).unwrap();
+        state.start(prompt(1), None).unwrap();
         state.request_cancel(RuntimeActor::auspex(), ControlSurface::Ipc);
         state.request_cancel(
             RuntimeActor {
@@ -224,7 +340,7 @@ mod tests {
     #[test]
     fn lifecycle_snapshots_increment_sequence_and_preserve_contract_fields() {
         let mut state = ActiveTurnState::default();
-        let active = state.start(prompt(7)).unwrap();
+        let active = state.start(prompt(7), None).unwrap();
         let mut lifecycle = RuntimeTurnLifecycle::new(&active, "promoted");
         let (events_tx, mut events_rx) = broadcast::channel(4);
 

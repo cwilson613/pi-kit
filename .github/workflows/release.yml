@@ -41,18 +41,130 @@ jobs:
           fetch-depth: 0
 
       - name: Require stable release version on main
-        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') && !contains(github.ref_name, '-fixture.') }}
         run: |
           set -euo pipefail
           git fetch origin main
           python3 scripts/release_branch.py verify-publish
+
+      - name: Require tag-bound workflow identity
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/tags/${RELEASE_TAG}" || {
+            echo "Release workflow must run from refs/tags/${RELEASE_TAG}, got $GITHUB_REF" >&2
+            exit 1
+          }
+
+  release-verifier-fixture:
+    name: Generate release verifier fixture
+    needs: verify-trunk-version
+    if: ${{ contains(github.ref_name, '-fixture.') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Build deterministic fixture archive and manifest
+        run: |
+          set -euo pipefail
+          VERSION=${RELEASE_TAG#v}
+          TARGET=x86_64-unknown-linux-gnu
+          ARCHIVE="omegon-${VERSION}-${TARGET}.tar.gz"
+          FIXTURE_DIR="$RUNNER_TEMP/release-verifier-fixture"
+          mkdir -p "$FIXTURE_DIR"
+          printf '#!/bin/sh\necho omegon fixture\n' > "$FIXTURE_DIR/omegon"
+          printf '#!/bin/sh\necho omegon-maintain fixture\n' > "$FIXTURE_DIR/omegon-maintain"
+          chmod 0755 "$FIXTURE_DIR/omegon" "$FIXTURE_DIR/omegon-maintain"
+          python3 scripts/content_pack_manifest.py --check
+          python3 scripts/package_release.py --binary-dir "$FIXTURE_DIR" --output "$ARCHIVE"
+          python3 scripts/release_manifest.py generate-package \
+            --archive "$ARCHIVE" \
+            --tag "$RELEASE_TAG" \
+            --target "$TARGET" \
+            --output "${ARCHIVE}.manifest.json" \
+            --repo "${{ github.repository }}" \
+            --commit "$(git rev-parse HEAD)"
+          echo "FIXTURE_ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      - name: Sign fixture manifest without TSA evidence
+        run: |
+          set -euo pipefail
+          cosign signing-config create --with-default-services --no-default-tsa \
+            --out "$RUNNER_TEMP/signing-config.json"
+          cosign sign-blob --yes \
+            --signing-config "$RUNNER_TEMP/signing-config.json" \
+            --bundle "${FIXTURE_ARCHIVE}.manifest.sigstore.json" \
+            "${FIXTURE_ARCHIVE}.manifest.json"
+
+      - name: Upload immutable fixture candidate
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-verifier-fixture-${{ env.RELEASE_TAG }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ env.FIXTURE_ARCHIVE }}
+            ${{ env.FIXTURE_ARCHIVE }}.manifest.json
+            ${{ env.FIXTURE_ARCHIVE }}.manifest.sigstore.json
+
+  composition-development-paths:
+    name: Gate source and linked compositions
+    needs: verify-trunk-version
+    if: ${{ !contains(github.ref_name, '-fixture.') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and exercise source profiles
+        run: python3 scripts/check_composition_matrix.py --path source --cargo-profile release
+
+      - name: Install isolated linked-development channel
+        run: |
+          set -euo pipefail
+          LINK_HOME="$RUNNER_TEMP/omegon-linked-home"
+          TARGET="$(rustc -vV | awk '/^host:/ {print $2}')"
+          mkdir -p "$LINK_HOME/.local/bin" "$LINK_HOME/.omegon/channels" "$LINK_HOME/.omegon/bin"
+          install -m 0755 scripts/omegon-launcher.sh "$LINK_HOME/.local/bin/omegon"
+          install -m 0755 scripts/omegon-launcher.sh "$LINK_HOME/.local/bin/om"
+          install -m 0755 scripts/omegon-launcher.sh "$LINK_HOME/.local/bin/omegon-maintain"
+          printf '%s\n' "$GITHUB_WORKSPACE" > "$LINK_HOME/.omegon/channels/composition-ci"
+          install -m 0755 target/release/omegon "$LINK_HOME/.omegon/bin/omegon"
+          install -m 0755 target/release/omegon-maintain "$LINK_HOME/.omegon/bin/omegon-maintain"
+          python3 scripts/package_release.py --binary-dir target/release \
+            --target "$TARGET" --lock-dir "$LINK_HOME/.omegon/share/omegon/composition"
+          python3 scripts/content_pack_manifest.py \
+            --install-root "$LINK_HOME/.omegon/share/omegon/content-packs/omegon-shipped"
+          echo "LINK_HOME=$LINK_HOME" >> "$GITHUB_ENV"
+          echo "LINK_TARGET=$TARGET" >> "$GITHUB_ENV"
+
+      - name: Exercise installed linked launchers, locks, and assets
+        run: |
+          python3 scripts/check_composition_matrix.py --path linked \
+            --binary-dir target/release \
+            --linked-home "$LINK_HOME" \
+            --target "$LINK_TARGET"
+          python3 scripts/check_composition_authority.py
 
   # ── Primary builds (macOS + Linux x86_64) ──────────────────────
   # These finish in ~10 minutes and unblock the release.
   build:
     name: Build ${{ matrix.target }}
     needs: verify-trunk-version
-    if: ${{ !contains(inputs.tag_name || github.ref_name, '-rc.') }}
+    if: ${{ !contains(github.ref_name, '-fixture.') && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -102,9 +214,9 @@ jobs:
           RUSTFLAGS: ${{ matrix.static && '-C target-feature=+crt-static' || '' }}
         run: |
           if [ "${{ matrix.zigbuild }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} -p omegon
+            cargo zigbuild --release --target ${{ matrix.target }} -p omegon -p omegon-maintain
           else
-            cargo build --release --target ${{ matrix.target }} -p omegon
+            cargo build --release --target ${{ matrix.target }} -p omegon -p omegon-maintain
           fi
 
       - name: Build omegon-browser extension
@@ -120,10 +232,13 @@ jobs:
       - name: Strip binary
         run: |
           BINARY="target/${{ matrix.target }}/release/omegon"
+          MAINTAIN_BINARY="target/${{ matrix.target }}/release/omegon-maintain"
           if command -v llvm-strip >/dev/null 2>&1; then
             llvm-strip "$BINARY"
+            llvm-strip "$MAINTAIN_BINARY"
           elif command -v strip >/dev/null 2>&1; then
             strip "$BINARY" 2>/dev/null || true
+            strip "$MAINTAIN_BINARY" 2>/dev/null || true
           fi
           EXT_BINARY="extensions/omegon-browser/target/${{ matrix.target }}/release/omegon-browser"
           if [ -f "$EXT_BINARY" ]; then
@@ -155,19 +270,22 @@ jobs:
         if: runner.os == 'macOS' && env.APPLE_SIGNING_CERT_B64 != '' && env.APPLE_CODESIGN_IDENTITY != ''
         run: |
           set -euo pipefail
-          BINARY="target/${{ matrix.target }}/release/omegon"
-          codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "$BINARY"
-          codesign --verify --deep --strict --verbose=2 "$BINARY"
+          for BINARY in target/${{ matrix.target }}/release/omegon target/${{ matrix.target }}/release/omegon-maintain; do
+            codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "$BINARY"
+            codesign --verify --deep --strict --verbose=2 "$BINARY"
+          done
 
       - name: Notarize macOS binary
         if: runner.os == 'macOS' && env.APPLE_SIGNING_CERT_B64 != '' && env.APPLE_CODESIGN_IDENTITY != '' && env.APPLE_API_KEY_P8_B64 != '' && env.APPLE_API_KEY_ID != '' && env.APPLE_API_ISSUER != ''
         run: |
           set -euo pipefail
-          BINARY="target/${{ matrix.target }}/release/omegon"
+          PACKAGE_DIR="$RUNNER_TEMP/omegon-${{ matrix.target }}-notary"
+          mkdir -p "$PACKAGE_DIR"
+          cp target/${{ matrix.target }}/release/omegon target/${{ matrix.target }}/release/omegon-maintain "$PACKAGE_DIR/"
           NOTARY_ZIP="$RUNNER_TEMP/omegon-${{ matrix.target }}-notary.zip"
           KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
           echo "$APPLE_API_KEY_P8_B64" | base64 --decode > "$KEY_PATH"
-          ditto -c -k --keepParent "$BINARY" "$NOTARY_ZIP"
+          ditto -c -k --keepParent "$PACKAGE_DIR" "$NOTARY_ZIP"
           # Retry notarization up to 3 times — Apple's service frequently times out
           for attempt in 1 2 3; do
             echo "Notarization attempt $attempt/3..."
@@ -194,8 +312,10 @@ jobs:
         run: |
           VERSION=${RELEASE_TAG#v}
           ARCHIVE="omegon-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
-          BINARY="target/${{ matrix.target }}/release/omegon"
-          tar czf "$ARCHIVE" -C "$(dirname $BINARY)" omegon
+          BINARY_DIR="target/${{ matrix.target }}/release"
+          chmod 0755 "$BINARY_DIR/omegon" "$BINARY_DIR/omegon-maintain"
+          python3 scripts/content_pack_manifest.py --check
+          python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "$ARCHIVE"
           EXT_ARCHIVE="omegon-browser-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
           EXT_BINARY="extensions/omegon-browser/target/${{ matrix.target }}/release/omegon-browser"
           EXT_PACKAGE="$RUNNER_TEMP/omegon-browser-package"
@@ -207,6 +327,17 @@ jobs:
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
           echo "EXT_ARCHIVE=$EXT_ARCHIVE" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Gate release composition and budgets
+        run: |
+          python3 scripts/check_composition_matrix.py --path release \
+            --archive "$ARCHIVE" \
+            --target "${{ matrix.target }}"
+          python3 scripts/check_composition_budgets.py \
+            --binary-dir "target/${{ matrix.target }}/release" \
+            --archive "$ARCHIVE" \
+            --target "${{ matrix.target }}"
+          python3 scripts/check_composition_authority.py
 
       - name: Generate SHA256 checksum
         run: |
@@ -232,7 +363,7 @@ jobs:
   # Runs in parallel but does not block release publication.
   build-extended:
     name: Build aarch64-unknown-linux-gnu
-    if: ${{ !contains(inputs.tag_name || github.ref_name, '-rc.') }}
+    if: ${{ !contains(github.ref_name, '-fixture.') && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -252,7 +383,7 @@ jobs:
         run: cargo install cargo-zigbuild
 
       - name: Build release binary
-        run: cargo zigbuild --release --target aarch64-unknown-linux-gnu -p omegon
+        run: cargo zigbuild --release --target aarch64-unknown-linux-gnu -p omegon -p omegon-maintain
 
       - name: Build omegon-browser extension
         run: cargo zigbuild --manifest-path extensions/omegon-browser/Cargo.toml --release --target aarch64-unknown-linux-gnu
@@ -260,10 +391,13 @@ jobs:
       - name: Strip binary
         run: |
           BINARY="target/aarch64-unknown-linux-gnu/release/omegon"
+          MAINTAIN_BINARY="target/aarch64-unknown-linux-gnu/release/omegon-maintain"
           if command -v llvm-strip >/dev/null 2>&1; then
             llvm-strip "$BINARY"
+            llvm-strip "$MAINTAIN_BINARY"
           elif command -v strip >/dev/null 2>&1; then
             strip "$BINARY" 2>/dev/null || true
+            strip "$MAINTAIN_BINARY" 2>/dev/null || true
           fi
           EXT_BINARY="extensions/omegon-browser/target/aarch64-unknown-linux-gnu/release/omegon-browser"
           if command -v llvm-strip >/dev/null 2>&1; then
@@ -276,8 +410,10 @@ jobs:
         run: |
           VERSION=${RELEASE_TAG#v}
           ARCHIVE="omegon-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
-          BINARY="target/aarch64-unknown-linux-gnu/release/omegon"
-          tar czf "$ARCHIVE" -C "$(dirname $BINARY)" omegon
+          BINARY_DIR="target/aarch64-unknown-linux-gnu/release"
+          chmod 0755 "$BINARY_DIR/omegon" "$BINARY_DIR/omegon-maintain"
+          python3 scripts/content_pack_manifest.py --check
+          python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "$ARCHIVE"
           EXT_ARCHIVE="omegon-browser-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
           EXT_BINARY="extensions/omegon-browser/target/aarch64-unknown-linux-gnu/release/omegon-browser"
           EXT_PACKAGE="$RUNNER_TEMP/omegon-browser-package"
@@ -289,6 +425,17 @@ jobs:
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
           echo "EXT_ARCHIVE=$EXT_ARCHIVE" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Gate release composition and budgets
+        run: |
+          python3 scripts/check_composition_matrix.py --path release \
+            --archive "$ARCHIVE" \
+            --target aarch64-unknown-linux-gnu
+          python3 scripts/check_composition_budgets.py \
+            --binary-dir target/aarch64-unknown-linux-gnu/release \
+            --archive "$ARCHIVE" \
+            --target aarch64-unknown-linux-gnu
+          python3 scripts/check_composition_authority.py
 
       - name: Generate SHA256 checksum
         run: |
@@ -307,7 +454,7 @@ jobs:
 
   live-upstream-smoke:
     name: Live upstream smoke (non-blocking)
-    if: ${{ !contains(inputs.tag_name || github.ref_name, '-rc.') }}
+    if: ${{ !contains(github.ref_name, '-fixture.') && !contains(inputs.tag_name || github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true
@@ -357,6 +504,7 @@ jobs:
   linux-abi-validation:
     name: Linux ABI validation (${{ matrix.name }})
     needs: build
+    if: ${{ !contains(github.ref_name, '-fixture.') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -383,8 +531,8 @@ jobs:
           set -euo pipefail
           mkdir -p abi-artifacts/unpacked
           tar xzf "$(ls abi-artifacts/omegon-[0-9]*.tar.gz | head -1)" -C abi-artifacts/unpacked
-          ls -lh abi-artifacts/unpacked/omegon
-          file abi-artifacts/unpacked/omegon
+          ls -lh abi-artifacts/unpacked/omegon abi-artifacts/unpacked/omegon-maintain
+          file abi-artifacts/unpacked/omegon abi-artifacts/unpacked/omegon-maintain
 
       - name: Validate binary in ${{ matrix.name }} container
         run: |
@@ -397,12 +545,15 @@ jobs:
               ${{ matrix.install_cmd }}
               ldd --version || true
               /work/omegon --version
+              /work/omegon-maintain --version
+              /work/omegon-maintain --json identity | grep -q '"status":"success"'
             '
 
   # ── Release (publishes as soon as primary builds pass) ─────────
   release:
     name: Create release
-    needs: [build, build-extended, linux-abi-validation]
+    needs: [build, build-extended, composition-development-paths, linux-abi-validation]
+    if: ${{ !contains(github.ref_name, '-fixture.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -412,6 +563,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download primary build artifacts
         uses: actions/download-artifact@v6
@@ -428,13 +581,26 @@ jobs:
 
       - name: Generate release manifest
         run: |
+          COMMIT=$(git rev-parse HEAD)
           python3 scripts/release_manifest.py generate \
             --tag "${RELEASE_TAG}" \
             --checksums artifacts/checksums.sha256 \
             --output artifacts/release-manifest.json \
             --repo "${{ github.repository }}" \
-            --commit "${{ github.sha }}"
+            --commit "$COMMIT"
           cat artifacts/release-manifest.json
+
+          for target in aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            archive="artifacts/omegon-${RELEASE_TAG#v}-${target}.tar.gz"
+            test -f "$archive" || continue
+            python3 scripts/release_manifest.py generate-package \
+              --archive "$archive" \
+              --tag "$RELEASE_TAG" \
+              --target "$target" \
+              --output "${archive}.manifest.json" \
+              --repo "${{ github.repository }}" \
+              --commit "$COMMIT"
+          done
 
       - name: Install Rust toolchain (for cargo-cyclonedx)
         if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
@@ -465,7 +631,9 @@ jobs:
           cp THIRD_PARTY_NOTICES.md artifacts/THIRD_PARTY_NOTICES.md
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.0.6
 
       - name: Sign release artifacts
         run: |
@@ -475,6 +643,15 @@ jobs:
             cosign sign-blob --yes "$archive" \
               --output-signature "${archive}.sig" \
               --output-certificate "${archive}.pem"
+          done
+
+          cosign signing-config create --with-default-services --no-default-tsa \
+            --out "$RUNNER_TEMP/signing-config.json"
+          for manifest in omegon-[0-9]*.tar.gz.manifest.json; do
+            cosign sign-blob --yes \
+              --signing-config "$RUNNER_TEMP/signing-config.json" \
+              --bundle "${manifest%.manifest.json}.manifest.sigstore.json" \
+              "$manifest"
           done
 
       - name: Sign SBOM and notices
@@ -513,6 +690,8 @@ jobs:
           # Collect asset files
           ASSET_FILES=(artifacts/omegon-[0-9]*.tar.gz artifacts/omegon-[0-9]*.tar.gz.sha256)
           ASSET_FILES+=(artifacts/omegon-[0-9]*.tar.gz.sig artifacts/omegon-[0-9]*.tar.gz.pem)
+          ASSET_FILES+=(artifacts/omegon-[0-9]*.tar.gz.manifest.json)
+          ASSET_FILES+=(artifacts/omegon-[0-9]*.tar.gz.manifest.sigstore.json)
           ASSET_FILES+=(artifacts/omegon-browser-*.tar.gz artifacts/omegon-browser-*.tar.gz.sha256)
           ASSET_FILES+=(artifacts/omegon-browser-*.tar.gz.sig artifacts/omegon-browser-*.tar.gz.pem)
           ASSET_FILES+=(artifacts/checksums.sha256 artifacts/release-manifest.json)
@@ -560,7 +739,7 @@ jobs:
     needs: release
     # Only build OCI images for stable releases — nightlies don't
     # need container images, and 7 Nix builds burn ~70 runner-minutes.
-    if: ${{ !contains(inputs.tag_name || github.ref_name, '-nightly.') }}
+    if: ${{ !contains(github.ref_name, '-fixture.') && !contains(inputs.tag_name || github.ref_name, '-nightly.') }}
     runs-on: ubuntu-latest
     permissions:
       packages: write

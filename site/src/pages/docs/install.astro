@@ -9,8 +9,9 @@ import { snippet } from "../../lib/snippets";
   <h2>Quick Install (Recommended)</h2>
   <pre><code>{snippet("install.quick_install")}</code></pre>
   <p>
-    Downloads the latest signed binary for your platform (macOS arm64/x86_64, Linux x86_64/aarch64),
-    verifies the SHA-256 checksum, and installs to <code>/usr/local/bin</code> by default.
+    Downloads the latest signed release pair and shipped content pack for your platform
+    (macOS arm64/x86_64, Linux x86_64/aarch64), verifies the SHA-256 checksum, and installs
+    to <code>/usr/local/bin</code> by default.
   </p>
 
   <h3>Options</h3>
@@ -46,7 +47,9 @@ import { snippet } from "../../lib/snippets";
     Each release includes:
   </p>
   <ul>
-    <li>Pre-built binaries for macOS (arm64, x86_64) and Linux (x86_64, aarch64)</li>
+    <li>Pre-built <code>omegon</code> and <code>omegon-maintain</code> companions for macOS and Linux</li>
+    <li>Resident composition locks for both executables, bound by the signed package manifest</li>
+    <li>The versioned <code>omegon-shipped</code> content pack under <code>share/omegon/content-packs/</code></li>
     <li>SHA-256 checksums</li>
     <li><a href="https://www.sigstore.dev/">Sigstore cosign</a> signatures (keyless)</li>
     <li>CycloneDX SBOM</li>
@@ -55,9 +58,30 @@ import { snippet } from "../../lib/snippets";
   </ul>
 
   <h3>Verify a Download</h3>
-  <pre><code>{snippet("verify.cosign_verify")}</code></pre>
+  <pre><code>{snippet("verify.release_verify")}</code></pre>
   <p>
-    The filenames above target the 0.28.0 release. Replace 0.28.0 with the release you downloaded.
+    This offline check binds release identity, provenance, executable digests, protocol ranges,
+    target support, required/optional state, fallback, and both resident locks to compiled trust
+    policy. Required lock failure is fail-closed. It does not extract or execute optional contributions.
+  </p>
+
+  <h2>Verify the Installed Pair</h2>
+  <pre><code>{snippet("install.verify_companions")}</code></pre>
+  <p>
+    Supported packages install matching <code>omegon</code> and <code>omegon-maintain</code>
+    versions. Supported packages also install the shipped content pack beside the pair. A missing,
+    incompatible, or non-launching companion is an incomplete installation. Missing optional content
+    does not block kernel or maintenance startup, but shipped skills, prompts, and catalog data are unavailable.
+    Do not copy a companion from another release; reinstall through the owning channel.
+  </p>
+  <p>
+    For a linked source checkout, both <code>--which</code> results must identify the same current checkout
+    and report <code>stale: no</code>. Re-run <code>just link</code> if either launcher reports stale metadata.
+  </p>
+  <p>
+    Upgrades require no configuration rename: existing <code>disabled_tools</code> inputs remain
+    accepted and are translated to capability admission policy. Older archives are not retrofitted
+    with resident locks; install the complete pair from one current release rather than mixing files.
   </p>
 
   <h2>Provider Setup</h2>
@@ -69,8 +93,10 @@ import { snippet } from "../../lib/snippets";
   <pre><code>{snippet("auth.login_anthropic")}
 {snippet("quickstart.start_slim")}</code></pre>
   <p>
-    Opens a browser for OAuth authentication. This path is for interactive TUI use.
-    Omegon will block headless and automated entry points when this is your only Anthropic credential.
+    Opens a browser for OAuth authentication. Interactive TUI use is the intended low-friction path.
+    If this is your only Anthropic credential, headless execution emits an explicit operator-risk
+    warning and proceeds; it does not silently switch providers or pretend subscription OAuth has
+    API-key automation semantics.
   </p>
 
   <h3>Option B: API key path</h3>
@@ -98,12 +124,13 @@ import { snippet } from "../../lib/snippets";
   </p>
 
   <p>
-    Omegon installs two entrypoints from the same binary:
+    Omegon installs two normal-runtime entrypoints from the same binary:
     <code>om</code> (slim, copy-friendly, familiar terminal mode) and
-    <code>omegon</code> (full harness). You can always override the startup posture with
-    <code>om --full</code> or <code>omegon --slim</code>.
+    <code>omegon</code> (full harness), plus the distinct <code>omegon-maintain</code>
+    recovery companion. You can override normal startup posture with <code>om --full</code>
+    or <code>omegon --slim</code>; maintenance is not an alias or mode.
   </p>
-  <p>See <a href="/docs/providers">Providers</a> for all supported auth modes and boundaries.</p>
+  <p>See <a href="/docs/providers">Providers</a> for representative auth postures and current boundaries.</p>
 
   <h2>Updates</h2>
   <p>
@@ -121,7 +148,19 @@ import { snippet } from "../../lib/snippets";
 
   <h3>Script installs</h3>
   <pre><code># Re-run the install script to update
-{snippet("install.update_script")}</code></pre>
+{snippet("install.quick_install")}</code></pre>
+  <p>
+    Source checkouts should run <code>just link</code>. Every update path replaces and validates
+    the pair together. See <a href="/docs/recovery">Maintenance &amp; Recovery</a> when normal
+    startup is unavailable. A compatible content-pack replacement can be installed independently;
+    Omegon admits it on the next process boot and does not migrate active sessions.
+  </p>
+  <p>
+    Script-managed installs stage each matching executable pair and its receipt in an immutable
+    <code>~/.omegon/versions/&lt;version&gt;/</code> directory. One atomic
+    <code>~/.omegon/current</code> switch activates all three together, so an interrupted update
+    leaves the previous complete release active and available for rollback.
+  </p>
 
   <h2>Supported Platforms</h2>
   <table>

@@ -11,23 +11,23 @@ visibility = "private"
 
 [data]
 design_docs = ["design/harness-upstream-error-recovery.md"]
-last_updated = "2026-03-10"
+last_updated = "2026-08-21"
 openspec_baselines = ["harness/upstream-error-recovery.md"]
 subsystem = "error-recovery"
 +++
 
 # Error Recovery
 
-> Structured upstream failure classification, bounded retry, provider fallback, and recovery state signaling to agent and operator.
+> Structured provider-request failure classification, mode-aware retry, and recovery state signaling to agent and operator.
 
 ## What It Does
 
-When an upstream provider (Anthropic, OpenAI, Ollama) returns an error, the error recovery system:
+When an upstream provider returns an error before a model response completes, the error recovery system:
 
-1. **Classifies** the failure into a specific category (context-overflow, auth, quota, rate-limit, backoff, image-too-large, invalid-request, retryable-flake, non-retryable)
-2. **Decides** the recovery action: retry same model (bounded to 1 attempt), fail over to alternate provider, or surface to operator
-3. **Emits** a structured recovery event that the agent and dashboard can observe
-4. **Executes** the recovery action (retry, model switch, or structured error message with guidance)
+1. **Classifies** provider and transport failures into typed upstream classes.
+2. **Retries** transient request/stream failures with capped exponential backoff and deterministic jitter while honoring cancellation.
+3. **Exhausts** according to the active mode: bounded workers keep their configured attempt cap, while interactive runs use failure-specific time envelopes and persistent Codex overload recovery.
+4. **Emits** structured retry or terminal provider-failure events with operator guidance.
 
 Classification chain order: context-overflow → auth → quota → tool-output → rate-limit → backoff → image-too-large → invalid-request → retryable-flake → non-retryable.
 
@@ -35,17 +35,17 @@ Classification chain order: context-overflow → auth → quota → tool-output 
 
 | File | Role |
 |------|------|
-| `extensions/model-budget.ts` | Recovery controller, failure classification dispatch, retry ledger, recovery event emission |
-| `extensions/lib/model-routing.ts` | Pattern-based failure classification (HTTP status codes, error message patterns) |
-| `extensions/shared-state.ts` | `RecoveryFailureClassification` type definition |
-| `extensions/lib/operator-fallback.ts` | Alternate candidate resolution for failover |
+| `core/crates/omegon/src/upstream_errors.rs` | Provider-aware classification and recovery-action vocabulary |
+| `core/crates/omegon/src/loop.rs` | Request/stream retry loop, backoff, exhaustion, and retry/failure events |
+| `core/crates/omegon/src/routing.rs` | Provider/model route eligibility and fallback policy |
+| `core/crates/omegon/src/invocation_service.rs` | Separate privileged invocation replay and unknown-completion safeguards |
 
 ## Design Decisions
 
-- **Structured recovery controller**: Centralized failure classification with recovery-event emission, retry/failover, and operator/harness visibility. Not scattered across individual error handlers.
-- **Retry only bounded same-model transient failures**: Obvious upstream flakiness (server_error, temporarily unavailable) retries once. Rate-limit/backoff classes fail over to alternate providers instead.
-- **Extension-driven retry fallback for structured-code failures**: When retryable failures are only structured strings (e.g., Codex JSON `server_error`), model-budget queues one bounded retry.
-- **Image-specific pattern matches before generic `invalid_request_error`**: Ensures targeted guidance for the common >8000px case before falling through to generic 400-class handling.
+- **Provider request retry is not invocation replay**: Provider retries repeat inference while no completed tool call has been dispatched. They never authorize resending a privileged mutation whose completion is unknown.
+- **Transient-only retry**: Rate limits, overload, 5xx responses, timeouts, stream stalls, selected network failures, decode failures, dropped bridges, and incomplete/cancelled responses enter backoff. Authentication, quota, invalid-request, and other non-transient failures return without that retry loop.
+- **Mode-aware exhaustion**: `--max-retries` bounds headless/worker attempts. Interactive mode uses elapsed-time envelopes, with shorter rate-limit handling, provider/model-aware stall budgets, and persistent retry for Codex overload while operator cancellation remains authoritative.
+- **Observable recovery**: Every retry emits `ProviderRetry`; exhaustion emits `ProviderFailure` and actionable guidance.
 
 ## Behavioral Contracts
 
@@ -57,10 +57,10 @@ See `openspec/baseline/harness/upstream-error-recovery.md` for Given/When/Then s
 
 ## Constraints & Known Limitations
 
-- Pi core has its own auto-retry for context overflow — extension-level recovery must not conflict
-- Same-model retries capped at 1 to prevent loops
-- Authentication and quota errors are never retried (non-transient)
-- Recovery events are emitted via `pi.events` — consumers must subscribe to receive them
+- Provider-request retry does not imply automatic provider failover; routing and higher-level orchestration decide whether another route is eligible after exhaustion.
+- Authentication, quota, malformed request, and other non-transient errors are not retried by the transient backoff loop.
+- Unknown completion after privileged owner dispatch is durable invocation state. Mutating replay is denied unless the original persisted contract was idempotent or used exact owner-enforced stable-call deduplication.
+- The runtime does not currently schedule even a safety-eligible unknown invocation replay, and it exposes no command that reconciles historical unknown invocations or clears mutation fences.
 
 ## Related Subsystems
 

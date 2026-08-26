@@ -2,6 +2,9 @@
 ///
 /// Plugin manifests define activation rules, context injection,
 /// tool declarations, and event forwarding for Omegon extensions.
+/// Executable plugin trust uses plugin:<containing-directory-name>; [plugin].name
+/// is display metadata. Activation rules select candidates and do not grant code
+/// trust, tool authority, or verified confinement.
 ///
 /// Example:
 /// ```

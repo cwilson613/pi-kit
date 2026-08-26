@@ -181,7 +181,9 @@ Current `session_router.rs` tracks caller sessions internally, but I did not fin
 
 #### `GET /api/web/sessions/{session_id}`
 
-Return session metadata and current surface snapshot for one session.
+Return session metadata and the requested session's validated surface snapshot. The current-session alias resolves to the dynamically bound host session; historical responses disclose exact-full, exact-suffix, legacy-unavailable, or unavailable projection status and never reuse the current process accumulator.
+
+`GET /api/web/sessions/{session_id}/surfaces` returns the same requested-session projection as a read-only surface endpoint.
 
 Needed for URL-addressable sessions.
 

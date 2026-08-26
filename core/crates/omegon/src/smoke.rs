@@ -112,6 +112,17 @@ async fn run_single(
     };
 
     let bridge_guard = bridge.read().await;
+    let selected_model = bridge_guard
+        .selected_model_hint()
+        .ok_or_else(|| anyhow::anyhow!("smoke bridge has no selected route identity"))?;
+    let serving_model = bridge_guard
+        .serving_model_hint()
+        .ok_or_else(|| anyhow::anyhow!("smoke bridge has no serving route identity"))?;
+    crate::session_execution::boot_execution_binding().record_ephemeral_route_lease(
+        selected_model,
+        serving_model,
+        bridge_guard.credential_source_class_hint(),
+    )?;
     let mut event_rx = bridge_guard
         .stream(
             "You are a helpful assistant. Be concise.",

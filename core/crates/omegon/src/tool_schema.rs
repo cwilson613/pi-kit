@@ -6,7 +6,7 @@
 //!
 //! | Provider     | Schema support |
 //! |-------------|---------------|
-//! | Anthropic   | Full JSON Schema (allOf, anyOf, etc.) |
+//! | Anthropic   | Messages API input-schema subset |
 //! | OpenAI      | OpenAPI subset — top-level allOf/anyOf stripped |
 //! | Google/Gemini| Restricted — no allOf/anyOf/if/then/$ref, recursive strip |
 //! | Groq/xAI/etc| OpenAI-compatible — same as OpenAI |
@@ -14,12 +14,16 @@
 //! Each provider calls the appropriate normalization function before
 //! sending tool definitions to the API.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// Provider schema capability level.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SchemaDialect {
-    /// Full JSON Schema — no stripping needed (Anthropic).
+    /// Anthropic Messages tool input subset.
+    Anthropic,
+    /// Full JSON Schema pass-through for adapters that accept it.
     Full,
     /// OpenAI-compatible — strip top-level composition keywords.
     OpenAI,
@@ -27,22 +31,49 @@ pub enum SchemaDialect {
     Gemini,
 }
 
-/// Determine the schema dialect for a provider.
-pub fn dialect_for_provider(provider_id: &str) -> SchemaDialect {
-    match provider_id {
-        "anthropic" => SchemaDialect::Full,
-        "google" | "google-antigravity" => SchemaDialect::Gemini,
-        // OpenAI, OpenRouter, Groq, xAI, Mistral, Cerebras, HuggingFace, Ollama, Codex
-        _ => SchemaDialect::OpenAI,
+/// Return the validated executable schema dialect for a provider.
+pub fn dialect_for_provider(provider_id: &str) -> Option<SchemaDialect> {
+    match crate::provider_contributions::registry()
+        .get(provider_id)?
+        .tools
+    {
+        crate::provider_contributions::ProviderToolContract::Supported(dialect) => Some(dialect),
+        crate::provider_contributions::ProviderToolContract::Unsupported => None,
     }
 }
 
 /// Normalize a tool parameter schema for the given dialect.
 pub fn normalize(schema: &Value, dialect: SchemaDialect) -> Value {
     match dialect {
+        SchemaDialect::Anthropic => normalize_anthropic(schema),
         SchemaDialect::Full => schema.clone(),
         SchemaDialect::OpenAI => normalize_openai(schema),
         SchemaDialect::Gemini => normalize_gemini(schema),
+    }
+}
+
+fn normalize_anthropic(schema: &Value) -> Value {
+    let properties = schema
+        .get("properties")
+        .map(strip_descriptions)
+        .unwrap_or_else(|| json!({}));
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": schema.get("required").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+fn strip_descriptions(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, _)| key.as_str() != "description")
+                .map(|(key, value)| (key.clone(), strip_descriptions(value)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(strip_descriptions).collect()),
+        other => other.clone(),
     }
 }
 
@@ -231,14 +262,19 @@ mod tests {
 
     #[test]
     fn dialect_resolution() {
-        assert_eq!(dialect_for_provider("anthropic"), SchemaDialect::Full);
-        assert_eq!(dialect_for_provider("google"), SchemaDialect::Gemini);
+        assert_eq!(
+            dialect_for_provider("anthropic"),
+            Some(SchemaDialect::Anthropic)
+        );
+        assert_eq!(dialect_for_provider("google"), Some(SchemaDialect::OpenAI));
         assert_eq!(
             dialect_for_provider("google-antigravity"),
-            SchemaDialect::Gemini
+            Some(SchemaDialect::Gemini)
         );
-        assert_eq!(dialect_for_provider("openai"), SchemaDialect::OpenAI);
-        assert_eq!(dialect_for_provider("groq"), SchemaDialect::OpenAI);
-        assert_eq!(dialect_for_provider("ollama"), SchemaDialect::OpenAI);
+        assert_eq!(dialect_for_provider("openai"), Some(SchemaDialect::OpenAI));
+        assert_eq!(dialect_for_provider("groq"), Some(SchemaDialect::OpenAI));
+        assert_eq!(dialect_for_provider("ollama"), Some(SchemaDialect::OpenAI));
+        assert_eq!(dialect_for_provider("ollama-cloud"), None);
+        assert_eq!(dialect_for_provider("unknown"), None);
     }
 }

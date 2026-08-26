@@ -121,6 +121,15 @@ pub fn create_commit(repo_path: &Path, options: &CommitOptions) -> Result<Commit
 ///
 /// Returns the number of files committed inside the submodule (0 if clean).
 pub fn commit_in_submodule(repo_path: &Path, submodule_path: &str, message: &str) -> Result<usize> {
+    commit_in_submodule_with_cancel(repo_path, submodule_path, message, &|| false)
+}
+
+pub fn commit_in_submodule_with_cancel(
+    repo_path: &Path,
+    submodule_path: &str,
+    message: &str,
+    cancelled: &impl Fn() -> bool,
+) -> Result<usize> {
     let sub_full_path = repo_path.join(submodule_path);
     if !sub_full_path.join(".git").exists() && !sub_full_path.join(".git").is_file() {
         // Submodule not initialized
@@ -161,10 +170,7 @@ pub fn commit_in_submodule(repo_path: &Path, submodule_path: &str, message: &str
     // Stage the updated submodule pointer in the parent.
     // git2's index.add_path doesn't handle submodule pointers correctly
     // (treats them as directories), so we use CLI for this specific step.
-    let stage_output = std::process::Command::new("git")
-        .args(["add", submodule_path])
-        .current_dir(repo_path)
-        .output()
+    let stage_output = crate::process::run("git", ["add", submodule_path], repo_path, cancelled)
         .context("failed to stage submodule pointer")?;
     if !stage_output.status.success() {
         let stderr = String::from_utf8_lossy(&stage_output.stderr);

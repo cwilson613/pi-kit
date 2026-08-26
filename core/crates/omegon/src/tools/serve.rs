@@ -45,6 +45,7 @@ struct ServiceMeta {
     persist: bool,
 }
 
+#[cfg(unix)]
 pub async fn execute(action: &str, args: &serde_json::Value, cwd: &Path) -> Result<ToolResult> {
     match action {
         "start" => start(args, cwd).await,
@@ -56,6 +57,11 @@ pub async fn execute(action: &str, args: &serde_json::Value, cwd: &Path) -> Resu
             "Unknown action: {action}. Valid: start, stop, list, logs, check"
         )),
     }
+}
+
+#[cfg(not(unix))]
+pub async fn execute(_action: &str, _args: &serde_json::Value, _cwd: &Path) -> Result<ToolResult> {
+    anyhow::bail!("background service management requires Unix process signaling")
 }
 
 async fn start(args: &serde_json::Value, cwd: &Path) -> Result<ToolResult> {
@@ -159,6 +165,7 @@ async fn stop(args: &serde_json::Value) -> Result<ToolResult> {
 
     let pid: u32 = std::fs::read_to_string(&pid_path)?.trim().parse()?;
 
+    #[cfg(unix)]
     if is_alive(pid) {
         unsafe {
             libc::kill(pid as i32, libc::SIGTERM);
@@ -278,28 +285,36 @@ async fn check(args: &serde_json::Value) -> Result<ToolResult> {
 
 /// Stop all non-persist services. Called on session exit.
 pub fn cleanup_session_services() {
-    let dir = serve_dir();
-    if !dir.exists() {
+    #[cfg(not(unix))]
+    {
+        tracing::error!("background service cleanup requires Unix process signaling");
         return;
     }
+    #[cfg(unix)]
+    {
+        let dir = serve_dir();
+        if !dir.exists() {
+            return;
+        }
 
-    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-        if entry
-            .path()
-            .extension()
-            .map(|x| x == "meta")
-            .unwrap_or(false)
-            && let Ok(content) = std::fs::read_to_string(entry.path())
-            && let Ok(meta) = serde_json::from_str::<ServiceMeta>(&content)
-            && !meta.persist
-            && is_alive(meta.pid)
-        {
-            tracing::info!(name = %meta.name, pid = meta.pid, "stopping session service");
-            unsafe {
-                libc::kill(meta.pid as i32, libc::SIGTERM);
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            if entry
+                .path()
+                .extension()
+                .map(|x| x == "meta")
+                .unwrap_or(false)
+                && let Ok(content) = std::fs::read_to_string(entry.path())
+                && let Ok(meta) = serde_json::from_str::<ServiceMeta>(&content)
+                && !meta.persist
+                && is_alive(meta.pid)
+            {
+                tracing::info!(name = %meta.name, pid = meta.pid, "stopping session service");
+                unsafe {
+                    libc::kill(meta.pid as i32, libc::SIGTERM);
+                }
+                std::fs::remove_file(dir.join(format!("{}.pid", meta.name))).ok();
+                std::fs::remove_file(entry.path()).ok();
             }
-            std::fs::remove_file(dir.join(format!("{}.pid", meta.name))).ok();
-            std::fs::remove_file(entry.path()).ok();
         }
     }
 }
@@ -340,7 +355,15 @@ fn sanitize_name(name: &str) -> String {
 }
 
 fn is_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, 0) == 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 fn slugify_command(cmd: &str) -> String {

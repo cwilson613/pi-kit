@@ -57,7 +57,6 @@ pub async fn run_probes(tx: mpsc::Sender<ProbeResult>, cwd: String) {
     let tx7 = tx.clone();
     let tx8 = tx.clone();
     let tx9 = tx;
-    let cwd2 = cwd.clone();
     let cwd3 = cwd.clone();
 
     // Fire all probes concurrently. Each sends its result as it completes.
@@ -82,7 +81,7 @@ pub async fn run_probes(tx: mpsc::Sender<ProbeResult>, cwd: String) {
                 let _ = tx5.send(probe_tools());
             },
             async {
-                let _ = tx6.send(probe_design(&cwd2));
+                let _ = tx6.send(probe_design());
             },
             async {
                 let _ = tx7.send(probe_secrets());
@@ -335,31 +334,12 @@ fn probe_hardware() -> ProbeResult {
 }
 
 fn probe_memory(cwd: &str) -> ProbeResult {
-    let projection = crate::surfaces::memory_status::project_memory_federation_status(cwd);
-    let summary = match projection.memory_authority {
-        crate::surfaces::memory_status::MemoryAuthority::GitJsonl { ref paths } => {
-            let count = paths
-                .iter()
-                .filter_map(|path| {
-                    std::fs::read_to_string(projection.git_root_or_cwd().join(path)).ok()
-                })
-                .map(|content| {
-                    content
-                        .lines()
-                        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
-                        .count()
-                })
-                .sum::<usize>();
-            if count > 0 {
-                format!("git-jsonl {count} facts")
-            } else {
-                "git-jsonl empty".to_string()
-            }
-        }
-        crate::surfaces::memory_status::MemoryAuthority::LocalIndexOnly => {
-            "local index only".to_string()
-        }
-        crate::surfaces::memory_status::MemoryAuthority::None => "empty".to_string(),
+    let _ = cwd;
+    let snapshot = crate::status::managed_memory_status_snapshot_for(std::path::Path::new(cwd));
+    let summary = if snapshot.available {
+        format!("managed {} facts", snapshot.status.total_facts)
+    } else {
+        "managed unavailable".to_string()
     };
 
     ProbeResult {
@@ -379,38 +359,11 @@ fn probe_tools() -> ProbeResult {
     }
 }
 
-fn probe_design(cwd: &str) -> ProbeResult {
-    let docs_dir = Path::new(cwd).join("docs");
-    if !docs_dir.is_dir() {
-        return ProbeResult {
-            label: "design",
-            state: ProbeState::Done,
-            summary: "empty".into(),
-        };
-    }
-
-    // Count .md files that have design-node frontmatter (id: field)
-    let count = std::fs::read_dir(&docs_dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().extension().is_some_and(|ext| ext == "md")
-                        && std::fs::read_to_string(e.path())
-                            .is_ok_and(|c| c.starts_with("---") && c.contains("\nid:"))
-                })
-                .count()
-        })
-        .unwrap_or(0);
-
+fn probe_design() -> ProbeResult {
     ProbeResult {
         label: "design",
         state: ProbeState::Done,
-        summary: if count > 0 {
-            format!("{count} nodes")
-        } else {
-            "empty".into()
-        },
+        summary: "managed after composition".into(),
     }
 }
 
@@ -520,15 +473,15 @@ mod tests {
     }
 
     #[test]
-    fn probe_memory_empty_dir() {
+    fn probe_memory_without_managed_status_is_unavailable() {
         let tmp = tempfile::TempDir::new().unwrap();
         let result = probe_memory(tmp.path().to_str().unwrap());
         assert_eq!(result.label, "memory");
-        assert_eq!(result.summary, "empty");
+        assert_eq!(result.summary, "managed unavailable");
     }
 
     #[test]
-    fn probe_memory_with_tracked_jsonl_facts() {
+    fn probe_memory_ignores_tracked_jsonl_facts() {
         let tmp = tempfile::TempDir::new().unwrap();
         let pi_dir = tmp.path().join("ai/memory");
         std::fs::create_dir_all(&pi_dir).unwrap();
@@ -552,48 +505,24 @@ mod tests {
         git(&["commit", "-m", "seed memory"]);
 
         let result = probe_memory(tmp.path().to_str().unwrap());
-        assert_eq!(result.summary, "git-jsonl 2 facts");
+        assert_eq!(result.summary, "managed unavailable");
     }
 
     #[test]
-    fn probe_memory_with_untracked_jsonl_is_empty() {
+    fn probe_memory_ignores_untracked_jsonl() {
         let tmp = tempfile::TempDir::new().unwrap();
         let pi_dir = tmp.path().join("ai/memory");
         std::fs::create_dir_all(&pi_dir).unwrap();
         std::fs::write(pi_dir.join("facts.jsonl"), "{\"id\":\"1\"}\n").unwrap();
 
         let result = probe_memory(tmp.path().to_str().unwrap());
-        assert_eq!(result.summary, "empty");
+        assert_eq!(result.summary, "managed unavailable");
     }
 
     #[test]
-    fn probe_design_empty() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let result = probe_design(tmp.path().to_str().unwrap());
-        assert_eq!(result.summary, "empty");
-    }
-
-    #[test]
-    fn probe_design_with_nodes() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let docs = tmp.path().join("docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        // Real design nodes have frontmatter with id:
-        std::fs::write(
-            docs.join("node-a.md"),
-            "---\nid: node-a\ntitle: A\n---\n# A",
-        )
-        .unwrap();
-        std::fs::write(
-            docs.join("node-b.md"),
-            "---\nid: node-b\ntitle: B\n---\n# B",
-        )
-        .unwrap();
-        // These should NOT count
-        std::fs::write(docs.join("readme.md"), "# Just a readme").unwrap();
-        std::fs::write(docs.join("readme.txt"), "not md").unwrap();
-        let result = probe_design(tmp.path().to_str().unwrap());
-        assert_eq!(result.summary, "2 nodes");
+    fn probe_design_defers_to_managed_composition() {
+        let result = probe_design();
+        assert_eq!(result.summary, "managed after composition");
     }
 
     #[test]

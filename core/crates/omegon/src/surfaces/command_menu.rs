@@ -48,7 +48,11 @@ pub struct CommandSafetyProjection {
 }
 
 impl CommandMenuProjection {
-    pub fn matching(&self, input: &str) -> Vec<CommandMenuRowProjection> {
+    pub fn matching(
+        &self,
+        input: &str,
+        auth_provider_ids: &[&str],
+    ) -> Vec<CommandMenuRowProjection> {
         let Some(input) = input.strip_prefix('/') else {
             return Vec::new();
         };
@@ -70,8 +74,8 @@ impl CommandMenuProjection {
                 {
                     let action = nested_parts[0];
                     let provider_prefix = nested_parts.get(1).copied().unwrap_or("");
-                    return crate::auth::operator_auth_provider_ids()
-                        .into_iter()
+                    return auth_provider_ids
+                        .iter()
                         .filter(|provider| provider.starts_with(provider_prefix))
                         .map(|provider| {
                             let mut sub_row = self
@@ -324,7 +328,7 @@ mod tests {
             &[],
         );
 
-        let rows = projection.matching("/context st");
+        let rows = projection.matching("/context st", &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].command, "/context status");
         assert!(rows[0].description.is_empty());
@@ -344,17 +348,18 @@ mod tests {
             &[],
         );
 
-        let direct = projection.matching("/auth openai");
+        let providers = vec!["openai", "openai-codex", "github-copilot"];
+        let direct = projection.matching("/auth openai", &providers);
         assert!(
             direct.is_empty(),
             "provider ids must not be projected as direct /auth subcommands: {direct:?}"
         );
 
-        let login = projection.matching("/auth login openai-c");
+        let login = projection.matching("/auth login openai-c", &providers);
         assert_eq!(login.len(), 1);
         assert_eq!(login[0].command, "/auth login openai-codex");
 
-        let logout = projection.matching("/auth logout github-c");
+        let logout = projection.matching("/auth logout github-c", &providers);
         assert_eq!(logout.len(), 1);
         assert_eq!(logout[0].command, "/auth logout github-copilot");
     }

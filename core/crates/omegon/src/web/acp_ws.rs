@@ -231,17 +231,24 @@ async fn run_acp_session(
     use std::rc::Rc;
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-    if let Some(ref id) = agent_id {
+    let _admitted_manifest = if let Some(ref id) = agent_id {
         let shared_settings = crate::settings::shared(&model);
-        if let Err(e) = crate::apply_agent_manifest_pre_setup(id, &cwd, &shared_settings) {
-            tracing::error!(error = %e, "failed to apply agent manifest");
+        match crate::apply_agent_manifest_pre_setup(id, &cwd, &shared_settings) {
+            Ok(admitted) => Some(admitted),
+            Err(error) => {
+                tracing::error!(%error, "failed to apply agent manifest; refusing ACP startup");
+                return;
+            }
         }
-    }
+    } else {
+        None
+    };
 
     let agent = Rc::new(crate::acp::OmegonAcpAgent::new_for_websocket(
         &model,
         dangerously_bypass_permissions,
     ));
+    drop(_admitted_manifest);
 
     let (read_client, mut read_server) = tokio::io::duplex(DUPLEX_BUFFER_BYTES);
     let (write_client, write_server) = tokio::io::duplex(DUPLEX_BUFFER_BYTES);

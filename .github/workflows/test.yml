@@ -1,6 +1,7 @@
 name: Tests
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -46,6 +47,129 @@ jobs:
           OMEGON_NERD_FONT: "1"
         run: cargo test -p omegon --tests -- --nocapture
 
+  session-recovery-campaign:
+    name: Session recovery campaign (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run frozen recovery campaign serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: "cargo test -p omegon --bin omegon session_recovery_campaign:: -- --test-threads=1 --nocapture"
+
+  lifecycle-campaign:
+    name: Lifecycle campaign (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Enforce managed lifecycle ownership
+        run: python3 scripts/check_lifecycle_source_guard.py
+      - name: Run managed lifecycle campaign serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: "cargo test -p omegon --bin omegon lifecycle_campaign:: --locked -- --test-threads=1 --nocapture"
+      - name: Run lifecycle transaction recovery serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: "cargo test -p omegon --bin omegon lifecycle_transaction::tests:: --locked -- --test-threads=1 --nocapture"
+      - name: Run OpenSpec transaction recovery serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: "cargo test -p omegon --bin omegon lifecycle_openspec_transaction::tests:: --locked -- --test-threads=1 --nocapture"
+      - name: Run lifecycle service compatibility serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: "cargo test -p omegon --bin omegon lifecycle_service::tests:: --locked -- --test-threads=1 --nocapture"
+
+  memory-managed-campaign:
+    name: Memory managed-service campaign (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Test memory source guard
+        run: python3 scripts/test_check_memory_source_guard.py
+      - name: Enforce managed memory ownership
+        run: python3 scripts/check_memory_source_guard.py
+      - name: Run memory domain tests
+        run: cargo test -p omegon-memory --locked
+      - name: Run managed memory service tests serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: "cargo test -p omegon --bin omegon memory_service::tests:: --locked -- --test-threads=1 --nocapture"
+      - name: Run managed memory campaign serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: "cargo test -p omegon --bin omegon memory_campaign:: --locked -- --ignored --test-threads=1 --nocapture"
+
+  git-managed-campaign:
+    name: Git managed-service campaign (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run Git domain and process-tree tests
+        run: cargo test -p omegon-git --locked
+      - name: Run managed Git service campaign serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: "cargo test -p omegon --bin omegon git_service::tests:: --locked -- --test-threads=1 --nocapture"
+
+  codescan-managed-campaign:
+    name: Codescan managed-service campaign (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run codescan domain tests
+        run: cargo test -p omegon-codescan --locked
+      - name: Run managed codescan lifecycle tests serially
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: "cargo test -p omegon --bin omegon codescan_service::tests:: --locked -- --test-threads=1 --nocapture"
+
   rust-standalone-crates:
     name: Standalone crate tests
     runs-on: ubuntu-latest
@@ -60,6 +184,21 @@ jobs:
           cargo build -p omegon-secrets --no-default-features
           cargo test -p omegon-memory --no-default-features
           cargo test -p omegon-secrets --no-default-features
+
+  maintenance-boundary:
+    name: Maintenance composition boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Validate maintenance dependency boundary
+        run: python3 scripts/check_maintenance_dependency_boundary.py
+      - name: Test maintenance contracts and companion
+        run: |
+          cargo test -p omegon-maintenance-contracts --locked
+          cargo test -p omegon-maintain --locked
 
   extension-install-integration:
     name: Extension install integration tests

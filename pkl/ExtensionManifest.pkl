@@ -35,7 +35,8 @@ class ExtensionMeta {
 ///
 /// - `native`: spawned as a child process, JSON-RPC over stdin/stdout.
 ///   `binary` is relative to the manifest directory.
-/// - `oci`: run as a container image, stdin/stdout piped.
+/// - `oci`: run as a container image, stdin/stdout piped. Current OCI startup is
+///   trusted execution and does not provide verified-confinement admission.
 class RuntimeConfig {
   /// Runtime type discriminator.
   type: "native"|"oci"
@@ -45,13 +46,15 @@ class RuntimeConfig {
   image: String?
 }
 
-/// Startup health-check configuration.
+/// Startup readiness configuration. Trust, source digest, restart quarantine,
+/// and cleanup assurance are host-produced lifecycle facts, not manifest grants.
 class StartupConfig {
   /// RPC method to call on startup as a health check.
   /// Default: "get_tools" — also used to discover the tool surface.
   ping_method: String? = "get_tools"
 
-  /// Timeout for the health-check RPC in milliseconds.
+  /// One absolute readiness deadline in milliseconds spanning initialization,
+  /// tool discovery, configuration delivery, and secret delivery.
   timeout_ms: Int(this > 0) = 5000
 }
 

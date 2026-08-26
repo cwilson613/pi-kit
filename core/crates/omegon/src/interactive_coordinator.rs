@@ -3,220 +3,6 @@
 // Included by the binary composition root so this first relocation preserves existing
 // item visibility while removing the coordinator implementation from `main.rs`.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RuntimeActorKind {
-    Tui,
-    Auspex,
-    IpcClient,
-    WebClient,
-    DaemonEvent,
-    System,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RuntimeActor {
-    kind: RuntimeActorKind,
-    label: String,
-}
-
-impl RuntimeActor {
-    fn display_label(&self) -> &str {
-        if self.label.is_empty() {
-            match self.kind {
-                RuntimeActorKind::Tui => "tui",
-                RuntimeActorKind::Auspex => "auspex",
-                RuntimeActorKind::IpcClient => "ipc-client",
-                RuntimeActorKind::WebClient => "web-client",
-                RuntimeActorKind::DaemonEvent => "daemon-event",
-                RuntimeActorKind::System => "system",
-            }
-        } else {
-            &self.label
-        }
-    }
-
-    fn tui() -> Self {
-        Self {
-            kind: RuntimeActorKind::Tui,
-            label: "local-tui".to_string(),
-        }
-    }
-
-    fn auspex() -> Self {
-        Self {
-            kind: RuntimeActorKind::Auspex,
-            label: "auspex".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ControlSurface {
-    Tui,
-    Ipc,
-    WebSocket,
-    HttpEventIngress,
-    Internal,
-}
-
-impl ControlSurface {
-    fn label(&self) -> &'static str {
-        match self {
-            ControlSurface::Tui => "tui",
-            ControlSurface::Ipc => "ipc",
-            ControlSurface::WebSocket => "websocket",
-            ControlSurface::HttpEventIngress => "http-event-ingress",
-            ControlSurface::Internal => "internal",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum QueueMode {
-    InterruptAfterTurn,
-    #[default]
-    UntilReady,
-    Immediate,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PromptEnvelope {
-    id: u64,
-    text: String,
-    image_paths: Vec<PathBuf>,
-    submitted_by: RuntimeActor,
-    via: ControlSurface,
-    metadata: operator_commands::PromptMetadata,
-    queue_mode: QueueMode,
-    queued_at: std::time::Instant,
-}
-
-impl PromptEnvelope {
-    fn requests_voice_close(&self) -> bool {
-        self.metadata.voice.as_ref().is_some_and(|voice| {
-            voice.close_session_requested == Some(true)
-                && voice.radio_cue.as_deref() == Some("over_and_out")
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RuntimeTurnIdentity {
-    session_epoch: u64,
-    runtime_turn_id: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InterruptAdmission {
-    Admitted,
-    Duplicate,
-    Stale,
-    Idle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeTurnOutcome {
-    Completed,
-    Revoked,
-    Failed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ActiveTurnPhase {
-    Running,
-    Cancelling {
-        requested_by: RuntimeActor,
-        via: ControlSurface,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ActiveTurnMeta {
-    runtime_turn_id: u64,
-    prompt: PromptEnvelope,
-    phase: ActiveTurnPhase,
-    started_at: std::time::Instant,
-}
-
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[derive(Debug, Clone)]
-struct RuntimeTurnLifecycle {
-    runtime_turn_id: u64,
-    prompt_id: u64,
-    phase: &'static str,
-    phase_started_at: std::time::Instant,
-    turn_started_at: std::time::Instant,
-    sequence: Arc<AtomicU64>,
-}
-
-impl RuntimeTurnLifecycle {
-    fn new(active: &ActiveTurnMeta, phase: &'static str) -> Self {
-        let now = std::time::Instant::now();
-        Self {
-            runtime_turn_id: active.runtime_turn_id,
-            prompt_id: active.prompt.id,
-            phase,
-            phase_started_at: now,
-            turn_started_at: active.started_at,
-            sequence: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    fn transition(
-        &mut self,
-        phase: &'static str,
-        queue_depth: usize,
-        events_tx: &broadcast::Sender<AgentEvent>,
-    ) {
-        let now = std::time::Instant::now();
-        self.phase = phase;
-        self.phase_started_at = now;
-        self.emit_phase(phase, 0, queue_depth, events_tx, "supervisor");
-    }
-
-    fn emit_phase(
-        &self,
-        phase: &'static str,
-        phase_elapsed_ms: u64,
-        queue_depth: usize,
-        events_tx: &broadcast::Sender<AgentEvent>,
-        source: &'static str,
-    ) {
-        let now = std::time::Instant::now();
-        let sequence = self
-            .sequence
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let _ = events_tx.send(AgentEvent::RuntimeTurnLifecycleUpdated {
-            snapshot_json: serde_json::json!({
-                "turn_id": self.runtime_turn_id,
-                "prompt_id": self.prompt_id,
-                "phase": phase,
-                "source": source,
-                "sequence": sequence,
-                "phase_elapsed_ms": phase_elapsed_ms,
-                "turn_elapsed_ms": now.saturating_duration_since(self.turn_started_at).as_millis() as u64,
-                "queue_depth": queue_depth,
-            }),
-        });
-    }
-
-    fn snapshot(&self, queue_depth: usize) -> serde_json::Value {
-        let now = std::time::Instant::now();
-        serde_json::json!({
-            "turn_id": self.runtime_turn_id,
-            "prompt_id": self.prompt_id,
-            "phase": self.phase,
-            "source": "supervisor",
-            "sequence": self.sequence.load(Ordering::Relaxed),
-            "phase_elapsed_ms": now.saturating_duration_since(self.phase_started_at).as_millis() as u64,
-            "turn_elapsed_ms": now.saturating_duration_since(self.turn_started_at).as_millis() as u64,
-            "queue_depth": queue_depth,
-        })
-    }
-}
-
 fn runtime_actor_kind_from_via(via: &str) -> RuntimeActorKind {
     match via {
         "tui" => RuntimeActorKind::Tui,
@@ -235,29 +21,106 @@ fn control_surface_from_via(via: &str) -> ControlSurface {
     }
 }
 
+fn interactive_loop_terminal_intent(
+    identity: RuntimeTurnIdentity,
+    proposal: Option<&crate::loop_driver::LoopTerminalProposal>,
+    cancelled: bool,
+) -> LoopTerminalIntent {
+    if cancelled {
+        return LoopTerminalIntent {
+            identity,
+            outcome: RuntimeTurnOutcome::Revoked,
+            reason_code: "loop_cancelled".into(),
+        };
+    }
+    match proposal {
+        Some(proposal) => proposal.clone().into_intent(identity),
+        None => LoopTerminalIntent {
+            identity,
+            outcome: RuntimeTurnOutcome::Revoked,
+            reason_code: "loop_abandoned".into(),
+        }
+    }
+}
+
+async fn await_interactive_execution<F, T, C>(
+    mut execution: std::pin::Pin<&mut F>,
+    cancel: &CancellationToken,
+    on_cancel: C,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+    C: FnOnce(),
+{
+    tokio::select! {
+        result = execution.as_mut() => result,
+        _ = cancel.cancelled() => {
+            on_cancel();
+            execution.await
+        }
+    }
+}
+
+async fn relay_interactive_turn_events(
+    mut source: broadcast::Receiver<AgentEvent>,
+    destination: broadcast::Sender<AgentEvent>,
+    stop: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = stop.cancelled() => break,
+            event = source.recv() => match event {
+                Ok(event) => {
+                    let _ = destination.send(event);
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "interactive turn event relay lagged");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
+}
+
 fn handle_runtime_cancel_command(
     runtime: &mut InteractiveRuntimeSupervisor,
     shared_cancel: &operator_commands::SharedCancel,
     events_tx: &broadcast::Sender<AgentEvent>,
     submitted_by: String,
     via: &'static str,
-) {
+) -> bool {
     let actor = RuntimeActor {
         kind: runtime_actor_kind_from_via(via),
         label: submitted_by,
     };
     let surface = control_surface_from_via(via);
-    let active = runtime.request_cancel(actor, surface);
-    if active.is_none() {
-        let _ = events_tx.send(AgentEvent::SystemNotification {
-            message: "Cancel requested, but no active turn is running.".to_string(),
-        });
+    let admission = match runtime.current_identity() {
+        Some(identity) => runtime.request_durable_interrupt(identity, actor, surface),
+        None => Ok(InterruptAdmission::Idle),
+    };
+    match admission {
+        Ok(InterruptAdmission::Admitted | InterruptAdmission::Duplicate) => {}
+        Ok(InterruptAdmission::Idle | InterruptAdmission::Stale) => {
+            let _ = events_tx.send(AgentEvent::SystemNotification {
+                message: "Cancel requested, but no matching active turn is running.".to_string(),
+            });
+            return false;
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to durably admit turn cancellation");
+            let _ = events_tx.send(AgentEvent::SystemNotification {
+                message: format!("Cancel was not accepted because session authority could not be updated: {error}"),
+            });
+            return false;
+        }
     }
     if let Ok(guard) = shared_cancel.lock()
         && let Some(ref cancel) = *guard
     {
         cancel.cancel();
     }
+    true
 }
 
 fn emit_runtime_queue_notification(
@@ -265,7 +128,7 @@ fn emit_runtime_queue_notification(
     events_tx: &broadcast::Sender<AgentEvent>,
     prompt_id: u64,
 ) {
-    if let Some(prompt) = runtime.queue.iter().find(|prompt| prompt.id == prompt_id) {
+    if let Some(prompt) = runtime.queued_prompt(prompt_id) {
         emit_runtime_queue_snapshot(runtime, events_tx);
         let _ = events_tx.send(AgentEvent::SystemNotification {
             message: format!(
@@ -289,14 +152,22 @@ fn emit_runtime_queue_snapshot(
 
 pub(crate) struct InteractiveAgentState {
     pub(crate) bus: crate::bus::EventBus,
+    pub(crate) context_service: std::sync::Arc<crate::features::context::ContextProvider>,
     pub(crate) context_manager: crate::context::ContextManager,
     pub(crate) conversation: crate::conversation::ConversationState,
     pub(crate) inference_runtime: crate::inference_runtime::InferenceRuntimeState,
+    pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+    pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
+    pub(crate) memory_binding: crate::memory_service::MemoryBinding,
+    pub(crate) context_compaction:
+        crate::context_compaction_service::ContextCompactionBinding,
 }
 
 pub(crate) struct InteractiveAgentHost {
     pub(crate) session_id: String,
+    pub(crate) session_view_binding: crate::session_consumers::SessionViewBinding,
     pub(crate) instance_id: String,
+    pub(crate) runtime_ownership: Option<crate::workspace::runtime::RuntimeOwnership>,
     pub(crate) context_metrics:
         std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
     pub(crate) cwd: PathBuf,
@@ -306,6 +177,7 @@ pub(crate) struct InteractiveAgentHost {
     pub(crate) resume_info: Option<setup::ResumeInfo>,
     pub(crate) workspace_state: setup::WorkspaceStartupState,
     pub(crate) runtime_generation: u64,
+    pub(crate) git_binding: crate::git_service::GitBinding,
 }
 
 pub(crate) struct CliRuntimeView<'a> {
@@ -327,7 +199,9 @@ fn split_interactive_agent(
 ) -> (InteractiveAgentHost, InteractiveAgentState) {
     let host = InteractiveAgentHost {
         session_id: agent.session_id,
+        session_view_binding: agent.session_view_binding,
         instance_id: agent.instance_id,
+        runtime_ownership: Some(agent.runtime_ownership),
         context_metrics: agent.context_metrics,
         cwd: agent.cwd,
         secrets: agent.secrets,
@@ -336,12 +210,18 @@ fn split_interactive_agent(
         resume_info: agent.resume_info,
         workspace_state: agent.workspace_state,
         runtime_generation: 1,
+        git_binding: agent.git_binding,
     };
     let state = InteractiveAgentState {
         bus: agent.bus,
+        context_service: agent.context_service,
         context_manager: agent.context_manager,
         conversation: agent.conversation,
         inference_runtime: agent.inference_runtime,
+        work_snapshot: agent.work_snapshot,
+        behavior_policy: agent.behavior_policy,
+        memory_binding: agent.memory_binding,
+        context_compaction: agent.context_compaction,
     };
     (host, state)
 }
@@ -411,15 +291,28 @@ async fn run_interactive_active_turn(
     pending_compact: Arc<std::sync::atomic::AtomicBool>,
     events_tx: broadcast::Sender<AgentEvent>,
     active: ActiveTurnMeta,
+    active_identity: RuntimeTurnIdentity,
     lifecycle: RuntimeTurnLifecycle,
     cancel: CancellationToken,
-) {
+    invocation_session_id: Option<String>,
+    invocation_authority: Option<crate::session_authority::SessionAuthorityHandle>,
+    execution_capture: crate::session_execution::SessionExecutionCapture,
+) -> LoopTerminalIntent {
     let mut runtime_state = runtime_state.lock().await;
     let cancel_keeps_prompt = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut loop_config =
         build_interactive_loop_config(&runtime, &shared_settings, &pending_compact);
+    loop_config.compatibility.invocation_scope.principal =
+        active.prompt.submitted_by.display_label().to_string();
+    loop_config.compatibility.invocation_scope.session_id = invocation_session_id;
+    loop_config.compatibility.invocation_scope.turn_id = active.authority_turn_id;
+    loop_config.compatibility.invocation_scope.authority = invocation_authority;
     loop_config.cancel_keeps_prompt = Some(cancel_keeps_prompt.clone());
-    loop_config.drain_post_loop_requests = false;
+    loop_config.compatibility.drain_late_requests = false;
+    loop_config.compatibility.work_snapshot = runtime_state.work_snapshot.clone();
+    loop_config.compatibility.behavior_policy = runtime_state.behavior_policy.clone();
+    loop_config.compatibility.memory_binding = runtime_state.memory_binding.clone();
+    loop_config.compatibility.context_compaction = runtime_state.context_compaction.clone();
 
     if active.prompt.image_paths.is_empty() {
         runtime_state
@@ -462,10 +355,10 @@ async fn run_interactive_active_turn(
 
     let loop_started_at = std::time::Instant::now();
     lifecycle.emit_phase("loop_running", 0, 0, &events_tx, "worker");
-    let run_result = {
+    let execution = {
         let bridge_guard = bridge.read().await;
         let state = &mut *runtime_state;
-        let mut run = std::pin::pin!(r#loop::run(
+        let mut run = std::pin::pin!(execution_capture.execute(
             bridge_guard.as_ref(),
             &mut state.bus,
             &mut state.context_manager,
@@ -475,23 +368,22 @@ async fn run_interactive_active_turn(
             &loop_config,
         ));
 
-        tokio::select! {
-            result = &mut run => Some(result),
-            _ = cancel.cancelled() => {
+        await_interactive_execution(run.as_mut(), &cancel, || {
                 let keep_prompt = cancel_keeps_prompt.load(std::sync::atomic::Ordering::Relaxed);
                 let disposition = if keep_prompt { "interrupted · kept" } else { "aborted · forgotten" };
                 tracing::warn!(
                     runtime_turn_id = active.runtime_turn_id,
-                    "operator cancellation requested; abandoning active turn to recover operator surface"
+                    "operator cancellation requested; draining owned provider/tool execution"
                 );
                 let _ = events_tx.send(AgentEvent::SystemNotification {
-                    message: format!("Interrupt requested — recovered the operator surface ({disposition}). The abandoned provider/tool request may finish in the background."),
+                    message: format!("Interrupt requested — releasing the operator surface ({disposition}) while Omegon drains owned provider/tool work. A remote provider request already accepted may still finish externally, but its output is detached from this turn."),
                 });
                 let _ = events_tx.send(AgentEvent::AgentEnd);
-                None
-            }
-        }
+        })
+        .await
     };
+    let run_result = execution.result;
+    let terminal_proposal = execution.terminal;
     let cleanup_started_at = std::time::Instant::now();
     lifecycle.emit_phase("post_loop_cleanup", 0, 0, &events_tx, "worker");
     tracing::info!(
@@ -499,14 +391,18 @@ async fn run_interactive_active_turn(
         loop_elapsed_ms = loop_started_at.elapsed().as_millis() as u64,
         cancelled = cancel.is_cancelled(),
         result = match &run_result {
-            Some(Ok(_)) => "ok",
-            Some(Err(_)) => "error",
-            None => "abandoned",
+            Ok(_) => "ok",
+            Err(_) => "error",
         },
         "interactive active turn loop returned; starting post-turn cleanup"
     );
+    let terminal_intent = interactive_loop_terminal_intent(
+        active_identity,
+        Some(&terminal_proposal),
+        cancel.is_cancelled(),
+    );
 
-    if (matches!(run_result, Some(Ok(_))) || run_result.is_none()) && cancel.is_cancelled() {
+    if run_result.is_ok() && cancel.is_cancelled() {
         let keep_prompt = cancel_keeps_prompt.load(std::sync::atomic::Ordering::Relaxed);
         if !keep_prompt {
             runtime_state
@@ -523,8 +419,8 @@ async fn run_interactive_active_turn(
         });
     }
 
-    if let Some(Err(e)) = run_result {
-        let terminal_reason = if r#loop::is_upstream_exhausted(&e) {
+    if let Err(e) = run_result {
+        let terminal_reason = if crate::provider_route_service::is_upstream_exhausted(&e) {
             omegon_traits::TurnEndReason::ProviderExhausted
         } else {
             omegon_traits::TurnEndReason::WorkerFailed
@@ -699,12 +595,14 @@ async fn run_interactive_active_turn(
         &events_tx,
         "worker",
     );
+    terminal_intent
 }
 
 async fn stop_voice_session_if_requested(
     prompt: &PromptEnvelope,
     bus: &crate::bus::EventBus,
     events_tx: &tokio::sync::broadcast::Sender<AgentEvent>,
+    scope: crate::invocation_service::InvocationScope,
 ) {
     if !prompt.requests_voice_close() {
         return;
@@ -717,12 +615,14 @@ async fn stop_voice_session_if_requested(
         return;
     }
 
+    let call_id = format!("voice-over-and-out-stop:{}", uuid::Uuid::new_v4());
     match bus
-        .execute_tool(
+        .invoke_tool(
             "voice_session_stop",
-            "voice-over-and-out-stop",
+            &call_id,
             serde_json::json!({}),
             tokio_util::sync::CancellationToken::new(),
+            scope,
         )
         .await
     {
@@ -736,216 +636,5 @@ async fn stop_voice_session_if_requested(
                 message: format!("Voice requested shutdown, but voice_session_stop failed: {err}"),
             });
         }
-    }
-}
-
-#[derive(Debug, Default)]
-struct InteractiveRuntimeSupervisor {
-    queue: VecDeque<PromptEnvelope>,
-    active_turn: Option<ActiveTurnMeta>,
-    session_epoch: u64,
-    next_prompt_id: u64,
-    next_runtime_turn_id: u64,
-    default_queue_mode: QueueMode,
-}
-
-impl InteractiveRuntimeSupervisor {
-    fn enqueue_prompt(
-        &mut self,
-        text: String,
-        image_paths: Vec<PathBuf>,
-        actor: RuntimeActor,
-        via: ControlSurface,
-        metadata: operator_commands::PromptMetadata,
-        queue_mode: Option<QueueMode>,
-    ) -> u64 {
-        self.next_prompt_id += 1;
-        let prompt_id = self.next_prompt_id;
-        self.queue.push_back(PromptEnvelope {
-            id: prompt_id,
-            text,
-            image_paths,
-            submitted_by: actor,
-            via,
-            metadata,
-            queue_mode: queue_mode.unwrap_or(self.default_queue_mode),
-            queued_at: std::time::Instant::now(),
-        });
-        prompt_id
-    }
-
-    fn queue_depth(&self) -> usize {
-        self.queue.len()
-    }
-
-    fn queue_preview(&self) -> Vec<String> {
-        self.queue
-            .iter()
-            .map(|prompt| {
-                let attachment_summary = if prompt.image_paths.is_empty() {
-                    String::new()
-                } else {
-                    let names = prompt
-                        .image_paths
-                        .iter()
-                        .take(3)
-                        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
-                        .collect::<Vec<_>>();
-                    let suffix = if prompt.image_paths.len() > names.len() {
-                        format!(" +{} more", prompt.image_paths.len() - names.len())
-                    } else {
-                        String::new()
-                    };
-                    format!(" [{}{}]", names.join(", "), suffix)
-                };
-                let preview = prompt.text.chars().take(48).collect::<String>();
-                let mode = match prompt.queue_mode {
-                    QueueMode::InterruptAfterTurn => "after-turn",
-                    QueueMode::UntilReady => "ready",
-                    QueueMode::Immediate => "now",
-                };
-                format!("#{} {mode}: {}{}", prompt.id, preview, attachment_summary)
-            })
-            .collect()
-    }
-
-    fn queue_snapshot_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "depth": self.queue_depth(),
-            "active": self.active_turn.as_ref().map(|active| serde_json::json!({
-                "turn_id": active.runtime_turn_id,
-                "prompt_id": active.prompt.id,
-                "submitted_by": active.prompt.submitted_by.display_label(),
-                "via": active.prompt.via.label(),
-                "phase": match &active.phase {
-                    ActiveTurnPhase::Running => "running",
-                    ActiveTurnPhase::Cancelling { .. } => "cancelling",
-                },
-                "elapsed_ms": active.started_at.elapsed().as_millis() as u64,
-                "queued_wait_ms": active.started_at.saturating_duration_since(active.prompt.queued_at).as_millis() as u64,
-            })),
-            "items": self.queue.iter().map(|prompt| serde_json::json!({
-                "id": prompt.id,
-                "submitted_by": prompt.submitted_by.display_label(),
-                "via": prompt.via.label(),
-                "queue_mode": match prompt.queue_mode {
-                    QueueMode::InterruptAfterTurn => "interrupt_after_turn",
-                    QueueMode::UntilReady => "until_ready",
-                    QueueMode::Immediate => "immediate",
-                },
-                "preview": prompt.text.chars().take(80).collect::<String>(),
-                "attachments": prompt.image_paths.len(),
-                "voice": prompt.metadata.voice.is_some(),
-                "wait_ms": prompt.queued_at.elapsed().as_millis() as u64,
-            })).collect::<Vec<_>>(),
-            "previews": self.queue_preview(),
-        })
-    }
-
-    fn is_busy(&self) -> bool {
-        self.active_turn.is_some()
-    }
-
-    fn maybe_start_next_turn(&mut self) -> Option<ActiveTurnMeta> {
-        if self.active_turn.is_some() {
-            return None;
-        }
-        let prompt = self.queue.pop_front()?;
-        self.next_runtime_turn_id += 1;
-        let active = ActiveTurnMeta {
-            runtime_turn_id: self.next_runtime_turn_id,
-            prompt,
-            phase: ActiveTurnPhase::Running,
-            started_at: std::time::Instant::now(),
-        };
-        self.active_turn = Some(active.clone());
-        Some(active)
-    }
-
-    fn current_identity(&self) -> Option<RuntimeTurnIdentity> {
-        self.active_turn.as_ref().map(|active| RuntimeTurnIdentity {
-            session_epoch: self.session_epoch,
-            runtime_turn_id: active.runtime_turn_id,
-        })
-    }
-
-    fn admit_interrupt(
-        &mut self,
-        identity: RuntimeTurnIdentity,
-        actor: RuntimeActor,
-        via: ControlSurface,
-    ) -> InterruptAdmission {
-        let Some(active) = self.active_turn.as_mut() else {
-            return InterruptAdmission::Idle;
-        };
-        if identity.session_epoch != self.session_epoch
-            || identity.runtime_turn_id != active.runtime_turn_id
-        {
-            return InterruptAdmission::Stale;
-        }
-        if matches!(active.phase, ActiveTurnPhase::Cancelling { .. }) {
-            return InterruptAdmission::Duplicate;
-        }
-        active.phase = ActiveTurnPhase::Cancelling {
-            requested_by: actor,
-            via,
-        };
-        InterruptAdmission::Admitted
-    }
-
-    fn request_cancel(
-        &mut self,
-        actor: RuntimeActor,
-        via: ControlSurface,
-    ) -> Option<&ActiveTurnMeta> {
-        let identity = self.current_identity()?;
-        let _ = self.admit_interrupt(identity, actor, via);
-        self.active_turn.as_ref()
-    }
-
-    fn finish_active_turn(
-        &mut self,
-        runtime_turn_id: u64,
-        outcome: RuntimeTurnOutcome,
-    ) -> Option<ActiveTurnMeta> {
-        let active = self.active_turn.as_ref()?;
-        if active.runtime_turn_id != runtime_turn_id {
-            return None;
-        }
-        if outcome == RuntimeTurnOutcome::Completed
-            && matches!(active.phase, ActiveTurnPhase::Cancelling { .. })
-        {
-            return None;
-        }
-        self.active_turn.take()
-    }
-
-    fn settle_active_worker(&mut self) -> Option<(ActiveTurnMeta, RuntimeTurnOutcome)> {
-        let active = self.active_turn.as_ref()?;
-        let runtime_turn_id = active.runtime_turn_id;
-        let outcome = if matches!(active.phase, ActiveTurnPhase::Cancelling { .. }) {
-            RuntimeTurnOutcome::Revoked
-        } else {
-            RuntimeTurnOutcome::Completed
-        };
-        self.finish_active_turn(runtime_turn_id, outcome)
-            .map(|active| (active, outcome))
-    }
-
-    fn complete_active_turn(&mut self) -> Option<ActiveTurnMeta> {
-        let runtime_turn_id = self.active_turn.as_ref()?.runtime_turn_id;
-        self.finish_active_turn(runtime_turn_id, RuntimeTurnOutcome::Completed)
-    }
-
-    fn pop_front_prompt(&mut self) -> Option<PromptEnvelope> {
-        self.queue.pop_front()
-    }
-
-    fn push_front_prompt(&mut self, prompt: PromptEnvelope) {
-        self.queue.push_front(prompt);
-    }
-
-    fn clear_queue(&mut self) {
-        self.queue.clear();
     }
 }

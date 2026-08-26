@@ -8,13 +8,16 @@
 //!   - session stats (turns, tool calls, duration)
 //!   - active OpenSpec changes
 
-use std::collections::BTreeMap;
-use std::fs;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use omegon_traits::{
     BusEvent, BusRequest, CommandDefinition, CommandResult, ContentBlock, ContextComposition,
@@ -28,10 +31,43 @@ pub struct SessionLog {
     context_snippet: Option<String>,
     /// Per-turn provider/model/telemetry snapshots collected during the live session.
     turn_summaries: Vec<TurnSummary>,
+    session_binding: Option<crate::session_consumers::DeferredSessionViewBinding>,
+    event_session_id: Option<String>,
+    lifecycle: Option<crate::runtime_state::LifecycleHostHandle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JournalProvenanceV1 {
+    schema_version: u16,
+    authority_role: String,
+    session_id: Option<String>,
+    stream_id: Option<Uuid>,
+    host_generation: Option<u64>,
+    turn_ids: Vec<Uuid>,
+    source_frontier: Option<JournalFrontierV1>,
+    semantic_turn_count: u32,
+    semantic_tool_terminal_count: u32,
+    sessionless: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JournalFrontierV1 {
+    sequence: u64,
+    event_id: Uuid,
+}
+
+struct JournalNarrativeV1 {
+    provenance: JournalProvenanceV1,
+    initial_prompt: Option<String>,
+    outcome: Option<String>,
+    routes: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
 struct TurnSummary {
+    session_generation: Option<(String, u64)>,
     turn: u32,
     model: Option<String>,
     provider: Option<String>,
@@ -110,7 +146,26 @@ impl SessionLog {
             cwd: cwd.to_path_buf(),
             context_snippet: None,
             turn_summaries: Vec::new(),
+            session_binding: None,
+            event_session_id: None,
+            lifecycle: None,
         }
+    }
+
+    pub(crate) fn with_session_binding(
+        mut self,
+        binding: crate::session_consumers::DeferredSessionViewBinding,
+    ) -> Self {
+        self.session_binding = Some(binding);
+        self
+    }
+
+    pub(crate) fn with_lifecycle(
+        mut self,
+        lifecycle: crate::runtime_state::LifecycleHostHandle,
+    ) -> Self {
+        self.lifecycle = Some(lifecycle);
+        self
     }
 
     /// Read the last `n` narrative entries (## YYYY-MM-DD headings).
@@ -188,34 +243,28 @@ impl SessionLog {
 
     /// Collect active OpenSpec changes (any with incomplete tasks).
     fn active_openspec(&self) -> Vec<String> {
-        let changes_dir = self.cwd.join("openspec/changes");
-        if !changes_dir.is_dir() {
-            return vec![];
-        }
-
-        let mut active = vec![];
-        if let Ok(entries) = fs::read_dir(&changes_dir) {
-            for entry in entries.flatten() {
-                let tasks_path = entry.path().join("tasks.md");
-                if !tasks_path.exists() {
-                    continue;
-                }
-                if let Ok(content) = fs::read_to_string(&tasks_path) {
-                    let total = content
-                        .lines()
-                        .filter(|l| l.trim_start().starts_with("- ["))
-                        .count();
-                    let done = content
-                        .lines()
-                        .filter(|l| l.trim_start().starts_with("- [x]"))
-                        .count();
-                    if total > 0 {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        active.push(format!("{name} ({done}/{total})"));
-                    }
-                }
-            }
-        }
+        let mut active = self
+            .lifecycle
+            .as_ref()
+            .and_then(|lifecycle| lifecycle.observe().ok()?.repository)
+            .map(|repository| {
+                repository
+                    .lifecycle
+                    .openspec
+                    .changes
+                    .iter()
+                    .filter(|change| {
+                        change.total_tasks > 0 && change.done_tasks < change.total_tasks
+                    })
+                    .map(|change| {
+                        format!(
+                            "{} ({}/{})",
+                            change.name, change.done_tasks, change.total_tasks
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         active.sort();
         active
     }
@@ -235,12 +284,20 @@ impl SessionLog {
     /// Append a structured entry to `.omegon/agent-journal.md`.
     fn append_entry(
         &self,
-        turns: u32,
-        tool_calls: u32,
         duration_secs: f64,
-        initial_prompt: Option<&str>,
-        outcome_summary: Option<&str>,
-    ) {
+        narrative: JournalNarrativeV1,
+    ) -> std::io::Result<bool> {
+        if !narrative.provenance.sessionless
+            && !self.session_binding.as_ref().is_some_and(|binding| {
+                binding.snapshot().is_some_and(|target| {
+                    Some(target.session_id) == narrative.provenance.session_id
+                        && target.stream_id == narrative.provenance.stream_id
+                        && Some(target.generation) == narrative.provenance.host_generation
+                })
+            })
+        {
+            return Ok(false);
+        }
         let date = Self::today();
         let branch = self
             .git(&["branch", "--show-current"])
@@ -265,42 +322,86 @@ impl SessionLog {
         let mut lines = vec![
             format!(
                 "## {} — {} ({}t {}tc {})",
-                date, branch, turns, tool_calls, duration
+                date,
+                branch,
+                narrative.provenance.semantic_turn_count,
+                narrative.provenance.semantic_tool_terminal_count,
+                duration
             ),
             String::new(),
         ];
 
-        if let Some(prompt) = initial_prompt {
+        let provenance =
+            serde_json::to_string(&narrative.provenance).map_err(std::io::Error::other)?;
+        lines.push(format!(
+            "<!-- omegon-journal-provenance-v1 {provenance} -->"
+        ));
+        lines.push(String::new());
+
+        if narrative.provenance.sessionless {
+            lines.push("**Semantic source:** sessionless; authority replay unavailable".into());
+            lines.push(String::new());
+        } else if let Some(frontier) = &narrative.provenance.source_frontier {
+            lines.push(format!(
+                "**Semantic source:** validated replay through {} / {}",
+                frontier.sequence, frontier.event_id
+            ));
+            lines.push(String::new());
+        } else {
+            lines.push("**Semantic source:** semantic_source_unavailable".into());
+            lines.push(String::new());
+        }
+
+        if let Some(prompt) = narrative.initial_prompt.as_deref() {
             lines.push(format!("**Task:** {prompt}"));
             lines.push(String::new());
         }
 
-        if let Some(outcome) = outcome_summary {
+        if let Some(outcome) = narrative.outcome.as_deref() {
             lines.push(format!("**Outcome:** {outcome}"));
             lines.push(String::new());
         }
 
-        if !self.turn_summaries.is_empty() {
+        if !narrative.routes.is_empty() {
+            lines.push("**Committed routes:**".into());
+            for (provider, model) in narrative.routes {
+                lines.push(format!("- {provider} / {model}"));
+            }
+            lines.push(String::new());
+        }
+
+        let turn_summaries = self
+            .turn_summaries
+            .iter()
+            .filter(|summary| {
+                narrative.provenance.sessionless
+                    || summary.session_generation.as_ref()
+                        == narrative
+                            .provenance
+                            .session_id
+                            .as_ref()
+                            .zip(narrative.provenance.host_generation.as_ref())
+                            .map(|(session, generation)| (session.clone(), *generation))
+                            .as_ref()
+            })
+            .collect::<Vec<_>>();
+        if !turn_summaries.is_empty() {
             // Compact summary: just model and total tokens, not full per-turn telemetry.
-            let model = self
-                .turn_summaries
+            let model = turn_summaries
                 .last()
                 .and_then(|s| s.model.as_deref())
                 .unwrap_or("unknown");
-            let total_in: u64 = self
-                .turn_summaries
-                .iter()
-                .map(|s| s.actual_input_tokens)
-                .sum();
-            let total_out: u64 = self
-                .turn_summaries
-                .iter()
-                .map(|s| s.actual_output_tokens)
-                .sum();
+            let total_in: u64 = turn_summaries.iter().map(|s| s.actual_input_tokens).sum();
+            let total_out: u64 = turn_summaries.iter().map(|s| s.actual_output_tokens).sum();
             lines.push(format!(
-                "**Model:** {model} — {total_in} in / {total_out} out tokens across {} turns",
-                self.turn_summaries.len()
+                "**Observed usage:** {model} — {total_in} in / {total_out} out tokens across {} turns",
+                turn_summaries.len()
             ));
+            lines.push(String::new());
+        }
+
+        if !openspec.is_empty() || !commits.is_empty() {
+            lines.push("**Workspace observations (non-authoritative):**".to_string());
             lines.push(String::new());
         }
 
@@ -324,20 +425,173 @@ impl SessionLog {
 
         // Bootstrap header if file doesn't exist
         let header = "# Agent Journal\n\nAppend-only record of agent sessions. Read recent entries for context.\n\n";
-        let prefix = if self.log_path.exists() {
-            String::new()
+        let mut file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&self.log_path)?;
+        lock_file(&file)?;
+        let mut existing = String::new();
+        file.seek(SeekFrom::Start(0))?;
+        file.read_to_string(&mut existing)?;
+        let mut duplicate = false;
+        for line in existing.lines() {
+            let Some(value) = line.strip_prefix("<!-- omegon-journal-provenance-v1 ") else {
+                continue;
+            };
+            let value = value.strip_suffix(" -->").ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "journal contains partial semantic provenance",
+                )
+            })?;
+            let prior = serde_json::from_str::<JournalProvenanceV1>(value).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "journal contains malformed semantic provenance",
+                )
+            })?;
+            duplicate |= same_journal_source(&prior, &narrative.provenance);
+        }
+        if duplicate {
+            unlock_file(&file)?;
+            return Ok(false);
+        }
+        let bytes = if existing.is_empty() {
+            format!("{header}{entry}\n")
         } else {
-            header.to_string()
+            format!("\n{entry}\n")
         };
+        file.write_all(bytes.as_bytes())?;
+        file.flush()?;
+        file.sync_data()?;
+        unlock_file(&file)?;
+        sync_parent(&self.log_path)?;
+        Ok(true)
+    }
 
-        let existing = fs::read_to_string(&self.log_path).unwrap_or_default();
-        let new_content = if existing.is_empty() {
-            format!("{}{}\n", prefix, entry)
-        } else {
-            format!("{}\n{}\n", existing.trim_end(), entry)
+    fn narrative(&self, advisory_turns: u32) -> JournalNarrativeV1 {
+        let sessionless = || JournalNarrativeV1 {
+            provenance: JournalProvenanceV1 {
+                schema_version: 1,
+                authority_role: "workspace_narrative_not_authority".into(),
+                session_id: self.event_session_id.clone(),
+                stream_id: None,
+                host_generation: None,
+                turn_ids: Vec::new(),
+                source_frontier: None,
+                semantic_turn_count: advisory_turns,
+                semantic_tool_terminal_count: 0,
+                sessionless: true,
+            },
+            initial_prompt: None,
+            outcome: None,
+            routes: Vec::new(),
         };
-
-        let _ = fs::write(&self.log_path, new_content);
+        let Some(binding) = &self.session_binding else {
+            return sessionless();
+        };
+        let target = match binding.snapshot() {
+            Some(target) => target,
+            None => return sessionless(),
+        };
+        let replay = match crate::session_advisory::load(binding) {
+            Ok((_, replay)) => replay,
+            Err(_) => {
+                return JournalNarrativeV1 {
+                    provenance: JournalProvenanceV1 {
+                        schema_version: 1,
+                        authority_role: "semantic_source_unavailable".into(),
+                        session_id: Some(target.session_id),
+                        stream_id: target.stream_id,
+                        host_generation: Some(target.generation),
+                        turn_ids: Vec::new(),
+                        source_frontier: None,
+                        semantic_turn_count: 0,
+                        semantic_tool_terminal_count: 0,
+                        sessionless: false,
+                    },
+                    initial_prompt: None,
+                    outcome: None,
+                    routes: Vec::new(),
+                };
+            }
+        };
+        let minimum = replay
+            .first_full_spine_boundary()
+            .map_or(1, |frontier| frontier.sequence());
+        let records = replay
+            .records()
+            .iter()
+            .filter(|record| record.frontier().sequence() >= minimum)
+            .collect::<Vec<_>>();
+        let turn_ids = records
+            .iter()
+            .filter_map(|record| match record.payload() {
+                crate::session_authority::SessionFactPayload::TurnClosed(value) => {
+                    Some(value.turn_id)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let tool_count = records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record.payload(),
+                    crate::session_authority::SessionFactPayload::ToolResultRecorded(_)
+                )
+            })
+            .count() as u32;
+        let initial_prompt = records.iter().find_map(|record| match record.payload() {
+            crate::session_authority::SessionFactPayload::PromptAdmitted(value) => {
+                Some(value.content.text.clone())
+            }
+            _ => None,
+        });
+        let routes = records
+            .iter()
+            .filter_map(|record| match record.payload() {
+                crate::session_authority::SessionFactPayload::RouteLeaseRecorded(value) => Some((
+                    value.serving_provider_id.clone(),
+                    value.serving_model_id.clone(),
+                )),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if !crate::session_advisory::generation_is_current(binding, &target) {
+            return sessionless();
+        }
+        JournalNarrativeV1 {
+            provenance: JournalProvenanceV1 {
+                schema_version: 1,
+                authority_role: "workspace_narrative_not_authority".into(),
+                session_id: Some(target.session_id),
+                stream_id: Some(replay.frontier().stream_id()),
+                host_generation: Some(target.generation),
+                turn_ids,
+                source_frontier: Some(JournalFrontierV1 {
+                    sequence: replay.frontier().sequence(),
+                    event_id: replay.frontier().event_id(),
+                }),
+                semantic_turn_count: records
+                    .iter()
+                    .filter(|record| {
+                        matches!(
+                            record.payload(),
+                            crate::session_authority::SessionFactPayload::TurnClosed(_)
+                        )
+                    })
+                    .count() as u32,
+                semantic_tool_terminal_count: tool_count,
+                sessionless: false,
+            },
+            initial_prompt,
+            outcome: crate::session_advisory::default_assistant_outcome(&replay, minimum, 500),
+            routes,
+        }
     }
 
     fn read_entries_text(&self, n: usize) -> anyhow::Result<(String, Value)> {
@@ -475,6 +729,57 @@ impl SessionLog {
             Err(e) => CommandResult::Display(format!("Error reading session log usage: {e}")),
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn recovery_campaign_probe(
+    root: &Path,
+    target: &crate::session_consumers::SessionViewTarget,
+    scenario_id: &str,
+) -> std::io::Result<()> {
+    let binding = crate::session_consumers::SessionViewBinding::new(
+        target.snapshot.clone(),
+        target.session_id.clone(),
+    );
+    binding.replace(target.clone());
+    let deferred = crate::session_consumers::DeferredSessionViewBinding::default();
+    deferred.bind(binding);
+    let feature = SessionLog::new(root).with_session_binding(deferred);
+
+    if scenario_id == "AC45" {
+        fs::remove_file(target.snapshot.with_extension("authority.jsonl"))?;
+        let narrative = feature.narrative(0);
+        if narrative.provenance.sessionless
+            || narrative.provenance.authority_role != "semantic_source_unavailable"
+            || narrative.provenance.source_frontier.is_some()
+        {
+            return Err(std::io::Error::other(
+                "authority-backed journal failure fabricated a sessionless source",
+            ));
+        }
+    } else {
+        let narrative = feature.narrative(0);
+        if narrative.provenance.sessionless
+            || narrative.initial_prompt.as_deref() != Some("legacy request")
+        {
+            return Err(std::io::Error::other(
+                "legacy journal narrative lost its compatibility provenance",
+            ));
+        }
+    }
+
+    let partial_root = root.join(format!("{scenario_id}-partial"));
+    let partial = SessionLog::new(&partial_root);
+    fs::write(
+        &partial.log_path,
+        "# Agent Journal\n\n<!-- omegon-journal-provenance-v1 {\"schema_version\":1\n",
+    )?;
+    if partial.append_entry(0.0, partial.narrative(0)).is_ok() {
+        return Err(std::io::Error::other(
+            "partial journal provenance did not stop duplicate publication",
+        ));
+    }
+    Ok(())
 }
 
 fn format_context_composition(comp: &ContextComposition, context_window: usize) -> String {
@@ -761,6 +1066,52 @@ fn format_turn_summary(summary: &TurnSummary) -> String {
     parts.join(" · ")
 }
 
+fn same_journal_source(left: &JournalProvenanceV1, right: &JournalProvenanceV1) -> bool {
+    left.session_id == right.session_id
+        && left.stream_id == right.stream_id
+        && left.turn_ids == right.turn_ids
+        && left.source_frontier == right.source_frontier
+        && left.sessionless == right.sessionless
+}
+
+#[cfg(unix)]
+fn lock_file(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn lock_file(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unlock_file(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn unlock_file(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path.parent().unwrap_or_else(|| Path::new(".")))?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 #[async_trait]
 impl Feature for SessionLog {
     fn name(&self) -> &str {
@@ -867,7 +1218,8 @@ impl Feature for SessionLog {
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
-            BusEvent::SessionStart { .. } => {
+            BusEvent::SessionStart { session_id, .. } => {
+                self.event_session_id = Some(session_id.clone());
                 self.context_snippet = self.read_narrative_entries(3);
                 self.turn_summaries.clear();
                 if self.context_snippet.is_some() {
@@ -879,6 +1231,11 @@ impl Feature for SessionLog {
             }
             BusEvent::TurnEnd(te) => {
                 self.turn_summaries.push(TurnSummary {
+                    session_generation: self.session_binding.as_ref().and_then(|binding| {
+                        binding
+                            .snapshot()
+                            .map(|target| (target.session_id, target.generation))
+                    }),
                     turn: te.turn,
                     model: te.model.clone(),
                     provider: te.provider.clone(),
@@ -893,21 +1250,23 @@ impl Feature for SessionLog {
             }
             BusEvent::SessionEnd {
                 turns,
-                tool_calls,
                 duration_secs,
-                initial_prompt,
-                outcome_summary,
+                ..
             }
                 // Only write an entry if the session did meaningful work
                 if *turns > 0 => {
-                    self.append_entry(
-                        *turns,
-                        *tool_calls,
-                        *duration_secs,
-                        initial_prompt.as_deref(),
-                        outcome_summary.as_deref(),
-                    );
-                    tracing::info!("Session log entry appended to {}", self.log_path.display());
+                    let narrative = self.narrative(*turns);
+                    match self.append_entry(*duration_secs, narrative) {
+                        Ok(true) => tracing::info!(
+                            "Session log entry appended to {}",
+                            self.log_path.display()
+                        ),
+                        Ok(false) => {}
+                        Err(error) => tracing::warn!(
+                            error = %error,
+                            "best-effort session journal append failed"
+                        ),
+                    }
                 }
             _ => {}
         }
@@ -919,6 +1278,65 @@ impl Feature for SessionLog {
 mod tests {
     use super::*;
     use crate::bus::EventBus;
+
+    fn semantic_feature(
+        fixture: &str,
+    ) -> (
+        tempfile::TempDir,
+        SessionLog,
+        crate::session_consumers::DeferredSessionViewBinding,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("fixture-session.json");
+        let authority = directory.path().join("fixture-session.authority.jsonl");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/session-semantic-v1")
+                .join(fixture),
+            authority,
+        )
+        .unwrap();
+        let binding = crate::session_consumers::SessionViewBinding::new(
+            snapshot.clone(),
+            "fixture-session".into(),
+        );
+        binding.replace(crate::session_consumers::SessionViewTarget {
+            snapshot,
+            session_id: "fixture-session".into(),
+            stream_id: Some(Uuid::parse_str("10000000-0000-4000-8000-000000000001").unwrap()),
+            generation: 7,
+            kind: crate::session_consumers::SessionViewKind::Resume,
+        });
+        let deferred = crate::session_consumers::DeferredSessionViewBinding::default();
+        deferred.bind(binding);
+        let feature = SessionLog::new(directory.path()).with_session_binding(deferred.clone());
+        (directory, feature, deferred)
+    }
+
+    fn test_narrative(
+        turns: u32,
+        tool_calls: u32,
+        prompt: Option<&str>,
+        outcome: Option<&str>,
+    ) -> JournalNarrativeV1 {
+        JournalNarrativeV1 {
+            provenance: JournalProvenanceV1 {
+                schema_version: 1,
+                authority_role: "workspace_narrative_not_authority".into(),
+                session_id: Some("test-session".into()),
+                stream_id: None,
+                host_generation: None,
+                turn_ids: Vec::new(),
+                source_frontier: None,
+                semantic_turn_count: turns,
+                semantic_tool_terminal_count: tool_calls,
+                sessionless: true,
+            },
+            initial_prompt: prompt.map(str::to_owned),
+            outcome: outcome.map(str::to_owned),
+            routes: Vec::new(),
+        }
+    }
 
     #[test]
     fn no_log_file() {
@@ -1002,7 +1420,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let feature = SessionLog::new(dir.path());
 
-        feature.append_entry(5, 20, 300.0, Some("build the widget"), Some("widget built"));
+        feature
+            .append_entry(
+                300.0,
+                test_narrative(5, 20, Some("build the widget"), Some("widget built")),
+            )
+            .unwrap();
 
         assert!(feature.log_path.exists(), "log file should be created");
         let content = fs::read_to_string(&feature.log_path).unwrap();
@@ -1033,7 +1456,9 @@ mod tests {
         .unwrap();
 
         let feature = SessionLog::new(dir.path());
-        feature.append_entry(3, 10, 60.0, None, None);
+        feature
+            .append_entry(60.0, test_narrative(3, 10, None, None))
+            .unwrap();
 
         let content = fs::read_to_string(&log_path).unwrap();
         assert!(
@@ -1044,6 +1469,121 @@ mod tests {
             content.contains("(3t 10tc 1m0s)"),
             "should append new entry"
         );
+    }
+
+    #[test]
+    fn semantic_journal_preserves_legacy_markdown_and_deduplicates_provenance() {
+        let (directory, mut feature, _) = semantic_feature("slice-1-closed.authority.jsonl");
+        let legacy = "# Agent Journal\n\n## 2025-01-01 — legacy\n\nHand-written history.\n";
+        fs::write(&feature.log_path, legacy).unwrap();
+        feature.on_event(&BusEvent::SessionStart {
+            cwd: directory.path().into(),
+            session_id: "fixture-session".into(),
+        });
+        let end = BusEvent::SessionEnd {
+            turns: 99,
+            tool_calls: 99,
+            duration_secs: 2.0,
+            initial_prompt: Some("advisory prompt must not win".into()),
+            outcome_summary: Some("advisory outcome must not win".into()),
+        };
+        feature.on_event(&end);
+        feature.on_event(&end);
+
+        let journal = fs::read_to_string(&feature.log_path).unwrap();
+        assert!(journal.starts_with(legacy));
+        assert_eq!(journal.matches("omegon-journal-provenance-v1").count(), 1);
+        assert!(journal.contains("legacy request"));
+        assert!(journal.contains("(1t 0tc"));
+        assert!(!journal.contains("advisory prompt must not win"));
+        assert!(!journal.contains("advisory outcome must not win"));
+    }
+
+    #[test]
+    fn replacement_fences_an_old_generation_journal_entry() {
+        let (_directory, feature, deferred) = semantic_feature("slice-1-closed.authority.jsonl");
+        let old = feature.narrative(1);
+        let target = deferred.snapshot().unwrap();
+        let replacement = crate::session_consumers::SessionViewBinding::new(
+            target.snapshot.clone(),
+            target.session_id.clone(),
+        );
+        replacement.replace(crate::session_consumers::SessionViewTarget {
+            generation: target.generation + 1,
+            ..target
+        });
+        deferred.bind(replacement);
+
+        assert!(!feature.append_entry(1.0, old).unwrap());
+        assert!(!feature.log_path.exists());
+    }
+
+    #[test]
+    fn authority_backed_journal_failure_is_not_labeled_sessionless() {
+        let (_directory, feature, _) = semantic_feature("slice-1-closed.authority.jsonl");
+        let target = feature
+            .session_binding
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        fs::remove_file(target.snapshot.with_extension("authority.jsonl")).unwrap();
+        let narrative = feature.narrative(9);
+        assert!(!narrative.provenance.sessionless);
+        assert_eq!(
+            narrative.provenance.authority_role,
+            "semantic_source_unavailable"
+        );
+        assert_eq!(narrative.provenance.semantic_turn_count, 0);
+        assert!(narrative.initial_prompt.is_none());
+    }
+
+    #[test]
+    fn partial_existing_provenance_stops_journal_append_without_duplicate() {
+        let directory = tempfile::tempdir().unwrap();
+        let feature = SessionLog::new(directory.path());
+        let existing =
+            "# Agent Journal\n\n<!-- omegon-journal-provenance-v1 {\"schema_version\":1\n";
+        fs::write(&feature.log_path, existing).unwrap();
+        assert!(feature.append_entry(0.0, feature.narrative(1)).is_err());
+        assert_eq!(fs::read_to_string(&feature.log_path).unwrap(), existing);
+    }
+
+    #[test]
+    fn mixed_lineage_journal_never_regenerates_pre_boundary_text() {
+        let (_directory, feature, binding) = semantic_feature("mixed-legacy-full.authority.jsonl");
+        let (_, replay) = crate::session_advisory::load(&binding).unwrap();
+        assert_eq!(
+            replay
+                .first_full_spine_boundary()
+                .map(|frontier| frontier.sequence()),
+            Some(8)
+        );
+        let narrative = feature.narrative(2);
+        assert!(narrative.initial_prompt.is_none());
+        assert_ne!(narrative.initial_prompt.as_deref(), Some("legacy request"));
+        assert_eq!(narrative.provenance.semantic_turn_count, 0);
+    }
+
+    #[test]
+    fn sessionless_journal_is_explicit_and_excludes_advisory_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut feature = SessionLog::new(directory.path());
+        feature.on_event(&BusEvent::SessionStart {
+            cwd: directory.path().into(),
+            session_id: "sessionless-label".into(),
+        });
+        feature.on_event(&BusEvent::SessionEnd {
+            turns: 1,
+            tool_calls: 1,
+            duration_secs: 1.0,
+            initial_prompt: Some("uncommitted restricted advisory".into()),
+            outcome_summary: Some("uncommitted outcome".into()),
+        });
+        let journal = fs::read_to_string(feature.log_path).unwrap();
+        assert!(journal.contains("sessionless; authority replay unavailable"));
+        assert!(!journal.contains("uncommitted restricted advisory"));
+        assert!(!journal.contains("uncommitted outcome"));
     }
 
     #[test]
@@ -1096,18 +1636,9 @@ mod tests {
         );
         let content = fs::read_to_string(&feature.log_path).unwrap();
         assert!(content.contains("7t"), "should record turns");
-        assert!(
-            content.contains("**Task:** test prompt"),
-            "should record task"
-        );
-        assert!(
-            content.contains("**Outcome:** test outcome"),
-            "should record outcome"
-        );
-        assert!(
-            content.contains("anthropic:claude-sonnet-4-6"),
-            "should record model in compact summary"
-        );
+        assert!(content.contains("sessionless"));
+        assert!(!content.contains("test prompt"));
+        assert!(!content.contains("test outcome"));
         assert!(
             content.contains("tokens across"),
             "should record token summary"
@@ -1191,6 +1722,7 @@ mod tests {
     #[test]
     fn format_turn_summary_formats_codex_session_specific_fields() {
         let summary = TurnSummary {
+            session_generation: None,
             turn: 1,
             model: Some("openai-codex:gpt-5.4".into()),
             provider: Some("openai-codex".into()),

@@ -2,13 +2,21 @@
 import Docs from "../../layouts/Docs.astro";
 import { snippet } from "../../lib/snippets";
 ---
-<Docs title="Sessions" description="Auto-save and resume conversations across sessions.">
+<Docs title="Sessions" description="Durable semantic sessions, compatibility migration, and exact resume boundaries.">
   <h1>Sessions</h1>
 
-  <h2>Auto-Save</h2>
+  <h2>Persistence</h2>
   <p>
-    Sessions auto-save on exit. The full conversation history, memory state, and context are
-    preserved. Resume exactly where you left off.
+    Authority-backed sessions append semantic facts and content blobs during execution. Orderly
+    saves publish host-owned intent and plan state, operator observations, and catalog metadata
+    without turning those stores into conversation authority. Project memory remains a separate
+    durable subsystem.
+  </p>
+  <p>
+    Older Omegon sessions may also have a schema-v1 <code>.json</code>/<code>.meta.json</code>
+    pair. That pair is a compatibility import source, not an authority backup. Once its model-facing
+    context is materialized into a mixed semantic session, Omegon stops rewriting the pair. Existing
+    files are not deleted automatically.
   </p>
 
   <h2>Resume</h2>
@@ -21,22 +29,82 @@ import { snippet } from "../../lib/snippets";
 # List saved sessions
 {snippet("slash.sessions")}</code></pre>
 
-  <h2>Session Contents</h2>
-  <p>A saved session includes:</p>
+  <h2>Lineage and Resume</h2>
+  <p>Resume behavior is explicit about what can be reconstructed:</p>
   <ul>
-    <li>Full conversation history (all segments with metadata)</li>
-    <li>Model and provider state at time of save</li>
-    <li>Working memory pins</li>
-    <li>Active persona and tone</li>
-    <li>Turn count, tool call count, session duration</li>
+    <li><strong>Full:</strong> provider context and committed transcript derive exactly from semantic authority. Compatibility conversation bytes are ignored.</li>
+    <li><strong>Mixed:</strong> one labeled, content-addressed legacy context block is followed by an exact semantic suffix. The legacy prefix never becomes an exact historical transcript.</li>
+    <li><strong>Legacy:</strong> the schema-v1 pair provides labeled compatibility continuity only. Recent history and an older summary may be used, with no exactness claim.</li>
   </ul>
-  <!-- DIAGRAM:session-lifecycle | Timeline: session start → turns accumulate → auto-save on exit → [time passes] → omegon --resume → full context restored (history, model state, working memory, persona). Show what persists vs what resets -->
+  <p>
+    Migration is one-way. After a mixed legacy base is durable, stale or missing pair files cannot
+    change semantic context, transcript, or resume. Unsupported semantic events, missing required
+    blobs, a missing catalog, or corrupt required host stores fail closed instead of falling back to
+    compatibility JSON.
+  </p>
+  <h2>Transcript and Session Export</h2>
+  <pre><code># Exact committed transcript for full lineage
+{snippet("slash.transcript")}
+
+# Exact semantic suffix for mixed lineage
+{snippet("slash.transcript_suffix")}
+
+# Presentation and evidence export
+{snippet("slash.session_export")}
+
+# Current rendered scrollback
+{snippet("slash.session_export_scrollback")}</code></pre>
+  <p>
+    <code>/transcript</code> is unavailable for legacy sessions and for a mixed full-session request.
+    <code>/session-export</code> is a presentation/evidence artifact with provenance and freshness
+    disclosure; it is not semantic transcript authority. <code>/copy session</code> has the same
+    presentation-only limitation.
+  </p>
+  <h2>Durable Turn Authority</h2>
+  <p>
+    Authority-backed interactive, ACP, daemon, Web/IPC, and <code>omegon run</code> paths record
+    admitted prompts, FIFO queue order, active-turn identity, cancellation or revocation requests,
+    and terminal outcomes in an adjacent authority stream. IPC and Web acceptance first means the
+    runtime ingress received the command; clients observe durable queue state through subsequent
+    runtime queue updates. A cancellation request leaves the turn busy while owned cleanup runs.
+  </p>
+  <p>
+    Mutating calls also carry a durable mutation domain and fence key. If owner acknowledgement or
+    unknown-completion classification, or terminal settlement cannot be recorded after dispatch,
+    Omegon withholds ordinary completion, writes independent emergency evidence, and blocks later
+    matching mutations rather than risking an unqualified repeat. A prepared call has not reached
+    its owner; a dispatched or acknowledged call without settlement recovers as unknown completion.
+  </p>
+  <p>
+    Unknown completion does not mean failure and does not prove that no side effect occurred.
+    Omegon denies unsafe stable-call replay for mutations unless the original persisted contract
+    was idempotent or enforced exact stable-call deduplication. It does not currently schedule even
+    a safety-eligible replay automatically.
+  </p>
+  <p>
+    On restart, Omegon validates authority and content blobs, closes an interrupted active turn
+    conservatively, and restores eligible queued prompts that reached durable admission. ACP
+    withdraws orphaned queued requests when their client response channel was lost. Derived
+    projections may be rebuilt from validated authority; authority is never repaired from a
+    compatibility pair, projection, journal, audit row, or UI state. A maintenance resume deny
+    fails before any session load; follow the <a href="/docs/recovery">recovery guide</a> to inspect it.
+  </p>
+  <p>
+    Before a session-backed provider dispatch, authority appends a
+    <code>route.lease_recorded</code> fact for the active turn. It preserves selected and serving
+    provider/model identities plus bounded route, contribution, schema, and credential-class
+    evidence without secret material. Sessionless work instead writes a versioned step wrapper to
+    <code>runtime/route-leases.jsonl</code> under the Omegon home and does not fabricate session or
+    turn identity. No current operator command lists historical route leases.
+  </p>
+  <!-- DIAGRAM:session-lifecycle | Timeline: legacy pair imports once into a labeled mixed base; semantic facts and blobs append during execution; host stores and catalog publish separately; resume validates authority and reconstructs full or mixed context; derived projections rebuild independently. Show project memory as separate persistence. -->
 
   <h2>Disable Auto-Save</h2>
   <pre><code>{snippet("cli.no_session")}</code></pre>
   <p>
-    Disables session auto-save for this run. Useful for one-off queries or sensitive work
-    you don't want persisted to disk.
+    Disables interactive semantic session authority and compatibility persistence for this run.
+    Other configured subsystems, including project memory, logs, and audit records, may still
+    persist data.
   </p>
 
   <h2>Headless Mode</h2>

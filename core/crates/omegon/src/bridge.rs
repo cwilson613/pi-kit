@@ -162,6 +162,13 @@ pub enum BoundaryExpectation {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderContinuityKind {
+    HiddenReasoning,
+    OpaqueProviderState,
+}
+
 /// Events streamed from the bridge during an LLM call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -197,6 +204,13 @@ pub enum LlmEvent {
     /// evidence to distinguish reasoning, content, terminal, or unknown gaps.
     #[serde(rename = "boundary")]
     Boundary { expectation: BoundaryExpectation },
+    /// Minimum provider-defined bytes explicitly required for a later request.
+    /// Raw responses, headers, credentials, and transport objects are forbidden.
+    #[serde(rename = "provider_continuity")]
+    ProviderContinuity {
+        kind: ProviderContinuityKind,
+        bytes: Vec<u8>,
+    },
     #[serde(rename = "done")]
     Done {
         /// The complete assistant message in Omegon's format
@@ -272,6 +286,25 @@ pub trait LlmBridge: Send + Sync {
         options: &StreamOptions,
     ) -> anyhow::Result<mpsc::Receiver<LlmEvent>>;
 
+    /// Route identity captured when this bridge was resolved. Provider-neutral
+    /// callers use it to retain serving identity when a compatible fallback was
+    /// selected before dispatch.
+    fn serving_model_hint(&self) -> Option<&str> {
+        None
+    }
+
+    fn selected_model_hint(&self) -> Option<&str> {
+        None
+    }
+
+    fn credential_source_class_hint(&self) -> Option<&str> {
+        None
+    }
+
+    fn route_is_disconnected(&self) -> bool {
+        false
+    }
+
     /// Graceful shutdown. Default no-op for native clients.
     async fn shutdown(&self) {}
 }
@@ -302,6 +335,10 @@ impl LlmBridge for NullBridge {
              • /login ollama-cloud   — Hosted Ollama API key\n\
              Or set an env var such as ANTHROPIC_API_KEY."
         );
+    }
+
+    fn route_is_disconnected(&self) -> bool {
+        true
     }
 }
 // ─── Mock bridge for testing ────────────────────────────────────────────────

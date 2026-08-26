@@ -11,6 +11,17 @@ openspec_change: provider-route-state-machine
 
 # Provider Route State Machine — eliminate implicit auth/fallback states
 
+## Disposition
+
+This is the historical design and 0.27 interactive `RouteController` closeout.
+Its interactive selected/serving state and opt-in `fallbackProviders` behavior
+remain current. Its daemon deferral and implication that this controller alone
+is the complete provider-routing authority are superseded by the cross-host
+route service and durable request leases documented in
+[Provider contributions and route leases](provider-contributions-and-route-leases.md).
+The runtime route service does not broaden interactive `fallbackProviders`, and
+sessionless declared-fallback resolution is a separate scope.
+
 ## Overview
 
 Three model-identity honesty bugs were fixed individually within 48h (42ce0bb6 session-log model chain, a9fc3215 TurnEnd active-model seeding, 77bf6227 footer fallback display) — whack-a-mole that proves the architecture, not the patches, is the problem. Audit of the provider/auth system (2026-06-12) found six structural fragilities:

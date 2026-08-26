@@ -6,6 +6,7 @@
 //! responsive (streaming, cancel, notifications).
 
 use omegon_traits::Feature;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -36,7 +37,11 @@ pub enum WorkerRequest {
     LoadSession {
         path: PathBuf,
         resume_id: String,
-        ack: oneshot::Sender<Result<Vec<AcpReplayMessage>, String>>,
+        ack: oneshot::Sender<Result<AcpSessionReplay, String>>,
+    },
+    /// Atomically replace the idle worker with a fresh authority lineage.
+    NewSession {
+        ack: oneshot::Sender<Result<String, String>>,
     },
     /// Cancel the current prompt.
     Cancel,
@@ -79,6 +84,13 @@ pub enum WorkerRequest {
     CanonicalControlRequest {
         request: crate::operator_commands::InterfaceControlRequest,
         response_tx: oneshot::Sender<WorkerResponse>,
+    },
+    /// Invoke one extension-owned ACP transport route through kernel admission.
+    ExtensionRpcCall {
+        extension: String,
+        method: String,
+        params: serde_json::Value,
+        response_tx: oneshot::Sender<Result<serde_json::Value, String>>,
     },
     /// Connect MCP servers forwarded by the ACP client.
     ConnectMcpServers {
@@ -179,6 +191,12 @@ pub struct AcpReplayMessage {
     pub text: String,
 }
 
+pub struct AcpSessionReplay {
+    pub status: String,
+    pub frontier_sequence: u64,
+    pub messages: Vec<AcpReplayMessage>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpReplayRole {
     User,
@@ -186,29 +204,72 @@ pub enum AcpReplayRole {
 }
 
 pub fn project_replay_messages(
-    conversation: &crate::conversation::ConversationState,
-) -> Vec<AcpReplayMessage> {
-    conversation
-        .replay_messages()
-        .iter()
-        .filter_map(|message| match message {
-            crate::conversation::AgentMessage::User { text, .. } => Some(AcpReplayMessage {
-                role: AcpReplayRole::User,
-                text: text.clone(),
-            }),
-            crate::conversation::AgentMessage::Assistant(message, _)
-                if !message.text.is_empty() =>
-            {
-                Some(AcpReplayMessage {
-                    role: AcpReplayRole::Agent,
-                    text: message.text.clone(),
-                })
+    view: &crate::session_consumers::SemanticSessionView,
+) -> AcpSessionReplay {
+    use crate::surfaces::session::{FrontendConversationKindV1, TranscriptContentV1};
+
+    let mut messages = Vec::new();
+    if let Some(snapshot) = view.frontend.as_ref() {
+        for item in &snapshot.conversation {
+            match item.kind {
+                FrontendConversationKindV1::CommittedMessage => {
+                    let Some(message) = item.transcript_message.as_ref() else {
+                        continue;
+                    };
+                    match &message.content {
+                        TranscriptContentV1::Prompt { prompt_content } => {
+                            messages.push(AcpReplayMessage {
+                                role: AcpReplayRole::User,
+                                text: prompt_content.text.clone(),
+                            });
+                        }
+                        TranscriptContentV1::Assistant { assistant_channels } => {
+                            let mut text = String::new();
+                            for channel in assistant_channels {
+                                if channel.content_kind
+                                    != crate::session_authority::AssistantContentKind::Text
+                                {
+                                    continue;
+                                }
+                                for content_ref in &channel.chunk_refs {
+                                    if let Ok(chunk) = view.content_text(content_ref) {
+                                        text.push_str(&chunk);
+                                    }
+                                }
+                            }
+                            if !text.is_empty() {
+                                messages.push(AcpReplayMessage {
+                                    role: AcpReplayRole::Agent,
+                                    text,
+                                });
+                            }
+                        }
+                        TranscriptContentV1::ToolResult { .. } => {}
+                    }
+                }
+                FrontendConversationKindV1::AssistantEvidence => {
+                    if item.content_kind
+                        != Some(crate::session_authority::AssistantContentKind::Text)
+                    {
+                        continue;
+                    }
+                    if let Some(content_ref) = item.content_ref.as_ref()
+                        && let Ok(text) = view.content_text(content_ref)
+                    {
+                        messages.push(AcpReplayMessage {
+                            role: AcpReplayRole::Agent,
+                            text: format!("[durable {:?} assistant evidence]\n{text}", item.status),
+                        });
+                    }
+                }
             }
-            // Tool activity is intentionally omitted. Replaying historical tool
-            // calls as live ACP updates would fabricate execution state.
-            _ => None,
-        })
-        .collect()
+        }
+    }
+    AcpSessionReplay {
+        status: view.status.label().into(),
+        frontier_sequence: view.frontier_sequence,
+        messages,
+    }
 }
 
 /// Handle to communicate with the worker thread.
@@ -223,6 +284,10 @@ pub struct WorkerHandle {
     /// Secrets manager from the worker — arrives asynchronously after setup.
     /// Used by the ACP transport to redact streaming output before emission.
     pub secrets_rx: tokio::sync::oneshot::Receiver<std::sync::Arc<omegon_secrets::SecretsManager>>,
+    pub work_snapshot_rx:
+        tokio::sync::oneshot::Receiver<Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>>,
+    pub lifecycle_binding_rx:
+        tokio::sync::oneshot::Receiver<crate::lifecycle_service::LifecycleBinding>,
 }
 
 /// Spawn the worker thread. Returns a handle for communication.
@@ -235,6 +300,8 @@ pub fn spawn_worker(
     let (request_tx, request_rx) = mpsc::channel::<WorkerRequest>(16);
     let (event_tx, event_rx) = tokio::sync::broadcast::channel::<WorkerEvent>(256);
     let (secrets_tx, secrets_rx) = tokio::sync::oneshot::channel();
+    let (work_snapshot_tx, work_snapshot_rx) = tokio::sync::oneshot::channel();
+    let (lifecycle_binding_tx, lifecycle_binding_rx) = tokio::sync::oneshot::channel();
 
     let shared_settings = crate::settings::shared(&model);
     let worker_settings = shared_settings.clone();
@@ -257,6 +324,8 @@ pub fn spawn_worker(
                     request_rx,
                     event_tx,
                     secrets_tx,
+                    work_snapshot_tx,
+                    lifecycle_binding_tx,
                     host_ctx,
                     dangerously_bypass_permissions,
                 ),
@@ -269,6 +338,80 @@ pub fn spawn_worker(
         event_rx,
         settings: shared_settings,
         secrets_rx,
+        work_snapshot_rx,
+        lifecycle_binding_rx,
+    }
+}
+
+async fn await_turn_with_control<F>(
+    turn: F,
+    request_rx: &mut mpsc::Receiver<WorkerRequest>,
+    event_tx: &tokio::sync::broadcast::Sender<WorkerEvent>,
+    cancel: &CancellationToken,
+    supervisor: &mut crate::runtime_supervisor::InteractiveRuntimeSupervisor,
+    deferred_requests: &mut VecDeque<WorkerRequest>,
+    request_channel_open: &mut bool,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    tokio::pin!(turn);
+    loop {
+        tokio::select! {
+            result = &mut turn => break result,
+            request = request_rx.recv(), if *request_channel_open => match request {
+                Some(WorkerRequest::Cancel) => {
+                    let admission = supervisor.current_identity().map(|identity| {
+                        supervisor.request_durable_interrupt(
+                            identity,
+                            crate::runtime_prompt::RuntimeActor::from_submission(
+                                "acp-client".into(),
+                                "acp",
+                            ),
+                            crate::runtime_prompt::ControlSurface::Acp,
+                        )
+                    });
+                    match admission.transpose() {
+                        Ok(Some(crate::runtime_turn::InterruptAdmission::Admitted | crate::runtime_turn::InterruptAdmission::Duplicate)) => {
+                            cancel.cancel();
+                            let _ = event_tx.send(WorkerEvent::TurnCancelled {
+                                reason: "operator_cancelled".to_string(),
+                            });
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
+                                "Cancellation was not accepted because session authority could not be updated: {error}"
+                            )));
+                        }
+                    }
+                }
+                Some(request) => deferred_requests.push_back(request),
+                None => {
+                    *request_channel_open = false;
+                    if let Some(identity) = supervisor.current_identity()
+                        && supervisor
+                            .request_durable_interrupt(
+                                identity,
+                                crate::runtime_prompt::RuntimeActor::from_submission(
+                                    "acp-transport".into(),
+                                    "acp",
+                                ),
+                                crate::runtime_prompt::ControlSurface::Acp,
+                            )
+                            .is_ok()
+                    {
+                        cancel.cancel();
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn finalize_acp_setup_error(agent: &mut crate::setup::AgentSetup, error: anyhow::Error) {
+    if let Err(error) = crate::setup::finalize_agent_error::<()>(agent, error).await {
+        tracing::error!(%error, "ACP worker setup failed");
     }
 }
 
@@ -281,6 +424,10 @@ async fn worker_loop(
     mut request_rx: mpsc::Receiver<WorkerRequest>,
     event_tx: tokio::sync::broadcast::Sender<WorkerEvent>,
     secrets_tx: tokio::sync::oneshot::Sender<std::sync::Arc<omegon_secrets::SecretsManager>>,
+    work_snapshot_tx: tokio::sync::oneshot::Sender<
+        Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+    >,
+    lifecycle_binding_tx: tokio::sync::oneshot::Sender<crate::lifecycle_service::LifecycleBinding>,
     host_ctx: Option<crate::host_context::HostContext>,
     dangerously_bypass_permissions: bool,
 ) {
@@ -300,24 +447,22 @@ async fn worker_loop(
         }
     }
 
-    let agent_setup = match crate::setup::AgentSetup::new_with_safety(
+    let mut agent_setup = match crate::setup::AgentSetup::new_with_safety_and_mode(
         &cwd,
         None,
         Some(shared_settings.clone()),
         dangerously_bypass_permissions,
+        "acp",
     )
     .await
     {
         Ok(mut setup) => {
-            let setup_instance_id = setup.instance_id.clone();
-            setup.instance_id = crate::paths::instance_id("acp");
             setup.workspace_state.lease.owner_agent_id = Some("omegon-acp".into());
             let _ = crate::workspace::runtime::write_workspace_lease(
                 &cwd,
                 &setup.instance_id,
                 &setup.workspace_state.lease,
             );
-            crate::workspace::runtime::cleanup_instance(&cwd, &setup_instance_id);
             setup
         }
         Err(e) => {
@@ -326,18 +471,96 @@ async fn worker_loop(
         }
     };
 
-    let session_id = agent_setup.session_id.clone();
+    let mut session_id = agent_setup.session_id.clone();
     let instance_id = agent_setup.instance_id.clone();
+    let composition_generation_id = match agent_setup.bus.composition_generation_id() {
+        Some(generation_id) => generation_id.as_str().to_string(),
+        None => {
+            finalize_acp_setup_error(
+                &mut agent_setup,
+                anyhow::anyhow!("ACP composition was not published"),
+            )
+            .await;
+            return;
+        }
+    };
+    let workspace_id = agent_setup.workspace_state.lease.workspace_id.clone();
+    let session_snapshot = match crate::session::sessions_dir(&cwd) {
+        Some(directory) => directory.join(format!("{session_id}.json")),
+        None => {
+            finalize_acp_setup_error(
+                &mut agent_setup,
+                anyhow::anyhow!("cannot determine ACP session directory"),
+            )
+            .await;
+            return;
+        }
+    };
+    let authority = match crate::session_authority::SessionAuthority::open(
+        &session_snapshot,
+        &session_id,
+        &workspace_id,
+        &composition_generation_id,
+        crate::session_authority::ActorIdentity {
+            principal: "acp-client".into(),
+            ingress: "acp".into(),
+        },
+        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    ) {
+        Ok(authority) => authority,
+        Err(error) => {
+            finalize_acp_setup_error(
+                &mut agent_setup,
+                anyhow::anyhow!("failed to open ACP session authority: {error}"),
+            )
+            .await;
+            return;
+        }
+    };
+    let mut supervisor =
+        match crate::runtime_supervisor::InteractiveRuntimeSupervisor::with_authority(authority) {
+            Ok(supervisor) => supervisor,
+            Err(error) => {
+                finalize_acp_setup_error(
+                    &mut agent_setup,
+                    anyhow::anyhow!("failed to restore ACP session supervisor: {error}"),
+                )
+                .await;
+                return;
+            }
+        };
+    match supervisor.withdraw_recovered_prompts() {
+        Ok(0) => {}
+        Ok(count) => tracing::warn!(
+            count,
+            "withdrew recovered ACP prompts whose response channels were lost"
+        ),
+        Err(error) => {
+            finalize_acp_setup_error(
+                &mut agent_setup,
+                anyhow::anyhow!("failed to withdraw orphaned recovered ACP prompts: {error}"),
+            )
+            .await;
+            return;
+        }
+    }
     let mut bus = agent_setup.bus;
+    let work_snapshot = agent_setup.work_snapshot;
+    let lifecycle_binding = agent_setup.lifecycle_binding.clone();
+    let behavior_policy = agent_setup.behavior_policy;
+    let git_binding = agent_setup.git_binding.clone();
     let mut context_manager = agent_setup.context_manager;
     let mut conversation = agent_setup.conversation;
     let secrets = agent_setup.secrets;
     let extension_metadata = agent_setup.extension_metadata.clone();
     let extension_rpc_handles = agent_setup.extension_rpc_handles.clone();
-    let mut cancel = CancellationToken::new();
+    let mut dynamic_contributions = std::mem::take(&mut agent_setup.dynamic_contributions);
     let mut resume_id: Option<String> = None;
+    let mut resume_info = agent_setup.resume_info;
 
     let _ = secrets_tx.send(secrets.clone());
+    let _ = work_snapshot_tx.send(work_snapshot.clone());
+    let _ = lifecycle_binding_tx.send(lifecycle_binding);
     if !extension_metadata.is_empty() {
         let _ = event_tx.send(WorkerEvent::ExtensionMetadata(extension_metadata));
     }
@@ -347,21 +570,93 @@ async fn worker_loop(
     let host_ctx_arc = host_ctx.map(std::sync::Arc::new);
     tracing::info!(model = %model, "ACP worker ready");
     let mut first_prompt = true;
+    let mut deferred_requests = VecDeque::new();
+    let mut request_channel_open = true;
 
     // Process requests
-    while let Some(req) = request_rx.recv().await {
+    loop {
+        let req = match deferred_requests.pop_front() {
+            Some(request) => request,
+            None if request_channel_open => match request_rx.recv().await {
+                Some(request) => request,
+                None => break,
+            },
+            None => break,
+        };
         match req {
             WorkerRequest::Prompt { text, response_tx } => {
+                let prompt_id = match supervisor.admit_prompt(
+                    text,
+                    Vec::new(),
+                    crate::runtime_prompt::RuntimeActor::from_submission(
+                        "acp-client".into(),
+                        "acp",
+                    ),
+                    crate::runtime_prompt::ControlSurface::Acp,
+                    crate::operator_commands::PromptMetadata::default(),
+                    Some(crate::runtime_prompt::QueueMode::UntilReady),
+                ) {
+                    Ok(prompt_id) => prompt_id,
+                    Err(error) => {
+                        let _ = response_tx.send(WorkerResponse {
+                            text: String::new(),
+                            error: Some(format!("Session authority rejected the prompt: {error}")),
+                            cancelled: false,
+                        });
+                        continue;
+                    }
+                };
+                let active = match supervisor.start_next_turn() {
+                    Ok(Some(active)) if active.prompt.id == prompt_id => active,
+                    Ok(Some(_)) => {
+                        let _ = response_tx.send(WorkerResponse {
+                            text: String::new(),
+                            error: Some("Recovered queued work must settle before this ACP prompt can start".into()),
+                            cancelled: false,
+                        });
+                        continue;
+                    }
+                    Ok(None) => {
+                        let _ = response_tx.send(WorkerResponse {
+                            text: String::new(),
+                            error: Some("ACP session is already running a turn".into()),
+                            cancelled: false,
+                        });
+                        continue;
+                    }
+                    Err(error) => {
+                        let _ = response_tx.send(WorkerResponse {
+                            text: String::new(),
+                            error: Some(format!(
+                                "Session authority could not start the turn: {error}"
+                            )),
+                            cancelled: false,
+                        });
+                        continue;
+                    }
+                };
+                let active_identity = supervisor
+                    .current_identity()
+                    .expect("promoted ACP turn has identity");
+                let execution_capture = supervisor
+                    .active_execution_capture()
+                    .expect("promoted ACP turn has an execution capture");
                 if first_prompt {
                     first_prompt = false;
-                    let title: String =
-                        text.chars().take(80).collect::<String>().trim().to_string();
+                    let title: String = active
+                        .prompt
+                        .text
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                        .trim()
+                        .to_string();
                     let title = title.lines().next().unwrap_or(&title).trim().to_string();
                     if !title.is_empty() {
                         let _ = event_tx.send(WorkerEvent::SessionTitle(title));
                     }
                 }
-                conversation.push_user(text);
+                conversation.push_user(active.prompt.text.clone());
 
                 // Resolve the model from settings (may have been changed via SetModel)
                 let current_model = shared_settings
@@ -373,6 +668,22 @@ async fn worker_loop(
                 let bridge = match crate::providers::auto_detect_bridge(&current_model).await {
                     Some(b) => b,
                     None => {
+                        if let Err(authority_error) = supervisor.submit_loop_terminal_intent(
+                            crate::runtime_turn::LoopTerminalIntent {
+                                identity: active_identity,
+                                outcome: crate::runtime_turn::RuntimeTurnOutcome::Failed,
+                                reason_code: "provider_unavailable".into(),
+                            },
+                        ) {
+                            let _ = response_tx.send(WorkerResponse {
+                                text: String::new(),
+                                error: Some(format!(
+                                    "Provider is unavailable and session authority could not record closure: {authority_error}"
+                                )),
+                                cancelled: false,
+                            });
+                            break;
+                        }
                         let _ = response_tx.send(WorkerResponse {
                             text: String::new(),
                             error: Some(format!(
@@ -391,7 +702,7 @@ async fn worker_loop(
 
                 // Forward agent events to worker events
                 let worker_event_tx = event_tx.clone();
-                tokio::task::spawn_local(async move {
+                let event_forwarder = tokio::task::spawn_local(async move {
                     while let Ok(event) = loop_events_rx.recv().await {
                         let worker_event = match event {
                             omegon_traits::AgentEvent::MessageChunk { text, .. } => {
@@ -550,7 +861,8 @@ async fn worker_loop(
                     }
                 });
 
-                cancel = CancellationToken::new();
+                let cancel = CancellationToken::new();
+                let invocation_authority = supervisor.invocation_authority();
 
                 let loop_config = crate::r#loop::LoopConfig {
                     max_turns: shared_settings
@@ -563,40 +875,59 @@ async fn worker_loop(
                     retry_delay_ms: 750,
                     model: current_model,
                     bridge_model: None,
-                    route_controller: None,
                     cwd: cwd.clone(),
                     extended_context: false,
                     settings: Some(shared_settings.clone()),
-                    secrets: Some(secrets.clone()),
                     force_compact: None,
                     allow_commit_nudge: true,
                     enforce_first_turn_execution_bias: false,
-                    ollama_manager: None,
                     skill_phases: Vec::new(),
-                    host_context: host_ctx_arc.clone(),
-                    permission_policy: None,
-                    permission_role: None,
+                    compatibility: crate::loop_driver::LoopCompatibilityBindings {
+                        invocation_frontend: host_ctx_arc
+                            .clone()
+                            .map(crate::loop_permission::LoopInvocationFrontend::acp)
+                            .unwrap_or_default(),
+                        secrets: Some(secrets.clone()),
+                        invocation_scope: crate::invocation_service::InvocationScope {
+                            principal: "acp-model".into(),
+                            principal_class: omegon_traits::RuntimePrincipalClass::Model,
+                            surface: omegon_traits::RuntimeSurface::Model,
+                            session_id: Some(session_id.clone()),
+                            turn_id: active.authority_turn_id,
+                            authority: invocation_authority,
+                        },
+                        drain_late_requests: false,
+                        work_snapshot: work_snapshot.clone(),
+                        behavior_policy: behavior_policy.clone(),
+                        memory_binding: agent_setup.memory_binding.clone(),
+                        context_compaction: agent_setup.context_compaction.clone(),
+                        ..Default::default()
+                    },
                     cancel_keeps_prompt: None,
-                    drain_post_loop_requests: false,
                 };
 
-                let result = crate::r#loop::run(
-                    bridge.as_ref(),
-                    &mut bus,
-                    &mut context_manager,
-                    &mut conversation,
-                    &loop_events_tx,
-                    cancel.clone(),
-                    &loop_config,
+                let execution = await_turn_with_control(
+                    execution_capture.execute(
+                        bridge.as_ref(),
+                        &mut bus,
+                        &mut context_manager,
+                        &mut conversation,
+                        &loop_events_tx,
+                        cancel.clone(),
+                        &loop_config,
+                    ),
+                    &mut request_rx,
+                    &event_tx,
+                    &cancel,
+                    &mut supervisor,
+                    &mut deferred_requests,
+                    &mut request_channel_open,
                 )
                 .await;
 
-                drop(loop_events_tx);
-                let _ = event_tx.send(WorkerEvent::TurnComplete);
-
-                let response_text = conversation.last_assistant_text().unwrap_or("").to_string();
-
                 let cancelled = cancel.is_cancelled();
+                let terminal = execution.terminal;
+                let result = execution.result;
                 let error = match result {
                     Ok(()) => None,
                     Err(_e) if cancelled => None,
@@ -610,6 +941,34 @@ async fn worker_loop(
                         Some(humanize_agent_error(&raw, &model_name))
                     }
                 };
+                let terminal_intent = if cancelled {
+                    crate::runtime_turn::LoopTerminalIntent {
+                        identity: active_identity,
+                        outcome: crate::runtime_turn::RuntimeTurnOutcome::Revoked,
+                        reason_code: "loop_cancelled".into(),
+                    }
+                } else {
+                    terminal.into_intent(active_identity)
+                };
+                bridge.shutdown().await;
+                drop(loop_events_tx);
+                let _ = event_forwarder.await;
+                if let Err(authority_error) =
+                    supervisor.submit_loop_terminal_intent(terminal_intent)
+                {
+                    let _ = response_tx.send(WorkerResponse {
+                        text: String::new(),
+                        error: Some(format!(
+                            "Turn finished locally but session authority could not record closure: {authority_error}"
+                        )),
+                        cancelled,
+                    });
+                    break;
+                }
+
+                let _ = event_tx.send(WorkerEvent::TurnComplete);
+
+                let response_text = conversation.last_assistant_text().unwrap_or("").to_string();
 
                 // Save session, preserving the canonical ID after a load.
                 let _ = crate::session::save_session(&conversation, &cwd, resume_id.as_deref());
@@ -619,9 +978,6 @@ async fn worker_loop(
                     error,
                     cancelled,
                 });
-                if cancelled {
-                    cancel = CancellationToken::new();
-                }
             }
 
             WorkerRequest::LoadSession {
@@ -632,24 +988,100 @@ async fn worker_loop(
                 let result = if !crate::session::is_canonical_session_id(&requested_id) {
                     Err(format!("invalid session id `{requested_id}`"))
                 } else {
-                    crate::conversation::ConversationState::load_session(&path)
-                        .map(|loaded| {
-                            let replay = project_replay_messages(&loaded);
-                            conversation = loaded;
-                            resume_id = Some(requested_id);
+                    crate::session_replacement::resume_request(&cwd, &path)
+                        .and_then(|request| {
+                            if request.target_session_id != requested_id {
+                                return Err(
+                                    crate::session_replacement::SessionReplacementError::Target(
+                                        "loaded session identity does not match ACP request".into(),
+                                    ),
+                                );
+                            }
+                            let outcome = crate::session_replacement::replace(
+                                crate::session_replacement::HostSessionPublication {
+                                    supervisor: &mut supervisor,
+                                    conversation: &mut conversation,
+                                    displayed_session_id: &mut session_id,
+                                    resume_info: &mut resume_info,
+                                },
+                                request,
+                                crate::session_replacement::SessionReplacementEnvironment {
+                                    cwd: &cwd,
+                                    persist_current: true,
+                                    workspace_identity: &workspace_id,
+                                    runtime_generation_id: &composition_generation_id,
+                                    actor: crate::session_authority::ActorIdentity {
+                                        principal: "acp-client".into(),
+                                        ingress: "acp".into(),
+                                    },
+                                },
+                            )?;
+                            crate::session_replacement::emit_canonical_session_start(
+                                &mut bus, &cwd, &outcome,
+                            );
+                            resume_id = Some(session_id.clone());
                             first_prompt = false;
-                            replay
+                            let target = crate::session_consumers::SessionViewTarget {
+                                snapshot: path.clone(),
+                                session_id: session_id.clone(),
+                                stream_id: Some(outcome.projection.stream_id),
+                                generation: outcome.host_generation,
+                                kind: crate::session_consumers::SessionViewKind::Resume,
+                            };
+                            Ok(
+                                match crate::session_consumers::SemanticSessionView::load(&target) {
+                                    Ok(view) => project_replay_messages(&view),
+                                    Err(error) => AcpSessionReplay {
+                                        status: format!("semantic history unavailable: {error}"),
+                                        frontier_sequence: outcome.projection.last_sequence,
+                                        messages: Vec::new(),
+                                    },
+                                },
+                            )
                         })
-                        .map_err(|error| format!("could not load session: {error}"))
+                        .map_err(|error| error.to_string())
                 };
                 let _ = ack.send(result);
             }
 
+            WorkerRequest::NewSession { ack } => {
+                let result = crate::session_replacement::fresh_request(
+                    crate::session_replacement::SessionReplacementKind::New,
+                    &cwd,
+                )
+                .and_then(|request| {
+                    let outcome = crate::session_replacement::replace(
+                        crate::session_replacement::HostSessionPublication {
+                            supervisor: &mut supervisor,
+                            conversation: &mut conversation,
+                            displayed_session_id: &mut session_id,
+                            resume_info: &mut resume_info,
+                        },
+                        request,
+                        crate::session_replacement::SessionReplacementEnvironment {
+                            cwd: &cwd,
+                            persist_current: true,
+                            workspace_identity: &workspace_id,
+                            runtime_generation_id: &composition_generation_id,
+                            actor: crate::session_authority::ActorIdentity {
+                                principal: "acp-client".into(),
+                                ingress: "acp".into(),
+                            },
+                        },
+                    )?;
+                    crate::session_replacement::emit_canonical_session_start(
+                        &mut bus, &cwd, &outcome,
+                    );
+                    resume_id = Some(session_id.clone());
+                    first_prompt = true;
+                    Ok(session_id.clone())
+                })
+                .map_err(|error| error.to_string());
+                let _ = ack.send(result);
+            }
+
             WorkerRequest::Cancel => {
-                cancel.cancel();
-                let _ = event_tx.send(WorkerEvent::TurnCancelled {
-                    reason: "operator_cancelled".to_string(),
-                });
+                tracing::debug!("ACP cancel ignored while the session is idle");
             }
 
             WorkerRequest::SetModel { value, ack } => {
@@ -709,7 +1141,7 @@ async fn worker_loop(
                     &conversation,
                     &shared_settings,
                     &secrets,
-                    workspace_ctx(&cwd, &session_id, &instance_id),
+                    workspace_ctx(&cwd, &session_id, &instance_id).with_git(&git_binding),
                     &mut bus,
                     dangerously_bypass_permissions,
                 )
@@ -719,8 +1151,21 @@ async fn worker_loop(
                     let name = name.to_string();
                     let cancel = CancellationToken::new();
                     let args = serde_json::json!({ "name": name });
+                    let call_id = format!("acp-persona-switch:{}", uuid::Uuid::new_v4());
+                    let scope = crate::invocation_service::InvocationScope {
+                        principal: "kernel:acp-persona-switch".into(),
+                        principal_class: omegon_traits::RuntimePrincipalClass::Internal,
+                        surface: omegon_traits::RuntimeSurface::Internal,
+                        ..Default::default()
+                    };
                     match bus
-                        .execute_tool("switch_persona", "ctrl", args, cancel)
+                        .invoke_internal(
+                            crate::tool_registry::persona::SWITCH_PERSONA,
+                            &call_id,
+                            args,
+                            cancel,
+                            scope,
+                        )
                         .await
                     {
                         Ok(result) => {
@@ -751,6 +1196,66 @@ async fn worker_loop(
                 request,
                 response_tx,
             } => {
+                if matches!(
+                    &request,
+                    crate::operator_commands::InterfaceControlRequest::ContextClear
+                        | crate::operator_commands::InterfaceControlRequest::NewSession
+                ) {
+                    let kind = if matches!(
+                        &request,
+                        crate::operator_commands::InterfaceControlRequest::ContextClear
+                    ) {
+                        crate::session_replacement::SessionReplacementKind::ContextClear
+                    } else {
+                        crate::session_replacement::SessionReplacementKind::New
+                    };
+                    let result = crate::session_replacement::fresh_request(kind, &cwd).and_then(
+                        |replacement| {
+                            crate::session_replacement::replace(
+                                crate::session_replacement::HostSessionPublication {
+                                    supervisor: &mut supervisor,
+                                    conversation: &mut conversation,
+                                    displayed_session_id: &mut session_id,
+                                    resume_info: &mut resume_info,
+                                },
+                                replacement,
+                                crate::session_replacement::SessionReplacementEnvironment {
+                                    cwd: &cwd,
+                                    persist_current: true,
+                                    workspace_identity: &workspace_id,
+                                    runtime_generation_id: &composition_generation_id,
+                                    actor: crate::session_authority::ActorIdentity {
+                                        principal: "acp-client".into(),
+                                        ingress: "acp".into(),
+                                    },
+                                },
+                            )?;
+                            resume_id = Some(session_id.clone());
+                            first_prompt = true;
+                            Ok(())
+                        },
+                    );
+                    let response = match result {
+                        Ok(()) => WorkerResponse {
+                            text: if kind
+                                == crate::session_replacement::SessionReplacementKind::ContextClear
+                            {
+                                "Context cleared. Starting fresh conversation.".into()
+                            } else {
+                                "Started a fresh session.".into()
+                            },
+                            error: None,
+                            cancelled: false,
+                        },
+                        Err(error) => WorkerResponse {
+                            text: String::new(),
+                            error: Some(format!("Session was not replaced: {error}")),
+                            cancelled: false,
+                        },
+                    };
+                    let _ = response_tx.send(response);
+                    continue;
+                }
                 let handles = crate::runtime_state::RuntimeStateHandles::default();
                 let text = crate::control_runtime::execute_stateless_control(
                     &request,
@@ -769,34 +1274,128 @@ async fn worker_loop(
                 });
             }
 
+            WorkerRequest::ExtensionRpcCall {
+                extension,
+                method,
+                params,
+                response_tx,
+            } => {
+                let route = crate::extensions::extension_rpc_invocation_name(&extension);
+                let call_id = format!("acp-extension-rpc:{}", uuid::Uuid::new_v4());
+                let scope = crate::invocation_service::InvocationScope {
+                    principal: "acp-client".into(),
+                    principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+                    surface: omegon_traits::RuntimeSurface::Acp,
+                    ..Default::default()
+                };
+                let result = bus
+                    .invoke_acp(
+                        &route,
+                        &call_id,
+                        serde_json::json!({"method": method, "params": params}),
+                        CancellationToken::new(),
+                        scope,
+                    )
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = response_tx.send(result);
+            }
+
             WorkerRequest::ConnectMcpServers { servers } => {
                 let server_map: std::collections::HashMap<
                     String,
                     crate::plugins::mcp::McpServerConfig,
                 > = servers.into_iter().collect();
                 if !server_map.is_empty() {
+                    let canonical: std::collections::BTreeMap<_, _> = server_map.iter().collect();
+                    let static_config = serde_json::to_string(&canonical)
+                        .unwrap_or_else(|_| "acp-mcp-invalid-config".into());
+                    let preflight = crate::plugins::mcp::dynamic_preflight(
+                        "mcp:acp-client",
+                        &static_config,
+                        &server_map,
+                    );
+                    let profile = crate::settings::Profile::load(&cwd);
+                    let inventory = dynamic_contributions.inventory();
+                    let candidate = preflight.and_then(|preflight| inventory.discover(preflight));
+                    let candidate_id = candidate
+                        .as_ref()
+                        .ok()
+                        .map(|candidate| candidate.preflight.id.clone());
+                    let trust_admission = candidate.and_then(|candidate| {
+                        inventory.admit(
+                            &candidate,
+                            &crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(
+                                &profile,
+                            ),
+                        )
+                    });
+                    let Ok(trust_admission) = trust_admission else {
+                        let _ = event_tx.send(WorkerEvent::StatusUpdate(
+                            "ACP client MCP servers denied: add mcp:acp-client to permissions.trustedContributionCode"
+                                .into(),
+                        ));
+                        continue;
+                    };
                     match crate::plugins::mcp::McpFeature::connect(
                         "acp-client",
                         &server_map,
                         Some(secrets.as_ref()),
+                        trust_admission,
                     )
                     .await
                     {
                         Ok(mcp_feature) => {
                             let tool_count = mcp_feature.tools().len();
+                            let mcp_supervisor = mcp_feature.supervisor();
+                            let mut candidate_owner =
+                                crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(
+                                    inventory.clone(),
+                                );
+                            candidate_owner.own_mcp(mcp_supervisor);
+                            if let Some(candidate_id) = &candidate_id {
+                                inventory.ready(candidate_id);
+                            }
+                            candidate_owner.stage();
                             if tool_count > 0 {
                                 bus.register(Box::new(mcp_feature));
-                                bus.finalize();
-                                tracing::info!(
-                                    tools = tool_count,
-                                    "ACP client MCP servers connected"
-                                );
-                                let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
-                                    "Connected {tool_count} tools from client MCP servers"
-                                )));
+                                match bus.try_finalize() {
+                                    Ok(()) => {
+                                        candidate_owner.publish();
+                                        dynamic_contributions.absorb_published(candidate_owner);
+                                        tracing::info!(
+                                            tools = tool_count,
+                                            "ACP client MCP servers connected"
+                                        );
+                                        let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
+                                            "Connected {tool_count} tools from client MCP servers"
+                                        )));
+                                    }
+                                    Err(error) => {
+                                        let cleanup_failures =
+                                            candidate_owner.reject(error.to_string()).await;
+                                        tracing::warn!(%error, "ACP client MCP candidate rejected");
+                                        if !cleanup_failures.is_empty() {
+                                            tracing::warn!(failures = ?cleanup_failures, "ACP client MCP candidate cleanup degraded");
+                                        }
+                                        let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
+                                            "Client MCP candidate rejected: {error}"
+                                        )));
+                                    }
+                                }
+                            } else {
+                                let cleanup_failures = candidate_owner
+                                    .reject("MCP candidate declared no callable tools")
+                                    .await;
+                                if !cleanup_failures.is_empty() {
+                                    tracing::warn!(failures = ?cleanup_failures, "empty ACP MCP candidate cleanup degraded");
+                                }
                             }
                         }
                         Err(e) => {
+                            if let Some(candidate_id) = &candidate_id {
+                                inventory.quarantine(candidate_id, e.to_string());
+                            }
                             tracing::warn!(error = %e, "Failed to connect client MCP servers");
                             let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
                                 "MCP server connection failed: {e}"
@@ -810,6 +1409,16 @@ async fn worker_loop(
         }
     }
 
+    let managed_cleanup = bus.shutdown_managed_services_strict().await;
+    for failure in dynamic_contributions.shutdown().await {
+        tracing::warn!(%failure, "ACP dynamic contribution cleanup degraded");
+    }
+    if let Err(error) = managed_cleanup {
+        tracing::error!(%error, "ACP worker managed cleanup failed");
+        let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
+            "ACP worker cleanup failed: {error}"
+        )));
+    }
     tracing::info!("ACP worker shutting down");
 }
 
@@ -844,7 +1453,7 @@ async fn handle_control_request(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            let mut harness = crate::status::HarnessStatus::assemble();
+            let mut harness = crate::status::HarnessStatus::assemble(workspace_ctx.cwd);
             let operating_profile = settings.operating_profile();
             harness.update_routing(
                 settings.effective_requested_class().label(),
@@ -869,15 +1478,21 @@ async fn handle_control_request(
                     .unwrap_or("unknown"),
                 &operating_profile.authorization.summary(),
             );
-            crate::surfaces::diagnostics::HarnessStatusProjection::new(
-                harness,
+            let bootstrap_markdown = crate::bootstrap_projection::render_bootstrap(&harness, false);
+            let mut output = crate::surfaces::diagnostics::HarnessStatusProjection::new(
+                serde_json::to_value(harness).unwrap_or(serde_json::Value::Null),
                 0,
                 workspace_ctx.session_id,
                 workspace_ctx.instance_id,
                 settings.automation_level.as_str(),
                 settings.automation_level.summary(),
+                bootstrap_markdown,
             )
-            .render_markdown()
+            .render_markdown();
+            if let Some(composition) = bus.composition_diagnostic_projection() {
+                output.push_str(&composition.render_markdown());
+            }
+            output
         }
         "stats" => {
             let settings = shared_settings
@@ -924,25 +1539,26 @@ async fn handle_control_request(
         }
 
         "persona_list" => {
-            let (personas, tones) = crate::plugins::persona_loader::scan_available();
-            let mut out = String::new();
-            if personas.is_empty() && tones.is_empty() {
-                out.push_str("No personas or tones found.");
-            } else {
-                if !personas.is_empty() {
-                    out.push_str(&format!("Personas ({}):\n", personas.len()));
-                    for p in &personas {
-                        out.push_str(&format!("  {} — {}\n", p.name, p.description));
+            crate::plugins::persona_loader::with_available(cwd, |personas, tones| {
+                let mut out = String::new();
+                if personas.is_empty() && tones.is_empty() {
+                    out.push_str("No personas or tones found.");
+                } else {
+                    if !personas.is_empty() {
+                        out.push_str(&format!("Personas ({}):\n", personas.len()));
+                        for p in personas {
+                            out.push_str(&format!("  {} — {}\n", p.name, p.description));
+                        }
+                    }
+                    if !tones.is_empty() {
+                        out.push_str(&format!("\nTones ({}):\n", tones.len()));
+                        for t in tones {
+                            out.push_str(&format!("  {} — {}\n", t.name, t.description));
+                        }
                     }
                 }
-                if !tones.is_empty() {
-                    out.push_str(&format!("\nTones ({}):\n", tones.len()));
-                    for t in &tones {
-                        out.push_str(&format!("  {} — {}\n", t.name, t.description));
-                    }
-                }
-            }
-            out
+                out
+            })
         }
 
         "persona_switch" => {
@@ -1247,7 +1863,7 @@ async fn handle_control_request(
                 workspace_response_text(crate::workspace::control::workspace_new_response(
                     &workspace_ctx,
                     args,
-                ))
+                ).await)
             }
         }
         "workspace_destroy" => {
@@ -1257,7 +1873,7 @@ async fn handle_control_request(
                 workspace_response_text(crate::workspace::control::workspace_destroy_response(
                     &workspace_ctx,
                     args,
-                ))
+                ).await)
             }
         }
         "workspace_adopt" => workspace_response_text(
@@ -1327,7 +1943,7 @@ async fn handle_control_request(
         ),
 
         // ── Design tree ────────────────────────────────
-        "tree_view" => match bus.dispatch_command("design", args) {
+        "tree_view" => match invoke_acp_command(bus, "design", args) {
             omegon_traits::CommandResult::Display(msg) => msg,
             omegon_traits::CommandResult::Handled => "Design tree command handled.".into(),
             omegon_traits::CommandResult::NotHandled => "Design tree not available.".into(),
@@ -1405,13 +2021,35 @@ pub(crate) fn handle_registered_acp_command(
         ));
     }
 
-    match bus.dispatch_command(name, args) {
+    match invoke_acp_command(bus, name, args) {
         omegon_traits::CommandResult::Display(text) => Some(text),
         omegon_traits::CommandResult::Handled => Some(format!("/{name} handled.")),
         omegon_traits::CommandResult::NotHandled => Some(format!(
             "Command /{name} was registered but did not handle the request."
         )),
     }
+}
+
+fn invoke_acp_command(
+    bus: &mut crate::bus::EventBus,
+    name: &str,
+    args: &str,
+) -> omegon_traits::CommandResult {
+    let call_id = format!("acp-command:{}", uuid::Uuid::new_v4());
+    let scope = crate::invocation_service::InvocationScope {
+        principal: "acp-operator".into(),
+        principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+        surface: omegon_traits::RuntimeSurface::Acp,
+        ..Default::default()
+    };
+    bus.invoke_command(name, &call_id, args, scope, None)
+        .unwrap_or_else(|denial| {
+            omegon_traits::CommandResult::Display(format!(
+                "{}: {}",
+                denial.code.as_str(),
+                denial.message
+            ))
+        })
 }
 
 fn workspace_ctx<'a>(
@@ -1511,6 +2149,53 @@ mod command_safety_tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    #[tokio::test]
+    async fn active_turn_receives_cancel_without_waiting_for_turn_completion() {
+        let (request_tx, mut request_rx) = mpsc::channel(1);
+        let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(2);
+        let cancel = CancellationToken::new();
+        let observed_cancel = cancel.clone();
+        let mut deferred = VecDeque::new();
+        let mut channel_open = true;
+        let mut supervisor = crate::runtime_supervisor::InteractiveRuntimeSupervisor::default();
+        supervisor.enqueue_prompt(
+            "active".into(),
+            Vec::new(),
+            crate::runtime_prompt::RuntimeActor::from_submission("acp-client".into(), "acp"),
+            crate::runtime_prompt::ControlSurface::Acp,
+            crate::operator_commands::PromptMetadata::default(),
+            None,
+        );
+        supervisor.maybe_start_next_turn().unwrap();
+        request_tx.send(WorkerRequest::Cancel).await.unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            await_turn_with_control(
+                async move {
+                    observed_cancel.cancelled().await;
+                    "cancelled"
+                },
+                &mut request_rx,
+                &event_tx,
+                &cancel,
+                &mut supervisor,
+                &mut deferred,
+                &mut channel_open,
+            ),
+        )
+        .await
+        .expect("cancel must reach an active turn");
+
+        assert_eq!(result, "cancelled");
+        assert!(cancel.is_cancelled());
+        assert!(deferred.is_empty());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(WorkerEvent::TurnCancelled { reason }) if reason == "operator_cancelled"
+        ));
+    }
 
     struct TestCommandFeature {
         definition: CommandDefinition,

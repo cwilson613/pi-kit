@@ -342,6 +342,7 @@ pub(crate) fn is_harness_owned_command(
         | crate::operator_commands::OperatorCommand::ModelUnpin { .. }
         | crate::operator_commands::OperatorCommand::SetThinking { .. }
         | crate::operator_commands::OperatorCommand::ExecuteControl { .. }
+        | crate::operator_commands::OperatorCommand::ExecuteControlFrom { .. }
         | crate::operator_commands::OperatorCommand::ManagedDelegateControl { .. }
         | crate::operator_commands::OperatorCommand::RunShellCommand { .. }
         | crate::operator_commands::OperatorCommand::ShellHandoff { .. }
@@ -370,7 +371,12 @@ pub(crate) const BUILTIN_COMMANDS: &[BuiltinCommandSpec] = &[
     ),
     BuiltinCommandSpec::state_changing(
         "transcript",
-        "write a clean clickable Markdown transcript",
+        "write the exact committed semantic transcript",
+        &["file", "open", "suffix"],
+    ),
+    BuiltinCommandSpec::state_changing(
+        "session-export",
+        "export the current presentation and evidence view",
         &["file", "open", "scrollback"],
     ),
     BuiltinCommandSpec::state_changing(
@@ -757,6 +763,20 @@ mod tests {
             omegon_traits::CommandSafetyClass::ExternalSideEffect
         );
         assert!(update.safety.requires_confirmation);
+
+        for name in ["transcript", "session-export"] {
+            let definition = definitions
+                .iter()
+                .find(|definition| definition.name == name)
+                .expect("session export command definition");
+            assert!(definition.availability.tui);
+            assert!(!definition.availability.cli);
+            assert!(!definition.availability.acp);
+            assert_eq!(
+                definition.safety.class,
+                omegon_traits::CommandSafetyClass::StateChanging
+            );
+        }
 
         let auth = definitions
             .iter()

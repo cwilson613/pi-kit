@@ -1,0 +1,27 @@
+{
+  "lifecycle": {
+    "schema_version": 1,
+    "composition_generation_id": "composition:boot-7",
+    "contribution_id": "extension:scribe",
+    "generation_id": "extension-generation:scribe-3",
+    "state": "quarantined",
+    "last_completed_boundary": "cleanup_settled",
+    "reason_code": "lifecycle:readiness_timeout",
+    "reason": "probe did not become ready before its deadline",
+    "restart_attempts": 3,
+    "next_restart_not_before_ms": 1724000100000,
+    "last_heartbeat_ms": 1724000000000,
+    "cleanup_assurance": "strict",
+    "cleanup_state": "settled"
+  },
+  "resource": {
+    "schema_version": 1,
+    "id": "resource:scribe-process-tree",
+    "composition_generation_id": "composition:boot-7",
+    "contribution_id": "extension:scribe",
+    "generation_id": "extension-generation:scribe-3",
+    "kind": "process_tree",
+    "cleanup_assurance": "strict",
+    "cleanup_state": "settled"
+  }
+}

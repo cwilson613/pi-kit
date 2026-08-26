@@ -14,8 +14,7 @@ use omegon_opsx::{ChangeArtifactRecord, ChangeState, OpenSpecRepository};
 
 /// Locate the openspec/ directory in a repository.
 pub fn find_openspec_dir(repo_path: &Path) -> Option<PathBuf> {
-    let dir = repo_path.join("openspec");
-    if dir.is_dir() { Some(dir) } else { None }
+    crate::paths::openspec_dir(repo_path)
 }
 
 /// List all active OpenSpec changes (in openspec/changes/).
@@ -553,8 +552,14 @@ pub struct EvidenceGateFinding {
 /// This keeps evidence opt-in by requiring an explicit `evidence-claim` marker,
 /// but prevents knowingly refuted evidence from being archived silently.
 pub fn evaluate_evidence_gates(change: &ChangeInfo) -> Vec<EvidenceGateFinding> {
+    evaluate_spec_evidence_gates(&change.specs)
+}
+
+pub fn evaluate_spec_evidence_gates(
+    specs: &[crate::lifecycle::types::SpecFileProjection],
+) -> Vec<EvidenceGateFinding> {
     let mut findings = Vec::new();
-    for spec in &change.specs {
+    for spec in specs {
         for requirement in &spec.requirements {
             for scenario in &requirement.scenarios {
                 for support in &scenario.evidence_support {

@@ -16,8 +16,9 @@ pub mod types;
 
 // Re-exports for convenience
 pub use artifacts::{
-    ChangeArtifactRecord, OpenSpecRepository, TaskCheckboxStatus, TaskStableIdFinding,
-    TaskStableIdValidationReport, TaskWriteReport,
+    ChangeArtifactRecord, OpenSpecRepository, PlannedArtifactWrite, PlannedTaskWrite,
+    TaskCheckboxStatus, TaskStableIdFinding, TaskStableIdValidationReport, TaskWriteReport,
+    plan_proposal_state, plan_spec_write, plan_task_checkbox_status, task_counts_content,
 };
 pub use authority::{
     ArtifactAuthority, ArtifactDrift, ArtifactDriftKind, ArtifactHealth, ArtifactState,
@@ -35,7 +36,7 @@ pub use design_artifacts::{
 };
 pub use error::OpsxError;
 pub use fsm::Lifecycle;
-pub use store::{JsonFileStore, LifecycleState, MemoryStore, StateStore};
+pub use store::{JsonFileStore, JsonFileStoreTransaction, LifecycleState, MemoryStore, StateStore};
 pub use types::{
     Change, ChangeState, Decision, DecisionStatus, DesignNode, IssueType, Milestone,
     MilestoneState, NodeState, Priority,

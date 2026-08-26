@@ -7,8 +7,9 @@ import Docs from "../../layouts/Docs.astro";
   <p>
     Omegon separates the operator's <strong>model route</strong> from provider-neutral
     <strong>model grade intent</strong>, <strong>thinking level</strong>, and <strong>context class</strong>.
-    The concrete provider/model can change as credentials, fallbacks, or policy require, while the
-    visible route state keeps the operator honest about what is selected and what is actually serving turns.
+    A provider-neutral intent can resolve according to declared policy. An exact concrete model
+    override pins the selected route until <code>/model unpin</code> clears it. Selected and serving
+    routes remain distinct when declared fallback compatibility is used.
   </p>
   <img src="/diagrams/three-axis.svg" alt="Three-axis routing model: model grade intent, thinking level, and context class feed into the routing engine" class="diagram" />
 
@@ -16,7 +17,9 @@ import Docs from "../../layouts/Docs.astro";
   <p>
     Grades are provider-neutral capability bands. They are not legacy slash aliases and they are not local
     endpoint names. Use <code>/model grade &lt;F|D|C|B|A|S&gt;</code> to express desired capability, or
-    <code>/model &lt;provider:model&gt;</code> to pin an exact route.
+    <code>/model &lt;provider:model&gt;</code> to pin an exact concrete route. The
+    <code>exact</code> grade policy means the requested grade must match exactly; it does not itself
+    pin one concrete provider/model.
   </p>
   <table>
     <thead><tr><th>Grade</th><th>Use Case</th><th>Typical Examples</th></tr></thead>
@@ -29,7 +32,8 @@ import Docs from "../../layouts/Docs.astro";
   <pre><code>/model                   # Opens selector with available models
 /model grade B           # Request a B-grade route, provider auto
 /model provider local    # Restrict routing to local endpoints
-/model policy minimum    # Allow requested grade or better</code></pre>
+/model policy minimum    # Allow requested grade or better
+/model unpin             # Clear an exact concrete model override</code></pre>
 
   <h2>Axis 2: Thinking Level</h2>
   <p>Controls extended reasoning budget — how much reasoning effort capable providers spend before responding.</p>
@@ -75,10 +79,11 @@ import Docs from "../../layouts/Docs.astro";
 
   <h2>Provider routing</h2>
   <p>
-    Provider availability depends on configured credentials, endpoint health, and policy. Use
-    <code>/model route</code> to inspect selected-vs-served route state, <code>/auth status</code> for credential
-    diagnostics, and <code>/model providers</code> for the provider inventory. Local endpoints are selected with
-    <code>/model provider local</code>; they are not a legacy grade.
+    In the native TUI, <code>/model route</code> opens the model menu at its current route state,
+    <code>/model providers</code> opens its provider view, and <code>/auth status</code> reports credential
+    diagnostics. These TUI views do not list historical route leases and should not be read as a
+    cross-surface command guarantee. Local endpoints are selected with <code>/model provider local</code>;
+    they are not a legacy grade.
   </p>
   <p>
     See <a href="/docs/providers">Providers</a> for the authentication and fallback boundaries.

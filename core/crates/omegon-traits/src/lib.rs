@@ -24,6 +24,9 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub mod runtime_contributions;
+pub use runtime_contributions::*;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Runtime capability declaration contract
 //
@@ -32,8 +35,7 @@ use std::sync::Arc;
 // leases remain outside this first contract slice.
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RuntimeCapabilityId(String);
 
 impl RuntimeCapabilityId {
@@ -69,10 +71,30 @@ impl RuntimeCapabilityId {
     }
 }
 
+impl Serialize for RuntimeCapabilityId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeCapabilityId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeCapabilityKind {
     KernelService,
+    InProcessService,
     Tool,
     OperatorAction,
     Skill,
@@ -113,6 +135,7 @@ impl RuntimeCapabilityOwner {
 pub enum RuntimeInvocationKind {
     Tool,
     Command,
+    Internal,
     Cli,
     Acp,
     Ipc,
@@ -205,7 +228,16 @@ mod runtime_capability_contract_tests {
     fn capability_id_rejects_unscoped_or_unsafe_values() {
         assert!(RuntimeCapabilityId::new("read").is_err());
         assert!(RuntimeCapabilityId::new("tool:../../read").is_err());
+        assert!(serde_json::from_str::<RuntimeCapabilityId>(r#""tool:../../read""#).is_err());
         assert_eq!(RuntimeCapabilityId::tool("read").as_str(), "tool:read");
+    }
+
+    #[test]
+    fn in_process_service_kind_has_stable_wire_name() {
+        assert_eq!(
+            serde_json::to_string(&RuntimeCapabilityKind::InProcessService).unwrap(),
+            "\"in_process_service\""
+        );
     }
 }
 
@@ -753,6 +785,9 @@ pub struct HelloResponse {
     pub started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Host-session publication generation. Additive in protocol v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_generation: Option<u64>,
     /// Server-advertised capabilities. Client must not assume any capability
     /// not present in this list.
     pub capabilities: Vec<String>,
@@ -1158,6 +1193,20 @@ pub struct IpcSessionSnapshot {
     pub git_detached: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_frontier: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_revision: Option<u64>,
+    #[serde(default)]
+    pub queue_depth: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_turn: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1554,6 +1603,11 @@ pub enum IpcEventPayload {
     #[serde(rename = "state.changed")]
     StateChanged { sections: Vec<String> },
 
+    /// Full same-connection reconciliation emitted automatically after the
+    /// server detects event-stream lag. It precedes all later deltas.
+    #[serde(rename = "state.reconciled")]
+    StateReconciled { snapshot: Box<IpcStateSnapshot> },
+
     // ── Notifications ──────────────────────────────────────────────────────
     #[serde(rename = "runtime.lifecycle.updated")]
     RuntimeLifecycleUpdated { snapshot: RuntimeLifecycleSnapshot },
@@ -1817,6 +1871,12 @@ pub struct ToolDefinition {
     pub parameters: Value,
     #[serde(default)]
     pub capabilities: Vec<ToolCapability>,
+}
+
+/// One non-tool ACP transport invocation owned by a runtime feature.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeAcpInvocationDefinition {
+    pub name: String,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2311,6 +2371,12 @@ pub struct CommandDefinition {
     pub surface: CommandSurface,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandAlias {
+    pub alias: String,
+    pub canonical: String,
+}
+
 /// Presentation contract for a command's output.
 ///
 /// This is a property of the command, not of the text it happens to emit.
@@ -2364,9 +2430,69 @@ pub struct ContextInjection {
 /// Host-provided execution context for tools that need request/response
 /// interaction with the operator surface. Most tools ignore this and use the
 /// simpler `execute` / `execute_with_sink` paths.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InvocationDispatchMetadata {
+    pub invocation_id: String,
+    pub visible_call_id: String,
+    pub deduplication_id: Option<String>,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct InvocationControl {
+    acknowledge: std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+}
+
+impl InvocationControl {
+    pub fn new(acknowledge: impl Fn() -> Result<(), String> + Send + Sync + 'static) -> Self {
+        Self {
+            acknowledge: std::sync::Arc::new(acknowledge),
+        }
+    }
+
+    pub fn acknowledge(&self) -> Result<(), String> {
+        (self.acknowledge)()
+    }
+}
+
+#[derive(Clone)]
+pub struct HostActionInvocationGuard {
+    authorize: std::sync::Arc<HostActionAuthorizeFn>,
+}
+
+type HostActionAuthorizeFn = dyn Fn(&str, &str, &[RuntimeEffect]) -> Result<InvocationDispatchMetadata, String>
+    + Send
+    + Sync;
+
+impl HostActionInvocationGuard {
+    #[doc(hidden)]
+    pub fn new(
+        authorize: impl Fn(&str, &str, &[RuntimeEffect]) -> Result<InvocationDispatchMetadata, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            authorize: std::sync::Arc::new(authorize),
+        }
+    }
+
+    pub fn authorize(
+        &self,
+        dispatch_key: &str,
+        action_type: &str,
+        required_effects: &[RuntimeEffect],
+    ) -> Result<InvocationDispatchMetadata, String> {
+        (self.authorize)(dispatch_key, action_type, required_effects)
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct ToolExecutionContext {
     pub host_action_approval: Option<HostActionApprovalSink>,
+    pub invocation: Option<InvocationDispatchMetadata>,
+    pub host_action_invocation: Option<HostActionInvocationGuard>,
 }
 
 /// Callback used by host-action-aware tool providers to request an operator
@@ -2413,6 +2539,7 @@ pub enum ToolProvenance {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait Feature: Send + Sync {
     /// Human-readable name for logging and debugging.
@@ -2421,6 +2548,65 @@ pub trait Feature: Send + Sync {
     /// Producer identity attached to tools owned by this feature.
     fn tool_provenance(&self) -> ToolProvenance {
         ToolProvenance::BuiltIn
+    }
+
+    /// Dynamic lifecycle policy frozen with this feature's declaration.
+    /// Static features may return `None` and use the composition defaults.
+    fn runtime_lifecycle_policy(&self) -> Option<RuntimeLifecyclePolicy> {
+        None
+    }
+
+    /// Dynamic activation and cleanup policy frozen with this feature's declaration.
+    fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
+        None
+    }
+
+    /// Explicit implementation generation for services that support replacement.
+    fn runtime_contribution_generation_id(&self) -> Option<RuntimeContributionGenerationId> {
+        None
+    }
+
+    /// Bindingless typed services published atomically with this feature's declaration.
+    fn runtime_in_process_services(&self) -> Vec<RuntimeInProcessService> {
+        vec![]
+    }
+
+    /// Graph-visible dependencies for this feature or its in-process services.
+    fn runtime_dependencies(&self) -> Vec<RuntimeContributionDependency> {
+        vec![]
+    }
+
+    /// Capability authority frozen into the declaration for one owned tool.
+    /// Returning `None` selects the host's conservative legacy adapter.
+    fn runtime_tool_policy(&self, _tool_name: &str) -> Option<RuntimeToolPolicy> {
+        None
+    }
+
+    /// Explicit invocation surfaces for one owned tool. Returning `None`
+    /// preserves the model-only compatibility declaration.
+    fn runtime_tool_surfaces(&self, _tool_name: &str) -> Option<Vec<RuntimeSurface>> {
+        None
+    }
+
+    /// Explicit principal classes eligible to invoke one owned tool. Returning
+    /// `None` preserves the principals from `runtime_tool_policy` or adaptation.
+    fn runtime_tool_principals(&self, _tool_name: &str) -> Option<Vec<RuntimePrincipalClass>> {
+        None
+    }
+
+    /// ACP transport invocations owned by this feature. These are not model tools.
+    fn runtime_acp_invocations(&self) -> Vec<RuntimeAcpInvocationDefinition> {
+        vec![]
+    }
+
+    /// Execute one ACP transport invocation declared by this feature.
+    async fn execute_acp_invocation(
+        &self,
+        _name: &str,
+        _args: Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<Value> {
+        anyhow::bail!("ACP invocation not implemented")
     }
 
     /// Tool definitions this feature provides. Called once at startup.
@@ -2476,8 +2662,37 @@ pub trait Feature: Send + Sync {
             .await
     }
 
+    /// Execute after durably acknowledging owner acceptance. External
+    /// adapters may override this to acknowledge at their transport boundary.
+    async fn execute_with_invocation_control(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        context: ToolExecutionContext,
+        control: InvocationControl,
+    ) -> anyhow::Result<ToolResult> {
+        control.acknowledge().map_err(anyhow::Error::msg)?;
+        self.execute_with_context(tool_name, call_id, args, cancel, sink, context)
+            .await
+    }
+
     /// Slash commands this feature registers. Called once at startup.
     fn commands(&self) -> Vec<CommandDefinition> {
+        vec![]
+    }
+
+    /// Explicit invocation surfaces for one canonical command capability.
+    /// Returning `None` derives TUI/CLI/ACP surfaces from command availability.
+    fn runtime_command_surfaces(&self, _command_name: &str) -> Option<Vec<RuntimeSurface>> {
+        None
+    }
+
+    /// Explicit aliases owned by this feature. Aliases bind to the canonical
+    /// action identity and never create independent execution authority.
+    fn command_aliases(&self) -> Vec<CommandAlias> {
         vec![]
     }
 
@@ -2497,6 +2712,12 @@ pub trait Feature: Send + Sync {
     /// Return any requests to send back to the runtime.
     fn on_event(&mut self, _event: &BusEvent) -> Vec<BusRequest> {
         vec![]
+    }
+
+    /// Close feature-owned background admission and settle all accepted work
+    /// before managed services begin draining.
+    async fn prepare_managed_shutdown(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
@@ -3189,6 +3410,13 @@ pub struct SessionStats {
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
     fn tools(&self) -> Vec<ToolDefinition>;
+
+    /// Capability authority frozen into the declaration for one owned tool.
+    /// Returning `None` selects the host's conservative legacy adapter.
+    fn runtime_tool_policy(&self, _tool_name: &str) -> Option<RuntimeToolPolicy> {
+        None
+    }
+
     async fn execute(
         &self,
         tool_name: &str,
@@ -3209,6 +3437,21 @@ pub trait ToolProvider: Send + Sync {
         _sink: ToolProgressSink,
     ) -> anyhow::Result<ToolResult> {
         self.execute(tool_name, call_id, args, cancel).await
+    }
+
+    /// Sink-aware execution with durable invocation identity. Providers that
+    /// advertise owner-enforced deduplication must consume this metadata.
+    async fn execute_with_context(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        _context: ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_with_sink(tool_name, call_id, args, cancel, sink)
+            .await
     }
 }
 
@@ -3310,6 +3553,13 @@ mod tests {
                 git_branch: Some("main".into()),
                 git_detached: false,
                 session_id: None,
+                session_generation: None,
+                stream_id: None,
+                projection_status: None,
+                projection_frontier: None,
+                context_revision: None,
+                queue_depth: 0,
+                active_turn: None,
             },
             design_tree: IpcDesignTreeSnapshot {
                 counts: IpcDesignCounts {
@@ -3479,6 +3729,7 @@ mod tests {
             server_instance_id: "abc123".into(),
             started_at: "2026-03-29T00:00:00Z".into(),
             session_id: None,
+            session_generation: None,
             capabilities: IpcCapability::v1_server_set()
                 .into_iter()
                 .map(|s| s.to_string())
@@ -3490,6 +3741,26 @@ mod tests {
         assert_eq!(decoded.started_at, "2026-03-29T00:00:00Z");
         assert!(decoded.capabilities.contains(&"state.snapshot".to_string()));
         assert!(decoded.capabilities.contains(&"shutdown".to_string()));
+    }
+
+    #[test]
+    fn ipc_session_additions_decode_from_legacy_v1_shape() {
+        let legacy = serde_json::json!({
+            "cwd": "/project",
+            "pid": 99,
+            "started_at": "2026-03-29T00:00:00Z",
+            "turns": 1,
+            "tool_calls": 2,
+            "compactions": 0,
+            "busy": false,
+            "git_detached": false,
+            "session_id": "session-1"
+        });
+        let decoded: IpcSessionSnapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.session_id.as_deref(), Some("session-1"));
+        assert_eq!(decoded.session_generation, None);
+        assert_eq!(decoded.queue_depth, 0);
+        assert_eq!(decoded.projection_status, None);
     }
 
     #[test]

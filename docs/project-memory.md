@@ -11,8 +11,8 @@ visibility = "private"
 
 [data]
 design_docs = ["design/memory-lifecycle-integration.md", "design/memory-mind-audit.md", "design/cheap-gpt-memory-models.md", "memory-system-overhaul.md", "memory-session-continuity.md", "memory-episode-reliability.md", "memory-task-completion-facts.md", "memory-pruning-ceiling.md"]
-last_updated = "2026-03-17"
-last_reviewed = "2026-05-11"
+last_updated = "2026-08-26"
+last_reviewed = "2026-08-26"
 openspec_baselines = ["memory.md", "memory/lifecycle.md", "memory/models.md", "project-memory/compaction.md"]
 subsystem = "project-memory"
 +++
@@ -25,14 +25,14 @@ subsystem = "project-memory"
 
 Project memory gives agents persistent knowledge across sessions. It operates at multiple levels:
 
-- **Fact store**: SQLite+WAL database (`ai/memory/facts.db`) with atomic facts organized by section (Architecture, Decisions, Constraints, Known Issues, Patterns & Conventions, Specs, Recent Work). Facts are stored, superseded, archived, and connected in a knowledge graph.
+- **Fact store**: Schema-v8 SQLite+WAL database (`ai/memory/facts.db`, or the existing `.omegon/memory/facts.db` legacy root) with atomic facts organized by section (Architecture, Decisions, Constraints, Known Issues, Patterns & Conventions, Specs, Recent Work). Facts are stored, superseded, archived, and connected in a knowledge graph.
 - **Semantic retrieval**: Facts embedded for `memory_recall(query)` similarity search. Omegon first probes the configured Ollama embedding endpoint, then falls back to a local ONNX embedding service when the binary is built with `local-embeddings` and model files are present. If no embedding backend is available, recall falls back to FTS5 keyword search.
 - **Working memory**: 25-slot buffer of pinned facts that survive context compaction and get priority injection.
 - **Episodic memory**: Session narratives generated at shutdown via fallback chain (cloud → local → template floor), capturing goals, decisions, sequences, and outcomes.
 - **Context injection**: Three-layer proactive startup injection (last 3 episodes + recency window + Architecture/Decisions core) fires before the user's first message. Semantic injection on first message adds task-specific facts on top.
 - **Task-completion facts**: Write/edit tool calls queue `Recent Work` facts with 2-day half-life, capturing mid-term "what was accomplished" continuity.
 - **Structural pruning ceiling**: `computeConfidence()` caps effective half-life at 90 days regardless of reinforcement count. Per-section LLM archival pass fires at session_start when any section exceeds 60 facts.
-- **Directive minds**: `implement` forks a scoped mind from `default`; all fact reads/writes auto-scope to the directive. `archive` ingests discoveries back to `default` and cleans up. Zero-copy fork with parent-chain inheritance — no fact duplication, parent embeddings and edges are reused.
+- **Mind-scoped durability**: Durable facts, vectors, edges, and episodes are isolated by mind label. The host selects the active mind scope; the managed version-1 service does not expose a standalone durable mind-record or parent-mutation API.
 - **JSONL sync**: `facts.jsonl` exported for git tracking; `merge=union` gitattribute enables multi-branch fact merging. Volatile runtime scoring metadata (confidence, reinforcement counts, decay scores) omitted from exports for stable diffs.
 - **Global knowledge base**: Cross-project facts stored in `~/.config/omegon/global-memory.db`.
 
@@ -41,14 +41,20 @@ Project memory gives agents persistent knowledge across sessions. It operates at
 | File | Role |
 |------|------|
 | `core/crates/omegon/src/features/memory.rs` | Agent-facing memory tools and hybrid recall orchestration |
+| `core/crates/omegon/src/memory_service.rs` | Managed serial owner for project/global stores, JSONL, and configured Codex-vault effects |
 | `core/crates/omegon-memory/` | SQLite storage, JSONL sync, embeddings, search, episodes, and graph types |
 | `core/crates/omegon/src/embedding.rs` | Ollama embedding service used for hybrid search when reachable |
 | `core/crates/omegon/src/local_embedding.rs` | Optional ONNX embedding service compiled behind the `local-embeddings` feature |
-| `core/crates/omegon/src/setup.rs` | Wires memory storage, embedding service selection, and tool registration |
+| `core/crates/omegon/src/setup.rs` | Starts and captures the managed memory binding, selects embedding services, and registers tools |
 
 ## Design Decisions
 
 - **SQLite+WAL for storage, JSONL for git sync**: Database handles concurrent reads during extraction; JSONL enables cross-branch merging via git union strategy.
+- **Payload-bound operation replay**: Durable mutations can carry a stable operation identity. Exact replay returns the original compact effect; reuse with a different payload fails before mutation. Targeted changes use fact-version preconditions instead of one global store revision.
+- **Managed JSONL and Codex-vault synchronization**: One boot worker owns the selected project `facts.jsonl` and explicitly configured vault effects. Startup preserves empty-store, non-child JSONL bootstrap behavior. Bounded imports keep Lamport conflict rules and operation replay; deterministic exports and vault projections compare bytes before synced atomic replacement. Vault inputs are snapshotted before mutation, reject static traversal/symlink escape, and use stable note/fact lineage so unchanged, edited, moved, aliased, and repeated synchronization converges.
+- **Managed production consumers**: Tools, context, lifecycle ingestion, session-end persistence, status, provider-result writes, and embedding backfill use a boot-captured exact-generation binding or a bounded managed composition. The host retains session-local pins, context rendering, provider selection, extraction, and embedding computation. Tracked provider tasks settle before the memory worker shuts down.
+- **Typed optional availability**: Memory tools and status remain declared when the managed service is unavailable and return typed unavailable evidence. Durable memory context is omitted while unrelated context, sessions, frontends, and host-owned compaction continue.
+- **Governed schema v8 migration**: Startup migrates schemas v5-v7 before opening the store. Historical v5/v6 `default` records move to `legacy`; post-v7 `default` records move to `primensus`. Schema v8 persists operation receipts and complete episode metadata.
 - **Semantic search primary, FTS5 fallback**: Embeddings give better retrieval; FTS5 always works as a fallback. The current selection order is configured Ollama embedding service, optional local ONNX service, then FTS5-only recall.
 - **Pointer facts over inline details**: Facts reference files (`"X does Y. See path/to/file.ts"`) instead of inlining implementation details — keeps facts atomic and maintainable.
 - **Store conclusions, not investigation steps**: Facts capture final state, not debugging journey.
@@ -59,7 +65,7 @@ Project memory gives agents persistent knowledge across sessions. It operates at
 - **Recent Work section for task-completion**: Write/edit tool calls queue lightweight facts in `Recent Work` with `RECENT_WORK_DECAY` (halfLifeDays=2, reinforcementFactor=1.0 — reinforcement does NOT extend these). Mid-term bridge between architecture facts and ephemeral context.
 - **Episode fallback chain**: Generation tries cloud (haiku → codex-spark) first; Ollama optional. Guaranteed template-floor episode when all models fail — at least date + tool counts + files written.
 - **Cheap/local models for extraction and embeddings**: Background extraction and embedding paths avoid burning expensive frontier calls where possible. For embeddings, the Rust runtime supports Ollama and an optional local ONNX sentence-transformer path.
-- **Mind-per-directive scoping**: Each directive gets its own mind (memory namespace) forked from `default`. Parent-chain inheritance means child minds see parent facts without duplication. On archive, valuable discoveries are ingested back to `default`. This isolates directive-specific context while preserving project-wide knowledge.
+- **Mind-label scoping**: The selected mind label scopes durable reads and writes without duplicating records. Directive lifecycle policy and any transfer of discoveries between scopes remain host-owned rather than a standalone managed mind hierarchy API.
 - **Context pressure auto-compaction**: When context window usage exceeds thresholds, memory triggers compaction. Local (45s) → codex-spark (60s) → haiku (30s) fallback chain.
 
 ## Behavioral Contracts
@@ -89,6 +95,7 @@ Override the model name with `OMEGON_EMBED_LOCAL_MODEL` or the exact directory w
 - Episode generation runs at session shutdown — abrupt kill (SIGKILL) skips episode; `/exit` uses the full fallback chain
 - JSONL merge=union can create duplicates if the same fact is modified on two branches
 - Global DB injection injects up to 15 facts from `~/.config/omegon/global-memory.db`; global extraction is off by default so the global DB only receives manually stored facts and lifecycle-ingest candidates
+- Vault synchronization rejects static traversal and symlink escape, but it is not a sandbox against hostile concurrent replacement of an already validated filesystem path
 
 ## Related Subsystems
 

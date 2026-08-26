@@ -17,6 +17,14 @@ visibility = "private"
 
 Use this document for constraints and behavior intent only. Do not treat `extensions/model-budget.ts`, `extensions/effort/index.ts`, or `extensions/dashboard/footer.ts` as current implementation paths.
 
+Current contribution, exact-resolution, selected-versus-serving, fallback, and
+route-evidence semantics are canonical in
+[Provider contributions and route leases](../provider-contributions-and-route-leases.md).
+In particular, inventory diagnostics do not currently gate dispatch, and the
+implemented fallback check must not be described as full serving-model family
+or capability validation. Command sketches below remain design targets unless
+confirmed by the command registry.
+
 ## Overview
 
 Track the implementation that makes model controls provider-neutral in operator-facing UX and persists the last-used concrete driver model across sessions.

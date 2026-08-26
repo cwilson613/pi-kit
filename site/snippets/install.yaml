@@ -31,6 +31,11 @@ brew_upgrade_stable:
   cmd: "brew upgrade omegon"
   desc: "Update Homebrew install"
 
-update_script:
-  cmd: "curl -fsSL https://omegon.styrene.io/install.sh | sh"
-  desc: "Re-run install script to update"
+verify_companions:
+  cmd: |
+    omegon --version
+    omegon-maintain --version
+    omegon --which
+    omegon-maintain --which
+    omegon-maintain --json identity
+  desc: "Verify the release-coupled executable pair and launcher freshness"

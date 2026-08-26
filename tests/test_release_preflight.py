@@ -44,9 +44,22 @@ class ReleasePreflightTests(unittest.TestCase):
             "".join(install_lines)
         )
 
-        manifest_line = "release-manifest.json\n" if manifest_wired else "checksums.sha256\n"
-        (root / ".github" / "workflows" / "release.yml").write_text(manifest_line)
-        (root / ".github" / "workflows" / "homebrew.yml").write_text(manifest_line)
+        if manifest_wired:
+            release_lines = "\n".join(
+                (
+                    "release-manifest.json",
+                    "generate-package",
+                    "omegon-maintain",
+                    "manifest.sigstore.json",
+                    "--signing-config",
+                    "--no-default-tsa",
+                )
+            )
+            homebrew_lines = "release-manifest.json\n"
+        else:
+            release_lines = homebrew_lines = "checksums.sha256\n"
+        (root / ".github" / "workflows" / "release.yml").write_text(release_lines)
+        (root / ".github" / "workflows" / "homebrew.yml").write_text(homebrew_lines)
 
     def init_git_repo(self, root: Path, *, branch: str = "release/0.28") -> None:
         subprocess.run(

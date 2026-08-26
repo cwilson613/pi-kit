@@ -143,9 +143,81 @@
     "cmd": "brew upgrade omegon",
     "desc": "Update Homebrew install"
   },
-  "install.update_script": {
-    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh",
-    "desc": "Re-run install script to update"
+  "install.verify_companions": {
+    "cmd": "omegon --version\nomegon-maintain --version\nomegon --which\nomegon-maintain --which\nomegon-maintain --json identity",
+    "desc": "Verify the release-coupled executable pair and launcher freshness"
+  },
+  "maintenance.identity": {
+    "cmd": "omegon-maintain --json identity",
+    "desc": "Report the compiled maintenance artifact and exclusion profile"
+  },
+  "maintenance.doctor": {
+    "cmd": "omegon-maintain --json doctor",
+    "desc": "Run bounded maintenance diagnostics"
+  },
+  "maintenance.composition_inspect": {
+    "cmd": "omegon-maintain --json composition inspect",
+    "desc": "Inspect the compiled maintenance profile"
+  },
+  "maintenance.release_inspect": {
+    "cmd": "omegon-maintain --json release inspect",
+    "desc": "Inspect adjacent package metadata"
+  },
+  "maintenance.contribution_list_project": {
+    "cmd": "omegon-maintain --json \\\n  --workspace /absolute/path/to/project \\\n  contribution list --scope project",
+    "desc": "List inert project contribution metadata"
+  },
+  "maintenance.contribution_inspect_project": {
+    "cmd": "omegon-maintain --json \\\n  --workspace /absolute/path/to/project \\\n  contribution inspect plugin:formatter --scope project",
+    "desc": "Inspect one exact project contribution"
+  },
+  "maintenance.contribution_disable_dry_run": {
+    "cmd": "omegon-maintain --json --dry-run --deadline 30s \\\n  --workspace /absolute/path/to/project \\\n  contribution disable plugin:formatter --scope project",
+    "desc": "Plan a future-activation deny"
+  },
+  "maintenance.contribution_disable": {
+    "cmd": "omegon-maintain --json --deadline 30s \\\n  --workspace /absolute/path/to/project \\\n  contribution disable plugin:formatter --scope project",
+    "desc": "Deny a contribution from future activation"
+  },
+  "maintenance.contribution_quarantine": {
+    "cmd": "omegon-maintain --json --deadline 30s \\\n  --workspace /absolute/path/to/project \\\n  contribution quarantine plugin:formatter --scope project",
+    "desc": "Deny and atomically detach one contribution"
+  },
+  "maintenance.session_list": {
+    "cmd": "omegon-maintain --json \\\n  --workspace /absolute/path/to/project \\\n  session list",
+    "desc": "List sessions for an explicit workspace"
+  },
+  "maintenance.session_inspect": {
+    "cmd": "omegon-maintain --json \\\n  --workspace /absolute/path/to/project \\\n  session inspect <session-id>",
+    "desc": "Inspect one exact workspace session"
+  },
+  "maintenance.session_quarantine_dry_run": {
+    "cmd": "omegon-maintain --json --dry-run --deadline 30s \\\n  --workspace /absolute/path/to/project \\\n  session quarantine <session-id>",
+    "desc": "Plan a session resume deny"
+  },
+  "maintenance.session_quarantine": {
+    "cmd": "omegon-maintain --json --deadline 30s \\\n  --workspace /absolute/path/to/project \\\n  session quarantine <session-id>",
+    "desc": "Deny session resume without rewriting session bytes"
+  },
+  "maintenance.resource_list": {
+    "cmd": "omegon-maintain --json \\\n  --workspace /absolute/path/to/project \\\n  resource list",
+    "desc": "List runtime ownership evidence"
+  },
+  "maintenance.resource_prune_dry_run": {
+    "cmd": "omegon-maintain --json --dry-run --deadline 30s \\\n  --workspace /absolute/path/to/project \\\n  resource prune-stale",
+    "desc": "Plan stale ownership-record pruning"
+  },
+  "maintenance.resource_prune": {
+    "cmd": "omegon-maintain --json --deadline 30s \\\n  --workspace /absolute/path/to/project \\\n  resource prune-stale",
+    "desc": "Prune ownership records proven stale"
+  },
+  "maintenance.audit_inspect": {
+    "cmd": "omegon-maintain --json audit inspect",
+    "desc": "Inspect maintenance audit records"
+  },
+  "maintenance.audit_verify": {
+    "cmd": "omegon-maintain --json audit verify",
+    "desc": "Verify structural audit continuity"
   },
   "quickstart.setup_codex": {
     "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh\nomegon auth login openai-codex\nom",
@@ -231,6 +303,22 @@
     "cmd": "/sessions",
     "desc": "List saved sessions"
   },
+  "slash.transcript": {
+    "cmd": "/transcript",
+    "desc": "Write the exact committed semantic transcript"
+  },
+  "slash.transcript_suffix": {
+    "cmd": "/transcript suffix",
+    "desc": "Write the labeled exact suffix of a mixed-lineage session"
+  },
+  "slash.session_export": {
+    "cmd": "/session-export",
+    "desc": "Write the presentation and evidence export"
+  },
+  "slash.session_export_scrollback": {
+    "cmd": "/session-export scrollback",
+    "desc": "Export the current presentation scrollback"
+  },
   "slash.cleave": {
     "cmd": "/cleave",
     "desc": "Trigger parallel task decomposition"
@@ -291,9 +379,9 @@
     "cmd": "/secrets get VAULT_ROOT_TOKEN",
     "desc": "Check that a secret resolves without printing it"
   },
-  "verify.cosign_verify": {
-    "cmd": "cosign verify-blob omegon-0.28.0-aarch64-apple-darwin.tar.gz \\\n  --signature omegon-0.28.0-aarch64-apple-darwin.tar.gz.sig \\\n  --certificate omegon-0.28.0-aarch64-apple-darwin.tar.gz.pem \\\n  --certificate-identity-regexp '.*' \\\n  --certificate-oidc-issuer https://token.actions.githubusercontent.com",
-    "desc": "Verify cosign signature (keyless) — replace version with actual"
+  "verify.release_verify": {
+    "cmd": "omegon-maintain --json release verify \\\n  --archive /absolute/path/omegon-<version>-<target>.tar.gz \\\n  --manifest /absolute/path/omegon-<version>-<target>.tar.gz.manifest.json \\\n  --bundle /absolute/path/omegon-<version>-<target>.tar.gz.manifest.sigstore.json",
+    "desc": "Verify a release package offline against compiled identity policy"
   },
   "verify.gh_attestation": {
     "cmd": "gh attestation verify omegon-*.tar.gz --repo styrene-lab/omegon",

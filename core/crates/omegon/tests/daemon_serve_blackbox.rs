@@ -156,6 +156,17 @@ async fn serve_accepts_cleave_child_cancel_event_over_http() -> Result<()> {
     let payload =
         wait_for_startup_payload(&startup_event.startup_url, Duration::from_secs(5)).await?;
     wait_for_ready(&startup_event.ready_url, Duration::from_secs(5)).await?;
+    let runtime_root = daemon._tmp.path().join(".omegon/runtime");
+    let ownership_files = std::fs::read_dir(&runtime_root)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("ownership-v1.json"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    assert_eq!(ownership_files.len(), 1, "{ownership_files:?}");
+    let ownership: omegon_maintenance_contracts::OwnershipRecordV1 =
+        omegon_maintenance_contracts::parse_record(&std::fs::read(&ownership_files[0])?)?;
+    assert_eq!(ownership.pid, daemon.child.id());
+    assert!(ownership.runtime_id.starts_with("embedded-"));
 
     let event = DaemonEventEnvelope {
         event_id: "evt-blackbox-cancel-child".into(),

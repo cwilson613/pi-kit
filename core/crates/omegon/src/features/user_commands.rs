@@ -85,12 +85,19 @@ struct UserCommand {
 
 pub struct UserCommandFeature {
     commands: Vec<UserCommand>,
+    workspace_root: PathBuf,
 }
 
 impl UserCommandFeature {
     pub fn load() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::load_for_workspace(&cwd)
+    }
+
+    pub fn load_for_workspace(workspace_root: &std::path::Path) -> Self {
         Self {
-            commands: load_commands().unwrap_or_default(),
+            commands: load_commands(workspace_root).unwrap_or_default(),
+            workspace_root: workspace_root.to_path_buf(),
         }
     }
 
@@ -98,6 +105,7 @@ impl UserCommandFeature {
     fn from_dir(root: &std::path::Path) -> Self {
         Self {
             commands: load_commands_from_dirs(&[root.join(".omegon/commands")]).unwrap_or_default(),
+            workspace_root: root.to_path_buf(),
         }
     }
 }
@@ -118,21 +126,19 @@ impl Feature for UserCommandFeature {
         let Some(command) = self.commands.iter().find(|cmd| cmd.manifest.name == name) else {
             return CommandResult::NotHandled;
         };
-        match preview_prompt_command(command) {
+        match preview_prompt_command(command, &self.workspace_root) {
             Ok(output) => CommandResult::Display(output),
             Err(err) => CommandResult::Display(format!("/{name} failed: {err}")),
         }
     }
 }
 
-fn load_commands() -> anyhow::Result<Vec<UserCommand>> {
+fn load_commands(cwd: &std::path::Path) -> anyhow::Result<Vec<UserCommand>> {
     let mut dirs = Vec::new();
     if let Ok(home) = crate::paths::omegon_home() {
         dirs.push(home.join("commands"));
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        dirs.push(cwd.join(".omegon/commands"));
-    }
+    dirs.push(crate::setup::find_project_root(cwd).join(".omegon/commands"));
     load_commands_from_dirs(&dirs)
 }
 
@@ -249,22 +255,30 @@ fn safety_class(class: &str) -> anyhow::Result<CommandSafetyClass> {
     })
 }
 
-fn preview_prompt_command(command: &UserCommand) -> anyhow::Result<String> {
+fn preview_prompt_command(
+    command: &UserCommand,
+    workspace_root: &std::path::Path,
+) -> anyhow::Result<String> {
     let prompt_name = command.manifest.target.trim_start_matches("prompt:");
-    let (_manifest, body, prompt_path) = crate::prompts::get_prompt(prompt_name)?;
-    let safety = crate::prompts::safety_verdict(&body);
-    if safety.is_blocked() {
-        anyhow::bail!("target prompt is blocked by safety verdict: {safety:?}");
-    }
-    Ok(format!(
-        "User command /{} -> prompt:{}\nCommand: {}\nPrompt: {}\nSafety: {:?}\n\n{}",
-        command.manifest.name,
+    crate::prompts::with_prompt_for_project(
+        workspace_root,
         prompt_name,
-        command.path.display(),
-        prompt_path.display(),
-        safety,
-        body
-    ))
+        |_manifest, body, prompt_path| {
+            let safety = crate::prompts::safety_verdict(body);
+            if safety.is_blocked() {
+                anyhow::bail!("target prompt is blocked by safety verdict: {safety:?}");
+            }
+            Ok(format!(
+                "User command /{} -> prompt:{}\nCommand: {}\nPrompt: {}\nSafety: {:?}\n\n{}",
+                command.manifest.name,
+                prompt_name,
+                command.path.display(),
+                prompt_path.display(),
+                safety,
+                body
+            ))
+        },
+    )?
 }
 
 #[cfg(test)]

@@ -1,8 +1,23 @@
 //! Renderer-neutral model-menu curation over the complete model catalog.
 
-use crate::model_catalog::{ModelCatalog, ModelInfo};
-use crate::model_preferences::ModelMenuPreferences;
 use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelMenuSnapshot {
+    pub providers: BTreeMap<String, Vec<ModelMenuModelSnapshot>>,
+    pub freshness: BTreeMap<String, String>,
+    pub favorites: BTreeMap<String, BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelMenuModelSnapshot {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub context_input: usize,
+    pub capabilities: Vec<String>,
+    pub available: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelMenuProjection {
@@ -60,9 +75,9 @@ pub fn provider_seeds(provider_id: &str) -> &'static [&'static str] {
         "ollama-cloud" => &["gpt-oss:120b", "qwen3.5:397b", "kimi-k3"],
         "moonshot" => &["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"],
         "openrouter" => &[
+            "stealth/ox-alpha",
             "anthropic/claude-sonnet-4-7",
             "deepseek/deepseek-chat",
-            "minimax/minimax-m2.7",
         ],
         "google" | "gemini-openai" => &[
             "gemini-3.1-pro-preview",
@@ -77,15 +92,14 @@ pub fn provider_seeds(provider_id: &str) -> &'static [&'static str] {
 }
 
 pub fn project_model_menu(
-    catalog: &ModelCatalog,
-    preferences: &ModelMenuPreferences,
+    snapshot: &ModelMenuSnapshot,
     current_route: &str,
 ) -> ModelMenuProjection {
-    let inventories = provider_inventories(catalog, preferences, current_route);
+    let inventories = provider_inventories(snapshot, current_route);
     let favorite_groups = inventories
         .iter()
         .filter_map(|(provider_id, group)| {
-            let explicit = preferences.favorites_for(provider_id);
+            let explicit = snapshot.favorites.get(provider_id);
             let available_ids: BTreeSet<&str> = group
                 .models
                 .iter()
@@ -129,7 +143,7 @@ pub fn project_model_menu(
         .map(|(provider_id, group)| ModelProviderSummaryProjection {
             favorite_count: group.models.iter().filter(|model| model.favorite).count(),
             model_count: group.models.len(),
-            freshness: catalog.freshness.get(&group.display_name).cloned(),
+            freshness: snapshot.freshness.get(&group.display_name).cloned(),
             provider_id,
             display_name: group.display_name,
         })
@@ -143,26 +157,24 @@ pub fn project_model_menu(
 }
 
 pub fn project_provider_inventory(
-    catalog: &ModelCatalog,
-    preferences: &ModelMenuPreferences,
+    snapshot: &ModelMenuSnapshot,
     current_route: &str,
     provider_id: &str,
 ) -> Option<ModelProviderGroupProjection> {
-    provider_inventories(catalog, preferences, current_route).remove(provider_id)
+    provider_inventories(snapshot, current_route).remove(provider_id)
 }
 
 fn provider_inventories(
-    catalog: &ModelCatalog,
-    preferences: &ModelMenuPreferences,
+    snapshot: &ModelMenuSnapshot,
     current_route: &str,
 ) -> BTreeMap<String, ModelProviderGroupProjection> {
     let mut groups = BTreeMap::new();
-    for (display_name, models) in &catalog.providers {
+    for (display_name, models) in &snapshot.providers {
         let Some(first) = models.first() else {
             continue;
         };
         let provider_id = provider_id_from_route(&first.id).to_string();
-        let explicit = preferences.favorites_for(&provider_id);
+        let explicit = snapshot.favorites.get(&provider_id);
         let seeds: BTreeSet<String> = provider_seeds(&provider_id)
             .iter()
             .map(|id| format!("{provider_id}:{id}"))
@@ -191,7 +203,7 @@ fn provider_inventories(
 }
 
 fn project_route(
-    model: &ModelInfo,
+    model: &ModelMenuModelSnapshot,
     provider_id: &str,
     explicit: Option<&BTreeSet<String>>,
     seeds: &BTreeSet<String>,
@@ -203,11 +215,7 @@ fn project_route(
         display_name: model.name.clone(),
         description: model.description.clone(),
         context_input: model.context_input,
-        capabilities: model
-            .capabilities
-            .iter()
-            .map(|cap| cap.as_str().to_string())
-            .collect(),
+        capabilities: model.capabilities.clone(),
         favorite: explicit.is_some_and(|favorites| favorites.contains(&model.id)),
         seeded: explicit.is_none() && seeds.contains(&model.id),
         current: model.id == current_route,
@@ -219,7 +227,8 @@ fn project_route(
 mod tests {
     use super::*;
     use crate::inference_inventory::ModelAdmissionStatus;
-    use crate::model_catalog::Capability;
+    use crate::model_catalog::{Capability, ModelCatalog, ModelInfo};
+    use crate::model_preferences::ModelMenuPreferences;
 
     fn model(id: &str, name: &str, provider: &str) -> ModelInfo {
         ModelInfo {
@@ -254,11 +263,17 @@ mod tests {
             freshness: BTreeMap::new(),
         };
         let preferences = ModelMenuPreferences::default();
-        let projection = project_model_menu(&catalog, &preferences, "ollama-cloud:gpt-oss:120b");
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
+        let projection = project_model_menu(&snapshot, "ollama-cloud:gpt-oss:120b");
         assert_eq!(projection.providers[0].model_count, 4);
         assert_eq!(projection.favorite_groups[0].models.len(), 3);
-        let full = project_provider_inventory(&catalog, &preferences, "", "ollama-cloud").unwrap();
+        let full = project_provider_inventory(&snapshot, "", "ollama-cloud").unwrap();
         assert_eq!(full.models.len(), 4);
+    }
+
+    #[test]
+    fn openrouter_shortlist_includes_ox_alpha() {
+        assert!(provider_seeds("openrouter").contains(&"stealth/ox-alpha"));
     }
 
     #[test]
@@ -275,7 +290,8 @@ mod tests {
         };
         let mut preferences = ModelMenuPreferences::default();
         preferences.toggle("ollama-cloud:deepseek-v4-pro").unwrap();
-        let projection = project_model_menu(&catalog, &preferences, "");
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
+        let projection = project_model_menu(&snapshot, "");
         assert_eq!(projection.favorite_groups[0].models.len(), 1);
         assert_eq!(
             projection.favorite_groups[0].models[0].route_id,

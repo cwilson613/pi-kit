@@ -8,6 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::contribution_loading::{GuardedContributionDirectory, read_file_at};
+
+const MAX_SKILL_ENTRIES: usize = 10_000;
+const MAX_SKILL_BYTES: usize = 4 * 1024 * 1024;
+
 /// A fact in the memory system — shared format across all layers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MindFact {
@@ -79,6 +84,7 @@ pub enum SkillConflictResolution {
 struct PromptSkillCandidate {
     name: String,
     source: String,
+    path: std::path::PathBuf,
     content: String,
     order: usize,
     manifest: omegon_skills::SkillManifest,
@@ -87,7 +93,16 @@ struct PromptSkillCandidate {
 #[derive(Debug, Clone)]
 struct PromptSkillLoadResult {
     skills: Vec<String>,
+    snapshots: Vec<LoadedSkillSnapshot>,
     events: Vec<omegon_traits::SkillActivationEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedSkillSnapshot {
+    pub name: String,
+    pub source: String,
+    pub path: std::path::PathBuf,
+    pub content: String,
 }
 
 fn prompt_skill_ref(candidate: &PromptSkillCandidate) -> String {
@@ -131,6 +146,7 @@ pub struct AugmentRegistry {
     /// Project-local (.omegon/skills/) entries override same-named user-installed
     /// entries so prompt assembly consumes one resolved directive per skill name.
     loaded_skills: Vec<String>,
+    loaded_skill_snapshots: Vec<LoadedSkillSnapshot>,
     /// True when skills were loaded from an explicit operator-supplied subset.
     ///
     /// An explicit subset is itself the admission evidence: the parent already
@@ -210,16 +226,14 @@ impl AugmentRegistry {
             active_tone: None,
             memory: MemoryLayers::default(),
             loaded_skills: Vec::new(),
+            loaded_skill_snapshots: Vec::new(),
             explicit_skill_subset: false,
             skill_activation_events: Vec::new(),
             skill_conflict_resolution: SkillConflictResolution::default(),
         }
     }
 
-    /// Load skills from the two canonical locations:
-    ///   1. `~/.omegon/skills/<name>/SKILL.md`  — bundled / user-installed
-    ///   2. `<cwd>/.omegon/skills/<name>/SKILL.md` — project-local (appended last,
-    ///      so project-local content follows bundled in the prompt)
+    /// Load skills from the boot content generation, user root, then project root.
     ///
     /// Call once at session start. Silently skips missing directories.
     pub fn load_skills(&mut self, cwd: &std::path::Path) {
@@ -229,20 +243,207 @@ impl AugmentRegistry {
     /// Load only a named subset of skills from the canonical locations.
     /// When `allowed` is empty, behaves like `load_skills` and loads all skills.
     pub fn load_skills_subset(&mut self, cwd: &std::path::Path, allowed: &[String]) {
-        let bundled = crate::paths::omegon_home().ok().map(|h| h.join("skills"));
-        let project = cwd.join(".omegon").join("skills");
-        let dirs: Vec<std::path::PathBuf> = bundled
-            .into_iter()
-            .chain(std::iter::once(project))
+        let explicit_skill_subset = !allowed.is_empty();
+        match crate::paths::omegon_home() {
+            Ok(home) => self.load_skills_subset_with_home(cwd, &home, allowed),
+            Err(error) => {
+                tracing::warn!(error = %error, "skill loading failed closed");
+                self.loaded_skills.clear();
+                self.loaded_skill_snapshots.clear();
+                self.explicit_skill_subset = explicit_skill_subset;
+                self.skill_activation_events.clear();
+            }
+        }
+    }
+
+    pub(crate) fn load_skills_subset_with_home(
+        &mut self,
+        cwd: &std::path::Path,
+        home: &std::path::Path,
+        allowed: &[String],
+    ) {
+        let explicit_skill_subset = !allowed.is_empty();
+        let policy = self.skill_conflict_resolution;
+        Self::with_guarded_skills(cwd, home, allowed, policy, |result| {
+            self.loaded_skills = result.skills;
+            self.loaded_skill_snapshots = result.snapshots;
+            self.explicit_skill_subset = explicit_skill_subset;
+            self.skill_activation_events = result.events;
+        });
+    }
+
+    fn with_guarded_skills<R>(
+        cwd: &std::path::Path,
+        home: &std::path::Path,
+        allowed: &[String],
+        policy: SkillConflictResolution,
+        publish: impl FnOnce(PromptSkillLoadResult) -> R,
+    ) -> R {
+        let mut scopes = Vec::new();
+        for (root, components, scope, display_root) in [
+            (
+                home,
+                [b"skills".as_slice(), b"".as_slice()],
+                "user",
+                home.join("skills"),
+            ),
+            (
+                cwd,
+                [b".omegon".as_slice(), b"skills".as_slice()],
+                "project",
+                cwd.join(".omegon/skills"),
+            ),
+        ] {
+            let components = components
+                .iter()
+                .copied()
+                .filter(|component| !component.is_empty())
+                .collect::<Vec<_>>();
+            match GuardedContributionDirectory::open(
+                root,
+                &components,
+                home,
+                omegon_maintenance_contracts::ContributionKind::Skill,
+                scope,
+            ) {
+                Ok(Some(directory)) => scopes.push((scope, display_root, directory)),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(scope, error = %error, "skill contribution scope failed closed");
+                }
+            }
+        }
+
+        let mut skills = std::collections::BTreeMap::<String, PromptSkillCandidate>::new();
+        let mut order = 0usize;
+        if let Some(pack) = crate::content_pack::boot_pack() {
+            for asset in pack.assets("skill") {
+                let path = std::path::Path::new(&asset.manifest.path);
+                if path.file_name().and_then(|name| name.to_str()) != Some("SKILL.md") {
+                    continue;
+                }
+                let Some(skill_name) = path
+                    .parent()
+                    .and_then(std::path::Path::file_name)
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                if !allowed.is_empty() && !allowed.iter().any(|name| name == &skill_name) {
+                    continue;
+                }
+                let Ok(content) = std::str::from_utf8(&asset.bytes).map(str::to_owned) else {
+                    continue;
+                };
+                let (manifest, _body) = omegon_skills::parse_skill_file(&content);
+                skills.insert(
+                    skill_name.clone(),
+                    PromptSkillCandidate {
+                        name: skill_name,
+                        source: "bundled".into(),
+                        path: pack.root.join(path),
+                        content,
+                        order,
+                        manifest,
+                    },
+                );
+                order += 1;
+            }
+        }
+        for (scope, display_root, directory) in &scopes {
+            let mut scoped = std::collections::BTreeMap::new();
+            let starting_order = order;
+            match Self::load_guarded_skill_scope(
+                scope,
+                display_root,
+                directory,
+                allowed,
+                &mut scoped,
+                &mut order,
+            ) {
+                Ok(()) => skills.extend(scoped),
+                Err(error) => {
+                    order = starting_order;
+                    tracing::warn!(scope, error = %error, "skill contribution scope failed closed");
+                }
+            }
+        }
+        let (candidates, events) =
+            Self::resolve_prompt_skill_conflicts(skills.into_values().collect(), policy);
+        let snapshots = candidates
+            .iter()
+            .map(|candidate| LoadedSkillSnapshot {
+                name: candidate.name.clone(),
+                source: candidate.source.clone(),
+                path: candidate.path.clone(),
+                content: candidate.content.clone(),
+            })
             .collect();
-        let result = Self::load_from_dirs_filtered_with_policy(
-            &dirs,
-            allowed,
-            self.skill_conflict_resolution,
-        );
-        self.loaded_skills = result.skills;
-        self.explicit_skill_subset = !allowed.is_empty();
-        self.skill_activation_events = result.events;
+        publish(PromptSkillLoadResult {
+            skills: candidates
+                .into_iter()
+                .map(|candidate| candidate.content)
+                .collect(),
+            snapshots,
+            events,
+        })
+    }
+
+    fn load_guarded_skill_scope(
+        scope: &str,
+        display_root: &std::path::Path,
+        directory: &GuardedContributionDirectory,
+        allowed: &[String],
+        skills: &mut std::collections::BTreeMap<String, PromptSkillCandidate>,
+        order: &mut usize,
+    ) -> anyhow::Result<()> {
+        let mut entries = directory.entry_names(MAX_SKILL_ENTRIES)?;
+        entries.sort();
+        for raw_name in entries {
+            if crate::contribution_loading::is_internal_contribution_entry(&raw_name) {
+                continue;
+            }
+            if !directory.allows(&raw_name)? {
+                tracing::info!(scope, skill = %String::from_utf8_lossy(&raw_name), "excluded denied skill");
+                continue;
+            }
+            let Ok(skill_name) = std::str::from_utf8(&raw_name).map(ToOwned::to_owned) else {
+                tracing::warn!(scope, "skipping skill with a non-UTF-8 basename");
+                continue;
+            };
+            if !allowed.is_empty() && !allowed.iter().any(|name| name == &skill_name) {
+                continue;
+            }
+            let Some(skill_directory) = directory.open_child_directory(&raw_name)? else {
+                continue;
+            };
+            let Some(bytes) = read_file_at(&skill_directory, b"SKILL.md", MAX_SKILL_BYTES)? else {
+                continue;
+            };
+            let Ok(content) = String::from_utf8(bytes) else {
+                tracing::warn!(scope, skill = %skill_name, "skipping non-UTF-8 skill");
+                continue;
+            };
+            if content.trim().is_empty() {
+                continue;
+            }
+            let (manifest, _body) = omegon_skills::parse_skill_file(&content);
+            let path = display_root.join(&skill_name);
+            skills.insert(
+                skill_name.clone(),
+                PromptSkillCandidate {
+                    name: skill_name,
+                    source: scope.into(),
+                    path,
+                    content,
+                    order: *order,
+                    manifest,
+                },
+            );
+            *order += 1;
+        }
+        Ok(())
     }
 
     /// Configure how prompt assembly resolves skill activation conflicts.
@@ -293,6 +494,7 @@ impl AugmentRegistry {
                         PromptSkillCandidate {
                             name: skill_name,
                             source: prompt_skill_source_for_order(order),
+                            path: entry.path(),
                             content,
                             order,
                             manifest,
@@ -304,11 +506,21 @@ impl AugmentRegistry {
         }
         let (candidates, events) =
             Self::resolve_prompt_skill_conflicts(skills.into_values().collect(), policy);
+        let snapshots = candidates
+            .iter()
+            .map(|candidate| LoadedSkillSnapshot {
+                name: candidate.name.clone(),
+                source: candidate.source.clone(),
+                path: candidate.path.clone(),
+                content: candidate.content.clone(),
+            })
+            .collect();
         PromptSkillLoadResult {
             skills: candidates
                 .into_iter()
                 .map(|candidate| candidate.content)
                 .collect(),
+            snapshots,
             events,
         }
     }
@@ -391,6 +603,10 @@ impl AugmentRegistry {
         &self.loaded_skills
     }
 
+    pub fn skill_snapshots(&self) -> &[LoadedSkillSnapshot] {
+        &self.loaded_skill_snapshots
+    }
+
     /// Test-only: load skills from an explicit list of directories,
     /// bypassing the real ~/.omegon/skills/ path.
     #[cfg(test)]
@@ -405,6 +621,7 @@ impl AugmentRegistry {
         let result =
             Self::load_from_dirs_filtered_with_policy(dirs, &[], self.skill_conflict_resolution);
         self.loaded_skills = result.skills;
+        self.loaded_skill_snapshots = result.snapshots;
         self.skill_activation_events = result.events;
     }
 
@@ -420,6 +637,7 @@ impl AugmentRegistry {
             self.skill_conflict_resolution,
         );
         self.loaded_skills = result.skills;
+        self.loaded_skill_snapshots = result.snapshots;
         self.skill_activation_events = result.events;
     }
 
@@ -1041,6 +1259,283 @@ mod tests {
         let skill_dir = dir.join(name);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_skill_loading_excludes_denied_project_skill() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write_skill(&home.path().join("skills"), "shared", "USER_SKILL_MARKER");
+        write_skill(
+            &project.path().join(".omegon/skills"),
+            "shared",
+            "DENIED_PROJECT_MARKER",
+        );
+        write_skill(
+            &project.path().join(".omegon/skills"),
+            "allowed",
+            "ALLOWED_PROJECT_MARKER",
+        );
+        deny_skill(
+            project.path(),
+            &[b".omegon", b"skills"],
+            home.path(),
+            "project",
+            b"shared",
+        );
+
+        let registry = load_guarded_registry(project.path(), home.path());
+        let prompt = registry.build_system_prompt();
+        assert!(prompt.contains("USER_SKILL_MARKER"));
+        assert!(prompt.contains("ALLOWED_PROJECT_MARKER"));
+        assert!(!prompt.contains("DENIED_PROJECT_MARKER"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_skill_loading_isolates_malformed_scope() {
+        use std::io::Write;
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write_skill(&home.path().join("skills"), "user", "USER_SCOPE_MARKER");
+        write_skill(
+            &project.path().join(".omegon/skills"),
+            "project",
+            "PROJECT_SCOPE_MARKER",
+        );
+        let authority = initialize_skill_scope(
+            project.path(),
+            &[b".omegon", b"skills"],
+            home.path(),
+            "project",
+        );
+        let state_path = home
+            .path()
+            .join("maintain/v1/deny")
+            .join(authority.to_hex())
+            .join("state.json");
+        let mut state = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(state_path)
+            .unwrap();
+        state.write_all(b"{not-json").unwrap();
+        state.sync_all().unwrap();
+
+        let registry = load_guarded_registry(project.path(), home.path());
+        let prompt = registry.build_system_prompt();
+        assert!(prompt.contains("USER_SCOPE_MARKER"));
+        assert!(!prompt.contains("PROJECT_SCOPE_MARKER"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_skill_loading_holds_locks_through_publication() {
+        use omegon_maintenance_contracts::{LockMode, MaintenanceStateV1, ProtocolLock};
+
+        let home_path = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write_skill(&home_path.path().join("skills"), "user", "USER_MARKER");
+        write_skill(
+            &project.path().join(".omegon/skills"),
+            "project",
+            "PROJECT_MARKER",
+        );
+        let user_authority = skill_scope_key(home_path.path().join("skills"), "user");
+        let project_authority = skill_scope_key(project.path().join(".omegon/skills"), "project");
+        let home = omegon_maintenance_contracts::open_secure_root(home_path.path()).unwrap();
+        let state = MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+
+        let result = AugmentRegistry::with_guarded_skills(
+            project.path(),
+            home_path.path(),
+            &[],
+            SkillConflictResolution::MostRecent,
+            |result| {
+                for authority in [user_authority, project_authority] {
+                    let lock_name = format!("contribution-{authority}.lock");
+                    assert!(
+                        ProtocolLock::acquire_at(
+                            &state.locks,
+                            lock_name.as_bytes(),
+                            LockMode::Exclusive,
+                            false,
+                            true,
+                        )
+                        .is_err()
+                    );
+                }
+                result
+            },
+        );
+        assert!(result.snapshots.iter().any(|skill| skill.name == "user"));
+        assert!(result.snapshots.iter().any(|skill| skill.name == "project"));
+        assert!(
+            result
+                .snapshots
+                .iter()
+                .any(|skill| skill.source == "bundled")
+        );
+        for authority in [user_authority, project_authority] {
+            let lock_name = format!("contribution-{authority}.lock");
+            assert!(
+                ProtocolLock::acquire_at(
+                    &state.locks,
+                    lock_name.as_bytes(),
+                    LockMode::Exclusive,
+                    false,
+                    true,
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guarded_skill_loading_skips_opaque_basenames_without_collision() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let skills = project.path().join(".omegon/skills");
+        write_skill(&skills, "valid", "VALID_SKILL_MARKER");
+        for raw_name in [vec![b'o', 0x80], vec![b'o', 0x81]] {
+            let directory = skills.join(std::ffi::OsString::from_vec(raw_name));
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("SKILL.md"), "OPAQUE_SKILL_MARKER").unwrap();
+        }
+
+        let registry = load_guarded_registry(project.path(), home.path());
+        let prompt = registry.build_system_prompt();
+        assert_eq!(
+            registry
+                .loaded_skill_snapshots
+                .iter()
+                .filter(|skill| skill.source != "bundled")
+                .count(),
+            1
+        );
+        assert!(prompt.contains("VALID_SKILL_MARKER"));
+        assert!(!prompt.contains("OPAQUE_SKILL_MARKER"));
+    }
+
+    #[cfg(unix)]
+    fn load_guarded_registry(project: &std::path::Path, home: &std::path::Path) -> AugmentRegistry {
+        let mut registry = AugmentRegistry::new(LEX.into());
+        AugmentRegistry::with_guarded_skills(
+            project,
+            home,
+            &[],
+            registry.skill_conflict_resolution,
+            |result| {
+                registry.loaded_skills = result.skills;
+                registry.loaded_skill_snapshots = result.snapshots;
+                registry.skill_activation_events = result.events;
+            },
+        );
+        registry
+    }
+
+    #[cfg(unix)]
+    fn initialize_skill_scope(
+        root: &std::path::Path,
+        components: &[&[u8]],
+        home: &std::path::Path,
+        scope: &str,
+    ) -> omegon_maintenance_contracts::AuthorityKey {
+        GuardedContributionDirectory::open(
+            root,
+            components,
+            home,
+            omegon_maintenance_contracts::ContributionKind::Skill,
+            scope,
+        )
+        .unwrap()
+        .unwrap()
+        .scope_key()
+    }
+
+    #[cfg(unix)]
+    fn skill_scope_key(
+        directory: std::path::PathBuf,
+        scope: &str,
+    ) -> omegon_maintenance_contracts::AuthorityKey {
+        let directory = std::fs::File::open(directory).unwrap();
+        let parent = omegon_maintenance_contracts::path_identity(&directory).unwrap();
+        omegon_maintenance_contracts::scope_key(
+            omegon_maintenance_contracts::ContributionKind::Skill.as_str(),
+            scope,
+            parent.key,
+        )
+    }
+
+    #[cfg(unix)]
+    fn deny_skill(
+        root: &std::path::Path,
+        components: &[&[u8]],
+        home_path: &std::path::Path,
+        scope: &str,
+        raw_name: &[u8],
+    ) {
+        use omegon_maintenance_contracts::{
+            AuthorityKey, ContributionKind, DenyRecordV1, DenyState, DenyStateV1, SCHEMA_VERSION,
+            derive_key, entry_key, open_secure_dir_at, replace_record_at,
+        };
+        use sha2::{Digest, Sha256};
+
+        let authority = initialize_skill_scope(root, components, home_path, scope);
+        let home = omegon_maintenance_contracts::open_secure_root(home_path).unwrap();
+        let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let deny_directory = open_secure_dir_at(&state.deny, authority.to_hex().as_bytes())
+            .unwrap()
+            .unwrap();
+        let kind = ContributionKind::Skill;
+        let entry = entry_key(kind.as_str(), authority, raw_name);
+        let request_id = "00000000-0000-0000-0000-000000000001";
+        let record = DenyRecordV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny".into(),
+            record_id: derive_key(
+                "deny",
+                &[
+                    authority.as_bytes(),
+                    entry.as_bytes(),
+                    request_id.as_bytes(),
+                ],
+            ),
+            scope_key: authority,
+            contribution_kind: kind,
+            entry_key: entry,
+            raw_name_digest: AuthorityKey::from_bytes(Sha256::digest(raw_name).into()),
+            generation: 1,
+            state: DenyState::Denied,
+            request_id: request_id.into(),
+            created_at: "2026-08-17T00:00:00Z".into(),
+        };
+        let deny = DenyStateV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny_state".into(),
+            record_id: derive_key("deny-state", &[authority.as_bytes(), &1_u64.to_be_bytes()]),
+            scope_key: authority,
+            generation: 1,
+            entries: [(entry.to_hex(), record)].into(),
+        };
+        replace_record_at(&deny_directory, b"state.json", &deny, "deny-skill-test").unwrap();
     }
 
     #[test]

@@ -67,7 +67,15 @@ def install_docs_use_placeholders(repo_root: Path) -> bool:
 def workflows_use_release_manifest(repo_root: Path) -> bool:
     release_workflow = (repo_root / ".github" / "workflows" / "release.yml").read_text()
     homebrew_workflow = (repo_root / ".github" / "workflows" / "homebrew.yml").read_text()
-    return "release-manifest.json" in release_workflow and "release-manifest.json" in homebrew_workflow
+    required_release_fragments = (
+        "release-manifest.json",
+        "generate-package",
+        "omegon-maintain",
+        "manifest.sigstore.json",
+        "--signing-config",
+        "--no-default-tsa",
+    )
+    return all(fragment in release_workflow for fragment in required_release_fragments) and "release-manifest.json" in homebrew_workflow
 
 
 def release_gaps_clear(repo_root: Path) -> bool:
@@ -190,7 +198,7 @@ def collect_failures(
         failures.append("site/src/pages/docs/install.astro versioned examples are not marked as placeholders")
 
     if not workflows_use_release_manifest(repo_root):
-        failures.append("release workflows are not consistently wired through release-manifest.json")
+        failures.append("release workflows are not consistently wired through release-manifest.json and offline package bundles")
 
     if check_release_gaps:
         try:

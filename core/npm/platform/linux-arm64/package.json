@@ -14,10 +14,15 @@
     "arm64"
   ],
   "bin": {
-    "omegon": "omegon"
+    "omegon": "omegon",
+    "omegon-maintain": "omegon-maintain"
   },
   "files": [
-    "omegon"
+    "omegon",
+    "omegon-maintain",
+    "omegon.composition-lock.json",
+    "omegon-maintain.composition-lock.json",
+    "share/omegon/content-packs/omegon-shipped"
   ],
   "publishConfig": {
     "access": "public"

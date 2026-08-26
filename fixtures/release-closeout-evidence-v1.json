@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "scope": "selective-kernel-decomposition-slice-7-closeout",
+  "release_signing_evidence": {
+    "claim": "checked_fixture_and_tests_only",
+    "fixture": "core/crates/omegon-maintain/tests/fixtures/release-verifier-v1.tar.gz.b64",
+    "fixture_provenance": "core/crates/omegon-maintain/tests/fixtures/README.md",
+    "success_test": "release_verify_accepts_production_fixture_without_runtime_roots",
+    "refusal_test": "release_verify_rejects_corruption_and_relative_operands"
+  },
+  "maintenance_cases": [
+    {
+      "id": "identity-composition-isolation",
+      "test": "identity_starts_without_normal_runtime_inputs"
+    },
+    {
+      "id": "doctor-root-refusal",
+      "test": "root_aliases_and_final_symlinks_are_rejected"
+    },
+    {
+      "id": "contribution-denial-settlement",
+      "test": "contribution_disable_settles_deny_transaction_and_is_idempotent"
+    },
+    {
+      "id": "contribution-quarantine-settlement",
+      "test": "contribution_quarantine_renames_real_entry_and_unlinks_only_symlink"
+    },
+    {
+      "id": "session-quarantine-settlement",
+      "test": "session_quarantine_creates_resume_deny_and_preserves_pair_bytes"
+    },
+    {
+      "id": "resource-stale-prune-and-refusal",
+      "test": "resource_prune_removes_only_expired_different_boot_record"
+    },
+    {
+      "id": "audit-success-and-corruption-refusal",
+      "test": "audit_inspect_and_verify_detect_structural_corruption"
+    },
+    {
+      "id": "durable-restart-settlement",
+      "test": "same_request_reconciles_audited_target_settlement_without_repeating_mutation"
+    },
+    {
+      "id": "managed-resource-cleanup",
+      "test": "shutdown_retries_retained_best_effort_generation_until_settled"
+    },
+    {
+      "id": "dynamic-contribution-cleanup",
+      "test": "publication_rejection_stale_generation_and_optional_absence_are_local"
+    }
+  ],
+  "canonical_snippets": {
+    "maintenance": [
+      "identity",
+      "doctor",
+      "composition_inspect",
+      "contribution_disable",
+      "contribution_quarantine",
+      "session_quarantine",
+      "resource_prune",
+      "audit_inspect",
+      "audit_verify"
+    ],
+    "verify": [
+      "release_verify"
+    ]
+  },
+  "public_pages": [
+    "site/src/pages/docs/install.astro",
+    "site/src/pages/docs/recovery.astro",
+    "site/src/pages/docs/migration.astro",
+    "site/src/pages/docs/security.astro"
+  ],
+  "package_surfaces": [
+    "scripts/package_release.py",
+    "core/install.sh",
+    "homebrew/Formula/omegon.rb",
+    "flake.nix",
+    "nix/oci.nix",
+    "core/npm/publish.sh",
+    "core/npm/platform/darwin-arm64/package.json",
+    "core/npm/platform/darwin-x64/package.json",
+    "core/npm/platform/linux-arm64/package.json",
+    "core/npm/platform/linux-x64/package.json"
+  ]
+}

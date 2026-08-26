@@ -25,9 +25,7 @@ use crate::child_agent::{
     parse_child_activity, spawn_headless_child_agent, spawn_sandboxed_child_agent,
     write_child_prompt_file,
 };
-use crate::surfaces::{
-    conversation::ToolActivitySummary, operations::OperationWorkbenchProjection,
-};
+use crate::surfaces::conversation::ToolActivitySummary;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -1151,28 +1149,31 @@ If blocked, say the blocker plainly.\n",
         // Assemble field kit: load persona mind if specified
         let mut field_kit_context = String::new();
         if let Some(ref persona_id) = mind {
-            // Try to find the persona in installed plugins and load its directive + facts
-            let (personas, _) = crate::plugins::persona_loader::scan_available();
-            if let Some(available) = personas.iter().find(|p| {
-                p.id.contains(persona_id)
-                    || p.name.to_lowercase().contains(&persona_id.to_lowercase())
-            }) && let Ok(persona) = crate::plugins::persona_loader::load_persona(&available.path)
-            {
-                field_kit_context.push_str(&format!(
-                    "\n## Persona: {}\n{}\n",
-                    persona.name, persona.directive
-                ));
-                if !persona.mind_facts.is_empty() {
+            crate::plugins::persona_loader::with_available(&self.cwd, |personas, _| {
+                if let Some(persona) = personas
+                    .iter()
+                    .find(|p| {
+                        p.id.contains(persona_id)
+                            || p.name.to_lowercase().contains(&persona_id.to_lowercase())
+                    })
+                    .and_then(|available| available.persona())
+                {
                     field_kit_context.push_str(&format!(
-                        "\n## Mind Facts ({} facts)\n",
-                        persona.mind_facts.len()
+                        "\n## Persona: {}\n{}\n",
+                        persona.name, persona.directive
                     ));
-                    for fact in &persona.mind_facts {
-                        field_kit_context
-                            .push_str(&format!("- [{}] {}\n", fact.section, fact.content));
+                    if !persona.mind_facts.is_empty() {
+                        field_kit_context.push_str(&format!(
+                            "\n## Mind Facts ({} facts)\n",
+                            persona.mind_facts.len()
+                        ));
+                        for fact in &persona.mind_facts {
+                            field_kit_context
+                                .push_str(&format!("- [{}] {}\n", fact.section, fact.content));
+                        }
                     }
                 }
-            }
+            });
         }
         if let Some(ref fact_list) = facts
             && !fact_list.is_empty()
@@ -1689,7 +1690,7 @@ impl Feature for DelegateFeature {
                     },
                     "required": ["task_id"]
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::delegate::DELEGATE_STATUS.to_string(),
@@ -1719,6 +1720,42 @@ impl Feature for DelegateFeature {
                 ],
             },
         ]
+    }
+
+    fn runtime_tool_surfaces(&self, tool_name: &str) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+        matches!(
+            tool_name,
+            crate::tool_registry::delegate::DELEGATE
+                | crate::tool_registry::delegate::DELEGATE_RESULT
+                | crate::tool_registry::delegate::DELEGATE_STATUS
+                | crate::tool_registry::delegate::DELEGATE_CANCEL
+        )
+        .then(|| {
+            vec![
+                omegon_traits::RuntimeSurface::Model,
+                omegon_traits::RuntimeSurface::Web,
+                omegon_traits::RuntimeSurface::Daemon,
+            ]
+        })
+    }
+
+    fn runtime_tool_principals(
+        &self,
+        tool_name: &str,
+    ) -> Option<Vec<omegon_traits::RuntimePrincipalClass>> {
+        matches!(
+            tool_name,
+            crate::tool_registry::delegate::DELEGATE
+                | crate::tool_registry::delegate::DELEGATE_RESULT
+                | crate::tool_registry::delegate::DELEGATE_STATUS
+                | crate::tool_registry::delegate::DELEGATE_CANCEL
+        )
+        .then(|| {
+            vec![
+                omegon_traits::RuntimePrincipalClass::Model,
+                omegon_traits::RuntimePrincipalClass::Service,
+            ]
+        })
     }
 
     async fn execute(
@@ -2172,7 +2209,7 @@ impl Feature for DelegateFeature {
 
             crate::tool_registry::delegate::DELEGATE_STATUS => {
                 let snapshot = self.result_store.progress_snapshot();
-                let projection = OperationWorkbenchProjection::from_delegate(&snapshot);
+                let projection = crate::features::operation_surface::project_delegate(&snapshot);
                 let mut status_text = format!(
                     "# Delegate Tasks
 
@@ -2275,6 +2312,28 @@ No delegate tasks found.
                 surface: Default::default(),
             },
         ]
+    }
+
+    fn runtime_command_surfaces(
+        &self,
+        command_name: &str,
+    ) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+        (command_name == crate::tool_registry::delegate::DELEGATE).then(|| {
+            vec![
+                omegon_traits::RuntimeSurface::Tui,
+                omegon_traits::RuntimeSurface::Cli,
+                omegon_traits::RuntimeSurface::Acp,
+                omegon_traits::RuntimeSurface::Ipc,
+                omegon_traits::RuntimeSurface::Web,
+            ]
+        })
+    }
+
+    fn command_aliases(&self) -> Vec<omegon_traits::CommandAlias> {
+        vec![omegon_traits::CommandAlias {
+            alias: "subagent".into(),
+            canonical: "delegate".into(),
+        }]
     }
 
     fn handle_command(&mut self, name: &str, args: &str) -> CommandResult {
@@ -2768,6 +2827,38 @@ mod tests {
         )
         .expect("test managed store");
         omegon_secrets::SecretsManager::new_with_managed_store(config_dir, store).expect("manager")
+    }
+
+    #[test]
+    fn managed_delegate_tools_declare_service_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let feature = DelegateFeature::new(temp.path(), vec![], false);
+
+        for tool_name in [
+            crate::tool_registry::delegate::DELEGATE,
+            crate::tool_registry::delegate::DELEGATE_RESULT,
+            crate::tool_registry::delegate::DELEGATE_STATUS,
+            crate::tool_registry::delegate::DELEGATE_CANCEL,
+        ] {
+            let surfaces = feature.runtime_tool_surfaces(tool_name).unwrap();
+            assert!(surfaces.contains(&omegon_traits::RuntimeSurface::Model));
+            assert!(surfaces.contains(&omegon_traits::RuntimeSurface::Web));
+            assert!(surfaces.contains(&omegon_traits::RuntimeSurface::Daemon));
+            let principals = feature.runtime_tool_principals(tool_name).unwrap();
+            assert!(principals.contains(&omegon_traits::RuntimePrincipalClass::Model));
+            assert!(principals.contains(&omegon_traits::RuntimePrincipalClass::Service));
+        }
+
+        let result = feature
+            .tools()
+            .into_iter()
+            .find(|tool| tool.name == crate::tool_registry::delegate::DELEGATE_RESULT)
+            .unwrap();
+        assert!(
+            result
+                .capabilities
+                .contains(&omegon_traits::ToolCapability::StateChanging)
+        );
     }
 
     #[test]
@@ -3721,19 +3812,21 @@ This agent runs in write mode and can modify files.
 
     fn write_fake_child(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
+        let staged = dir.join(format!(".{name}.tmp"));
         {
             use std::io::Write;
-            let mut file = std::fs::File::create(&path).unwrap();
+            let mut file = std::fs::File::create(&staged).unwrap();
             file.write_all(body.as_bytes()).unwrap();
             file.sync_all().unwrap();
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            let mut perms = std::fs::metadata(&staged).unwrap().permissions();
             perms.set_mode(0o755);
-            std::fs::set_permissions(&path, perms).unwrap();
+            std::fs::set_permissions(&staged, perms).unwrap();
         }
+        std::fs::rename(staged, &path).unwrap();
         path
     }
 

@@ -24,7 +24,6 @@ use crate::autonomy::{
 };
 use crate::child_agent::ChildTaskItem;
 use crate::surfaces::conversation::ToolActivitySummary;
-use crate::surfaces::operations::OperationWorkbenchProjection;
 
 use omegon_traits::{
     AgentEvent, BusEvent, BusRequest, BusRequestSink, CommandDefinition, CommandResult,
@@ -899,6 +898,7 @@ pub struct CleaveFeature {
     settings: Option<crate::settings::SharedSettings>,
     sandbox: bool,
     dangerously_bypass_permissions: bool,
+    git: crate::git_service::GitBinding,
 }
 
 impl CleaveFeature {
@@ -935,6 +935,7 @@ impl CleaveFeature {
             settings: None,
             sandbox,
             dangerously_bypass_permissions,
+            git: Default::default(),
         };
         feature.load_pending_approvals();
         feature.refresh_progress_from_workspace_state();
@@ -956,6 +957,11 @@ impl CleaveFeature {
 
     pub fn with_secrets(mut self, secrets: Arc<omegon_secrets::SecretsManager>) -> Self {
         self.secrets = Some(secrets);
+        self
+    }
+
+    pub(crate) fn with_git(mut self, git: crate::git_service::GitBinding) -> Self {
+        self.git = git;
         self
     }
 
@@ -1984,30 +1990,33 @@ Directive: {}{}",
             }
         }
 
-        let config = cleave::orchestrator::CleaveConfig {
-            agent_binary,
-            bridge_path: PathBuf::new(), // Not used in native mode
-            node: String::new(),
-            model: parent_model,
-            max_parallel,
-            timeout_secs: 900,
-            idle_timeout_secs: 180,
-            max_turns: 50,
-            route_decisions,
-            inventory: self.inventory.clone().or_else(|| {
-                // Probe on demand if no inventory was injected at startup
-                Some(std::sync::Arc::new(tokio::sync::RwLock::new(
-                    crate::routing::ProviderInventory::probe(),
-                )))
-            }),
-            inherited_env: self.child_secret_env(),
-            injected_env: Vec::new(),
-            child_runtime: crate::cleave::CleaveChildRuntimeProfile::default(),
-            progress_sink,
-            workflow: crate::workflow::discover_workflow(&self.repo_path),
-            sandbox: self.sandbox,
-            dangerously_bypass_permissions: self.dangerously_bypass_permissions,
-        };
+        let config = crate::workflow::with_discovered_workflow(&self.repo_path, |workflow| {
+            cleave::orchestrator::CleaveConfig {
+                agent_binary,
+                bridge_path: PathBuf::new(), // Not used in native mode
+                node: String::new(),
+                model: parent_model,
+                max_parallel,
+                timeout_secs: 900,
+                idle_timeout_secs: 180,
+                max_turns: 50,
+                route_decisions,
+                inventory: self.inventory.clone().or_else(|| {
+                    // Probe on demand if no inventory was injected at startup
+                    Some(std::sync::Arc::new(tokio::sync::RwLock::new(
+                        crate::routing::ProviderInventory::probe(),
+                    )))
+                }),
+                inherited_env: self.child_secret_env(),
+                injected_env: Vec::new(),
+                child_runtime: crate::cleave::CleaveChildRuntimeProfile::default(),
+                progress_sink,
+                workflow,
+                sandbox: self.sandbox,
+                dangerously_bypass_permissions: self.dangerously_bypass_permissions,
+                git: self.git.clone(),
+            }
+        });
 
         let result = cleave::run_cleave(
             &plan,
@@ -2367,6 +2376,21 @@ impl Feature for CleaveFeature {
         }]
     }
 
+    fn runtime_command_surfaces(
+        &self,
+        command_name: &str,
+    ) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+        (command_name == "cleave").then(|| {
+            vec![
+                omegon_traits::RuntimeSurface::Tui,
+                omegon_traits::RuntimeSurface::Cli,
+                omegon_traits::RuntimeSurface::Acp,
+                omegon_traits::RuntimeSurface::Ipc,
+                omegon_traits::RuntimeSurface::Web,
+            ]
+        })
+    }
+
     fn handle_command(&mut self, name: &str, args: &str) -> CommandResult {
         match name {
             "cleave" => {
@@ -2391,7 +2415,7 @@ impl Feature for CleaveFeature {
                         }
                         return CommandResult::Display(lines.join("\n"));
                     }
-                    let projection = OperationWorkbenchProjection::from_cleave(&prog);
+                    let projection = crate::features::operation_surface::project_cleave(&prog);
                     let mut lines = Vec::new();
                     if prog.active {
                         lines.push(format!(

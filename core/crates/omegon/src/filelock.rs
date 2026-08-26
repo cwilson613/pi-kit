@@ -13,9 +13,46 @@ use std::path::{Path, PathBuf};
 
 /// RAII guard for an advisory file lock. Releases the lock on drop.
 #[cfg(unix)]
+#[derive(Debug)]
 pub struct FileLockGuard {
     fd: std::os::unix::io::RawFd,
     _lock_path: PathBuf,
+}
+
+/// Try to acquire an exclusive advisory lock on `<path>.lock` without waiting.
+#[cfg(unix)]
+pub fn try_acquire_lock(path: &Path) -> anyhow::Result<Option<FileLockGuard>> {
+    use std::os::unix::io::IntoRawFd;
+
+    let lock_path = lock_path_for(path);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    let fd = file.into_raw_fd();
+    let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    if ret == 0 {
+        return Ok(Some(FileLockGuard {
+            fd,
+            _lock_path: lock_path,
+        }));
+    }
+    let error = std::io::Error::last_os_error();
+    unsafe {
+        libc::close(fd);
+    }
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        Ok(None)
+    } else {
+        Err(anyhow::anyhow!(
+            "flock failed on {}: {error}",
+            lock_path.display()
+        ))
+    }
 }
 
 #[cfg(unix)]
@@ -96,8 +133,20 @@ pub fn acquire_lock(path: &Path) -> anyhow::Result<FileLockGuard> {
 }
 
 #[cfg(not(unix))]
+#[derive(Debug)]
 pub struct FileLockGuard {
     _lock_path: PathBuf,
+}
+
+#[cfg(not(unix))]
+pub fn try_acquire_lock(path: &Path) -> anyhow::Result<Option<FileLockGuard>> {
+    tracing::warn!(
+        path = %path.display(),
+        "advisory file locking not available on this platform"
+    );
+    Ok(Some(FileLockGuard {
+        _lock_path: lock_path_for(path),
+    }))
 }
 
 #[cfg(not(unix))]
@@ -139,6 +188,29 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> anyhow::Result<()> {
 pub fn atomic_write_locked(path: &Path, content: &[u8]) -> anyhow::Result<()> {
     let _guard = acquire_lock(path)?;
     atomic_write(path, content)
+}
+
+/// Atomic write for session compatibility data that must never be group/world-readable.
+pub fn atomic_write_locked_private(path: &Path, content: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let _guard = acquire_lock(path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 #[cfg(test)]

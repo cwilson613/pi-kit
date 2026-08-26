@@ -12,7 +12,7 @@ Measured on branch `refactor/minimal-default-binary` on 2026-08-14.
 
 The TUI feature accounts for 158 additional unique dependency-tree lines. This is a useful compatibility boundary, but it is not yet a product boundary: the headless artifact still admits the provider stack, control plane, lifecycle engines, web server, plugin/skill management, archive/signature support, and other optional operational domains.
 
-Compile-time content embedded directly in the main binary is approximately 332 KiB of source material:
+The original assessment found approximately 332 KiB of compile-time source content:
 
 | Content family | Source size |
 |---|---:|
@@ -22,7 +22,7 @@ Compile-time content embedded directly in the main binary is approximately 332 K
 | `pkl/` | 48 KiB |
 | `prompts/` | 16 KiB |
 
-This content is small relative to native code, but embedding it is architecturally significant: it makes contribution packs part of the kernel release cadence and prevents replacement without rebuilding the binary.
+Slice 6.4 removes shipped skill, prompt, persona, tone, workflow, and catalog bodies and inventory from kernel Rust. These families now ship as `omegon-shipped` content pack v1. Other rows in the historical measurement, such as required configuration and dashboard data, are not reclassified by Slice 6.4.
 
 ## Kernel admission criteria
 
@@ -58,19 +58,23 @@ A component failing any criterion defaults to an external contribution pack, opt
 - lifecycle methodologies, language conventions, personas, prompts, and catalog agents
 - demo projects and onboarding content
 
-## First extraction slice
+## Shipped content-pack boundary
 
-Extract bundled skills from the binary into an installed **contribution pack directory** while preserving the existing `~/.omegon/skills` discovery contract.
+The shipped pack root contains `content-pack.toml` plus manifest-inventoried assets. Source runs use the repository root. Installed distributions use `share/omegon/content-packs/omegon-shipped` relative to the executable.
 
 Why this slice first:
 
 - the interface already exists and is filesystem-based;
 - `just link` already installs bundled skills/catalog content;
 - no runtime protocol redesign is required;
-- removing `include_str!` makes content independently replaceable and versionable;
+- removing content `include_str!` calls makes content independently replaceable and versionable;
 - failure is bounded: missing packs degrade inventory/install commands, not the agent kernel.
 
-The default binary will discover shipped skills from a compile-time path supplied by packaging, then user and project roots. It will not embed skill markdown. Packaging remains responsible for installing the shipped pack.
+The runtime validates identity, semantic version, provenance, protocol compatibility, requested content capabilities, every file digest, and one canonical aggregate digest. It admits one immutable boot generation. A compatible replacement takes effect on the next process boot without a kernel rebuild. Absence or invalidity disables only shipped content.
+
+Residency is not authority. Pack metadata cannot admit a prompt body, activate a skill or persona, call a tool, execute an asset, grant an effect, or persist a trusted path. Existing content-specific and kernel admission gates remain authoritative. Project and user content retain precedence over extension and shipped content.
+
+The sole production Markdown embedding in this boundary is `data/lex-imperialis.md`. It contains exactly the six non-overridable host axioms already classified as constitutional authority: anti-sycophancy, evidence-based epistemology, ship-before-perfection, systems-engineering identity, cognitive honesty, and operator agency. It contains no tool inventory, extension guidance, workflow, or provider instructions. The former capability section, tool recommendations, extension contexts, and session-compaction instruction are replaceable `prompt` assets in `omegon-shipped`. Without a valid pack, the six kernel axioms remain active, optional prompt augmentation is omitted, and compaction returns a local unavailable error before provider dispatch.
 
 ## External-agent interoperability
 
@@ -125,9 +129,9 @@ Before external-agent import is implemented, specify a provider-neutral `SkillIm
 
 - no `include_str!(...skills/*/SKILL.md)` remains in non-test Omegon code;
 - `omegon skills list/install` reads a deterministic shipped-pack manifest/directory;
-- missing shipped content returns an actionable error and does not panic;
-- project/user skill discovery and override precedence remain unchanged;
-- `just link` and package workflows install the contribution pack;
+- missing, corrupt, and incompatible shipped content return actionable local diagnostics and do not panic;
+- project/user content discovery and override precedence remain unchanged;
+- source, `just link`, direct install, release archive, Homebrew, Nix/OCI, and npm packaging carry the same pack;
 - default and headless compile matrices remain green.
 
 ---
@@ -139,6 +143,109 @@ The first extraction slice proved that optional content can leave the binary wit
 ### Design status
 
 **Decided.** This section is the target contract for subsequent implementation slices. It does not claim that the current runtime already conforms.
+
+The first Slice-2 contract foundation is implemented in `omegon_traits::runtime_contributions`. Its version-1 renderer-neutral vocabulary distinguishes composition generations, contribution generations, and process identity; keeps owner tier, requested trust, and requested confinement separate; binds canonical invocations and aliases to one capability; and declares dependencies, conflicts, replacements, groups, platform requirements, effects, lifecycle, execution, transition, cleanup, and surface support before activation. Requested trust or confinement is not an admission grant, and owner-enforced deduplication is distinct from idempotency and ordinary call-ID propagation.
+
+The contracts include validated scoped identities, fail-closed protocol/schema decoding, typed generation/lifecycle states, and diagnostics with explicit stable ordering. Representative declaration, generation, and diagnostic JSON fixtures freeze the v1 wire shape. This foundation does not yet make the graph authoritative: legacy capability inventory and dispatch remain unchanged until graph validation, activation, readiness, and compatibility-adapter gates land in later Slice-2 tasks. There is therefore no public command, configuration, or site behavior change in this contract-only lane.
+
+The next Slice-2 layer is a pure deterministic candidate-graph builder. It receives frozen declarations, explicit host protocol/platform facts, and requested or observed effect evidence; it does not read process environment, activate code, or publish registrations. Validation accumulates stable all-error diagnostics for duplicate contribution/generation/group/capability ownership, ambiguous or dangling bindings, replacement and dependency cycles, missing requirements, conflicts, protocol/platform mismatch, dangling groups, and undeclared effects. Explicit acyclic replacement chains can resolve superseded owners structurally, but replacement authorization remains a later trust-admission decision. A valid result contains immutable owner/binding/group indexes, negotiated protocols, dependency edges, and prerequisite-first activation waves. Any error returns no graph, never a valid subset, and legacy composition/dispatch remains authoritative until task 2.3 migrates that boundary.
+
+Static setup now stages feature implementations outside the published EventBus surface, freezes and adapts their tool, command, alias, internal-binding, safety, surface, provenance, and conservative effect metadata, validates one candidate graph, checks activation-plan membership and implementation parity as the synchronous static readiness gate, and only then commits graph-derived legacy caches. Tool, command, and internal binding collisions fail closed without registration-order fallback. Rejected additions or replacements are dropped while the previous accepted feature set and dispatch caches remain active; setup and live ACP/model-budget rebuilds use the fallible boundary. Event and context delivery include only published features, and plugin/extension admission guards remain held through publication. This static compatibility adapter does not claim dynamic trust preflight, quarantine, resource rollback, readiness deadlines, or lifecycle-generation promotion, which remain tasks 2.4 and 2.5.
+
+Dynamic preflight now has a separate version-1 renderer-neutral contract. It binds stable contribution identity, immutable source digest, source kind, protocol range, minimum dependencies, requested trust/confinement, probe operations, timeout, and conservative effects before code evaluation, spawn, or connection. Host-produced trust admission is separately source-bound: trusted-code evidence identifies kernel-release or explicit operator-policy authority, while verified-confinement evidence fails validation unless an OS/OCI boundary prevents direct filesystem, process, network, and secret access and forces privileged effects through brokers. No current execution substrate is implicitly certified by this vocabulary, and manifest requests, installation, enablement, maintenance admission, or trusted-directory state cannot mint admission evidence.
+
+Native and OCI extension startup now enforces that contract. `permissions.trustedContributionCode` is a distinct operator-policy list of stable IDs such as `extension:example`; selected or installed extensions absent from it are denied before secret preflight, secret resolution, spawn, or protocol probing. A permit binds the accepted ID and complete snapshotted source-tree digest and is revalidated at the low-level process boundary on initial launch and transport-error respawn. The current OCI launcher is not treated as verified confinement, so it also requires explicit trusted-code admission. Test-only unsnapshotted launch helpers are not compiled into production.
+
+Executable plugin paths now use the same policy and permit. A guarded plugin directory is identified as `plugin:<directory-name>` and denied before Pkl evaluation, dynamic context generation, script/OCI execution, HTTP registration, or plugin-declared MCP connection. Production Armory, HTTP, and MCP constructors require a permit and revalidate it at deferred execution/send boundaries. Project MCP uses the separately frozen `mcp:project` identity, while ACP-submitted server configuration uses `mcp:acp-client` and is admitted authoritatively in the worker before secret-template resolution, process spawn, or network connection. Red tests use marker processes to prove untrusted plugin context and project MCP configuration cannot execute during discovery.
+
+Slice 2.5 lifecycle records add owner and composition-generation identity, last completed lifecycle boundary, bounded coded reasons, restart/backoff and heartbeat evidence, cleanup assurance, and cleanup outcome. Separate resource records cover process trees, tasks, sockets, subscriptions, temporary directories, durable writers, and remote services. Validation rejects unbounded reasons, strict cleanup paired with unverified outcomes, and false host-ownership claims for remote services. These renderer-neutral records describe evidence produced by the lifecycle owner and concrete transport adapters.
+
+The transport-neutral lifecycle owner now models one quarantined candidate with one absolute readiness deadline, per-contribution lifecycle records, and generation-bound resource cleanup callbacks. Promotion requires every contribution to reach readiness and every strict-cleanup owner to have strict resource assurance; the non-awaiting publication callback must succeed before active-generation state changes. Rejection and publication failure run bounded cleanup in reverse activation order and preserve the prior active generation. Successful replacement promotes the new generation before retiring the old resource set, recording unverified cleanup rather than claiming settlement when a deadline expires. Current setup and ACP adapters apply these invariants directly to extension and MCP resources while EventBus atomically preserves or replaces the accepted graph and legacy dispatch caches.
+
+Extension negotiation now applies one absolute manifest readiness deadline across optional initialization, required tool discovery, configuration delivery, and secret delivery. Timeout and handshake failure retain the canonical child handle long enough to shut down, kill the dedicated process group, and reap it before reporting failure. Setup also explicitly shuts down every successfully started extension supervisor when graph publication or later runtime-ownership startup fails, preserving admission locks through extension cleanup and reporting degraded cleanup instead of relying solely on synchronous drop backstops.
+
+MCP connection and discovery now use one absolute per-server readiness deadline across transport startup, required tool discovery, and optional resource, template, and prompt discovery. A shared MCP supervisor owns every accepted `RunningService`, performs bounded explicit close, remains held through graph publication, and is retained through daemon or interactive runtime shutdown. Startup and ACP graph rejection close candidate services before reporting failure; timeout or join failure is surfaced as degraded cleanup rather than hidden behind rmcp's asynchronous drop guard.
+
+Extension transport recovery now uses a generation-local restart controller. Failures consume a fixed restart budget, apply deterministic capped exponential backoff, and transition to terminal quarantine when the budget is exhausted; later invocations cannot silently start another process. Constructing a changed extension generation creates a fresh controller, while ordinary successful respawn does not erase prior crash evidence.
+
+Armory context, script-tool, and OCI-tool processes now remain under explicit child ownership while output is drained. They run as dedicated process groups with kill-on-drop backstops; timeout and cancellation kill the complete group, wait for the child, and settle output tasks before returning. Script paths must be normal relative paths inside the admitted snapshot, preventing absolute-path and parent-traversal execution.
+
+Dynamic feature adapters now freeze their negotiated lifecycle and transition policy with the candidate declaration instead of inheriting zero-valued static defaults. Extensions publish their manifest readiness deadline, bounded restart budget, quarantine disposition, and platform-honest cleanup assurance; MCP, Armory, and HTTP plugins publish bounded readiness and best-effort cleanup policy appropriate to their transport boundaries. EventBus validates these values as part of the candidate graph and changes the accepted graph, feature set, and compatibility dispatch caches only after the complete candidate succeeds. Slice 2.5 does not issue generation-bound invocation leases or drain active calls; those enforcement semantics remain Slice 3 work.
+
+Each successful EventBus publication now mints a distinct `composition:<uuid>` generation only after the candidate graph and graph-derived compatibility caches pass validation and parity. Failed candidates preserve the prior graph, dispatch caches, and composition identity. New interactive, daemon, bounded, and ACP session-authority lineages persist that composition identity instead of the process instance ID. Existing session generation strings remain valid opaque legacy IDs: resume retains the session's original value for later turns and does not rewrite it to the current process or composition generation. Slice 2 still performs no live session migration.
+
+One renderer-neutral composition diagnostic projection now supplies native and ACP `/status`. It carries the accepted generation, effective declarations, negotiated protocols, activation waves, replacement edges, owner and contribution-generation provenance, active health, cleanup assurance and state, coded diagnostics from the latest accepted or rejected candidate, and explicit `graph_derived_legacy` compatibility dispatch with parity status. Renderers consume this projection rather than reconstructing graph policy; the projection itself does not issue invocation authority.
+
+Model-tool dispatch now crosses one kernel-owned invocation service before host delegation or local owner execution. The service resolves the invocation against the accepted graph, combines the declaration-derived RBAC ceiling with layered permission policy and operator approval, and issues a call-, principal-, scope-, capability-, owner-, effect-, transition-, and composition-generation-bound lease. EventBus revalidates the accepted generation and owner immediately before execution; stale, mismatched, closed, reused, unknown, or incompletely declared calls receive no executable authority. Lease claim and terminal closure are exactly once, and rejected candidate publications leave leases for the retained generation valid.
+
+Authority-backed model-tool calls now persist `invocation.prepared` after admission and approval but before returning a lease, then persist `invocation.dispatched` after lease claim and generation revalidation but before host or local owner entry. Preparation captures the complete lease policy plus stable invocation, lease, visible call, optional owner-enforced deduplication, session, and turn identities. Interactive, ACP, daemon, and bounded turns share the single session-authority writer; explicit no-session compatibility calls remain ephemeral. Preparation failure issues no lease, dispatch-write failure revokes before handoff, and JSONL authority remains committed if its replaceable snapshot cache cannot refresh.
+
+Owner execution now receives one cloneable acknowledgement control. Local owners acknowledge on entry; host delegation, extension RPC, and MCP acknowledge at their selected transport boundary. Completed, failed, cancelled, timed-out, and revoked results persist terminal settlement before `ToolEnd`, result return, or lease closure. External transport loss after acknowledgement is durably classified as unknown completion and is not automatically replayed; restart recovery applies the same classification to every unsettled dispatched or acknowledged invocation, including calls from an already-closed legacy turn, while preserving prepared calls as not handed off.
+
+Mutating execution declarations now require a validated durable mutation domain and fence key. If acknowledgement, unknown classification, or terminal settlement persistence fails after dispatch, the lease writes append-only emergency evidence through a writer independent of the failed authority JSONL, withholds ordinary completion, and denies later matching mutations before preparation. Malformed evidence fails closed, and an emergency-writer failure poisons mutation admission for the running authority. Runtime execution exposes no fence-removal shortcut; deterministic reconciliation or an explicit audited operator recovery path must own clearing.
+
+Before preparing a stable call identity, session authority now classifies any unresolved unknown invocation with that call ID across prior turns. Mutating replay is denied unless the original persisted contract was idempotent or carried owner-enforced deduplication for the exact call identity; current replacement metadata cannot retroactively authorize it. Legacy unknown records fail closed. This lane does not yet enable safe replay, relax duplicate-call rules, or add attempt lineage/request fingerprints. Provider-request retries remain a distinct pre-dispatch mechanism. ACP host writes also no longer fall back to a second local mutation after an ambiguous host response.
+
+Loop-driver and provider-route-service selection is one atomic release-coupled
+system-module binding. Each durable session owns one boot-selected pair and
+captures it at turn start; sessionless hosts use the immutable process boot
+pair. A mid-turn replacement remains in-memory `Pending` until a deliberate
+caller explicitly commits it at quiescence. Turn closure and subsequent turn
+start do not auto-promote it. The durable migration records distinct driver and
+route-service contribution generations only after idle and unknown-invocation
+guards pass, and publication follows the synced append. Resume boot binding is
+process-local and creates no migration history. This boundary does not make the
+release-coupled modules third-party plugins or add Slice 5 semantic facts.
+
+Slice 5.1 subsequently activates semantic emission inside that captured binding
+only when the invocation scope contains one complete, current session/turn
+authority. Partial authority cannot downgrade to sessionless operation;
+sessionless bindings continue to emit only their existing route evidence. The
+supervisor terminalizes any remaining semantic step after host-owned cleanup and
+before canonical turn closure, so TUI, ACP, daemon, and bounded hosts do not rely
+on advisory events or future destruction for durable abnormal completion.
+
+Slice 5.2 completes the authority-backed compatibility boundary around that
+binding: response attempts, event-backed context provenance, strict replay and
+blob verification, compaction facts/recovery, reducer/cache v5, and generic
+output-before-cursor storage are active. Interactive, ACP, and daemon session
+replacement validates the complete target authority and publishes session,
+execution, projection, and compatibility state atomically while idle. Slice 5.3
+now gives each authority-backed supervisor one session-lifetime shadow worker:
+post-durability hints use bounded dirty-bit coalescing, strict-replay the latest
+stable frontier, and independently publish provider-history, transcript,
+frontend, and compaction-checkpoint outputs. Replacement clears and stops the
+old notifier, fences its root, and transfers join ownership to the new
+supervisor without delaying host publication; sessionless bindings remain route-only and
+start no projector. Slice 5.4 now consumes those outputs through validated
+readers without adding a configuration surface.
+
+Task 5.4.0 froze that migration without changing runtime. Slice 5.4 provider dispatch
+now consumes a synchronous immutable current-context reduction at its captured
+latest durable frontier, never lagging provider-history or another background
+projection. Exact resume follows the same frontier rule; frontend adapters may
+show a validated stale snapshot only with disclosed lag. Host-owned intent/plan
+state, durable operator observations, operator metadata, semantic counters,
+audit, and Markdown journal retain distinct schemas and ownership. Mixed resume
+is a labeled legacy base plus exact semantic suffix, while exact full-session and
+mixed Web-prefix export remain unavailable. Slice 5.6 stops compatibility pair
+rewrites for full and materialized-mixed sessions while retaining legacy pairs
+only as one-way import sources; no rollback selector can re-enable an old writer
+or downgrade semantic lineage. `/transcript` is reserved for exact committed
+semantic content and `/session-export` names presentation/evidence output. The
+native command help reflects that cutover. Slice 5.5 dispatches every frozen
+manifest row through an exhaustive consumer-specific oracle, includes AC13's
+chunk-bearing mixed-lineage reconstruction seed, and passes the macOS, Ubuntu,
+and Windows runtime budgets. GitHub Actions run `32622078435` at `b788f3b8`
+supplies the required Ubuntu and Windows evidence. Slice 5.6 completes the
+applicable public command/session/migration/recovery docs and compatibility-
+publication closeout.
+
+Invocation admission and lease revalidation are now kind-aware rather than tool-only. Graph-registered feature commands from TUI, CLI remote execution, ACP, Web, and IPC enter with explicit operator principals and owner-declared surfaces, then acknowledge, settle, and close through the shared lease lifecycle before returning their result. Model-loop path grants invoke the graph-declared `trust_directory` internal owner under an internal principal while retaining parent session and turn authority. Automatic memory ingestion and host-mediated persona/tone switches use explicit internal bindings and leases, and model-facing memory mutations declare state-changing effects. Managed-delegation tools explicitly admit model and service principals on Model/Web/Daemon surfaces; authenticated supervisor calls now use service leases, and status resolves to the owned delegate-status binding. Operator context-pack reads call a typed read-only context service rather than entering tool admission. Extension-provided voice stop declares TUI service authority and executes under the promoted turn's durable scope. Daemon vox polling invokes the declared `vox_route` tool under an ephemeral Service/Daemon lease. Arbitrary ACP methods use one extension-owned conservative Operator/ACP transport capability because per-method effects are not yet declared; dispatch occurs on the worker-owned EventBus rather than a raw polling handle. Lease-less imperative extension HostActions fail closed, and approval contributes only operator intent without granting independent project, runtime, or origin trust. Declarative native HostActions and MCP review candidates require a host-only parent guard injected after revalidation; it checks live dispatch state, effect containment, and exactly-once child identity before execution or review. Idle and post-loop calls remain ephemeral because no active authority turn exists; the runtime does not fabricate durable scope. Reactive path grants and extension HostAction approval can only narrow an upstream lease decision.
+
+Capability execution declarations now include typed eligible principal classes, timeout class, retry/idempotency/deduplication policy, serial or parallel-safe scheduling, and explicit transaction behavior alongside required effects and transition policy. Candidate validation rejects empty principal sets, zero attempts, unsafe non-idempotent retry, parallel rollback, and mutation/effect contradictions. Leased model-tool admission derives RBAC from declared effects rather than the visible tool name, captures the complete policy, and revalidates it before owner execution. The scheduler uses declared parallelism and best-effort rollback eligibility; caller timeout arguments may narrow but not widen the declaration-class ceiling, including for host-delegated calls.
+
+Static features and legacy tool providers can publish precise policy through the runtime tool-policy hook. Missing hooks receive a conservative serial, non-retrying host adapter, and external tools retain a full host-effect envelope. The behavioral tool catalog remains available for guidance and loop heuristics but no longer grants model-tool scheduling or rollback authority. Retry metadata participates in unknown-completion safety classification but does not schedule or authorize replay, and direct compatibility execution retains its legacy timeout behavior until the broader privileged-path migration.
 
 ### Design laws
 
@@ -405,13 +512,37 @@ Default transition policies:
 
 **Exit gate:** minimal headless/kernel and default interactive matrices compile and pass contract tests; optional domains can be absent without kernel startup failure.
 
-### Slice 6 — budgets and deletion
+### Slice 6 — budgets and deletion (implemented by release Slice 7)
 
 - Remove legacy disabled-name sets, hard-coded tool groups, first-registration-wins arbitration, per-surface capability allowlists, and duplicate loaded/active flags.
 - Establish dependency, artifact-size, schema-token, default-callable-count, and startup-task budgets.
 - Report budget deltas in CI and require explicit approval for regressions.
 
 **Exit gate:** one admission engine and snapshot remain as the authority; legacy compatibility adapters are read-only or removed.
+
+The shipped implementation translates compatibility `disabled_tools` inputs at
+the profile/session boundary into capability IDs held by
+`ToolAdmissionPolicy`; there is no shared disabled-name-set authority. Registry
+publication rejects duplicate capability/invocation owners independent of
+registration order. Dynamic transports share one contribution generation owner,
+and command surfaces project the canonical `CommandDefinition` registry.
+`scripts/check_composition_authority.py` guards these deletions.
+
+`fixtures/release-composition-matrix-v1.json` is the executable profile/path
+matrix. `fixtures/composition-budgets-v1.json` records measured maintenance and
+normal baselines plus approved deltas. The source path invokes each profile with
+`cargo run` in an isolated workspace. The linked path invokes the installed
+channel launchers from outside the checkout and verifies their `--which` target,
+resident locks, and content assets. The release path validates exact archive
+inventory and invokes the extracted executables.
+
+The normal executable's inspection command constructs the requested production
+runtime mode. It reports post-admission callable capability IDs, schema tokens
+from the model-request estimator, and active managed startup resources grouped
+by owner. The budget collector combines that runtime evidence with target-aware
+Cargo dependency closure, release executable bytes, and resident-lock entries.
+Budget failures retain owner diagnostics instead of falling back to source-text
+counts.
 
 ## Enforcement gates
 

@@ -213,14 +213,16 @@ spec:
             cargo install cross --git https://github.com/cross-rs/cross
 
             # Build
-            cross build --release --target "$TARGET"
+            cross build --release --target "$TARGET" -p omegon -p omegon-maintain
 
             # Strip if possible
             BINARY="target/${TARGET}/release/omegon"
+            MAINTAIN_BINARY="target/${TARGET}/release/omegon-maintain"
             strip "$BINARY" 2>/dev/null || true
+            strip "$MAINTAIN_BINARY" 2>/dev/null || true
 
             # Package
-            tar czf "/artifacts/${ARCHIVE}.tar.gz" -C "$(dirname "$BINARY")" "$(basename "$BINARY")"
+            tar czf "/artifacts/${ARCHIVE}.tar.gz" -C "$(dirname "$BINARY")" omegon omegon-maintain
             echo "Built: /artifacts/${ARCHIVE}.tar.gz ($(du -h "/artifacts/${ARCHIVE}.tar.gz" | cut -f1))"
         volumeMounts:
           - name: workspace

@@ -20,8 +20,11 @@ pub struct ChildContext {
 }
 
 /// Build context for a child given its scope and the repo path.
-pub fn discover_child_context(repo_path: &Path, scope: &[String]) -> ChildContext {
-    let submodules = detect_submodule_names(repo_path);
+pub fn discover_child_context(
+    repo_path: &Path,
+    scope: &[String],
+    submodules: Vec<String>,
+) -> ChildContext {
     let dependency_snippets = extract_dependency_versions(repo_path, scope);
     let test_example = sample_test_convention(repo_path, scope);
     let finalization = build_finalization_section(&submodules);
@@ -186,15 +189,6 @@ pub fn format_testing_section(directives: &TestingDirectives, test_convention: &
     section.push_str(&format!("### Test Convention\n\n{test_convention}\n\n"));
 
     section
-}
-
-/// Detect submodule names from `git submodule status`.
-/// Delegates to worktree::detect_submodules to avoid duplication.
-fn detect_submodule_names(repo_path: &Path) -> Vec<String> {
-    super::worktree::detect_submodules(repo_path)
-        .into_iter()
-        .map(|(name, _path)| name)
-        .collect()
 }
 
 /// Extract dependency version sections from Cargo.toml files relevant to scope.

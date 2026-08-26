@@ -22,7 +22,7 @@ use omegon_traits::{
 
 use super::snapshot::build_state_snapshot;
 use super::wire::{decode_envelope, encode_envelope, read_frame};
-use crate::operator_commands::{OperatorCommand as TuiCommand, SharedCancel};
+use crate::operator_commands::OperatorCommand as TuiCommand;
 use crate::runtime_state::RuntimeStateHandles as DashboardHandles;
 
 fn parse_caller_role(raw: Option<&str>) -> crate::control_actions::ControlRole {
@@ -39,12 +39,11 @@ pub struct ConnectionConfig {
     pub cwd: String,
     pub started_at: String,
     pub server_instance_id: String,
-    pub session_id: String,
+    pub session_view_binding: crate::session_consumers::SessionViewBinding,
     pub handles: DashboardHandles,
     pub events_tx: broadcast::Sender<AgentEvent>,
     pub command_tx: mpsc::Sender<TuiCommand>,
     pub shared_settings: crate::settings::SharedSettings,
-    pub shared_cancel: SharedCancel,
     /// Cleared to `false` when this connection closes.
     pub has_controller: Arc<AtomicBool>,
 }
@@ -118,6 +117,7 @@ impl IpcConnection {
             return Ok(());
         }
 
+        let hello_target = cfg.session_view_binding.snapshot();
         let hello_resp = HelloResponse {
             protocol_version: IPC_PROTOCOL_VERSION,
             omegon_version: cfg.omegon_version.clone(),
@@ -126,7 +126,8 @@ impl IpcConnection {
             cwd: cfg.cwd.clone(),
             server_instance_id: cfg.server_instance_id.clone(),
             started_at: cfg.started_at.clone(),
-            session_id: Some(cfg.session_id.clone()),
+            session_id: Some(hello_target.session_id),
+            session_generation: Some(hello_target.generation),
             capabilities: IpcCapability::v1_server_set()
                 .into_iter()
                 .map(|s| s.to_string())
@@ -144,6 +145,13 @@ impl IpcConnection {
         // ── Start event push task ──────────────────────────────────────
         let mut events_rx = cfg.events_tx.subscribe();
         let event_out_tx = out_tx.clone();
+        let event_session_binding = cfg.session_view_binding.clone();
+        let event_handles = cfg.handles.clone();
+        let event_version = cfg.omegon_version.clone();
+        let event_cwd = cfg.cwd.clone();
+        let event_started_at = cfg.started_at.clone();
+        let event_instance_id = cfg.server_instance_id.clone();
+        let event_settings = cfg.shared_settings.clone();
         let subscriptions: Arc<tokio::sync::Mutex<HashSet<String>>> =
             Arc::new(tokio::sync::Mutex::new(HashSet::new()));
         let sub_ref = subscriptions.clone();
@@ -152,6 +160,9 @@ impl IpcConnection {
             loop {
                 match events_rx.recv().await {
                     Ok(ev) => {
+                        if let AgentEvent::RuntimeQueueUpdated { snapshot_json } = &ev {
+                            event_session_binding.update_runtime_queue(snapshot_json.clone());
+                        }
                         if let Some(ipc_ev) = project_event(&ev) {
                             let name = event_name(&ipc_ev);
                             let subs = sub_ref.lock().await;
@@ -166,7 +177,33 @@ impl IpcConnection {
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        while let Ok(event) = events_rx.try_recv() {
+                            if let AgentEvent::RuntimeQueueUpdated { snapshot_json } = event {
+                                event_session_binding.update_runtime_queue(snapshot_json);
+                            }
+                        }
+                        let snapshot = build_state_snapshot(
+                            &event_handles,
+                            &event_version,
+                            &event_cwd,
+                            &event_started_at,
+                            &event_instance_id,
+                            &event_session_binding,
+                            event_settings
+                                .lock()
+                                .map(|settings| settings.ui_presentation)
+                                .unwrap_or_default(),
+                        );
+                        let reconciled = IpcEventPayload::StateReconciled {
+                            snapshot: Box::new(snapshot),
+                        };
+                        if let Ok(raw) = build_event_frame(&reconciled)
+                            && event_out_tx.send(raw).await.is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -221,7 +258,7 @@ impl IpcConnection {
                         &cfg.cwd,
                         &cfg.started_at,
                         &cfg.server_instance_id,
-                        &cfg.session_id,
+                        &cfg.session_view_binding,
                         cfg.shared_settings
                             .lock()
                             .map(|settings| settings.ui_presentation)
@@ -242,22 +279,6 @@ impl IpcConnection {
                             req_id,
                             IpcErrorCode::InvalidPayload,
                             "caller role is insufficient for submit_prompt",
-                        )
-                        .await;
-                        continue;
-                    }
-                    let turn_busy = cfg
-                        .handles
-                        .session()
-                        .observe()
-                        .map(|session| session.busy)
-                        .unwrap_or(true);
-                    if turn_busy {
-                        send_error(
-                            &out_tx,
-                            req_id,
-                            IpcErrorCode::TurnInProgress,
-                            "the agent is still processing or unwinding the current turn",
                         )
                         .await;
                         continue;
@@ -300,14 +321,14 @@ impl IpcConnection {
                         .await;
                         continue;
                     }
-                    let accepted = if let Ok(guard) = cfg.shared_cancel.lock()
-                        && let Some(ref cancel) = *guard
-                    {
-                        cancel.cancel();
-                        true
-                    } else {
-                        false
-                    };
+                    let accepted = cfg
+                        .command_tx
+                        .send(TuiCommand::CancelActiveTurn {
+                            submitted_by: "ipc-controller".to_string(),
+                            via: "ipc",
+                        })
+                        .await
+                        .is_ok();
                     send_response(
                         &out_tx,
                         req_id,
@@ -357,6 +378,7 @@ impl IpcConnection {
                 }
 
                 "get_graph" => {
+                    crate::web::api::refresh_lifecycle(&cfg.handles).await;
                     let graph = crate::web::api::build_graph_data(&cfg.handles);
                     send_response(&out_tx, req_id, "get_graph", serde_json::to_value(graph)?).await;
                 }
@@ -376,28 +398,35 @@ impl IpcConnection {
                         .await;
                         continue;
                     }
+                    let cwd = std::path::Path::new(&cfg.cwd);
                     let response = match method.as_str() {
-                        "prompts_list" => serde_json::json!({
-                            "prompts": crate::prompts::list_structured()?,
-                        }),
+                        "prompts_list" => crate::prompts::with_list_for_project(
+                            cwd,
+                            |prompts| serde_json::json!({ "prompts": prompts }),
+                        ),
                         "prompts_get" => {
                             let name = payload
                                 .get("name")
                                 .and_then(|v| v.as_str())
                                 .filter(|s| !s.is_empty())
                                 .ok_or_else(|| anyhow::anyhow!("missing name"))?;
-                            let (manifest, body, path) = crate::prompts::get_prompt(name)?;
-                            serde_json::json!({
-                                "name": name,
-                                "id": manifest.id,
-                                "title": manifest.title,
-                                "description": manifest.description,
-                                "tags": manifest.tags,
-                                "aliases": manifest.aliases,
-                                "safety": crate::prompts::safety_verdict(&body),
-                                "body": body,
-                                "path": path.display().to_string(),
-                            })
+                            crate::prompts::with_prompt_for_project(
+                                cwd,
+                                name,
+                                |manifest, body, path| {
+                                    serde_json::json!({
+                                        "name": name,
+                                        "id": &manifest.id,
+                                        "title": &manifest.title,
+                                        "description": &manifest.description,
+                                        "tags": &manifest.tags,
+                                        "aliases": &manifest.aliases,
+                                        "safety": crate::prompts::safety_verdict(body),
+                                        "body": body,
+                                        "path": path.display().to_string(),
+                                    })
+                                },
+                            )?
                         }
                         _ => {
                             let name = payload
@@ -405,14 +434,19 @@ impl IpcConnection {
                                 .and_then(|v| v.as_str())
                                 .filter(|s| !s.is_empty())
                                 .ok_or_else(|| anyhow::anyhow!("missing name"))?;
-                            let (_manifest, body, path) = crate::prompts::get_prompt(name)?;
-                            serde_json::json!({
-                                "ok": true,
-                                "action": "preview",
-                                "safety": crate::prompts::safety_verdict(&body),
-                                "prompt": body,
-                                "path": path.display().to_string(),
-                            })
+                            crate::prompts::with_prompt_for_project(
+                                cwd,
+                                name,
+                                |_manifest, body, path| {
+                                    serde_json::json!({
+                                        "ok": true,
+                                        "action": "preview",
+                                        "safety": crate::prompts::safety_verdict(body),
+                                        "prompt": body,
+                                        "path": path.display().to_string(),
+                                    })
+                                },
+                            )?
                         }
                     };
                     send_response(&out_tx, req_id, &method, response).await;
@@ -793,9 +827,10 @@ impl IpcConnection {
                     };
                     let accepted = if let Some(request) = request {
                         cfg.command_tx
-                            .send(TuiCommand::ExecuteControl {
+                            .send(TuiCommand::ExecuteControlFrom {
                                 request,
                                 respond_to: Some(reply_tx),
+                                surface: omegon_traits::RuntimeSurface::Ipc,
                             })
                             .await
                             .is_ok()
@@ -1243,6 +1278,7 @@ fn event_name(ev: &IpcEventPayload) -> &'static str {
         IpcEventPayload::StreamIdle { .. } => "stream.idle",
         IpcEventPayload::ProviderRouteChanged { .. } => "provider.route_changed",
         IpcEventPayload::RuntimeQueueUpdated { .. } => "runtime.queue_updated",
+        IpcEventPayload::StateReconciled { .. } => "state.reconciled",
         IpcEventPayload::HarnessChanged => "harness.changed",
         IpcEventPayload::StateChanged { .. } => "state.changed",
         IpcEventPayload::SystemNotification { .. } => "system.notification",

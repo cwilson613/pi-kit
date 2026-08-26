@@ -5,29 +5,180 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::status::HarnessStatus;
+use omegon_traits::{
+    RuntimeCleanupAssurance, RuntimeCleanupState, RuntimeCompositionGenerationId,
+    RuntimeContributionDeclaration, RuntimeContributionDiagnostic, RuntimeContributionId,
+    RuntimeContributionLifecycleRecord, RuntimeContributionLifecycleState,
+    RuntimeOwnedResourceRecord,
+};
 
 pub const DIAGNOSTIC_PROJECTION_VERSION: u16 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityDispatchMode {
+    GraphDerivedLegacy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompatibilityDispatchProjection {
+    pub mode: CompatibilityDispatchMode,
+    pub parity_verified: bool,
+    pub published_bindings: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompositionContributionProjection {
+    pub declaration: RuntimeContributionDeclaration,
+    pub negotiated_protocol: u16,
+    pub health: RuntimeContributionLifecycleState,
+    pub cleanup_assurance: RuntimeCleanupAssurance,
+    pub cleanup_state: RuntimeCleanupState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompositionReplacementProjection {
+    pub superseded: RuntimeContributionId,
+    pub replacement: RuntimeContributionId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedOwnerDisposition {
+    Published,
+    RejectedCandidate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedResourceDiagnosticProjection {
+    pub record: RuntimeOwnedResourceRecord,
+    pub stop_attempted: bool,
+    pub force_attempted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedOwnerDiagnosticProjection {
+    pub attempt_id: u64,
+    pub disposition: ManagedOwnerDisposition,
+    pub lifecycle: RuntimeContributionLifecycleRecord,
+    pub resources: Vec<ManagedResourceDiagnosticProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompositionDiagnosticProjection {
+    pub version: u16,
+    pub generation_id: RuntimeCompositionGenerationId,
+    pub contributions: Vec<CompositionContributionProjection>,
+    pub replacements: Vec<CompositionReplacementProjection>,
+    pub activation_waves: Vec<Vec<RuntimeContributionId>>,
+    pub diagnostics: Vec<RuntimeContributionDiagnostic>,
+    pub compatibility_dispatch: CompatibilityDispatchProjection,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub managed_owners: Vec<ManagedOwnerDiagnosticProjection>,
+}
+
+impl CompositionDiagnosticProjection {
+    pub fn render_markdown(&self) -> String {
+        let mut output = format!(
+            "\n\nComposition\n  Generation:   {}\n  Contributions: {}\n  Dispatch:     graph-derived legacy ({} bindings, parity {})",
+            self.generation_id.as_str(),
+            self.contributions.len(),
+            self.compatibility_dispatch.published_bindings,
+            if self.compatibility_dispatch.parity_verified {
+                "verified"
+            } else {
+                "unverified"
+            }
+        );
+        for contribution in &self.contributions {
+            output.push_str(&format!(
+                "\n  - {} [{}] generation={} health={} cleanup={}/{}",
+                contribution.declaration.id.as_str(),
+                serialized_label(&contribution.declaration.owner_tier),
+                contribution.declaration.generation_id.as_str(),
+                serialized_label(&contribution.health),
+                serialized_label(&contribution.cleanup_assurance),
+                serialized_label(&contribution.cleanup_state),
+            ));
+        }
+        if !self.diagnostics.is_empty() {
+            output.push_str("\n  Diagnostics:");
+            for diagnostic in &self.diagnostics {
+                output.push_str(&format!(
+                    "\n  - {}: {}",
+                    diagnostic.code.as_str(),
+                    diagnostic.message
+                ));
+            }
+        }
+        if !self.managed_owners.is_empty() {
+            output.push_str("\n  Managed owners:");
+            for owner in &self.managed_owners {
+                output.push_str(&format!(
+                    "\n  - attempt={} disposition={} owner={} generation={} state={} boundary={} cleanup={}/{}",
+                    owner.attempt_id,
+                    serialized_label(&owner.disposition),
+                    owner.lifecycle.contribution_id.as_str(),
+                    owner.lifecycle.generation_id.as_str(),
+                    serialized_label(&owner.lifecycle.state),
+                    serialized_label(&owner.lifecycle.last_completed_boundary),
+                    serialized_label(&owner.lifecycle.cleanup_assurance),
+                    serialized_label(&owner.lifecycle.cleanup_state),
+                ));
+                if let Some(reason_code) = &owner.lifecycle.reason_code {
+                    output.push_str(&format!(" reason_code={}", reason_code.as_str()));
+                }
+                if let Some(reason) = &owner.lifecycle.reason {
+                    output.push_str(&format!(" reason={reason}"));
+                }
+                for resource in &owner.resources {
+                    output.push_str(&format!(
+                        "\n    - resource={} kind={} state={} stop={} force={} reason={}",
+                        resource.record.id.as_str(),
+                        serialized_label(&resource.record.kind),
+                        serialized_label(&resource.record.cleanup_state),
+                        resource.stop_attempted,
+                        resource.force_attempted,
+                        resource.reason.as_deref().unwrap_or("none"),
+                    ));
+                }
+            }
+        }
+        output
+    }
+}
+
+fn serialized_label(value: &impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessStatusProjection {
     pub version: u16,
-    pub harness: HarnessStatus,
+    pub harness: serde_json::Value,
     pub runtime_generation: u64,
     pub session_id: String,
     pub instance_id: String,
     pub automation_level: String,
     pub automation_summary: String,
+    #[serde(skip)]
+    pub bootstrap_markdown: String,
 }
 
 impl HarnessStatusProjection {
     pub fn new(
-        harness: HarnessStatus,
+        harness: serde_json::Value,
         runtime_generation: u64,
         session_id: impl Into<String>,
         instance_id: impl Into<String>,
         automation_level: impl Into<String>,
         automation_summary: impl Into<String>,
+        bootstrap_markdown: impl Into<String>,
     ) -> Self {
         Self {
             version: DIAGNOSTIC_PROJECTION_VERSION,
@@ -37,13 +188,14 @@ impl HarnessStatusProjection {
             instance_id: instance_id.into(),
             automation_level: automation_level.into(),
             automation_summary: automation_summary.into(),
+            bootstrap_markdown: bootstrap_markdown.into(),
         }
     }
 
     pub fn render_markdown(&self) -> String {
         format!(
             "{}\nRuntime\n  Generation:   {}\n  Session:      {}\n  Instance:     {}\nAutomation\n  Level:        {} ({})",
-            crate::bootstrap_projection::render_bootstrap(&self.harness, false),
+            self.bootstrap_markdown,
             self.runtime_generation,
             self.session_id,
             self.instance_id,
@@ -195,14 +347,18 @@ mod tests {
     #[test]
     fn projection_serialization_contains_no_secret_values() {
         let projection = HarnessStatusProjection::new(
-            HarnessStatus::default(),
+            serde_json::json!({}),
             1,
             "session",
             "instance",
             "guarded",
             "confirm mutations",
+            "Harness",
         );
-        let json = serde_json::to_string(&projection).unwrap();
+        let value = serde_json::to_value(&projection).unwrap();
+        assert_eq!(value["harness"], serde_json::json!({}));
+        assert!(value.get("bootstrap_markdown").is_none());
+        let json = serde_json::to_string(&value).unwrap();
         assert!(!json.contains("secret_value"));
         assert!(!json.contains("api_key"));
     }

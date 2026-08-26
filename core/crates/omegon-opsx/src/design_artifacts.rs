@@ -226,6 +226,29 @@ impl DesignRepository {
         let docs = self.repo_root.join("docs");
         let mut paths = Vec::new();
         for directory in [docs.clone(), docs.join("design")] {
+            match std::fs::symlink_metadata(&directory) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    findings.push(DesignRepositoryFinding {
+                        kind: DesignRepositoryFindingKind::Unreadable,
+                        path: directory,
+                        node_id: None,
+                        message: "design directory must not be a symbolic link".into(),
+                    });
+                    continue;
+                }
+                Ok(metadata) if !metadata.is_dir() => continue,
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    findings.push(DesignRepositoryFinding {
+                        kind: DesignRepositoryFindingKind::Unreadable,
+                        path: directory,
+                        node_id: None,
+                        message: error.to_string(),
+                    });
+                    continue;
+                }
+            }
             let entries = match std::fs::read_dir(&directory) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -241,7 +264,28 @@ impl DesignRepository {
             };
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+                let file_type = match entry.file_type() {
+                    Ok(file_type) => file_type,
+                    Err(error) => {
+                        findings.push(DesignRepositoryFinding {
+                            kind: DesignRepositoryFindingKind::Unreadable,
+                            path,
+                            node_id: None,
+                            message: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                if file_type.is_symlink()
+                    && path.extension().is_some_and(|extension| extension == "md")
+                {
+                    findings.push(DesignRepositoryFinding {
+                        kind: DesignRepositoryFindingKind::Unreadable,
+                        path,
+                        node_id: None,
+                        message: "design artifact must not be a symbolic link".into(),
+                    });
+                } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "md") {
                     paths.push(path);
                 }
             }
@@ -799,5 +843,34 @@ mod tests {
                 .iter()
                 .any(|finding| finding.kind == DesignDiagnosticKind::UnknownSection)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_does_not_follow_symlink_artifacts_or_design_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let docs = temp.path().join("docs");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let source = outside.join("linked.md");
+        std::fs::write(
+            &source,
+            "---\nid: linked\ntitle: Linked\nstatus: seed\n---\n# Linked\n",
+        )
+        .unwrap();
+        symlink(&source, docs.join("linked.md")).unwrap();
+        symlink(&outside, docs.join("design")).unwrap();
+
+        let scan = DesignRepository::new(temp.path()).scan();
+
+        assert!(scan.records.is_empty());
+        assert_eq!(scan.findings.len(), 2);
+        assert!(scan.findings.iter().all(|finding| {
+            finding.kind == DesignRepositoryFindingKind::Unreadable
+                && finding.message.contains("symbolic link")
+        }));
     }
 }

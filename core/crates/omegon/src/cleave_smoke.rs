@@ -300,6 +300,7 @@ async fn run_scenario(cli: &Cli, scenario: &SmokeScenario) -> anyhow::Result<()>
 "#;
     let plan: cleave::CleavePlan = serde_json::from_str(plan_json)?;
     let injected_env = scenario_env(scenario);
+    let (mut git_bus, git) = crate::git_service::bounded_binding(repo.clone()).await?;
     let mut config = cleave::orchestrator::CleaveConfig {
         agent_binary: std::env::current_exe()?,
         bridge_path: PathBuf::new(),
@@ -318,6 +319,7 @@ async fn run_scenario(cli: &Cli, scenario: &SmokeScenario) -> anyhow::Result<()>
         workflow: None,
         sandbox: false,
         dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
+        git,
     };
     if let Some(profile) = &scenario.runtime_profile {
         config.child_runtime = profile.clone();
@@ -332,7 +334,12 @@ async fn run_scenario(cli: &Cli, scenario: &SmokeScenario) -> anyhow::Result<()>
         CancellationToken::new(),
         None,
     )
-    .await?;
+    .await;
+    let cleanup = git_bus.shutdown_managed_services().await;
+    if !cleanup.all_resources_settled() {
+        anyhow::bail!("managed Git smoke resources did not settle: {cleanup:?}");
+    }
+    let result = result?;
 
     let (completed, failed, upstream_exhausted, unfinished) =
         crate::summarize_cleave_child_statuses(&result.state.children);

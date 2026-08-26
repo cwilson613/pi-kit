@@ -12,8 +12,7 @@ visibility = "private"
 
 [data]
 open_questions = [
-  "Which ACP client-side resource-fetch method, if any, should Omegon call for virtual zed:///agent resources that are not embedded?",
-  "Should ACP session resume hydrate full transcript into clients, or should load_session remain a shallow worker attach until transcript replay is designed?"
+  "Which ACP client-side resource-fetch method, if any, should Omegon call for virtual zed:///agent resources that are not embedded?"
 ]
 +++
 
@@ -83,7 +82,11 @@ ACP startup treats the launch `--model` as a fallback when no profile model exis
 
 `_runtime/status` now also exposes `acp.turn.phase` (`idle`, `running`, `cancelling`, or `failed`) and a redacted `acp.turn.last_error`. Reconnecting clients should query this state rather than infer whether a turn is still active from stream timing.
 
-ACP does not currently advertise `load_session`: persisted transcript hydration and replay are not implemented yet, so clients cannot mistake the shallow internal attach path for full resume support.
+ACP advertises `load_session` and publishes replacement identity before replaying
+validated semantic user/assistant history. Full lineage exposes exact committed
+history; mixed lineage exposes its exact semantic suffix and separately reports
+lineage/frontier status. Historical tool activity is not replayed as live work,
+and legacy compatibility bytes are not advertised as exact transcript history.
 
 ### Tool/UI behavior
 
@@ -162,7 +165,9 @@ No silent fallback to guesses.
 
 ### Completed: session load capability honesty
 
-Omegon does not advertise session load support while `load_session` remains shallow. Transcript hydration and replay remain future work, but external clients no longer infer full resume semantics.
+Omegon advertises session load only with validated semantic replay and explicit
+lineage/frontier status. Mixed and legacy limitations remain visible rather than
+being promoted to exact history.
 
 ### Completed: model availability annotation
 

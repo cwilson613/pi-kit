@@ -127,10 +127,24 @@ impl WorkRuntime {
 
         for source in &self.sources {
             let descriptor = source.descriptor();
-            match source
-                .refresh(previous.get(&descriptor.id).copied(), &context)
-                .await?
-            {
+            let prior = previous.get(&descriptor.id).copied();
+            let refresh = match source.refresh(prior, &context).await {
+                Ok(refresh) => refresh,
+                Err(error) => {
+                    warnings.push(WorkWarning {
+                        source_id: descriptor.id.clone(),
+                        code: "source_error".into(),
+                        message: error.to_string(),
+                    });
+                    if let Some(previous) = prior {
+                        let mut stale = previous.clone();
+                        stale.stale = true;
+                        snapshots.push(stale);
+                    }
+                    continue;
+                }
+            };
+            match refresh {
                 SourceRefresh::Current(snapshot) => snapshots.push(snapshot),
                 SourceRefresh::Stale {
                     mut snapshot,
@@ -181,6 +195,10 @@ mod tests {
 
     struct MissingSource;
 
+    struct ErrorSource;
+
+    struct FlakySource(std::sync::atomic::AtomicBool);
+
     #[async_trait]
     impl WorkSource for MissingSource {
         fn descriptor(&self) -> WorkSourceDescriptor {
@@ -205,6 +223,57 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl WorkSource for ErrorSource {
+        fn descriptor(&self) -> WorkSourceDescriptor {
+            WorkSourceDescriptor {
+                id: SourceId::new("error").unwrap(),
+                kind: SourceKind::Server,
+                authority: WorkAuthority::TaskServer,
+                capabilities: WorkCapabilities::default(),
+                schema_version: 1,
+            }
+        }
+
+        async fn refresh(
+            &self,
+            _previous: Option<&SourceSnapshot>,
+            _context: &RefreshContext,
+        ) -> Result<SourceRefresh> {
+            Err(styrene_work_model::WorkError::Source("offline".into()))
+        }
+    }
+
+    #[async_trait]
+    impl WorkSource for FlakySource {
+        fn descriptor(&self) -> WorkSourceDescriptor {
+            WorkSourceDescriptor {
+                id: SourceId::new("flaky").unwrap(),
+                kind: SourceKind::Server,
+                authority: WorkAuthority::TaskServer,
+                capabilities: WorkCapabilities::default(),
+                schema_version: 1,
+            }
+        }
+
+        async fn refresh(
+            &self,
+            _previous: Option<&SourceSnapshot>,
+            context: &RefreshContext,
+        ) -> Result<SourceRefresh> {
+            if self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                Err(styrene_work_model::WorkError::Source("offline".into()))
+            } else {
+                Ok(SourceRefresh::Current(SourceSnapshot {
+                    descriptor: self.descriptor(),
+                    observed_at: context.now,
+                    items: Vec::new(),
+                    stale: false,
+                }))
+            }
+        }
+    }
+
     #[tokio::test]
     async fn partial_failure_produces_warning_and_snapshot() {
         let mut runtime = WorkRuntime::new(vec![Arc::new(MissingSource)]);
@@ -212,5 +281,41 @@ mod tests {
         assert_eq!(snapshot.generation, 1);
         assert!(snapshot.items.is_empty());
         assert_eq!(snapshot.warnings[0].code, "source_unavailable");
+    }
+
+    #[tokio::test]
+    async fn source_error_isolated_as_warning() {
+        let mut runtime = WorkRuntime::new(vec![Arc::new(ErrorSource), Arc::new(MissingSource)]);
+        let snapshot = runtime.refresh().await.unwrap();
+
+        assert_eq!(snapshot.generation, 1);
+        assert_eq!(snapshot.warnings.len(), 2);
+        assert!(
+            snapshot
+                .warnings
+                .iter()
+                .any(|warning| warning.source_id.as_str() == "error"
+                    && warning.code == "source_error")
+        );
+        assert!(
+            snapshot
+                .warnings
+                .iter()
+                .any(|warning| warning.source_id.as_str() == "missing"
+                    && warning.code == "source_unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn source_error_retains_previous_snapshot_as_stale() {
+        let mut runtime = WorkRuntime::new(vec![Arc::new(FlakySource(
+            std::sync::atomic::AtomicBool::new(false),
+        ))]);
+        assert!(!runtime.refresh().await.unwrap().sources[0].stale);
+
+        let snapshot = runtime.refresh().await.unwrap();
+        assert_eq!(snapshot.generation, 2);
+        assert!(snapshot.sources[0].stale);
+        assert_eq!(snapshot.warnings[0].code, "source_error");
     }
 }

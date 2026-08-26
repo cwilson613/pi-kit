@@ -28,8 +28,6 @@ pub(crate) mod host_actions;
 pub mod manifest;
 pub mod mind;
 pub(crate) mod sdk_compat;
-mod supervisor_set;
-pub use supervisor_set::ExtensionSupervisorSet;
 pub mod state;
 mod tool_result;
 pub mod voice_bridge;
@@ -293,9 +291,29 @@ fn host_rpc_response_for_extension_request(
 struct ExtensionRuntimeContext {
     name: String,
     ext_dir: PathBuf,
+    state_dir: PathBuf,
     manifest: ExtensionManifest,
     resolved_secrets: Vec<(String, String)>,
     notification_sink: Option<ExtensionNotificationSink>,
+    _snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
+    state_binding: Option<ExtensionStateBinding>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    restart: Arc<Mutex<crate::contribution_lifecycle::RestartController>>,
+}
+
+struct ExtensionSource {
+    ext_dir: PathBuf,
+    state_dir: PathBuf,
+    snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
+    state_binding: Option<ExtensionStateBinding>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
+}
+
+#[derive(Clone)]
+struct ExtensionStateBinding {
+    home: PathBuf,
+    raw_name: Vec<u8>,
+    source_identity: omegon_maintenance_contracts::PathIdentityV1,
 }
 
 /// Canonical owner of an extension child process. Feature and polling handles
@@ -562,6 +580,20 @@ impl ExtensionFeature {
     }
 
     async fn respawn_after_transport_error(&self, cause: &anyhow::Error) -> Result<()> {
+        let decision = self.runtime.restart.lock().await.record_failure();
+        let delay = match decision {
+            crate::contribution_lifecycle::RestartDecision::RetryAfter(delay) => delay,
+            crate::contribution_lifecycle::RestartDecision::Quarantined => {
+                self.supervisor
+                    .accepting_calls
+                    .store(false, Ordering::Release);
+                return Err(anyhow!(
+                    "extension '{}' entered quarantine after exhausting its restart budget: {cause}",
+                    self.runtime.name
+                ));
+            }
+        };
+        tokio::time::sleep(delay).await;
         self.supervisor.ensure_accepting()?;
         let mut guard = self.supervisor.handles.lock().await;
         if let Some(mut stale) = guard.take() {
@@ -569,14 +601,18 @@ impl ExtensionFeature {
             let _ = stale.child.wait().await;
         }
 
-        let mut handles = spawn_process_handles(&self.runtime.manifest, &self.runtime.ext_dir)
-            .await
-            .map_err(|err| {
-                anyhow!(
-                    "extension '{}' transport failed ({cause}); respawn failed: {err}",
-                    self.runtime.name
-                )
-            })?;
+        let mut handles = spawn_process_handles(
+            &self.runtime.manifest,
+            &self.runtime.ext_dir,
+            &self.runtime.admission,
+        )
+        .await
+        .map_err(|err| {
+            anyhow!(
+                "extension '{}' transport failed ({cause}); respawn failed: {err}",
+                self.runtime.name
+            )
+        })?;
         let handshake = match handshake(
             &mut handles,
             &self.runtime.manifest,
@@ -626,7 +662,42 @@ impl ExtensionFeature {
     pub async fn record_error(&self, error: String) {
         let mut state = self.state.lock().await;
         state.record_error(error);
-        let _ = state.save(&self.runtime.ext_dir);
+        if let Some(binding) = &self.runtime.state_binding {
+            let content = match toml::to_string_pretty(&*state) {
+                Ok(content) => content,
+                Err(error) => {
+                    tracing::warn!(extension = %self.runtime.name, %error, "could not serialize extension state");
+                    return;
+                }
+            };
+            let mutation =
+                crate::contribution_loading::GuardedContributionMutationDirectory::open_existing(
+                    &binding.home,
+                    &[b"extensions"],
+                    &binding.home,
+                    omegon_maintenance_contracts::ContributionKind::Extension,
+                    "user",
+                );
+            match mutation {
+                Ok(Some(mutation)) => {
+                    if let Err(error) = mutation.write_file_in_directory(
+                        &binding.raw_name,
+                        b".omegon",
+                        b"state.toml",
+                        content.as_bytes(),
+                        &binding.source_identity,
+                    ) {
+                        tracing::warn!(extension = %self.runtime.name, %error, "could not persist admitted extension state");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(extension = %self.runtime.name, %error, "could not lock admitted extension state");
+                }
+            }
+        } else {
+            let _ = state.save(&self.runtime.state_dir);
+        }
     }
 
     /// Broadcast a widget event (for internal use).
@@ -780,6 +851,34 @@ impl ExtensionPollingHandle {
     }
 }
 
+fn extension_tool_surfaces(tool_name: &str) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+    match tool_name {
+        "voice_session_stop" => Some(vec![
+            omegon_traits::RuntimeSurface::Model,
+            omegon_traits::RuntimeSurface::Tui,
+        ]),
+        "vox_route" => Some(vec![
+            omegon_traits::RuntimeSurface::Model,
+            omegon_traits::RuntimeSurface::Daemon,
+        ]),
+        _ => None,
+    }
+}
+
+fn extension_tool_principals(tool_name: &str) -> Option<Vec<omegon_traits::RuntimePrincipalClass>> {
+    match tool_name {
+        "voice_session_stop" | "vox_route" => Some(vec![
+            omegon_traits::RuntimePrincipalClass::Model,
+            omegon_traits::RuntimePrincipalClass::Service,
+        ]),
+        _ => None,
+    }
+}
+
+pub(crate) fn extension_rpc_invocation_name(extension_name: &str) -> String {
+    format!("extension_rpc:{extension_name}")
+}
+
 #[async_trait::async_trait]
 impl Feature for ExtensionFeature {
     fn name(&self) -> &str {
@@ -792,14 +891,92 @@ impl Feature for ExtensionFeature {
         }
     }
 
+    fn runtime_lifecycle_policy(&self) -> Option<omegon_traits::RuntimeLifecyclePolicy> {
+        Some(omegon_traits::RuntimeLifecyclePolicy {
+            requirement: omegon_traits::RuntimeLifecycleRequirement::Optional,
+            failure_disposition: omegon_traits::RuntimeFailureDisposition::Quarantine,
+            readiness_timeout_ms: self.runtime.manifest.startup.timeout_ms.max(1),
+            heartbeat_timeout_ms: None,
+            restart_limit: 3,
+        })
+    }
+
+    fn runtime_transition_policy(
+        &self,
+    ) -> Option<omegon_traits::RuntimeCompositionTransitionPolicy> {
+        let strict_native =
+            cfg!(unix) && matches!(&self.runtime.manifest.runtime, RuntimeConfig::Native { .. });
+        Some(omegon_traits::RuntimeCompositionTransitionPolicy {
+            activation_boundary: omegon_traits::RuntimeActivationBoundary::Boot,
+            cleanup: if strict_native {
+                omegon_traits::RuntimeCleanupRequirement::Strict
+            } else {
+                omegon_traits::RuntimeCleanupRequirement::BestEffort
+            },
+            cleanup_timeout_ms: 500,
+        })
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         self.tools.clone()
+    }
+
+    fn runtime_tool_surfaces(&self, tool_name: &str) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+        extension_tool_surfaces(tool_name)
+    }
+
+    fn runtime_tool_principals(
+        &self,
+        tool_name: &str,
+    ) -> Option<Vec<omegon_traits::RuntimePrincipalClass>> {
+        extension_tool_principals(tool_name)
+    }
+
+    fn runtime_acp_invocations(&self) -> Vec<omegon_traits::RuntimeAcpInvocationDefinition> {
+        vec![omegon_traits::RuntimeAcpInvocationDefinition {
+            name: extension_rpc_invocation_name(&self.runtime.name),
+        }]
+    }
+
+    async fn execute_acp_invocation(
+        &self,
+        name: &str,
+        args: Value,
+        cancel: CancellationToken,
+    ) -> Result<Value> {
+        if name != extension_rpc_invocation_name(&self.runtime.name) {
+            anyhow::bail!(
+                "extension '{}' does not own ACP route '{name}'",
+                self.runtime.name
+            );
+        }
+        let method = args
+            .get("method")
+            .and_then(Value::as_str)
+            .filter(|method| !method.trim().is_empty())
+            .ok_or_else(|| anyhow!("invalid_request: 'method' field must not be empty"))?;
+        let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
+        self.rpc_call_with_cancel(method, params, cancel, Some(EXTENSION_TOOL_RPC_TIMEOUT))
+            .await
+            .map_err(|error| {
+                if is_extension_transport_error(&error) {
+                    crate::invocation_service::UnknownCompletionError {
+                        reason: format!(
+                            "extension '{}' ACP method '{}' completion is unknown: {error}",
+                            self.runtime.name, method
+                        ),
+                    }
+                    .into()
+                } else {
+                    error
+                }
+            })
     }
 
     async fn execute(
         &self,
         tool_name: &str,
-        _call_id: &str,
+        call_id: &str,
         args: Value,
         cancel: CancellationToken,
     ) -> Result<ToolResult> {
@@ -812,7 +989,7 @@ impl Feature for ExtensionFeature {
             )
             .await
         {
-            Ok(output) => Ok(self.extension_tool_result(output, _call_id).await),
+            Ok(output) => Ok(self.extension_tool_result(output, call_id).await),
             Err(e) if is_extension_transport_error(&e) => {
                 self.record_error(format!("transport failure: {e}")).await;
                 self.respawn_after_transport_error(&e).await?;
@@ -831,7 +1008,7 @@ impl Feature for ExtensionFeature {
                             tool_name
                         )
                     })?;
-                let mut result = self.extension_tool_result(output, _call_id).await;
+                let mut result = self.extension_tool_result(output, call_id).await;
                 result.details = match result.details {
                     Value::Object(mut details) => {
                         details.insert("extension_reconnected".to_string(), Value::Bool(true));
@@ -870,10 +1047,16 @@ impl Feature for ExtensionFeature {
         _sink: omegon_traits::ToolProgressSink,
         context: omegon_traits::ToolExecutionContext,
     ) -> Result<ToolResult> {
+        let invocation = context.invocation.clone();
         match self
             .rpc_call_with_cancel(
                 "execute_tool",
-                json!({ "name": tool_name, "args": args.clone() }),
+                json!({
+                    "name": tool_name,
+                    "args": args.clone(),
+                    "call_id": call_id,
+                    "invocation": invocation,
+                }),
                 cancel.clone(),
                 Some(EXTENSION_TOOL_RPC_TIMEOUT),
             )
@@ -884,11 +1067,24 @@ impl Feature for ExtensionFeature {
                 .await),
             Err(e) if is_extension_transport_error(&e) => {
                 self.record_error(format!("transport failure: {e}")).await;
+                if invocation.is_some() {
+                    return Err(crate::invocation_service::UnknownCompletionError {
+                        reason: format!(
+                            "extension transport failed after invocation acknowledgement: {e}"
+                        ),
+                    }
+                    .into());
+                }
                 self.respawn_after_transport_error(&e).await?;
                 let output = self
                     .rpc_call_with_cancel(
                         "execute_tool",
-                        json!({ "name": tool_name, "args": args }),
+                        json!({
+                            "name": tool_name,
+                            "args": args,
+                            "call_id": call_id,
+                            "invocation": context.invocation,
+                        }),
                         cancel,
                         Some(EXTENSION_TOOL_RPC_TIMEOUT),
                     )
@@ -931,6 +1127,21 @@ impl Feature for ExtensionFeature {
             }
         }
     }
+
+    async fn execute_with_invocation_control(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: CancellationToken,
+        sink: omegon_traits::ToolProgressSink,
+        context: omegon_traits::ToolExecutionContext,
+        control: omegon_traits::InvocationControl,
+    ) -> Result<ToolResult> {
+        control.acknowledge().map_err(anyhow::Error::msg)?;
+        self.execute_with_context(tool_name, call_id, args, cancel, sink, context)
+            .await
+    }
 }
 
 /// Result of spawning an extension: feature + widgets
@@ -954,16 +1165,102 @@ pub struct SpawnedExtension {
     pub voice_notification_rx: Option<mpsc::UnboundedReceiver<ExtensionNotification>>,
 }
 
+pub(crate) fn dynamic_preflight(
+    manifest: &ExtensionManifest,
+    source: &Path,
+) -> Result<omegon_traits::RuntimeDynamicContributionPreflight> {
+    let id =
+        omegon_traits::RuntimeContributionId::new(format!("extension:{}", manifest.extension.name))
+            .map_err(|error| anyhow!(error))?;
+    let (source_kind, requested_confinement) = match manifest.runtime {
+        RuntimeConfig::Native { .. } => (
+            omegon_traits::RuntimeDynamicSourceKind::NativeExtension,
+            omegon_traits::RuntimeConfinementRequest::HostProcess,
+        ),
+        RuntimeConfig::Oci { .. } => (
+            omegon_traits::RuntimeDynamicSourceKind::OciExtension,
+            omegon_traits::RuntimeConfinementRequest::Oci,
+        ),
+    };
+    Ok(omegon_traits::RuntimeDynamicContributionPreflight {
+        schema_version: omegon_traits::RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+        id,
+        source_digest: crate::dynamic_admission::digest_path(source)?,
+        source_kind,
+        protocol: omegon_traits::RuntimeProtocolRange::new(1, 1).map_err(|error| anyhow!(error))?,
+        minimum_dependencies: Vec::new(),
+        requested_trust: omegon_traits::RuntimeTrustRequest::OperatorManaged,
+        requested_confinement,
+        probe: omegon_traits::RuntimeProbeRequirements {
+            operations: vec![
+                omegon_traits::RuntimeProbeOperation::Initialize,
+                omegon_traits::RuntimeProbeOperation::DiscoverCapabilities,
+            ],
+            timeout_ms: manifest.startup.timeout_ms.max(1),
+            requested_effects: vec![
+                omegon_traits::RuntimeEffect::FilesystemRead,
+                omegon_traits::RuntimeEffect::ProcessSpawn,
+                omegon_traits::RuntimeEffect::NetworkAccess,
+                omegon_traits::RuntimeEffect::SecretDelivery,
+            ],
+        },
+    })
+}
+
 /// Spawn an extension from its manifest directory.
 ///
 /// `resolved_secrets` contains pre-resolved (name, value) pairs for all secrets
 /// declared in `manifest.secrets`. These are delivered via `bootstrap_secrets`
 /// RPC — never via subprocess environment variables.
+#[cfg(test)]
 pub async fn spawn_from_manifest(
     ext_dir: &Path,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
     let manifest = ExtensionManifest::from_extension_dir(ext_dir)?;
+    let preflight = dynamic_preflight(&manifest, ext_dir)?;
+    let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test(preflight);
+    spawn_from_manifest_source(ext_dir, ext_dir, None, None, admission, resolved_secrets).await
+}
+
+pub(crate) async fn spawn_from_admitted_snapshot(
+    snapshot: Arc<crate::contribution_loading::ContributionSnapshot>,
+    state_dir: &Path,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    resolved_secrets: &[(String, String)],
+) -> Result<SpawnedExtension> {
+    let ext_dir = snapshot.path().to_path_buf();
+    let state_binding = extension_state_binding(state_dir, &snapshot)?;
+    spawn_from_manifest_source(
+        &ext_dir,
+        state_dir,
+        Some(snapshot),
+        Some(state_binding),
+        admission,
+        resolved_secrets,
+    )
+    .await
+}
+
+async fn spawn_from_manifest_source(
+    ext_dir: &Path,
+    state_dir: &Path,
+    snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
+    state_binding: Option<ExtensionStateBinding>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    resolved_secrets: &[(String, String)],
+) -> Result<SpawnedExtension> {
+    let source = ExtensionSource {
+        ext_dir: ext_dir.to_path_buf(),
+        state_dir: state_dir.to_path_buf(),
+        snapshot,
+        state_binding,
+        admission,
+    };
+    let manifest = ExtensionManifest::from_extension_dir(&source.ext_dir)?;
+    if source.snapshot.is_some() {
+        validate_admitted_runtime_paths(&manifest)?;
+    }
 
     // Enforce required secrets before spending any resources on spawning.
     // Check against the pre-resolved pairs rather than process env.
@@ -1021,14 +1318,65 @@ pub async fn spawn_from_manifest(
 
     match manifest.runtime {
         RuntimeConfig::Native { .. } => {
-            let binary = manifest.native_binary_path(ext_dir)?;
-            spawn_native(&manifest, ext_dir, binary, widgets, state, resolved_secrets).await
+            let binary = manifest.native_binary_path(&source.ext_dir)?;
+            spawn_native(&manifest, source, binary, widgets, state, resolved_secrets).await
         }
         RuntimeConfig::Oci { .. } => {
             let image = manifest.oci_image()?;
-            spawn_container(&manifest, ext_dir, &image, widgets, state, resolved_secrets).await
+            spawn_container(&manifest, source, &image, widgets, state, resolved_secrets).await
         }
     }
+}
+
+#[cfg(unix)]
+fn extension_state_binding(
+    state_dir: &Path,
+    snapshot: &crate::contribution_loading::ContributionSnapshot,
+) -> Result<ExtensionStateBinding> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let raw_name = state_dir
+        .file_name()
+        .ok_or_else(|| anyhow!("extension state path has no contribution basename"))?
+        .as_bytes()
+        .to_vec();
+    let extensions = state_dir
+        .parent()
+        .ok_or_else(|| anyhow!("extension state path has no extensions root"))?;
+    if extensions.file_name().and_then(|name| name.to_str()) != Some("extensions") {
+        anyhow::bail!("extension state path is outside the canonical extensions root");
+    }
+    let home = extensions
+        .parent()
+        .ok_or_else(|| anyhow!("extension state path has no Omegon home"))?;
+    Ok(ExtensionStateBinding {
+        home: home.to_path_buf(),
+        raw_name,
+        source_identity: snapshot.source_identity().clone(),
+    })
+}
+
+#[cfg(not(unix))]
+fn extension_state_binding(
+    _state_dir: &Path,
+    _snapshot: &crate::contribution_loading::ContributionSnapshot,
+) -> Result<ExtensionStateBinding> {
+    anyhow::bail!("guarded extension state requires Unix")
+}
+
+fn validate_admitted_runtime_paths(manifest: &ExtensionManifest) -> Result<()> {
+    let RuntimeConfig::Native { binary, .. } = &manifest.runtime else {
+        return Ok(());
+    };
+    let path = Path::new(binary);
+    if path.as_os_str().is_empty()
+        || !path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("native extension binary must be a relative path within its admitted bundle");
+    }
+    Ok(())
 }
 
 /// Build a `Command` with a clean environment — only safe non-secret vars inherited.
@@ -1085,7 +1433,9 @@ fn validate_runtime_env_name(name: &str) -> Result<()> {
 async fn spawn_process_handles(
     manifest: &ExtensionManifest,
     ext_dir: &Path,
+    admission: &crate::dynamic_admission::DynamicAdmissionPermit,
 ) -> Result<ProcessHandles> {
+    admission.validate_source_path(ext_dir)?;
     let extension_name = manifest.extension.name.clone();
     let mut child = match &manifest.runtime {
         RuntimeConfig::Native { .. } => {
@@ -1174,11 +1524,13 @@ async fn handshake(
     notification_sink: Option<&ExtensionNotificationSink>,
 ) -> Result<ExtensionHandshake> {
     let name = &manifest.extension.name;
+    let readiness_deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(manifest.startup.timeout_ms.max(1));
 
     // 1. Optional initialize handshake metadata. Older extensions may not
     // implement this method; absence must not prevent startup.
-    let metadata = match tokio::time::timeout(
-        std::time::Duration::from_secs(2),
+    let metadata = match tokio::time::timeout_at(
+        readiness_deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(2)),
         handles.rpc_call_with_notifications("initialize", json!({}), notification_sink),
     )
     .await
@@ -1216,9 +1568,18 @@ async fn handshake(
     }
 
     // 2. Discover tools
-    let tools_response = handles
-        .rpc_call_with_notifications("get_tools", json!({}), notification_sink)
-        .await?;
+    let tools_response = tokio::time::timeout_at(
+        readiness_deadline,
+        handles.rpc_call_with_notifications("get_tools", json!({}), notification_sink),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "extension '{}' readiness timed out during get_tools after {}ms",
+            name,
+            manifest.startup.timeout_ms.max(1)
+        )
+    })??;
     let tools = normalize_extension_tool_definitions(&tools_response).map_err(|err| {
         anyhow!(
             "extension '{}' returned invalid get_tools response: {err}",
@@ -1231,13 +1592,22 @@ async fn handshake(
     // stays in the same channel as secrets and never depends on inherited env.
     let config = resolved_config(manifest, ext_dir)?;
     if !config.is_empty() {
-        handles
-            .rpc_call_with_notifications(
+        tokio::time::timeout_at(
+            readiness_deadline,
+            handles.rpc_call_with_notifications(
                 "bootstrap_config",
                 Value::Object(config),
                 notification_sink,
-            )
+            ),
+        )
             .await
+            .map_err(|_| {
+                anyhow!(
+                    "extension '{}' readiness timed out during bootstrap_config after {}ms",
+                    name,
+                    manifest.startup.timeout_ms.max(1)
+                )
+            })?
             .map_err(|error| {
                 anyhow!(
                     "extension '{}' failed to accept bootstrap_config: {error}. Configuration delivery is required when resolved values are present.",
@@ -1253,20 +1623,22 @@ async fn handshake(
             .iter()
             .map(|(k, v)| (k.clone(), Value::String(v.clone())))
             .collect();
-        match handles
-            .rpc_call_with_notifications(
+        match tokio::time::timeout_at(
+            readiness_deadline,
+            handles.rpc_call_with_notifications(
                 "bootstrap_secrets",
                 Value::Object(secrets_map),
                 notification_sink,
-            )
-            .await
+            ),
+        )
+        .await
         {
-            Ok(_) => tracing::debug!(
+            Ok(Ok(_)) => tracing::debug!(
                 extension = name,
                 secrets = resolved_secrets.len(),
                 "bootstrap_secrets delivered"
             ),
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::error!(
                     extension = name,
                     error = %e,
@@ -1276,6 +1648,13 @@ async fn handshake(
                     "extension '{}' failed to accept bootstrap_secrets: {e}. \
                      Secrets delivery is required for extensions that declare secrets.",
                     name,
+                ));
+            }
+            Err(_) => {
+                return Err(anyhow!(
+                    "extension '{}' readiness timed out during bootstrap_secrets after {}ms",
+                    name,
+                    manifest.startup.timeout_ms.max(1)
                 ));
             }
         }
@@ -1438,13 +1817,13 @@ fn config_value_to_json(field: &omegon_extension::ConfigField, value: &str) -> V
 
 async fn spawn_native(
     manifest: &ExtensionManifest,
-    ext_dir: &Path,
+    source: ExtensionSource,
     binary: PathBuf,
     widgets: Vec<WidgetDeclaration>,
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(manifest, ext_dir).await?;
+    let mut handles = spawn_process_handles(manifest, &source.ext_dir, &source.admission).await?;
 
     let notification_pair = if manifest.capabilities.voice {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -1462,7 +1841,7 @@ async fn spawn_native(
     let handshake = match handshake(
         &mut handles,
         manifest,
-        ext_dir,
+        &source.ext_dir,
         resolved_secrets,
         notification_pair.0.as_ref(),
     )
@@ -1495,10 +1874,21 @@ async fn spawn_native(
 
     let runtime = ExtensionRuntimeContext {
         name: manifest.extension.name.clone(),
-        ext_dir: ext_dir.to_path_buf(),
+        ext_dir: source.ext_dir,
+        state_dir: source.state_dir,
         manifest: manifest.clone(),
         resolved_secrets: resolved_secrets.to_vec(),
         notification_sink: notification_pair.0,
+        _snapshot: source.snapshot,
+        state_binding: source.state_binding,
+        admission: source.admission,
+        restart: Arc::new(Mutex::new(
+            crate::contribution_lifecycle::RestartController::new(
+                3,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(2),
+            ),
+        )),
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(
@@ -1561,13 +1951,13 @@ async fn spawn_native(
 
 async fn spawn_container(
     manifest: &ExtensionManifest,
-    ext_dir: &Path,
+    source: ExtensionSource,
     image: &str,
     widgets: Vec<WidgetDeclaration>,
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(manifest, ext_dir).await?;
+    let mut handles = spawn_process_handles(manifest, &source.ext_dir, &source.admission).await?;
 
     let notification_pair = if manifest.capabilities.voice {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -1585,7 +1975,7 @@ async fn spawn_container(
     let handshake = match handshake(
         &mut handles,
         manifest,
-        ext_dir,
+        &source.ext_dir,
         resolved_secrets,
         notification_pair.0.as_ref(),
     )
@@ -1618,10 +2008,21 @@ async fn spawn_container(
 
     let runtime = ExtensionRuntimeContext {
         name: manifest.extension.name.clone(),
-        ext_dir: ext_dir.to_path_buf(),
+        ext_dir: source.ext_dir,
+        state_dir: source.state_dir,
         manifest: manifest.clone(),
         resolved_secrets: resolved_secrets.to_vec(),
         notification_sink: notification_pair.0,
+        _snapshot: source.snapshot,
+        state_binding: source.state_binding,
+        admission: source.admission,
+        restart: Arc::new(Mutex::new(
+            crate::contribution_lifecycle::RestartController::new(
+                3,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(2),
+            ),
+        )),
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(
@@ -1686,6 +2087,44 @@ mod tests {
     #[test]
     fn extension_manifest_paths() {
         // Placeholder for integration tests
+    }
+
+    #[test]
+    fn voice_stop_declares_model_and_tui_service_access() {
+        assert_eq!(
+            extension_tool_surfaces("voice_session_stop"),
+            Some(vec![
+                omegon_traits::RuntimeSurface::Model,
+                omegon_traits::RuntimeSurface::Tui,
+            ])
+        );
+        assert_eq!(
+            extension_tool_principals("voice_session_stop"),
+            Some(vec![
+                omegon_traits::RuntimePrincipalClass::Model,
+                omegon_traits::RuntimePrincipalClass::Service,
+            ])
+        );
+        assert_eq!(extension_tool_surfaces("other_extension_tool"), None);
+        assert_eq!(extension_tool_principals("other_extension_tool"), None);
+    }
+
+    #[test]
+    fn vox_route_declares_model_and_daemon_service_access() {
+        assert_eq!(
+            extension_tool_surfaces("vox_route"),
+            Some(vec![
+                omegon_traits::RuntimeSurface::Model,
+                omegon_traits::RuntimeSurface::Daemon,
+            ])
+        );
+        assert_eq!(
+            extension_tool_principals("vox_route"),
+            Some(vec![
+                omegon_traits::RuntimePrincipalClass::Model,
+                omegon_traits::RuntimePrincipalClass::Service,
+            ])
+        );
     }
 
     #[test]
@@ -1815,6 +2254,8 @@ description = "fixture"
 [runtime]
 type = "native"
 binary = "{}"
+[startup]
+timeout_ms = 30000
 [runtime.config]
 data_dir = "relative"
 "#,
@@ -1837,7 +2278,7 @@ data_dir = "relative"
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn extension_tool_call_respawns_after_child_exits() {
+    async fn admitted_extension_respawns_from_original_snapshot_after_source_changes() {
         let _env_guard = crate::test_support::env::lock_async().await;
         unsafe {
             std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
@@ -1846,8 +2287,10 @@ data_dir = "relative"
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
+        let extension_dir = temp.path().join("extensions/flaky");
+        std::fs::create_dir_all(&extension_dir).unwrap();
         let marker = temp.path().join("first-call-done");
-        let script = temp.path().join("flaky-extension.sh");
+        let script = extension_dir.join("flaky-extension.sh");
         let script_body = r#"#!/bin/sh
 marker=__MARKER__
 while IFS= read -r line; do
@@ -1876,7 +2319,7 @@ done
         std::fs::set_permissions(&script, perms).unwrap();
 
         std::fs::write(
-            temp.path().join("manifest.toml"),
+            extension_dir.join("manifest.toml"),
             r#"
 [extension]
 name = "flaky"
@@ -1886,17 +2329,29 @@ description = "Flaky test extension"
 [runtime]
 type = "native"
 binary = "flaky-extension.sh"
+[startup]
+timeout_ms = 30000
 "#,
         )
         .unwrap();
 
-        let spawned = spawn_from_manifest(temp.path(), &[]).await.unwrap();
+        let source = std::fs::File::open(&extension_dir).unwrap();
+        let snapshot = Arc::new(
+            crate::contribution_loading::snapshot_contribution_directory(&source).unwrap(),
+        );
+        let manifest = ExtensionManifest::from_extension_dir(snapshot.path()).unwrap();
+        let preflight = dynamic_preflight(&manifest, snapshot.path()).unwrap();
+        let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test(preflight);
+        let spawned = spawn_from_admitted_snapshot(snapshot, &extension_dir, admission, &[])
+            .await
+            .unwrap();
         let first = spawned
             .feature
             .execute("echo", "call-1", json!({}), CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(first.details["extension_reconnected"], Value::Null);
+        std::fs::write(&script, "#!/bin/sh\nexit 91\n").unwrap();
 
         let second = spawned
             .feature
@@ -1904,6 +2359,13 @@ binary = "flaky-extension.sh"
             .await
             .unwrap();
         assert_eq!(second.details["extension_reconnected"], true);
+        assert!(
+            ExtensionState::load(&extension_dir)
+                .unwrap()
+                .stability
+                .last_error
+                .is_some_and(|error| error.contains("transport failure"))
+        );
     }
 
     #[test]
@@ -2021,6 +2483,9 @@ description = "Voice test extension"
 type = "native"
 binary = "voice-extension.sh"
 
+[startup]
+timeout_ms = 30000
+
 [capabilities]
 voice = true
 "#,
@@ -2039,7 +2504,7 @@ voice = true
             .collect();
         assert_eq!(names, vec!["voice_status"]);
 
-        let notification = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        let notification = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
             .await
             .expect("notification received")
             .expect("notification channel open");
@@ -2094,6 +2559,9 @@ description = "Voice test extension"
 type = "native"
 binary = "voice-extension.sh"
 
+[startup]
+timeout_ms = 30000
+
 [capabilities]
 voice = true
 "#,
@@ -2112,7 +2580,7 @@ voice = true
             cancel.clone(),
         );
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 if let Some(event) = daemon_events.lock().unwrap().first().cloned() {
                     return event;
@@ -2180,6 +2648,9 @@ description = "Non voice extension"
 [runtime]
 type = "native"
 binary = "voice-extension.sh"
+
+[startup]
+timeout_ms = 30000
 "#,
         )
         .unwrap();
@@ -2217,7 +2688,7 @@ binary = "voice-extension.sh"
     }
 
     #[test]
-    fn host_rpc_actions_execute_cannot_bypass_manifest_policy() {
+    fn host_rpc_actions_execute_requires_outer_lease() {
         let manifest = test_manifest(HashMap::new());
         let request = omegon_extension::RpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -2231,7 +2702,7 @@ binary = "voice-extension.sh"
         let response =
             host_rpc_response_for_extension_request(&manifest, "test-extension", &request).unwrap();
         assert_eq!(response["result"]["status"], "denied");
-        assert_eq!(response["result"]["error"]["code"], "manifest_denied");
+        assert_eq!(response["result"]["error"]["code"], "outer_lease_required");
     }
 
     #[test]
@@ -2390,6 +2861,8 @@ description = "SDK compatibility test extension"
 [runtime]
 type = "native"
 binary = "sdk-extension.sh"
+[startup]
+timeout_ms = 30000
 "#,
         )
         .unwrap();
@@ -2452,6 +2925,70 @@ done
             .trim()
             .parse()
             .unwrap();
+        assert_pid_reaped(pid).await;
+    }
+
+    #[tokio::test]
+    async fn readiness_timeout_kills_and_reaps_native_extension() {
+        let _env_guard = crate::test_support::env::lock_async().await;
+        let _guard = SDK_COMPAT_SPAWN_TEST_LOCK.lock().await;
+        unsafe {
+            std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
+            std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("hanging-extension.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+IFS= read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"sdk_contract_version":"0.25"}}'
+while IFS= read -r line; do :; done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        std::fs::write(
+            temp.path().join("manifest.toml"),
+            r#"
+[extension]
+name = "hanging"
+version = "0.1.0"
+
+[runtime]
+type = "native"
+binary = "hanging-extension.sh"
+
+[startup]
+timeout_ms = 50
+"#,
+        )
+        .unwrap();
+
+        let manifest = ExtensionManifest::from_extension_dir(temp.path()).unwrap();
+        let mut command = tokio::process::Command::new(&script);
+        configure_extension_process(&mut command);
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let mut child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut handles = ProcessHandles::new(child, stdin, stdout);
+        let error = match handshake(&mut handles, &manifest, temp.path(), &[], None).await {
+            Ok(_) => panic!("hanging extension must not become ready"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("readiness timed out during get_tools")
+        );
+        handles.shutdown(std::time::Duration::ZERO).await.unwrap();
         assert_pid_reaped(pid).await;
     }
 

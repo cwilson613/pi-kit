@@ -21,7 +21,7 @@ use rmcp::{
     service::{self, NotificationContext, RoleClient, RunningService},
     transport::{StreamableHttpClientTransport, TokioChildProcess},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -64,7 +64,7 @@ use super::tool_capabilities::{
 /// [mcp_servers.github]
 /// docker_mcp = "github"
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
     /// HTTP URL for remote MCP server (enables HTTP transport mode).
     /// Must use HTTPS scheme, except http://localhost is allowed for development.
@@ -115,7 +115,7 @@ fn default_true() -> bool {
 }
 
 /// HostAction permission policy for a single MCP server.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct McpHostActionPolicy {
     /// Explicitly permitted HostAction type strings, e.g. `terminal.create@1`.
     #[serde(default)]
@@ -289,6 +289,70 @@ pub struct McpFeature {
     progress: Arc<ProgressRegistry>,
     /// Explicit MCP HostAction permissions by server name.
     host_action_policies: HashMap<String, McpHostActionPolicy>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    readiness_timeout_ms: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct McpSupervisor {
+    clients: Arc<Mutex<HashMap<String, McpConnection>>>,
+}
+
+impl McpSupervisor {
+    pub(crate) async fn shutdown(&self, timeout: Duration) -> Vec<String> {
+        let mut clients = self.clients.lock().await;
+        let mut failures = Vec::new();
+        for (name, client) in clients.iter_mut() {
+            match client.close_with_timeout(timeout).await {
+                Ok(Some(_)) => {}
+                Ok(None) => failures.push(format!("{name}: cleanup timeout")),
+                Err(error) => failures.push(format!("{name}: {error}")),
+            }
+        }
+        clients.clear();
+        failures
+    }
+}
+
+pub(crate) fn dynamic_preflight(
+    id: &str,
+    content: &str,
+    servers: &HashMap<String, McpServerConfig>,
+) -> anyhow::Result<omegon_traits::RuntimeDynamicContributionPreflight> {
+    let http_only = !servers.is_empty() && servers.values().all(|server| server.url.is_some());
+    Ok(omegon_traits::RuntimeDynamicContributionPreflight {
+        schema_version: omegon_traits::RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+        id: omegon_traits::RuntimeContributionId::new(id.to_string())
+            .map_err(|error| anyhow::anyhow!(error))?,
+        source_digest: crate::dynamic_admission::digest_bytes(content.as_bytes()),
+        source_kind: if http_only {
+            omegon_traits::RuntimeDynamicSourceKind::McpHttp
+        } else {
+            omegon_traits::RuntimeDynamicSourceKind::McpProcess
+        },
+        protocol: omegon_traits::RuntimeProtocolRange::new(1, 1)
+            .map_err(|error| anyhow::anyhow!(error))?,
+        minimum_dependencies: Vec::new(),
+        requested_trust: omegon_traits::RuntimeTrustRequest::OperatorManaged,
+        requested_confinement: omegon_traits::RuntimeConfinementRequest::HostProcess,
+        probe: omegon_traits::RuntimeProbeRequirements {
+            operations: vec![
+                omegon_traits::RuntimeProbeOperation::Connect,
+                omegon_traits::RuntimeProbeOperation::DiscoverCapabilities,
+            ],
+            timeout_ms: servers
+                .values()
+                .map(|server| server.timeout_secs.saturating_mul(1000))
+                .max()
+                .unwrap_or(30_000)
+                .max(1),
+            requested_effects: vec![
+                omegon_traits::RuntimeEffect::ProcessSpawn,
+                omegon_traits::RuntimeEffect::NetworkAccess,
+                omegon_traits::RuntimeEffect::SecretDelivery,
+            ],
+        },
+    })
 }
 
 impl McpFeature {
@@ -297,7 +361,9 @@ impl McpFeature {
         plugin_name: &str,
         servers: &HashMap<String, McpServerConfig>,
         secrets: Option<&omegon_secrets::SecretsManager>,
+        admission: crate::dynamic_admission::DynamicAdmissionPermit,
     ) -> anyhow::Result<Self> {
+        admission.validate()?;
         let mut all_tools = Vec::new();
         let mut all_resources = Vec::new();
         let mut all_resource_templates = Vec::new();
@@ -308,7 +374,18 @@ impl McpFeature {
         let mut timeouts = HashMap::new();
         let mut host_action_policies = HashMap::new();
         for (server_name, config) in servers {
-            match Self::connect_one(server_name, config, secrets, Arc::clone(&progress)).await {
+            admission.validate()?;
+            let readiness_deadline =
+                tokio::time::Instant::now() + Duration::from_secs(config.timeout_secs.max(1));
+            match Self::connect_one(
+                server_name,
+                config,
+                secrets,
+                Arc::clone(&progress),
+                readiness_deadline,
+            )
+            .await
+            {
                 Ok((server_tools, client)) => {
                     tracing::info!(
                         plugin = plugin_name,
@@ -324,8 +401,10 @@ impl McpFeature {
                     }
 
                     // Discover resources (non-fatal — many servers don't expose any)
-                    match client.list_all_resources().await {
-                        Ok(resources) => {
+                    match tokio::time::timeout_at(readiness_deadline, client.list_all_resources())
+                        .await
+                    {
+                        Ok(Ok(resources)) => {
                             if !resources.is_empty() {
                                 tracing::info!(
                                     plugin = plugin_name,
@@ -342,18 +421,27 @@ impl McpFeature {
                                 server_name: server_name.clone(),
                             }));
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             tracing::debug!(
                                 server = server_name,
                                 error = %e,
                                 "MCP server does not support resources"
                             );
                         }
+                        Err(_) => tracing::debug!(
+                            server = server_name,
+                            "MCP resource discovery exceeded readiness deadline"
+                        ),
                     }
 
                     // Discover resource templates (non-fatal)
-                    match client.list_all_resource_templates().await {
-                        Ok(templates) => {
+                    match tokio::time::timeout_at(
+                        readiness_deadline,
+                        client.list_all_resource_templates(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(templates)) => {
                             if !templates.is_empty() {
                                 tracing::info!(
                                     plugin = plugin_name,
@@ -372,18 +460,24 @@ impl McpFeature {
                                 }
                             }));
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             tracing::debug!(
                                 server = server_name,
                                 error = %e,
                                 "MCP server does not support resource templates"
                             );
                         }
+                        Err(_) => tracing::debug!(
+                            server = server_name,
+                            "MCP resource-template discovery exceeded readiness deadline"
+                        ),
                     }
 
                     // Discover prompts (non-fatal)
-                    match client.list_all_prompts().await {
-                        Ok(prompts) => {
+                    match tokio::time::timeout_at(readiness_deadline, client.list_all_prompts())
+                        .await
+                    {
+                        Ok(Ok(prompts)) => {
                             if !prompts.is_empty() {
                                 tracing::info!(
                                     plugin = plugin_name,
@@ -410,13 +504,17 @@ impl McpFeature {
                                 }
                             }));
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             tracing::debug!(
                                 server = server_name,
                                 error = %e,
                                 "MCP server does not support prompts"
                             );
                         }
+                        Err(_) => tracing::debug!(
+                            server = server_name,
+                            "MCP prompt discovery exceeded readiness deadline"
+                        ),
                     }
 
                     clients.insert(server_name.clone(), client);
@@ -442,6 +540,13 @@ impl McpFeature {
             timeouts,
             progress,
             host_action_policies,
+            admission,
+            readiness_timeout_ms: servers
+                .values()
+                .map(|server| server.timeout_secs.saturating_mul(1000))
+                .max()
+                .unwrap_or(30_000)
+                .max(1),
         })
     }
 
@@ -450,22 +555,44 @@ impl McpFeature {
         config: &McpServerConfig,
         secrets: Option<&omegon_secrets::SecretsManager>,
         progress: Arc<ProgressRegistry>,
+        readiness_deadline: tokio::time::Instant,
     ) -> anyhow::Result<(Vec<McpTool>, McpConnection)> {
         let handler = OmegonMcpClient { progress };
-        let client = if let Some(ref url) = config.url {
-            // HTTP transport mode
-            Self::validate_url(url)?;
-            let transport = StreamableHttpClientTransport::from_uri(url.clone());
-            service::serve_client(handler, transport).await?
-        } else {
-            // Local process transport mode
-            let cmd = Self::build_command(server_name, config, secrets)?;
-            let transport = TokioChildProcess::new(cmd)?;
-            service::serve_client(handler, transport).await?
+        let connect = async {
+            let client = if let Some(ref url) = config.url {
+                // HTTP transport mode
+                Self::validate_url(url)?;
+                let transport = StreamableHttpClientTransport::from_uri(url.clone());
+                service::serve_client(handler, transport).await?
+            } else {
+                // Local process transport mode
+                let cmd = Self::build_command(server_name, config, secrets)?;
+                let transport = TokioChildProcess::new(cmd)?;
+                service::serve_client(handler, transport).await?
+            };
+            Ok::<_, anyhow::Error>(client)
         };
+        let mut client = tokio::time::timeout_at(readiness_deadline, connect)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("MCP server '{server_name}' connection readiness timed out")
+            })??;
 
         // Discover tools via MCP tools/list
-        let tools_result = client.list_tools(None).await?;
+        let tools_result =
+            match tokio::time::timeout_at(readiness_deadline, client.list_tools(None)).await {
+                Ok(Ok(tools)) => tools,
+                Ok(Err(error)) => {
+                    let _ = client.close_with_timeout(Duration::from_secs(1)).await;
+                    return Err(error.into());
+                }
+                Err(_) => {
+                    let _ = client.close_with_timeout(Duration::from_secs(1)).await;
+                    return Err(anyhow::anyhow!(
+                        "MCP server '{server_name}' tool discovery readiness timed out"
+                    ));
+                }
+            };
         let tools: Vec<McpTool> = tools_result
             .tools
             .into_iter()
@@ -483,6 +610,12 @@ impl McpFeature {
             .collect();
 
         Ok((tools, client))
+    }
+
+    pub(crate) fn supervisor(&self) -> McpSupervisor {
+        McpSupervisor {
+            clients: Arc::clone(&self.clients),
+        }
     }
 
     /// Validate URL for HTTP transport.
@@ -762,6 +895,32 @@ impl Feature for McpFeature {
         &self.feature_name
     }
 
+    fn tool_provenance(&self) -> omegon_traits::ToolProvenance {
+        omegon_traits::ToolProvenance::Extension {
+            name: self.feature_name.clone(),
+        }
+    }
+
+    fn runtime_lifecycle_policy(&self) -> Option<omegon_traits::RuntimeLifecyclePolicy> {
+        Some(omegon_traits::RuntimeLifecyclePolicy {
+            requirement: omegon_traits::RuntimeLifecycleRequirement::Optional,
+            failure_disposition: omegon_traits::RuntimeFailureDisposition::Quarantine,
+            readiness_timeout_ms: self.readiness_timeout_ms,
+            heartbeat_timeout_ms: None,
+            restart_limit: 0,
+        })
+    }
+
+    fn runtime_transition_policy(
+        &self,
+    ) -> Option<omegon_traits::RuntimeCompositionTransitionPolicy> {
+        Some(omegon_traits::RuntimeCompositionTransitionPolicy {
+            activation_boundary: omegon_traits::RuntimeActivationBoundary::Boot,
+            cleanup: omegon_traits::RuntimeCleanupRequirement::BestEffort,
+            cleanup_timeout_ms: 500,
+        })
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         let mut defs: Vec<ToolDefinition> = self
             .tools
@@ -921,6 +1080,7 @@ impl Feature for McpFeature {
         args: Value,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.admission.validate()?;
         self.execute_with_sink(tool_name, call_id, args, cancel, ToolProgressSink::noop())
             .await
     }
@@ -947,12 +1107,25 @@ impl Feature for McpFeature {
     async fn execute_with_context(
         &self,
         tool_name: &str,
-        _call_id: &str,
+        call_id: &str,
         args: Value,
         _cancel: tokio_util::sync::CancellationToken,
         sink: ToolProgressSink,
         context: omegon_traits::ToolExecutionContext,
     ) -> anyhow::Result<ToolResult> {
+        self.admission.validate()?;
+        tracing::debug!(
+            call_id,
+            invocation_id = context
+                .invocation
+                .as_ref()
+                .map(|value| value.invocation_id.as_str()),
+            deduplication_id = context
+                .invocation
+                .as_ref()
+                .and_then(|value| value.deduplication_id.as_deref()),
+            "dispatching MCP tool invocation"
+        );
         let (server_name, mcp_name) = Self::split_tool_name(tool_name);
 
         // Route to resource/prompt handlers
@@ -1008,15 +1181,38 @@ impl Feature for McpFeature {
             None
         };
 
-        let result = tokio_timeout(Duration::from_secs(timeout_secs), client.call_tool(params))
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
+        let result = match tokio_timeout(
+            Duration::from_secs(timeout_secs),
+            client.call_tool(params),
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) if context.invocation.is_some() => {
+                return Err(crate::invocation_service::UnknownCompletionError {
+                    reason: format!(
+                        "MCP transport failed after invocation acknowledgement (server: '{server_name}'): {error}"
+                    ),
+                }
+                .into());
+            }
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) if context.invocation.is_some() => {
+                return Err(crate::invocation_service::UnknownCompletionError {
+                    reason: format!(
+                        "MCP tool call timed out after {timeout_secs}s (server: '{server_name}')"
+                    ),
+                }
+                .into());
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
                     "MCP tool call timed out after {}s (server: '{}')",
                     timeout_secs,
                     server_name
-                )
-            })??;
+                ));
+            }
+        };
 
         // Convert MCP content to Omegon content blocks
         let content: Vec<ContentBlock> = result
@@ -1045,6 +1241,22 @@ impl Feature for McpFeature {
         .await;
 
         Ok(ToolResult { content, details })
+    }
+
+    async fn execute_with_invocation_control(
+        &self,
+        tool_name: &str,
+        call_id: &str,
+        args: Value,
+        cancel: tokio_util::sync::CancellationToken,
+        sink: ToolProgressSink,
+        context: omegon_traits::ToolExecutionContext,
+        control: omegon_traits::InvocationControl,
+    ) -> anyhow::Result<ToolResult> {
+        self.admission.validate()?;
+        control.acknowledge().map_err(anyhow::Error::msg)?;
+        self.execute_with_context(tool_name, call_id, args, cancel, sink, context)
+            .await
     }
 }
 
@@ -1201,12 +1413,41 @@ async fn mcp_host_action_outcomes_with_context(
                     continue;
                 }
             };
-        let scoped = crate::extensions::host_actions::ScopedHostActionId {
+        let mut scoped = crate::extensions::host_actions::ScopedHostActionId {
             origin: crate::extensions::host_actions::HostActionOrigin::mcp(server_name),
             session_id: "mcp-tool-result".to_string(),
             tool_call_id: tool_name.to_string(),
             action_id: action.id.clone(),
         };
+        let authorization = context
+            .host_action_invocation
+            .as_ref()
+            .ok_or_else(|| "declared outer invocation lease is required".to_string())
+            .and_then(|guard| {
+                guard.authorize(
+                    &format!("mcp:{server_name}:{tool_name}:{idx}"),
+                    &action.action_type,
+                    &crate::extensions::host_actions::required_host_action_effects(),
+                )
+            });
+        match authorization {
+            Ok(parent) => {
+                scoped.session_id = parent
+                    .session_id
+                    .unwrap_or_else(|| format!("ephemeral:{}", parent.invocation_id));
+            }
+            Err(error) => {
+                out.push(json!({
+                    "action_id": action.id,
+                    "status": "denied",
+                    "error": {
+                        "code": "outer_lease_required",
+                        "message": error,
+                    }
+                }));
+                continue;
+            }
+        }
 
         let decision = if let Some(sink) = &context.host_action_approval {
             let request = crate::extensions::approval::build_host_action_permission_request(
@@ -1558,6 +1799,41 @@ mod tests {
         assert_eq!(outcome["result"]["tool"], "open");
         assert_eq!(outcome["result"]["action_type"], "terminal.create@1");
         assert_eq!(outcome["result"]["auto_execution"], "downgraded_to_manual");
+    }
+
+    #[tokio::test]
+    async fn mcp_host_action_review_requires_outer_lease_guard() {
+        let mut meta = rmcp::model::Meta::new();
+        meta.insert(
+            "omegon/hostActions".to_string(),
+            json!([{
+                "id": "open-reader",
+                "type": "terminal.create@1",
+                "params": {"command": "bookokrat"}
+            }]),
+        );
+        let mut result = CallToolResult::success(vec![rmcp::model::Content::text("ok")]);
+        result.meta = Some(meta);
+        let policy = McpHostActionPolicy {
+            allowed: vec!["terminal.create@1".to_string()],
+            tools: vec!["open".to_string()],
+            manual: true,
+        };
+
+        let details = mcp_tool_result_details_with_context(
+            "reader",
+            "open",
+            &result,
+            Some(&policy),
+            &omegon_traits::ToolExecutionContext::default(),
+        )
+        .await;
+
+        assert_eq!(details["host_action_outcomes"][0]["status"], "denied");
+        assert_eq!(
+            details["host_action_outcomes"][0]["error"]["code"],
+            "outer_lease_required"
+        );
     }
 
     #[test]
@@ -2034,6 +2310,12 @@ manual = true
             timeouts: HashMap::new(),
             progress: Arc::new(ProgressRegistry::default()),
             host_action_policies: HashMap::new(),
+            admission: crate::dynamic_admission::DynamicAdmissionPermit::for_test_id(
+                "mcp:test",
+                omegon_traits::RuntimeDynamicSourceKind::McpProcess,
+            )
+            .unwrap(),
+            readiness_timeout_ms: 30_000,
         }
     }
 

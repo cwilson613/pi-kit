@@ -7,16 +7,22 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use omegon_memory::EmbeddingService as _; // bring trait methods into scope
-use omegon_memory::MemoryBackend as _;
 
 use crate::bus::EventBus;
 use crate::context::ContextManager;
 use crate::conversation::ConversationState;
 use crate::features;
-use crate::lifecycle;
 use crate::prompt;
 use crate::session;
 use crate::tools;
+
+pub(crate) fn register_work_aggregation(
+    bus: &mut EventBus,
+) -> features::work_aggregation::WorkSnapshotPublisher {
+    let (feature, publisher) = features::work_aggregation::WorkAggregationFeature::pending();
+    bus.register(Box::new(feature));
+    publisher
+}
 
 /// Summary of a resumed session, surfaced to the TUI for the welcome brief.
 #[derive(Debug, Clone)]
@@ -49,16 +55,33 @@ pub struct AgentSetup {
     /// The event bus — owns all features. The loop dispatches tools and
     /// emits events through the bus.
     pub bus: EventBus,
+    /// Immutable repository-work service captured from the accepted boot generation.
+    pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+    /// Stateless behavior policy captured with its accepted service identity.
+    pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
+    /// Boot-captured exact-generation lifecycle service binding.
+    pub(crate) lifecycle_binding: crate::lifecycle_service::LifecycleBinding,
+    /// Boot-captured exact-generation memory service binding.
+    pub(crate) memory_binding: crate::memory_service::MemoryBinding,
+    /// Boot-captured exact-generation context/compaction planning binding.
+    pub(crate) context_compaction: crate::context_compaction_service::ContextCompactionBinding,
+    /// Boot-captured exact-generation repository Git/JJ binding.
+    pub(crate) git_binding: crate::git_service::GitBinding,
     /// Stable session id for the current live conversation. Fresh sessions
     /// get a generated id at startup; resumed sessions reuse their saved id.
     pub session_id: String,
+    pub(crate) session_view_binding: crate::session_consumers::SessionViewBinding,
     /// Instance identifier for runtime state isolation (`tui-{pid}`, `acp-{pid}`, etc.).
     pub instance_id: String,
+    /// Durable v1 runtime ownership and heartbeat lifecycle.
+    pub runtime_ownership: crate::workspace::runtime::RuntimeOwnership,
     /// Skill activation/resolution events produced while loading startup augments.
     pub startup_skill_activation_events: Vec<omegon_traits::SkillActivationEvent>,
     /// Shared context metrics — updated each turn, read by ContextProvider
     pub context_metrics:
         std::sync::Arc<std::sync::Mutex<crate::features::context::SharedContextMetrics>>,
+    /// Typed read-only context-pack service for host/operator surfaces.
+    pub context_service: std::sync::Arc<crate::features::context::ContextProvider>,
     /// Shared command channel — set by main after TUI init
     pub command_tx: crate::features::context::SharedCommandTx,
     pub context_manager: ContextManager,
@@ -85,10 +108,13 @@ pub struct AgentSetup {
     pub initial_harness_status: crate::status::HarnessStatus,
     /// Present when a prior session was loaded; None for fresh starts.
     pub resume_info: Option<ResumeInfo>,
+    /// Validated legacy/catalog metadata retained for one-way compatibility import.
+    pub(crate) resume_meta: Option<crate::session::SessionMeta>,
     /// Startup-local workspace ownership metadata.
     pub workspace_state: WorkspaceStartupState,
-    /// Canonical owners for deterministic extension process shutdown.
-    pub extension_supervisors: Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
+    /// One generation owner for native extension, MCP, and manifest resources.
+    pub(crate) dynamic_contributions:
+        crate::contribution_lifecycle::DynamicContributionGenerationOwner,
     /// Extension widgets discovered during setup — passed to TUI for rendering.
     pub extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
     /// Extension deployment metadata discovered during startup.
@@ -113,6 +139,35 @@ pub struct AgentSetup {
         Vec<tokio::sync::mpsc::UnboundedReceiver<crate::extensions::ExtensionNotification>>,
     /// Idle notification pumps for voice-capable extensions.
     pub voice_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
+}
+
+pub(crate) async fn finalize_agent_error<T>(
+    agent: &mut AgentSetup,
+    error: anyhow::Error,
+) -> anyhow::Result<T> {
+    let report = agent.bus.shutdown_managed_services().await;
+    let dynamic_failures = agent.dynamic_contributions.shutdown().await;
+    if report.all_resources_settled() && dynamic_failures.is_empty() {
+        Err(error)
+    } else {
+        Err(error.context(format!(
+            "runtime resources did not settle while finalizing error: managed={report:?}; dynamic={dynamic_failures:?}"
+        )))
+    }
+}
+
+pub(crate) async fn finalize_managed_error<T>(
+    bus: &mut EventBus,
+    error: anyhow::Error,
+) -> anyhow::Result<T> {
+    let report = bus.shutdown_managed_services().await;
+    if report.all_resources_settled() {
+        Err(error)
+    } else {
+        Err(error.context(format!(
+            "managed services did not settle while finalizing error: {report:?}"
+        )))
+    }
 }
 
 /// Runtime-substrate inventory captured at startup or before a future substrate refresh.
@@ -156,6 +211,19 @@ pub struct RuntimeSubstrateRefreshCandidate {
     pub skipped_by_policy: usize,
     pub disabled_extensions: usize,
     pub invalid_manifests: Vec<String>,
+}
+
+fn apply_initial_memory_status(
+    harness_status: &mut crate::status::HarnessStatus,
+    status: crate::status::MemoryStatus,
+    binding_available: bool,
+    warning: Option<String>,
+) {
+    harness_status.update_memory(status);
+    if !binding_available || warning.is_some() {
+        harness_status.memory_available = false;
+        harness_status.memory_warning = warning;
+    }
 }
 
 /// Build a runtime substrate refresh candidate inventory without mutating live runtime state.
@@ -234,59 +302,60 @@ pub(crate) struct StartupSnapshot {
 }
 
 /// Snapshot of design-tree + openspec state, extracted before boxing the provider.
+#[derive(Default)]
 pub(crate) struct LifecycleSnapshot {
     pub focused_node: Option<crate::runtime_state::FocusedNodeSummary>,
     pub active_changes: Vec<crate::runtime_state::ChangeSummary>,
 }
 
 impl LifecycleSnapshot {
-    fn from_lifecycle_feature(lf: &features::lifecycle::LifecycleFeature) -> Self {
-        let read_handle = lf.read_handle();
-        let focused_node = read_handle
-            .design_tree_snapshot(false)
-            .ok()
-            .and_then(|snapshot| {
-                snapshot.focused_node_id.and_then(|id| {
-                    snapshot.nodes.get(&id).map(|n| {
-                        let sections = lifecycle::design::read_node_sections(n);
-                        let assumptions = n.assumption_count();
-                        let decisions_count = sections
-                            .as_ref()
-                            .map(|s| s.decisions.iter().filter(|d| d.status == "decided").count())
-                            .unwrap_or(0);
-                        let readiness = sections
-                            .as_ref()
-                            .map(|s| s.readiness_score())
-                            .unwrap_or(0.0);
-                        crate::runtime_state::FocusedNodeSummary {
-                            id: n.id.clone(),
-                            title: n.title.clone(),
-                            status: n.status,
-                            open_questions: n.open_questions.len() - assumptions,
-                            assumptions,
-                            decisions: decisions_count,
-                            readiness,
-                            openspec_change: n.openspec_change.clone(),
-                        }
+    fn from_managed(host: &crate::runtime_state::LifecycleHostHandle) -> Self {
+        let Ok(observation) = host.observe() else {
+            return Self::default();
+        };
+        let Some(repository) = observation.repository else {
+            return Self::default();
+        };
+        let focused_node = observation.focus.node_id.as_ref().and_then(|id| {
+            repository.design.nodes.get(id).map(|node| {
+                let sections = repository.sections.get(id);
+                let assumptions = node.assumption_count();
+                let decisions = sections
+                    .map(|sections| {
+                        sections
+                            .decisions
+                            .iter()
+                            .filter(|decision| decision.status == "decided")
+                            .count()
                     })
-                })
-            });
-
-        let active_changes: Vec<_> = read_handle
-            .openspec_snapshot(Default::default())
-            .map(|snapshot| {
-                snapshot
-                    .changes
-                    .into_iter()
-                    .map(|c| crate::runtime_state::ChangeSummary {
-                        name: c.name,
-                        stage: c.lifecycle_state,
-                        done_tasks: c.done_tasks,
-                        total_tasks: c.total_tasks,
-                    })
-                    .collect()
+                    .unwrap_or(0);
+                let readiness = sections
+                    .map(|sections| sections.readiness_score())
+                    .unwrap_or(0.0);
+                crate::runtime_state::FocusedNodeSummary {
+                    id: node.id.clone(),
+                    title: node.title.clone(),
+                    status: node.status,
+                    open_questions: node.open_questions.len().saturating_sub(assumptions),
+                    assumptions,
+                    decisions,
+                    readiness,
+                    openspec_change: node.openspec_change.clone(),
+                }
             })
-            .unwrap_or_default();
+        });
+        let active_changes = repository
+            .lifecycle
+            .openspec
+            .changes
+            .iter()
+            .map(|change| crate::runtime_state::ChangeSummary {
+                name: change.name.clone(),
+                stage: change.lifecycle_state.clone(),
+                done_tasks: change.done_tasks,
+                total_tasks: change.total_tasks,
+            })
+            .collect();
 
         Self {
             focused_node,
@@ -318,7 +387,7 @@ pub(crate) fn ensure_project_memory_store_ready(
     let status = omegon_memory::sqlite::SqliteBackend::status(db_path)?;
     match status.schema_version {
         omegon_memory::sqlite::MEMORY_SCHEMA_VERSION => {
-            omegon_memory::sqlite::SqliteBackend::reconcile_v7_default_mind(db_path)?;
+            omegon_memory::sqlite::SqliteBackend::reconcile_current_default_mind(db_path)?;
             Ok(None)
         }
         version if omegon_memory::sqlite::LEGACY_MEMORY_SCHEMA_VERSIONS.contains(&version) => {
@@ -335,10 +404,21 @@ pub(crate) fn ensure_project_memory_store_ready(
             Ok(Some(result))
         }
         version => anyhow::bail!(
-            "unsupported memory schema v{version} at {}; run `omegon memory migrate --status --path {}` and restore a supported v5/v6 backup or upgrade Omegon",
+            "unsupported memory schema v{version} at {}; run `omegon memory migrate --status --path {}` and restore a supported v5-v7 backup or upgrade Omegon",
             db_path.display(),
             db_path.display()
         ),
+    }
+}
+
+async fn managed_setup_error(bus: &mut EventBus, error: anyhow::Error) -> anyhow::Error {
+    let report = bus.shutdown_managed_services().await;
+    if report.all_resources_settled() {
+        error
+    } else {
+        error.context(format!(
+            "published managed-service cleanup did not settle: {report:?}"
+        ))
     }
 }
 
@@ -364,7 +444,23 @@ impl AgentSetup {
         settings: Option<crate::settings::SharedSettings>,
         dangerously_bypass_permissions: bool,
     ) -> anyhow::Result<Self> {
-        let instance_id = crate::paths::instance_id("agent");
+        Self::new_with_safety_and_mode(
+            cwd,
+            resume,
+            settings,
+            dangerously_bypass_permissions,
+            "agent",
+        )
+        .await
+    }
+
+    pub async fn new_with_safety_and_mode(
+        cwd: &Path,
+        resume: Option<Option<&str>>,
+        settings: Option<crate::settings::SharedSettings>,
+        dangerously_bypass_permissions: bool,
+        runtime_mode: &str,
+    ) -> anyhow::Result<Self> {
         let cwd = std::fs::canonicalize(cwd)?;
         // Canonical project root — extensions read this instead of
         // embedder-specific env vars (FLYNT_VAULT, CODEX_VAULT).
@@ -458,39 +554,10 @@ impl AgentSetup {
         );
         tracing::debug!(diagnostics = ?session_secret_diag, "startup secret diagnostics");
 
-        let mut bus = EventBus::new();
-
         let project_root = find_project_root(&cwd);
-
-        // ─── Repo model (git state tracking) ────────────────────────────
-        let repo_model = if project_root.join(".git").exists() || project_root.join(".jj").exists()
-        {
-            match omegon_git::RepoModel::discover(&project_root) {
-                Ok(Some(model)) => {
-                    tracing::info!(
-                        repo = %model.repo_path().display(),
-                        branch = model.branch().as_deref().unwrap_or("(detached)"),
-                        submodules = model.submodules().len(),
-                        "RepoModel active"
-                    );
-                    Some(model)
-                }
-                Ok(None) => {
-                    tracing::debug!("not inside a git repo — RepoModel disabled");
-                    None
-                }
-                Err(e) => {
-                    tracing::warn!("git repo discovery failed: {e} — RepoModel disabled");
-                    None
-                }
-            }
-        } else {
-            tracing::debug!(
-                project = %project_root.display(),
-                "selected project root is not a VCS root — RepoModel disabled"
-            );
-            None
-        };
+        let mut bus = EventBus::new();
+        bus.set_project_root(project_root.clone());
+        let deferred_session_view = crate::session_consumers::DeferredSessionViewBinding::default();
 
         let boundary = if let Some(ref s) = settings {
             tools::WorkspaceBoundary::new(cwd.clone()).with_settings(s.clone())
@@ -550,7 +617,6 @@ impl AgentSetup {
             }
         }
 
-        let _codex_integration = crate::codex_config::load(&project_root);
         let codex_integration = crate::codex_config::load(&project_root);
         let codex_vault_path = codex_integration
             .as_ref()
@@ -573,13 +639,23 @@ impl AgentSetup {
             active_persona_mind: None,
         };
         let mut memory_warning: Option<String> = None;
-
-        let mut context_memory_backend: Option<std::sync::Arc<dyn omegon_memory::MemoryBackend>> =
-            None;
-        let mut context_memory_mind: Option<String> = None;
-        let mut context_embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> =
-            None;
-
+        let memory_binding = crate::memory_service::MemoryBinding::default();
+        let memory_vault_config = match (codex_vault_path.as_ref(), codex_integration.as_ref()) {
+            (Some(path), Some(integration)) => {
+                match crate::memory_service::MemoryVaultConfigV1::validated(
+                    path.clone(),
+                    &integration.memory,
+                ) {
+                    Ok(config) => Some(config),
+                    Err(error) => {
+                        tracing::warn!(%error, "Codex vault memory synchronization disabled");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        let mut embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> = None;
         if let Some(db_path) = db_path.as_ref() {
             if !is_child && let Some(migration) = ensure_project_memory_store_ready(db_path)? {
                 tracing::warn!(
@@ -591,130 +667,49 @@ impl AgentSetup {
                     "migrated legacy project memory store before startup"
                 );
             }
-            match omegon_memory::SqliteBackend::open(db_path) {
-                Ok(backend) => {
-                    tracing::info!(mind = %mind, db = %db_path.display(), child = is_child, "memory backend loaded");
-
-                    if let Ok(stats) = backend.stats(&mind).await {
-                        initial_memory_status = crate::status::MemoryStatus {
-                            total_facts: stats.total_facts,
-                            active_facts: stats.active_facts,
-                            project_facts: stats.active_facts,
-                            persona_facts: 0,
-                            working_facts: 0,
-                            episodes: stats.episodes,
-                            edges: stats.edges,
-                            active_persona_mind: None,
-                        };
-                        tracing::info!(
-                            facts = initial_memory_status.active_facts,
-                            episodes = initial_memory_status.episodes,
-                            edges = initial_memory_status.edges,
-                            "memory snapshot for TUI"
-                        );
-                    }
-
-                    // Import JSONL if database is empty (but not in child processes)
-                    if !is_child {
-                        let stats = backend.stats(&mind).await.ok();
-                        if stats.as_ref().is_none_or(|s| s.active_facts == 0)
-                            && jsonl_path.as_ref().is_some_and(|path| path.exists())
-                            && let Some(jsonl_path) = jsonl_path.as_ref()
-                            && let Ok(jsonl) = std::fs::read_to_string(jsonl_path)
-                        {
-                            match backend.import_jsonl(&jsonl).await {
-                                Ok(import) => {
-                                    tracing::info!(
-                                        imported = import.imported,
-                                        "imported facts.jsonl"
-                                    )
-                                }
-                                Err(e) => tracing::warn!("JSONL import failed: {e}"),
+            tracing::info!(mind = %mind, db = %db_path.display(), child = is_child, "managed memory candidate configured");
+            // Skip the probe in child processes — the async HTTP request blocks
+            // single-threaded runtimes (ACP, delegate children).
+            if !is_child {
+                let profile = crate::settings::Profile::load(&cwd);
+                let svc = crate::embedding::OllamaEmbeddingService::from_config(
+                    profile.embed_url.as_deref(),
+                    profile.embed_model.as_deref(),
+                );
+                embed_service = if svc.probe().await {
+                    tracing::info!(
+                        url = svc.base_url(),
+                        model = svc.model_name(),
+                        "embedding service available — hybrid search enabled"
+                    );
+                    Some(std::sync::Arc::new(svc)
+                        as std::sync::Arc<dyn omegon_memory::EmbeddingService>)
+                } else {
+                    #[cfg(feature = "local-embeddings")]
+                    {
+                        match crate::local_embedding::LocalEmbeddingService::from_default_dir() {
+                            Ok(local_svc) => {
+                                tracing::info!(
+                                    model = local_svc.model_name(),
+                                    "local ONNX embedding service loaded — hybrid search enabled"
+                                );
+                                Some(std::sync::Arc::new(local_svc)
+                                    as std::sync::Arc<dyn omegon_memory::EmbeddingService>)
+                            }
+                            Err(_) => {
+                                tracing::info!(
+                                    "embedding service not reachable and no local model — FTS-only recall"
+                                );
+                                None
                             }
                         }
                     }
-
-                    // Register MemoryFeature with Arc<dyn MemoryBackend>
-                    let memory_backend: std::sync::Arc<dyn omegon_memory::MemoryBackend> =
-                        std::sync::Arc::new(backend);
-                    context_memory_backend = Some(memory_backend.clone());
-                    context_memory_mind = Some(mind.clone());
-
-                    // ── Embedding service (optional, for hybrid search) ──
-                    // Skip the probe in child processes — the async HTTP request blocks
-                    // single-threaded runtimes (ACP, delegate children).
-                    let embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> =
-                        if is_child {
-                            None
-                        } else {
-                            let profile = crate::settings::Profile::load(&cwd);
-                            let svc = crate::embedding::OllamaEmbeddingService::from_config(
-                                profile.embed_url.as_deref(),
-                                profile.embed_model.as_deref(),
-                            );
-                            if svc.probe().await {
-                                tracing::info!(
-                                    url = svc.base_url(),
-                                    model = svc.model_name(),
-                                    "embedding service available — hybrid search enabled"
-                                );
-                                Some(std::sync::Arc::new(svc)
-                                    as std::sync::Arc<dyn omegon_memory::EmbeddingService>)
-                            } else {
-                                #[cfg(feature = "local-embeddings")]
-                                {
-                                    match crate::local_embedding::LocalEmbeddingService::from_default_dir()
-                            {
-                                Ok(local_svc) => {
-                                    tracing::info!(
-                                        model = local_svc.model_name(),
-                                        "local ONNX embedding service loaded — hybrid search enabled"
-                                    );
-                                    Some(std::sync::Arc::new(local_svc)
-                                        as std::sync::Arc<dyn omegon_memory::EmbeddingService>)
-                                }
-                                Err(_) => {
-                                    tracing::info!(
-                                        "embedding service not reachable and no local model — FTS-only recall"
-                                    );
-                                    None
-                                }
-                            }
-                                }
-                                #[cfg(not(feature = "local-embeddings"))]
-                                {
-                                    tracing::info!(
-                                        "embedding service not reachable — FTS-only recall"
-                                    );
-                                    None
-                                }
-                            }
-                        }; // end if is_child else probe
-
-                    let mut memory_feature =
-                        features::memory::MemoryFeature::new(memory_backend, mind);
-                    if let Some(ref svc) = embed_service {
-                        memory_feature = memory_feature.with_embed_service(svc.clone());
-                        context_embed_service = Some(svc.clone());
+                    #[cfg(not(feature = "local-embeddings"))]
+                    {
+                        tracing::info!("embedding service not reachable — FTS-only recall");
+                        None
                     }
-                    if let Some(ref vp) = codex_vault_path {
-                        memory_feature = memory_feature.with_codex_vault(vp.clone());
-                        tracing::info!(vault = %vp.display(), "Codex vault sync enabled for memory");
-                    }
-                    if embed_service.is_some() {
-                        memory_feature = memory_feature
-                            .with_extraction_model("anthropic:claude-haiku-4-5-20251001".into());
-                    }
-                    bus.register(Box::new(memory_feature));
-                }
-                Err(err) => {
-                    let warning = format!(
-                        "Memory backend unavailable — memory_* tools disabled ({})",
-                        db_path.display()
-                    );
-                    tracing::error!(db = %db_path.display(), error = %err, "memory backend unavailable — memory_* tools disabled");
-                    memory_warning = Some(warning);
-                }
+                };
             }
         } else {
             tracing::info!(
@@ -726,12 +721,29 @@ impl AgentSetup {
                     .to_string(),
             );
         }
+        let mut memory_feature =
+            features::memory::MemoryFeature::new(memory_binding.clone(), mind.clone())
+                .with_status_root(project_root.clone());
+        if let Some(ref service) = embed_service {
+            memory_feature = memory_feature
+                .with_embed_service(service.clone())
+                .with_extraction_model("anthropic:claude-haiku-4-5-20251001".into());
+        }
+        bus.register(Box::new(memory_feature));
+        bus.register_internal_tool(crate::tool_registry::memory::MEMORY_STORE, "memory");
 
         // ─── Lifecycle (design-tree + openspec) ──────────────────────────
         // Use project root (git repo root), not cwd — docs/ and openspec/
         // live at the repo root, which may differ from cwd when running
         // from a subdirectory like core/.
-        let mut lifecycle_feature = features::lifecycle::LifecycleFeature::new(&project_root);
+        let lifecycle_binding = crate::lifecycle_service::LifecycleBinding::default();
+        let lifecycle_host =
+            crate::runtime_state::LifecycleHostHandle::new(lifecycle_binding.clone());
+        let mut lifecycle_feature = features::lifecycle::LifecycleFeature::managed(
+            &project_root,
+            lifecycle_binding.clone(),
+            lifecycle_host.clone(),
+        );
         if let Some(ref vp) = codex_vault_path
             && codex_integration
                 .as_ref()
@@ -740,9 +752,26 @@ impl AgentSetup {
             lifecycle_feature = lifecycle_feature.with_codex_vault(vp.clone());
             tracing::info!(vault = %vp.display(), "Codex vault sync enabled for design tree");
         }
-        let lifecycle_snapshot = LifecycleSnapshot::from_lifecycle_feature(&lifecycle_feature);
-        let lifecycle_handle = lifecycle_feature.read_handle();
         bus.register(Box::new(lifecycle_feature));
+
+        // Declare the immutable work service in the initial boot graph. Its
+        // snapshot is populated from the managed lifecycle observation before
+        // setup publishes any consumer handles.
+        let work_snapshot_publisher = register_work_aggregation(&mut bus);
+
+        bus.register(Box::new(
+            features::behavior_policy::BehaviorPolicyHostFeature,
+        ));
+        bus.register(Box::new(
+            features::behavior_policy::BehaviorPolicyFeature::default(),
+        ));
+        let context_compaction =
+            crate::context_compaction_service::ContextCompactionBinding::default();
+        bus.register(Box::new(
+            crate::context_compaction_service::ContextCompactionFeature,
+        ));
+        let git_binding = crate::git_service::GitBinding::default();
+        bus.register(Box::new(crate::git_service::GitFeature));
 
         // ─── Sandbox setting (read once, shared by cleave + delegate) ──
         let sandbox = settings
@@ -779,7 +808,8 @@ impl AgentSetup {
         );
         cleave_feature = cleave_feature
             .with_inference_runtime(inference_runtime.clone())
-            .with_secrets(secrets.clone());
+            .with_secrets(secrets.clone())
+            .with_git(git_binding.clone());
         if let Some(settings) = settings.as_ref() {
             cleave_feature = cleave_feature.with_settings(settings.clone());
         }
@@ -792,13 +822,11 @@ impl AgentSetup {
         bus.register(Box::new(cleave_feature));
 
         // ─── Codescan (codebase_search / codebase_index) ──────────────
-        bus.register(Box::new(features::adapter::ToolAdapter::new(
-            "codescan",
-            Box::new(tools::codebase_search::CodescanProvider::new(
-                project_root.clone(),
-            )),
+        let codescan_binding = crate::codescan_service::CodescanBinding::default();
+        bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
+            project_root.clone(),
+            codescan_binding.clone(),
         )));
-
         // ─── Delegate (subagent system) ─────────────────────────────────
         let agents = crate::features::delegate::scan_agents(&cwd);
         let mut delegate_feature = features::delegate::DelegateFeature::new_with_safety(
@@ -829,7 +857,11 @@ impl AgentSetup {
         bus.register(Box::new(delegate_feature));
 
         // ─── Session log (context injection) ────────────────────────────
-        bus.register(Box::new(features::session_log::SessionLog::new(&cwd)));
+        bus.register(Box::new(
+            features::session_log::SessionLog::new(&cwd)
+                .with_session_binding(deferred_session_view.clone())
+                .with_lifecycle(lifecycle_host.clone()),
+        ));
 
         // ─── Audit log (structured JSONL trail for postmortem) ──────────
         let audit_session = std::env::var("OMEGON_SESSION_ID").unwrap_or_else(|_| {
@@ -841,10 +873,10 @@ impl AgentSetup {
                     .unwrap_or(0)
             )
         });
-        bus.register(Box::new(features::audit_log::AuditLog::new(
-            &cwd,
-            &audit_session,
-        )));
+        bus.register(Box::new(
+            features::audit_log::AuditLog::new(&cwd, &audit_session)
+                .with_session_binding(deferred_session_view.clone()),
+        ));
 
         // ─── Mutation (evolutionary skill/diagnostic creation) ───────────
         bus.register(Box::new(features::mutation::MutationFeature::new(
@@ -855,13 +887,17 @@ impl AgentSetup {
         bus.register(Box::new(features::usage::UsageFeature::new()));
 
         // ─── Prompt library (/prompt registry-native command surface) ───
-        bus.register(Box::new(features::prompt::PromptFeature::new()));
+        bus.register(Box::new(
+            features::prompt::PromptFeature::with_workspace_root(cwd.clone()),
+        ));
         bus.register(Box::new(features::loop_jobs::LoopFeature::new(
             &project_root,
         )));
 
         // ─── User command aliases (explicit prompt-targeted slash surfaces) ───
-        bus.register(Box::new(features::user_commands::UserCommandFeature::load()));
+        bus.register(Box::new(
+            features::user_commands::UserCommandFeature::load_for_workspace(&cwd),
+        ));
 
         // ─── Clipboard paste retention (/clipboard prune) ────────────────
         // Manual on-demand sweep surface for clipboard image pastes.
@@ -883,7 +919,7 @@ impl AgentSetup {
 
         // ─── Tool management ─────────────────────────────────────────────
         let manage_tools = features::manage_tools::ManageTools::new();
-        let disabled_handle = manage_tools.disabled_handle();
+        let tool_admission = manage_tools.admission_handle();
         let tool_inventory = manage_tools.inventory_handle();
         bus.register(Box::new(manage_tools));
 
@@ -907,31 +943,10 @@ impl AgentSetup {
             persona_registry.load_skills_subset(&cwd, &child_skills);
         }
 
-        // ─── Auto-trust paths declared in skills ─────────────────────────
-        // Skills can declare `trusted_paths` in their frontmatter for directories
-        // they need to read/write outside the workspace. Auto-add to settings
-        // so the user isn't prompted on every run and delegates inherit them.
+        // Skill path declarations are admission requests, never persistent grants.
         let skill_trusted_paths = crate::skills::collect_trusted_paths(persona_registry.skills());
-        if !skill_trusted_paths.is_empty()
-            && let Some(ref s) = settings
-            && let Ok(mut settings_guard) = s.lock()
-        {
-            let mut added = Vec::new();
-            for path in &skill_trusted_paths {
-                if !settings_guard.trusted_directories.contains(path) {
-                    settings_guard.trusted_directories.push(path.clone());
-                    added.push(path.clone());
-                }
-            }
-            if !added.is_empty() {
-                tracing::info!(
-                    paths = ?added,
-                    "auto-trusted paths from skill frontmatter"
-                );
-                let mut profile = crate::settings::Profile::load(&cwd);
-                profile.capture_from(&settings_guard);
-                let _ = profile.save(&cwd);
-            }
+        if !skill_trusted_paths.is_empty() {
+            tracing::info!(paths = ?skill_trusted_paths, "skills requested external paths; operator admission is required");
         }
 
         // ─── Extract skill phase info for completion tracking ──────────
@@ -950,10 +965,10 @@ impl AgentSetup {
             .ok()
             .or_else(|| startup_profile.persona.clone())
         {
-            activate_startup_persona(&mut persona_registry, &persona_name);
+            activate_startup_persona(&mut persona_registry, &cwd, &persona_name);
         }
         if let Some(tone_name) = startup_profile.tone.clone() {
-            activate_startup_tone(&mut persona_registry, &tone_name);
+            activate_startup_tone(&mut persona_registry, &cwd, &tone_name);
         }
 
         let shared_augment_registry =
@@ -964,13 +979,19 @@ impl AgentSetup {
                 cwd.clone(),
             ),
         ));
+        bus.register_internal_tool(crate::tool_registry::persona::SWITCH_PERSONA, "persona");
+        bus.register_internal_tool(crate::tool_registry::persona::SWITCH_TONE, "persona");
         bus.register(Box::new(features::skills::SkillsFeature::new(
             shared_augment_registry,
+            cwd.clone(),
+            crate::paths::omegon_home()?,
+            child_skills,
         )));
 
         if let Some(ref settings) = settings {
             bus.register(Box::new(features::harness_settings::HarnessSettings::new(
                 settings.clone(),
+                project_root.clone(),
             )));
         }
         bus.register(Box::new(features::auto_compact::AutoCompact::new()));
@@ -984,21 +1005,23 @@ impl AgentSetup {
         // ─── Context management provider ───────────────────────────────
         let context_metrics = features::context::SharedContextMetrics::new();
         let command_tx = features::context::new_shared_command_tx();
-        bus.register(Box::new(
-            features::context::ContextProvider::new_with_sources(
+        let context_service =
+            std::sync::Arc::new(features::context::ContextProvider::new_with_sources(
                 context_metrics.clone(),
                 command_tx.clone(),
                 settings.clone(),
-                Some(lifecycle_handle.provider()),
-                context_memory_backend.clone(),
-                context_memory_mind.clone(),
-                Some(project_root.clone()),
-            ),
-        ));
+                Some(lifecycle_host.clone()),
+                memory_binding.clone(),
+                mind.clone(),
+                Some(codescan_binding.clone()),
+            ));
+        bus.register(Box::new(context_service.as_ref().clone()));
 
         // ─── Operator-installed extensions (RPC + OCI) ────────────────
         // All extensions, including bundled ones (scribe-rpc), are discovered here
-        let (
+        let dynamic_inventory =
+            crate::contribution_lifecycle::DynamicContributionInventory::default();
+        let DiscoveredExtensions {
             extension_supervisors,
             extension_widgets,
             widget_receivers,
@@ -1007,55 +1030,33 @@ impl AgentSetup {
             voice_polling_handles,
             extension_metadata,
             extension_rpc_handles,
-        ) = match discover_and_register_extensions(&cwd, &mut bus, std::sync::Arc::clone(&secrets))
-            .await
+            admission: extension_admission,
+        } = match discover_and_register_extensions(
+            &cwd,
+            &mut bus,
+            std::sync::Arc::clone(&secrets),
+            dynamic_inventory.clone(),
+        )
+        .await
         {
-            Ok((
-                supervisors,
-                widgets,
-                receivers,
-                handles,
-                voice_receivers,
-                voice_handles,
-                metadata,
-                rpc_handles,
-            )) => (
-                supervisors,
-                widgets,
-                receivers,
-                handles,
-                voice_receivers,
-                voice_handles,
-                metadata,
-                rpc_handles,
-            ),
+            Ok(discovered) => discovered,
             Err(e) => {
                 tracing::warn!("extension discovery failed: {}", e);
-                (
-                    vec![],
-                    vec![],
-                    vec![],
-                    vec![],
-                    vec![],
-                    vec![],
-                    Default::default(),
-                    Default::default(),
-                )
+                DiscoveredExtensions::empty()
             }
         };
 
         // ─── Core tools (bash, read, write, edit, commit; hidden internal change) ──
-        let core_tools = if let Some(ref model) = repo_model {
-            tools::CoreTools::with_repo_model(cwd.clone(), model.clone())
-        } else {
-            tools::CoreTools::new(cwd.clone())
-        };
+        let core_tools = tools::CoreTools::with_git(cwd.clone(), git_binding.clone());
         let core_tools = if let Some(ref s) = settings {
             core_tools.with_settings(s.clone())
         } else {
             core_tools
         };
-        let core_tools = core_tools.with_secrets(secrets.clone());
+        let work_snapshot_slot = std::sync::Arc::new(std::sync::OnceLock::new());
+        let core_tools = core_tools
+            .with_secrets(secrets.clone())
+            .with_work_snapshot_slot(std::sync::Arc::clone(&work_snapshot_slot));
         bus.register(Box::new(features::adapter::ToolAdapter::new(
             "core-tools",
             Box::new(core_tools),
@@ -1068,19 +1069,235 @@ impl AgentSetup {
             enabled_extensions: crate::parse_csv_env("OMEGON_CHILD_ENABLED_EXTENSIONS"),
             disabled_extensions: crate::parse_csv_env("OMEGON_CHILD_DISABLED_EXTENSIONS"),
         };
-        let plugins =
-            crate::plugins::discover_plugins_filtered(&cwd, Some(secrets.as_ref()), &plugin_filter)
-                .await;
-        for plugin in plugins {
-            bus.register(plugin);
+        let plugins = crate::plugins::discover_plugins_filtered_with_inventory(
+            &cwd,
+            Some(secrets.as_ref()),
+            &plugin_filter,
+            dynamic_inventory.clone(),
+        )
+        .await;
+        match crate::codescan_service::start_candidate(project_root.clone()).await {
+            Ok(candidate) => bus.stage_managed_generation("codescan", candidate)?,
+            Err(error) => tracing::warn!(
+                %error,
+                "codescan startup failed; code search and code context are unavailable"
+            ),
         }
+        match crate::lifecycle_service::start_candidate(project_root.clone()).await {
+            Ok(candidate) => bus.stage_managed_generation("lifecycle", candidate)?,
+            Err(error) => tracing::warn!(
+                %error,
+                "managed lifecycle startup failed; lifecycle tools remain declared but unavailable"
+            ),
+        }
+        match crate::context_compaction_service::start_candidate().await {
+            Ok(candidate) => bus.stage_managed_generation("context-compaction", candidate)?,
+            Err(error) => tracing::warn!(
+                %error,
+                "context/compaction startup failed; compaction planning is unavailable"
+            ),
+        }
+        if project_root.join(".git").exists() || project_root.join(".jj").exists() {
+            match crate::git_service::start_candidate(project_root.clone()).await {
+                Ok(candidate) => bus.stage_managed_generation("git", candidate)?,
+                Err(error) => tracing::warn!(
+                    %error,
+                    "managed Git startup failed; Git-backed operations are unavailable"
+                ),
+            }
+        }
+        if let Some(project_path) = db_path.clone() {
+            let global_path = Some(crate::paths::user_config_dir().join("global-memory.db"))
+                .filter(|path| path.is_file());
+            let project_jsonl_path = jsonl_path
+                .clone()
+                .expect("project DB and JSONL paths derive from the same memory root");
+            match crate::memory_service::start_candidate(
+                crate::memory_service::MemoryWorkerConfig {
+                    project_memory_root: memory_dir
+                        .clone()
+                        .expect("project memory paths derive from an initialized root"),
+                    project_db_path: project_path,
+                    project_jsonl_path,
+                    global_db_path: global_path,
+                    vault: memory_vault_config,
+                    startup_sync_enabled: !is_child,
+                },
+            )
+            .await
+            {
+                Ok(candidate) => bus.stage_managed_generation("memory", candidate)?,
+                Err(error) => tracing::warn!(
+                    %error,
+                    "managed memory startup failed; memory binding remains unavailable"
+                ),
+            }
+        }
+        let (publication, mcp_supervisors, plugin_admissions) =
+            plugins.publish_candidate(|plugins| {
+                for plugin in plugins {
+                    bus.register(plugin);
+                }
 
-        // ─── Finalize bus (caches tool/command definitions) ─────────────
-        bus.finalize();
+                // Freeze declarations, validate and plan the candidate graph, then
+                // publish legacy caches only from the accepted graph while plugin
+                // admission locks remain held.
+                bus.try_finalize_managed()
+            });
+        let mut dynamic_contributions =
+            crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(
+                dynamic_inventory,
+            );
+        for supervisor in extension_supervisors {
+            dynamic_contributions.own_extension(supervisor);
+        }
+        for supervisor in mcp_supervisors {
+            dynamic_contributions.own_mcp(supervisor);
+        }
+        dynamic_contributions.stage();
+        let publication_result = publication.await;
+        if let Err(error) = publication_result {
+            let cleanup_failures = dynamic_contributions.reject(error.to_string()).await;
+            drop(plugin_admissions);
+            drop(extension_admission);
+            if cleanup_failures.is_empty() {
+                return Err(error);
+            }
+            return Err(error.context(format!(
+                "candidate cleanup degraded: {}",
+                cleanup_failures.join("; ")
+            )));
+        }
+        dynamic_contributions.publish();
+        if let Err(error) = codescan_binding.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        if let Err(error) = lifecycle_binding.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        if let Err(error) = memory_binding.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        if let Err(error) = context_compaction.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        if let Err(error) = git_binding.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        let git_snapshot = match git_binding
+            .invoke(crate::git_service::GitRequest::Snapshot {
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await
+        {
+            Ok(crate::git_service::GitResponse::Snapshot(snapshot)) => Some(snapshot),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::debug!(?error, "managed Git observation is unavailable");
+                None
+            }
+        };
+        if memory_binding.available() {
+            match memory_binding
+                .invoke(crate::memory_service::MemoryRequestV1::ManagedStatus {
+                    scope: crate::memory_service::MemoryScopeV1::Project,
+                    mind: mind.clone(),
+                    cancellation: tokio_util::sync::CancellationToken::new(),
+                })
+                .await
+            {
+                Ok(crate::memory_service::MemoryResponseV1 {
+                    payload: crate::memory_service::MemoryPayloadV1::ManagedStatus(status),
+                    ..
+                }) => {
+                    let authority = status.authority.clone();
+                    let index_state = status.index_state;
+                    initial_memory_status = status.into();
+                    crate::status::update_managed_memory_status(
+                        crate::status::ManagedMemoryStatusSnapshot {
+                            project_root: project_root.clone(),
+                            available: true,
+                            warning: None,
+                            status: initial_memory_status.clone(),
+                            authority,
+                            index_state,
+                        },
+                    );
+                }
+                Ok(_) => {
+                    memory_warning = Some("memory:startup_status_invalid_response".into());
+                    tracing::warn!("managed memory readiness returned unexpected statistics");
+                }
+                Err(error) => {
+                    memory_warning = Some("memory:startup_status_unavailable".into());
+                    tracing::warn!(?error, "managed memory readiness statistics unavailable");
+                }
+            }
+        }
+        if !memory_binding.available() || memory_warning.is_some() {
+            crate::status::update_managed_memory_status(
+                crate::status::ManagedMemoryStatusSnapshot {
+                    project_root: project_root.clone(),
+                    available: false,
+                    warning: memory_warning.clone(),
+                    status: initial_memory_status.clone(),
+                    authority: crate::memory_service::ManagedMemoryAuthorityV1::None,
+                    index_state: crate::memory_service::ManagedMemoryIndexStateV1::Unknown,
+                },
+            );
+        }
+        if lifecycle_binding.available()
+            && let Err(error) = lifecycle_host
+                .refresh(
+                    crate::lifecycle::read_model::SnapshotOptions::default(),
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+        {
+            tracing::warn!(error = %error, "managed lifecycle startup observation unavailable");
+        }
+        let lifecycle_observation = match lifecycle_host.observe() {
+            Ok(observation) => observation.repository,
+            Err(error) => {
+                return Err(managed_setup_error(
+                    &mut bus,
+                    anyhow::anyhow!("managed lifecycle observation failed: {error:?}"),
+                )
+                .await);
+            }
+        };
+        if let Some(observation) = lifecycle_observation {
+            let snapshot =
+                features::work_aggregation::WorkAggregationFeature::snapshot_from_observation(
+                    observation,
+                )
+                .await;
+            if let Err(error) = work_snapshot_publisher.publish(snapshot) {
+                return Err(managed_setup_error(&mut bus, error).await);
+            }
+        }
+        let lifecycle_snapshot = LifecycleSnapshot::from_managed(&lifecycle_host);
+        drop(plugin_admissions);
+        drop(extension_admission);
+        let work_snapshot = match features::work_aggregation::capture_work_snapshot(&bus) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Err(managed_setup_error(&mut bus, error).await),
+        };
+        let behavior_policy = match features::behavior_policy::capture_behavior_policy(&bus) {
+            Ok(policy) => policy,
+            Err(error) => return Err(managed_setup_error(&mut bus, error).await),
+        };
+        if let Some(snapshot) = work_snapshot.as_ref()
+            && let Err(error) = work_snapshot_slot
+                .set(std::sync::Arc::clone(snapshot))
+                .map_err(|_| anyhow::anyhow!("work snapshot slot was already initialized"))
+        {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
 
         // Wire ManageTools state so runtime filtering and list output reflect
         // the bus's finalized model-visible tool cache.
-        bus.set_disabled_tools(disabled_handle.clone());
+        bus.set_tool_admission_policy(tool_admission.clone());
         bus.set_tool_inventory(tool_inventory.clone());
 
         // ─── Default tool profile — disable rarely-used tools ───────────
@@ -1109,7 +1326,7 @@ impl AgentSetup {
                 posture_disabled.push(crate::tool_registry::core::TERMINAL.into());
             }
             bus.apply_operator_tool_profile(slim_mode, &posture_disabled, &posture_enabled);
-            let mut disabled = disabled_handle.lock().unwrap();
+            let mut disabled = tool_admission.lock().unwrap();
             tracing::info!(
                 disabled = disabled.len(),
                 slim = slim_mode,
@@ -1117,8 +1334,8 @@ impl AgentSetup {
             );
             let child_enabled_tools = crate::parse_csv_env("OMEGON_CHILD_ENABLED_TOOLS");
             let child_disabled_tools = crate::parse_csv_env("OMEGON_CHILD_DISABLED_TOOLS");
-            if !child_enabled_tools.is_empty() {
-                disabled.retain(|tool| !child_enabled_tools.iter().any(|enabled| enabled == tool));
+            for tool in child_enabled_tools {
+                disabled.remove(&tool);
             }
             for tool in child_disabled_tools {
                 disabled.insert(tool);
@@ -1126,7 +1343,7 @@ impl AgentSetup {
         }
 
         // ─── Assemble harness status (bootstrap probe) ──────────────────
-        let mut harness_status = crate::status::HarnessStatus::assemble();
+        let mut harness_status = crate::status::HarnessStatus::assemble(&project_root);
 
         // Account for the active runtime profile before rendering bootstrap.
         // `HarnessStatus::assemble()` starts from conservative defaults; the
@@ -1183,15 +1400,12 @@ impl AgentSetup {
         harness_status.web_auth_source = Some(web_auth_state.source_name().to_string());
 
         // Populate memory stats from the initial count captured during DB load
-        harness_status.update_memory(initial_memory_status.clone());
-        if initial_memory_status.active_facts == 0 {
-            // update_memory() marks memory_available=true even for an empty-but-working backend;
-            // if startup failed earlier, restore the unavailable state and carry the warning.
-            if let Some(ref warning) = memory_warning {
-                harness_status.memory_available = false;
-                harness_status.memory_warning = Some(warning.clone());
-            }
-        }
+        apply_initial_memory_status(
+            &mut harness_status,
+            initial_memory_status.clone(),
+            memory_binding.available(),
+            memory_warning.clone(),
+        );
         harness_status.update_bootstrap_expectations();
 
         tracing::info!(
@@ -1280,62 +1494,38 @@ impl AgentSetup {
         // the bus will provide context via collect_context().
         let mut context_manager = ContextManager::new(base_prompt, vec![]);
         // Wire embedding service for semantic context relevance scoring
-        if let Some(svc) = context_embed_service {
+        if let Some(svc) = embed_service {
             context_manager.set_embed_service(svc);
         }
 
         // ─── Conversation ───────────────────────────────────────────────
         let mut resume_info: Option<ResumeInfo> = None;
+        let mut resume_meta: Option<crate::session::SessionMeta> = None;
         let mut conversation = if let Some(resume_arg) = resume {
             let resume_id = resume_arg;
             // find_session returns the .json path; meta lives at .meta.json
             match session::find_session(&cwd, resume_id) {
                 Some(path) => {
                     tracing::info!(path = %path.display(), "Resuming session");
-                    match ConversationState::load_session(&path) {
-                        Ok(conv) => {
-                            // Read the companion meta file to populate the resumption brief
-                            let meta_path = path.with_extension("meta.json");
-                            if let Ok(json) = std::fs::read_to_string(&meta_path)
-                                && let Ok(meta) =
-                                    serde_json::from_str::<session::SessionMeta>(&json)
-                            {
-                                // ── Checkpoint consistency verification ──
-                                if let Some(latest_cp) =
-                                    crate::checkpoint::read_last_checkpoint(&meta.session_id)
-                                {
-                                    let cp_turns = latest_cp.intent.stats_turns;
-                                    let session_turns = meta.turns;
-                                    if cp_turns > session_turns {
-                                        tracing::warn!(
-                                            session_turns,
-                                            checkpoint_turns = cp_turns,
-                                            session_id = %meta.session_id,
-                                            "checkpoint is ahead of session file — \
-                                             session may be stale (crash during prior run?)"
-                                        );
-                                    } else {
-                                        tracing::debug!(
-                                            session_turns,
-                                            checkpoint_turns = cp_turns,
-                                            "checkpoint consistent with session"
-                                        );
-                                    }
-                                }
+                    match session::load_for_resume(&cwd, &path) {
+                        Ok((conv, meta)) => {
+                            crate::checkpoint::diagnose_startup_consistency(
+                                &path,
+                                &meta.session_id,
+                            );
 
-                                let description =
-                                    crate::session::session_display_description(&meta);
-                                resume_info = Some(ResumeInfo {
-                                    session_id: meta.session_id,
-                                    turns: meta.turns,
-                                    description,
-                                    last_prompt_snippet: meta.last_prompt_snippet,
-                                    created_at: meta.created_at,
-                                });
-                            }
+                            let description = crate::session::session_display_description(&meta);
+                            resume_info = Some(ResumeInfo {
+                                session_id: meta.session_id.clone(),
+                                turns: meta.turns,
+                                description,
+                                last_prompt_snippet: meta.last_prompt_snippet.clone(),
+                                created_at: meta.created_at.clone(),
+                            });
+                            resume_meta = Some(meta);
                             conv
                         }
-                        Err(e) => {
+                        Err(session::ResumeLoadError::Snapshot(e)) => {
                             tracing::warn!(
                                 path = %path.display(),
                                 error = %e,
@@ -1348,6 +1538,9 @@ impl AgentSetup {
                                 path.display()
                             );
                             ConversationState::new()
+                        }
+                        Err(error @ session::ResumeLoadError::Authority(_)) => {
+                            return Err(managed_setup_error(&mut bus, error.into()).await);
                         }
                     }
                 }
@@ -1402,14 +1595,18 @@ impl AgentSetup {
                 .unwrap_or_else(|| "primary".into()),
             path: cwd.display().to_string(),
             backend_kind: crate::workspace::types::WorkspaceBackendKind::LocalDir,
-            vcs_ref: repo_model
-                .as_ref()
-                .map(|model| crate::workspace::types::WorkspaceVcsRef {
-                    vcs: "git".into(),
-                    branch: model.branch(),
+            vcs_ref: git_snapshot.as_ref().map(|snapshot| {
+                crate::workspace::types::WorkspaceVcsRef {
+                    vcs: if snapshot.is_jj {
+                        "jj".into()
+                    } else {
+                        "git".into()
+                    },
+                    branch: snapshot.branch.clone(),
                     revision: None,
                     remote: Some("origin".into()),
-                }),
+                }
+            }),
             bindings: existing_workspace_lease
                 .as_ref()
                 .map(|lease| lease.bindings.clone())
@@ -1417,7 +1614,11 @@ impl AgentSetup {
             branch: existing_workspace_lease
                 .as_ref()
                 .map(|lease| lease.branch.clone())
-                .or_else(|| repo_model.as_ref().and_then(|model| model.branch()))
+                .or_else(|| {
+                    git_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.branch.clone())
+                })
                 .unwrap_or_else(|| "(unknown)".into()),
             role: crate::workspace::types::WorkspaceRole::Primary,
             workspace_kind,
@@ -1481,6 +1682,47 @@ impl AgentSetup {
         if !pruned.is_empty() {
             tracing::debug!(?pruned, "pruned stale instance directories");
         }
+        let session_id = resume_info
+            .as_ref()
+            .map(|r| r.session_id.clone())
+            .unwrap_or_else(|| startup_session_id_hint.clone());
+        // Setup owns the canonical session identity. Every host receives this
+        // event before the completed setup can execute a memory tool.
+        bus.emit(&omegon_traits::BusEvent::SessionStart {
+            cwd: cwd.clone(),
+            session_id: session_id.clone(),
+        });
+        let session_snapshot = match crate::session_consumers::snapshot_path(&cwd, &session_id) {
+            Some(path) => path,
+            None => {
+                return Err(managed_setup_error(
+                    &mut bus,
+                    anyhow::anyhow!("cannot determine interactive session path"),
+                )
+                .await);
+            }
+        };
+        let session_view_binding =
+            crate::session_consumers::SessionViewBinding::new(session_snapshot, session_id.clone());
+        deferred_session_view.bind(session_view_binding.clone());
+
+        let runtime_ownership =
+            match crate::workspace::runtime::RuntimeOwnership::start(&cwd, runtime_mode) {
+                Ok(ownership) => ownership,
+                Err(error) => {
+                    let managed_error = managed_setup_error(&mut bus, error).await;
+                    let cleanup_failures = dynamic_contributions.shutdown().await;
+                    if cleanup_failures.is_empty() {
+                        return Err(managed_error);
+                    }
+                    return Err(managed_error.context(format!(
+                        "published startup candidate cleanup degraded: {}",
+                        cleanup_failures.join("; ")
+                    )));
+                }
+            };
+        bus.bind_runtime_ownership_retention(runtime_ownership.retention_flag());
+        let instance_id = runtime_ownership.runtime_id().to_string();
         let _ =
             crate::workspace::runtime::write_workspace_lease(&cwd, &instance_id, &workspace_lease);
         let _ = crate::workspace::runtime::write_workspace_registry(&cwd, &workspace_registry);
@@ -1494,19 +1736,23 @@ impl AgentSetup {
             lifecycle: lifecycle_snapshot,
         };
 
-        let session_id = resume_info
-            .as_ref()
-            .map(|r| r.session_id.clone())
-            .unwrap_or_else(|| startup_session_id_hint.clone());
-
         let initial_harness_status = harness_status;
 
         Ok(Self {
             bus,
+            work_snapshot,
+            behavior_policy,
+            lifecycle_binding: lifecycle_binding.clone(),
+            memory_binding: memory_binding.clone(),
+            context_compaction: context_compaction.clone(),
+            git_binding: git_binding.clone(),
             session_id,
+            session_view_binding,
             instance_id,
+            runtime_ownership,
             startup_skill_activation_events: Vec::new(),
             context_metrics,
+            context_service,
             command_tx,
             context_manager,
             conversation,
@@ -1516,16 +1762,17 @@ impl AgentSetup {
             web_auth_state,
             session_secret_env,
             resume_info,
+            resume_meta,
             workspace_state,
             startup_snapshot,
             initial_harness_status: initial_harness_status.clone(),
-            extension_supervisors,
+            dynamic_contributions,
             extension_widgets,
             extension_metadata,
             extension_rpc_handles,
             widget_receivers,
             dashboard_handles: crate::runtime_state::RuntimeStateHandles::new(
-                Some(lifecycle_handle),
+                lifecycle_host,
                 Some(cleave_handle),
                 Some(delegate_handle),
                 Some(delegate_tasks),
@@ -1673,6 +1920,8 @@ fn collect_extension_secret_requirements(cwd: &Path) -> Vec<String> {
         return vec![];
     };
     let profile = crate::settings::Profile::load(cwd);
+    let dynamic_admission =
+        crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile);
     let env_enabled = crate::parse_csv_env("OMEGON_CHILD_ENABLED_EXTENSIONS");
     let env_disabled = crate::parse_csv_env("OMEGON_CHILD_DISABLED_EXTENSIONS");
     for entry in entries.flatten() {
@@ -1702,6 +1951,12 @@ fn collect_extension_secret_requirements(cwd: &Path) -> Vec<String> {
             continue;
         }
         if let Ok(manifest) = crate::extensions::ExtensionManifest::from_extension_dir(&path) {
+            let admitted = crate::extensions::dynamic_preflight(&manifest, &path)
+                .and_then(|preflight| dynamic_admission.admit(preflight).map(|_| ()));
+            if let Err(error) = admitted {
+                tracing::debug!(extension = ext_name, %error, "untrusted extension skipped during secret preflight");
+                continue;
+            }
             for name in manifest.secrets.required {
                 tracing::debug!(
                     extension = %path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"),
@@ -1881,37 +2136,59 @@ async fn resolve_extension_secrets(
 ///
 /// Resolves declared secrets at the enabled extension's spawn boundary and
 /// extension via `bootstrap_secrets` RPC — never via subprocess environment.
+struct DiscoveredExtensions {
+    extension_supervisors: Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
+    extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
+    widget_receivers: Vec<tokio::sync::broadcast::Receiver<crate::extensions::WidgetEvent>>,
+    vox_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
+    voice_notification_receivers:
+        Vec<tokio::sync::mpsc::UnboundedReceiver<crate::extensions::ExtensionNotification>>,
+    voice_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
+    extension_metadata: std::collections::BTreeMap<String, serde_json::Value>,
+    extension_rpc_handles:
+        std::collections::BTreeMap<String, crate::extensions::ExtensionPollingHandle>,
+    admission: Option<crate::contribution_loading::GuardedContributionDirectory>,
+}
+
+impl DiscoveredExtensions {
+    fn empty() -> Self {
+        Self {
+            extension_supervisors: vec![],
+            extension_widgets: vec![],
+            widget_receivers: vec![],
+            vox_polling_handles: vec![],
+            voice_notification_receivers: vec![],
+            voice_polling_handles: vec![],
+            extension_metadata: Default::default(),
+            extension_rpc_handles: Default::default(),
+            admission: None,
+        }
+    }
+}
+
 async fn discover_and_register_extensions(
     cwd: &Path,
     bus: &mut crate::bus::EventBus,
     secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
-) -> anyhow::Result<(
-    Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
-    Vec<crate::extensions::ExtensionTabWidget>,
-    Vec<tokio::sync::broadcast::Receiver<crate::extensions::WidgetEvent>>,
-    Vec<crate::extensions::ExtensionPollingHandle>,
-    Vec<tokio::sync::mpsc::UnboundedReceiver<crate::extensions::ExtensionNotification>>,
-    Vec<crate::extensions::ExtensionPollingHandle>,
-    std::collections::BTreeMap<String, serde_json::Value>,
-    std::collections::BTreeMap<String, crate::extensions::ExtensionPollingHandle>,
-)> {
-    let ext_dir = crate::paths::omegon_home()?.join("extensions");
-
-    if !ext_dir.exists() {
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
+) -> anyhow::Result<DiscoveredExtensions> {
+    let home = crate::paths::omegon_home()?;
+    let ext_dir = home.join("extensions");
+    let Some(admission) = crate::contribution_loading::GuardedContributionDirectory::open(
+        &home,
+        &[b"extensions"],
+        &home,
+        omegon_maintenance_contracts::ContributionKind::Extension,
+        "user",
+    )?
+    else {
         tracing::debug!("extension directory not found: {}", ext_dir.display());
-        return Ok((
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            vec![],
-            Default::default(),
-            Default::default(),
-        ));
-    }
+        return Ok(DiscoveredExtensions::empty());
+    };
 
     let profile = crate::settings::Profile::load(cwd);
+    let dynamic_admission =
+        crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile);
     let env_enabled = crate::parse_csv_env("OMEGON_CHILD_ENABLED_EXTENSIONS");
     let env_disabled = crate::parse_csv_env("OMEGON_CHILD_DISABLED_EXTENSIONS");
     let mut count = 0;
@@ -1923,22 +2200,18 @@ async fn discover_and_register_extensions(
     let mut voice_polling_handles = vec![];
     let mut extension_metadata = std::collections::BTreeMap::new();
     let mut extension_rpc_handles = std::collections::BTreeMap::new();
-    for entry in std::fs::read_dir(&ext_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if !path.is_dir() {
+    let mut candidates = Vec::new();
+    let mut raw_names = admission.entry_names(10_000)?;
+    raw_names.sort();
+    for raw_name in raw_names {
+        if crate::contribution_loading::is_internal_contribution_entry(&raw_name)
+            || !admission.allows(&raw_name)?
+        {
             continue;
         }
-
-        let manifest_path = path.join("manifest.toml");
-        if !manifest_path.exists() {
+        let Ok(ext_name) = std::str::from_utf8(&raw_name) else {
             continue;
-        }
-        let ext_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
+        };
         if !profile
             .extensions
             .permits(ext_name, &env_enabled, &env_disabled)
@@ -1946,31 +2219,84 @@ async fn discover_and_register_extensions(
             tracing::debug!(extension = ext_name, "extension skipped by profile policy");
             continue;
         }
-        if extension_state_disabled(&path) {
+        let Some(directory) = admission.open_child_directory(&raw_name)? else {
+            continue;
+        };
+        if crate::contribution_loading::read_file_at(&directory, b"manifest.toml", 1024 * 1024)?
+            .is_none()
+        {
+            continue;
+        }
+        let snapshot = std::sync::Arc::new(
+            crate::contribution_loading::snapshot_contribution_directory(&directory)?,
+        );
+        if extension_state_disabled(snapshot.path()) {
             tracing::debug!(extension = ext_name, "disabled extension skipped");
             continue;
         }
+        let manifest = match crate::extensions::ExtensionManifest::from_extension_dir(
+            snapshot.path(),
+        ) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                tracing::warn!(extension = ext_name, %error, "invalid extension manifest skipped");
+                continue;
+            }
+        };
+        let preflight = match crate::extensions::dynamic_preflight(&manifest, snapshot.path()) {
+            Ok(preflight) => preflight,
+            Err(error) => {
+                tracing::warn!(extension = ext_name, %error, "extension static preflight failed");
+                continue;
+            }
+        };
+        let candidate = match inventory.discover(preflight) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                tracing::warn!(extension = ext_name, %error, "extension static inventory rejected candidate");
+                continue;
+            }
+        };
+        let trust_admission = match inventory.admit(&candidate, &dynamic_admission) {
+            Ok(admission) => admission,
+            Err(error) => {
+                tracing::warn!(extension = ext_name, %error, "extension trust admission denied before execution");
+                continue;
+            }
+        };
+        candidates.push((
+            ext_name.to_string(),
+            ext_dir.join(ext_name),
+            snapshot,
+            manifest,
+            trust_admission,
+            candidate.preflight.id,
+        ));
+    }
 
+    for (ext_name, state_dir, snapshot, manifest, trust_admission, candidate_id) in candidates {
         // Spawning an enabled extension is its explicit operation boundary:
         // resolve declared credentials on demand here, then deliver them only
         // through bootstrap_secrets RPC. Discovery/status paths remain
         // metadata-only and therefore cannot trigger secure-store access.
-        let resolved_secrets: Vec<(String, String)> = {
-            if let Ok(manifest) = crate::extensions::ExtensionManifest::from_extension_dir(&path) {
-                resolve_extension_secrets(&manifest, secrets.as_ref()).await
-            } else {
-                vec![]
-            }
-        };
+        let resolved_secrets = resolve_extension_secrets(&manifest, secrets.as_ref()).await;
 
         // Try to spawn this extension
-        match crate::extensions::spawn_from_manifest(&path, &resolved_secrets).await {
+        match crate::extensions::spawn_from_admitted_snapshot(
+            snapshot,
+            &state_dir,
+            trust_admission,
+            &resolved_secrets,
+        )
+        .await
+        {
             Ok(spawned) => {
+                inventory.ready(&candidate_id);
                 let tool_count = spawned.feature.tools().len();
                 let widget_count = spawned.widgets.len();
                 tracing::info!(
-                    name = ext_name,
-                    path = %path.display(),
+                    name = %ext_name,
+                    path = %state_dir.display(),
                     tools = tool_count,
                     widgets = widget_count,
                     "discovered and spawned extension"
@@ -1987,13 +2313,13 @@ async fn discover_and_register_extensions(
                     voice_notification_receivers.push(rx);
                 }
                 extension_metadata.insert(
-                    ext_name.to_string(),
+                    ext_name.clone(),
                     crate::extensions::metadata_with_sdk_compatibility(
                         spawned.metadata,
                         &spawned.sdk_compatibility,
                     ),
                 );
-                extension_rpc_handles.insert(ext_name.to_string(), spawned.rpc_polling_handle);
+                extension_rpc_handles.insert(ext_name, spawned.rpc_polling_handle);
                 bus.register(spawned.feature);
                 // Collect widgets and receivers for TUI
                 extension_widgets.extend(spawned.widgets);
@@ -2001,13 +2327,10 @@ async fn discover_and_register_extensions(
                 count += 1;
             }
             Err(e) => {
-                let ext_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown");
+                inventory.quarantine(&candidate_id, e.to_string());
                 tracing::warn!(
-                    name = ext_name,
-                    path = %path.display(),
+                    name = %ext_name,
+                    path = %state_dir.display(),
                     error = %e,
                     "failed to spawn extension"
                 );
@@ -2019,7 +2342,7 @@ async fn discover_and_register_extensions(
         tracing::info!(count = count, "extension discovery complete");
     }
 
-    Ok((
+    Ok(DiscoveredExtensions {
         extension_supervisors,
         extension_widgets,
         widget_receivers,
@@ -2028,7 +2351,8 @@ async fn discover_and_register_extensions(
         voice_polling_handles,
         extension_metadata,
         extension_rpc_handles,
-    ))
+        admission: Some(admission),
+    })
 }
 
 fn extension_state_disabled(path: &Path) -> bool {
@@ -2038,55 +2362,364 @@ fn extension_state_disabled(path: &Path) -> bool {
 
 fn activate_startup_persona(
     registry: &mut crate::plugins::registry::AugmentRegistry,
+    cwd: &Path,
     persona_name: &str,
 ) {
-    let (personas, _) = crate::plugins::persona_loader::scan_available();
     let target = persona_name.to_lowercase();
-    if let Some(available) = personas
-        .iter()
-        .find(|p| p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target))
-    {
-        match crate::plugins::persona_loader::load_persona(&available.path) {
-            Ok(loaded) => {
-                tracing::info!(persona = %loaded.name, "activating startup persona");
-                registry.activate_persona(loaded);
-            }
-            Err(e) => {
-                tracing::warn!(persona = %persona_name, error = %e, "startup persona load failed");
-            }
+    crate::plugins::persona_loader::with_available(cwd, |personas, _| {
+        if let Some(loaded) = personas
+            .iter()
+            .find(|p| p.name.to_lowercase() == target || p.id.to_lowercase().contains(&target))
+            .and_then(|available| available.persona())
+            .cloned()
+        {
+            tracing::info!(persona = %loaded.name, "activating startup persona");
+            registry.activate_persona(loaded);
+        } else {
+            tracing::warn!(persona = %persona_name, "startup persona not found");
         }
-    } else {
-        tracing::warn!(persona = %persona_name, "startup persona not found");
+    });
+}
+
+fn memory_status_from_stats(
+    stats: omegon_memory::backend::MemoryStats,
+) -> crate::status::MemoryStatus {
+    crate::status::MemoryStatus {
+        total_facts: stats.total_facts,
+        active_facts: stats.active_facts,
+        project_facts: stats.active_facts,
+        persona_facts: 0,
+        working_facts: 0,
+        episodes: stats.episodes,
+        edges: stats.edges,
+        active_persona_mind: None,
     }
 }
 
 fn activate_startup_tone(
     registry: &mut crate::plugins::registry::AugmentRegistry,
+    cwd: &Path,
     tone_name: &str,
 ) {
-    let (_, tones) = crate::plugins::persona_loader::scan_available();
     let target = tone_name.to_lowercase();
-    if let Some(available) = tones
-        .iter()
-        .find(|t| t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target))
-    {
-        match crate::plugins::persona_loader::load_tone(&available.path) {
-            Ok(loaded) => {
-                tracing::info!(tone = %loaded.name, "activating startup tone");
-                registry.activate_tone(loaded);
-            }
-            Err(e) => {
-                tracing::warn!(tone = %tone_name, error = %e, "startup tone load failed");
-            }
+    crate::plugins::persona_loader::with_available(cwd, |_, tones| {
+        if let Some(loaded) = tones
+            .iter()
+            .find(|t| t.name.to_lowercase() == target || t.id.to_lowercase().contains(&target))
+            .and_then(|available| available.tone())
+            .cloned()
+        {
+            tracing::info!(tone = %loaded.name, "activating startup tone");
+            registry.activate_tone(loaded);
+        } else {
+            tracing::warn!(tone = %tone_name, "startup tone not found");
         }
-    } else {
-        tracing::warn!(tone = %tone_name, "startup tone not found");
-    }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_managed_status_overrides_a_live_binding_in_initial_harness_status() {
+        let mut harness = crate::status::HarnessStatus::default();
+        apply_initial_memory_status(
+            &mut harness,
+            crate::status::MemoryStatus {
+                total_facts: 9,
+                ..Default::default()
+            },
+            true,
+            Some("memory:startup_status_unavailable".into()),
+        );
+        assert!(!harness.memory_available);
+        assert_eq!(
+            harness.memory_warning.as_deref(),
+            Some("memory:startup_status_unavailable")
+        );
+    }
+
+    #[test]
+    fn setup_emits_canonical_session_identity_before_returning_tools() {
+        let production = include_str!("setup.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .unwrap()
+            .0;
+        let memory_registration = production
+            .find("bus.register(Box::new(memory_feature))")
+            .expect("memory feature registration");
+        let session_start = production
+            .find("bus.emit(&omegon_traits::BusEvent::SessionStart")
+            .expect("setup-owned SessionStart");
+        let setup_return = production.rfind("Ok(Self {").expect("AgentSetup return");
+        assert!(memory_registration < session_start);
+        assert!(session_start < setup_return);
+    }
+
+    #[test]
+    fn production_memory_consumers_have_no_direct_durable_owner() {
+        fn visit(directory: &Path, findings: &mut Vec<String>) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(&path, findings);
+                    continue;
+                }
+                if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap()
+                    .to_string_lossy();
+                if matches!(
+                    relative.as_ref(),
+                    "src/memory_service.rs" | "src/migrate.rs"
+                ) {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let production = source
+                    .split_once("#[cfg(test)]\nmod tests")
+                    .map_or(source.as_str(), |(production, _)| production);
+                for forbidden in [
+                    "MemoryBackend",
+                    "SqliteBackend::open",
+                    "vault_sync::import_",
+                    "vault_sync::materialize_",
+                    "vault_sync::reinforce_",
+                    ".import_jsonl(",
+                    ".export_jsonl(",
+                    ".store_embedding(",
+                    "SELECT COUNT(*) FROM facts",
+                ] {
+                    if production.contains(forbidden) {
+                        findings.push(format!("{relative}: {forbidden}"));
+                    }
+                }
+                if relative != "src/setup.rs" && production.contains("SqliteBackend") {
+                    findings.push(format!("{relative}: SqliteBackend import, alias, or open"));
+                }
+                let owns_project_memory_path = [
+                    "facts.db",
+                    "global-memory.db",
+                    "join(\"ai\").join(\"memory\")",
+                    "join(\".omegon\").join(\"memory\")",
+                ]
+                .iter()
+                .any(|marker| production.contains(marker));
+                if owns_project_memory_path
+                    && (production.contains("rusqlite::Connection")
+                        || production.contains("Connection::open")
+                        || production.contains("use rusqlite"))
+                {
+                    findings.push(format!(
+                        "{relative}: rusqlite project-memory connection or alias"
+                    ));
+                }
+                let lines = production.lines().collect::<Vec<_>>();
+                for (line, _) in lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, line)| line.contains("tokio::spawn"))
+                {
+                    let window =
+                        lines[line.saturating_sub(10)..(line + 30).min(lines.len())].join("\n");
+                    if window.contains("MemoryRequestV1::ApplyMutation")
+                        || window.contains("MemoryRequestV1::ApplyToolMutation")
+                        || window.contains("VaultSessionEnd")
+                    {
+                        findings.push(format!("{relative}: detached memory persistence task"));
+                    }
+                }
+            }
+        }
+
+        let mut findings = Vec::new();
+        visit(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut findings,
+        );
+        assert!(
+            findings.is_empty(),
+            "direct memory persistence owners: {findings:?}"
+        );
+
+        let feature = include_str!("features/memory.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .map_or(include_str!("features/memory.rs"), |(production, _)| {
+                production
+            });
+        for forbidden in [
+            "MemoryBackend",
+            "SqliteBackend",
+            "tokio::spawn",
+            "fn backend(",
+        ] {
+            assert!(
+                !feature.contains(forbidden),
+                "memory feature retained forbidden owner or detached task: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn production_compaction_consumers_have_no_direct_planner_or_ambient_lookup() {
+        fn visit(directory: &Path, findings: &mut Vec<String>) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(&path, findings);
+                    continue;
+                }
+                if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap()
+                    .to_string_lossy();
+                if matches!(
+                    relative.as_ref(),
+                    "src/context_compaction_service.rs" | "src/conversation.rs"
+                ) {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let production = source
+                    .split_once("#[cfg(test)]\nmod tests")
+                    .map_or(source.as_str(), |(production, _)| production);
+                for forbidden in [
+                    ".build_compaction_payload(",
+                    ".build_compaction_payload_keeping_recent(",
+                    "managed_service::<ContextCompactionService>",
+                ] {
+                    if production.contains(forbidden) {
+                        findings.push(format!("{relative}: {forbidden}"));
+                    }
+                }
+            }
+        }
+
+        let mut findings = Vec::new();
+        visit(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut findings,
+        );
+        assert!(
+            findings.is_empty(),
+            "direct context/compaction planning bypasses: {findings:?}"
+        );
+
+        for (source, marker) in [
+            (
+                include_str!("interactive_coordinator.rs"),
+                "loop_config.compatibility.context_compaction = runtime_state.context_compaction.clone()",
+            ),
+            (
+                include_str!("acp_worker.rs"),
+                "context_compaction: agent_setup.context_compaction.clone()",
+            ),
+            (
+                include_str!("sentry/executor.rs"),
+                "loop_config.compatibility.context_compaction = agent.context_compaction.clone()",
+            ),
+        ] {
+            assert!(
+                source.contains(marker),
+                "normal loop host lost boot-captured context/compaction binding: {marker}"
+            );
+        }
+        let main = include_str!("main.rs");
+        assert!(
+            main.matches("compatibility.context_compaction").count() >= 3,
+            "daemon, headless, and bounded main hosts must transfer the captured binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_managed_error_settles_memory_worker_and_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut bus = EventBus::new();
+        bus.set_project_root(directory.path().to_path_buf());
+        bus.register(Box::new(crate::memory_service::MemoryDeclarationFeature));
+        let candidate =
+            crate::memory_service::start_candidate(crate::memory_service::MemoryWorkerConfig {
+                project_memory_root: directory.path().to_path_buf(),
+                project_db_path: directory.path().join("facts.db"),
+                project_jsonl_path: directory.path().join("facts.jsonl"),
+                global_db_path: None,
+                vault: None,
+                startup_sync_enabled: false,
+            })
+            .await
+            .unwrap();
+        bus.stage_managed_generation("memory", candidate).unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        let error =
+            finalize_managed_error::<()>(&mut bus, anyhow::anyhow!("representative failure"))
+                .await
+                .unwrap_err();
+        assert_eq!(error.to_string(), "representative failure");
+        let report = bus.shutdown_managed_services().await;
+        assert!(report.all_resources_settled(), "{report:?}");
+    }
+
+    #[test]
+    fn managed_readiness_stats_drive_initial_memory_status() {
+        let status = memory_status_from_stats(omegon_memory::backend::MemoryStats {
+            total_facts: 7,
+            active_facts: 5,
+            episodes: 3,
+            edges: 2,
+            ..Default::default()
+        });
+        assert_eq!(status.total_facts, 7);
+        assert_eq!(status.active_facts, 5);
+        assert_eq!(status.project_facts, 5);
+        assert_eq!(status.episodes, 3);
+        assert_eq!(status.edges, 2);
+
+        let source = include_str!("setup.rs");
+        let capture = source.find("memory_binding.capture(&bus)").unwrap();
+        let readiness_status = source[capture..]
+            .find("MemoryRequestV1::ManagedStatus")
+            .map(|offset| capture + offset)
+            .unwrap();
+        let publish = source[capture..]
+            .find("apply_initial_memory_status")
+            .map(|offset| capture + offset)
+            .unwrap();
+        assert!(capture < readiness_status && readiness_status < publish);
+    }
+
+    struct ExtensionEnvGuard(Option<std::ffi::OsString>);
+
+    impl ExtensionEnvGuard {
+        fn isolate(home: &Path) -> Self {
+            let previous = std::env::var_os("OMEGON_HOME");
+            // SAFETY: guarded extension tests hold the shared environment lock.
+            unsafe { std::env::set_var("OMEGON_HOME", home) };
+            Self(previous)
+        }
+    }
+
+    impl Drop for ExtensionEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: guarded extension tests hold the shared environment lock.
+            unsafe {
+                if let Some(previous) = self.0.take() {
+                    std::env::set_var("OMEGON_HOME", previous);
+                } else {
+                    std::env::remove_var("OMEGON_HOME");
+                }
+            }
+        }
+    }
 
     fn with_auth_env_lock<T>(f: impl FnOnce() -> T + std::panic::UnwindSafe) -> T {
         let _guard = crate::auth::TEST_AUTH_ENV_LOCK
@@ -2131,6 +2764,195 @@ required = ["OMADA_TEST_SECRET"]
             resolved,
             vec![("OMADA_TEST_SECRET".to_string(), "omada-secret".to_string())]
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guarded_extension_discovery_excludes_denied_entry_and_holds_scope_lock() {
+        use omegon_maintenance_contracts::{LockMode, MaintenanceStateV1, ProtocolLock};
+        use std::os::unix::fs::symlink;
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home_path = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = ExtensionEnvGuard::isolate(home_path.path());
+        let denied = home_path.path().join("extensions/denied");
+        std::fs::create_dir_all(&denied).unwrap();
+        std::fs::write(denied.join("manifest.toml"), "not valid toml").unwrap();
+        let linked_source = tempfile::tempdir().unwrap();
+        symlink(
+            linked_source.path(),
+            home_path.path().join("extensions/linked-local"),
+        )
+        .unwrap();
+        deny_extension(home_path.path(), b"denied");
+        let authority = extension_scope_key(&home_path.path().join("extensions"));
+        let home = omegon_maintenance_contracts::open_secure_root(home_path.path()).unwrap();
+        let state = MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(home_path.path()).unwrap());
+        let mut bus = crate::bus::EventBus::new();
+
+        let discovered = discover_and_register_extensions(
+            project.path(),
+            &mut bus,
+            secrets,
+            crate::contribution_lifecycle::DynamicContributionInventory::default(),
+        )
+        .await
+        .unwrap();
+        assert!(discovered.extension_metadata.is_empty());
+        let lock_name = format!("contribution-{authority}.lock");
+        assert!(
+            ProtocolLock::acquire_at(
+                &state.locks,
+                lock_name.as_bytes(),
+                LockMode::Exclusive,
+                false,
+                true,
+            )
+            .is_err()
+        );
+        drop(discovered);
+        assert!(
+            ProtocolLock::acquire_at(
+                &state.locks,
+                lock_name.as_bytes(),
+                LockMode::Exclusive,
+                false,
+                true,
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malformed_extension_deny_state_fails_scope_closed() {
+        use std::io::Write;
+
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = ExtensionEnvGuard::isolate(home.path());
+        std::fs::create_dir_all(home.path().join("extensions/example")).unwrap();
+        std::fs::write(
+            home.path().join("extensions/example/manifest.toml"),
+            "not valid toml",
+        )
+        .unwrap();
+        let authority = initialize_extension_scope(home.path());
+        let state_path = home
+            .path()
+            .join("maintain/v1/deny")
+            .join(authority.to_hex())
+            .join("state.json");
+        let mut state = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(state_path)
+            .unwrap();
+        state.write_all(b"{not-json").unwrap();
+        state.sync_all().unwrap();
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(home.path()).unwrap());
+        let mut bus = crate::bus::EventBus::new();
+
+        assert!(
+            discover_and_register_extensions(
+                project.path(),
+                &mut bus,
+                secrets,
+                crate::contribution_lifecycle::DynamicContributionInventory::default(),
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    fn initialize_extension_scope(home: &Path) -> omegon_maintenance_contracts::AuthorityKey {
+        crate::contribution_loading::GuardedContributionDirectory::open(
+            home,
+            &[b"extensions"],
+            home,
+            omegon_maintenance_contracts::ContributionKind::Extension,
+            "user",
+        )
+        .unwrap()
+        .unwrap()
+        .scope_key()
+    }
+
+    #[cfg(unix)]
+    fn extension_scope_key(directory: &Path) -> omegon_maintenance_contracts::AuthorityKey {
+        let directory = std::fs::File::open(directory).unwrap();
+        let parent = omegon_maintenance_contracts::path_identity(&directory).unwrap();
+        omegon_maintenance_contracts::scope_key(
+            omegon_maintenance_contracts::ContributionKind::Extension.as_str(),
+            "user",
+            parent.key,
+        )
+    }
+
+    #[cfg(unix)]
+    fn deny_extension(home_path: &Path, raw_name: &[u8]) {
+        use omegon_maintenance_contracts::{
+            AuthorityKey, ContributionKind, DenyRecordV1, DenyState, DenyStateV1, SCHEMA_VERSION,
+            derive_key, entry_key, open_secure_dir_at, replace_record_at,
+        };
+        use sha2::{Digest, Sha256};
+
+        let authority = initialize_extension_scope(home_path);
+        let home = omegon_maintenance_contracts::open_secure_root(home_path).unwrap();
+        let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+            &home,
+            omegon_maintenance_contracts::path_identity(&home).unwrap(),
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let deny_directory = open_secure_dir_at(&state.deny, authority.to_hex().as_bytes())
+            .unwrap()
+            .unwrap();
+        let kind = ContributionKind::Extension;
+        let entry = entry_key(kind.as_str(), authority, raw_name);
+        let request_id = "00000000-0000-0000-0000-000000000001";
+        let record = DenyRecordV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny".into(),
+            record_id: derive_key(
+                "deny",
+                &[
+                    authority.as_bytes(),
+                    entry.as_bytes(),
+                    request_id.as_bytes(),
+                ],
+            ),
+            scope_key: authority,
+            contribution_kind: kind,
+            entry_key: entry,
+            raw_name_digest: AuthorityKey::from_bytes(Sha256::digest(raw_name).into()),
+            generation: 1,
+            state: DenyState::Denied,
+            request_id: request_id.into(),
+            created_at: "2026-08-19T00:00:00Z".into(),
+        };
+        let deny = DenyStateV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "deny_state".into(),
+            record_id: derive_key("deny-state", &[authority.as_bytes(), &1_u64.to_be_bytes()]),
+            scope_key: authority,
+            generation: 1,
+            entries: [(entry.to_hex(), record)].into(),
+        };
+        replace_record_at(&deny_directory, b"state.json", &deny, "deny-extension-test").unwrap();
     }
 
     #[test]
@@ -2324,6 +3146,7 @@ required = ["OMADA_TEST_SECRET"]
 #[cfg(test)]
 mod init_gating_tests {
     use super::*;
+    use omegon_memory::MemoryBackend as _;
 
     #[test]
     fn startup_migrates_supported_legacy_memory_before_open() {
@@ -2413,6 +3236,42 @@ mod init_gating_tests {
         assert!(project_memory_dir_if_initialized(dir.path()).is_none());
         assert!(!dir.path().join("ai").exists());
         assert!(!dir.path().join(".omegon").exists());
+    }
+
+    #[tokio::test]
+    async fn legacy_memory_root_reopens_the_same_persisted_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_root = dir.path().join(".omegon").join("memory");
+        std::fs::create_dir_all(&legacy_root).unwrap();
+        assert_eq!(
+            project_memory_dir_if_initialized(dir.path()),
+            Some(legacy_root.clone())
+        );
+
+        let db_path = legacy_root.join("facts.db");
+        let backend = omegon_memory::SqliteBackend::open(&db_path).unwrap();
+        let stored = backend
+            .store_fact(omegon_memory::StoreFact {
+                mind: omegon_memory::sqlite::PRIMENSUS_MIND.into(),
+                content: "Legacy-root reopen fixture".into(),
+                section: omegon_memory::Section::Architecture,
+                decay_profile: omegon_memory::DecayProfileName::Standard,
+                source: Some("test".into()),
+            })
+            .await
+            .unwrap();
+        drop(backend);
+
+        let reopened = omegon_memory::SqliteBackend::open(&db_path).unwrap();
+        assert_eq!(
+            reopened
+                .get_fact(&stored.fact.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "Legacy-root reopen fixture"
+        );
     }
 
     #[test]

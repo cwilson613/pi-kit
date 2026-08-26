@@ -1,8 +1,7 @@
 //! MemoryFeature — integrated memory system.
 //!
-//! This feature wraps MemoryBackend to provide all 12 memory_* agent-callable tools
-//! and context injection. It holds an Arc<dyn MemoryBackend> received from setup.rs
-//! and implements the Feature trait directly.
+//! This feature provides all 12 memory_* agent-callable tools and context injection
+//! over the boot-captured managed memory generation.
 //!
 //! Tools provided:
 //! - memory_query (render full memory as markdown)
@@ -21,18 +20,78 @@
 use async_trait::async_trait;
 use omegon_traits::*;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use omegon_memory::{
-    ContextRenderer, CreateEdge, DecayProfileName, EmbeddingService, FactFilter, MarkdownRenderer,
-    MemoryBackend, MemoryMindService, Section, StoreAction, StoreEpisode, StoreFact,
+    ContextRenderer, CreateEdge, DecayProfileName, EmbeddingService, FactPrecondition,
+    MarkdownRenderer, MemoryMutation, MemoryMutationEffect, Section, StoreAction, StoreEpisode,
+    StoreFact,
 };
+
+struct SessionEndTask {
+    cancellation: tokio_util::sync::CancellationToken,
+    handle: std::thread::JoinHandle<Result<(), String>>,
+}
+
+struct SessionEndTaskState {
+    accepting: bool,
+    tasks: Vec<SessionEndTask>,
+    failures: Vec<String>,
+}
+
+impl Default for SessionEndTaskState {
+    fn default() -> Self {
+        Self {
+            accepting: true,
+            tasks: Vec::new(),
+            failures: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MemoryFeatureInvokeError(
+    ManagedServiceCallError<crate::memory_service::MemoryServiceErrorV1>,
+);
+
+impl MemoryFeatureInvokeError {
+    fn code(&self) -> &'static str {
+        match &self.0 {
+            ManagedServiceCallError::Operation(error) => match error.code {
+                crate::memory_service::MemoryServiceErrorCodeV1::Cancelled => "memory:cancelled",
+                crate::memory_service::MemoryServiceErrorCodeV1::Unavailable
+                | crate::memory_service::MemoryServiceErrorCodeV1::StoreUnavailable => {
+                    "memory:unavailable"
+                }
+                crate::memory_service::MemoryServiceErrorCodeV1::OperationConflict => {
+                    "memory:operation_conflict"
+                }
+                crate::memory_service::MemoryServiceErrorCodeV1::FactVersionConflict => {
+                    "memory:fact_version_conflict"
+                }
+                _ => "memory:operation_failed",
+            },
+            ManagedServiceCallError::Cancelled => "memory:cancelled",
+            ManagedServiceCallError::GenerationDraining
+            | ManagedServiceCallError::GenerationDegraded
+            | ManagedServiceCallError::GenerationRetired => "memory:unavailable",
+            ManagedServiceCallError::Panicked => "memory:panicked",
+        }
+    }
+}
+
+impl std::fmt::Display for MemoryFeatureInvokeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.code())
+    }
+}
+
+impl std::error::Error for MemoryFeatureInvokeError {}
 
 /// Memory feature that provides all memory_* tools and context injection.
 pub struct MemoryFeature {
-    /// Memory backend for storage operations
-    backend: Arc<dyn MemoryBackend>,
     /// Renderer for context injection
     renderer: MarkdownRenderer,
     /// Mind identifier (normally `primensus` for automatic LLM memory).
@@ -48,32 +107,36 @@ pub struct MemoryFeature {
     /// `provide_context` returns None to skip re-injection — the existing
     /// injection persists via its TTL instead of being re-rendered.
     last_context_hash: Mutex<u64>,
+    last_context_turn: Mutex<Option<u32>>,
     /// Set to true by memory mutation tools so the next provide_context()
     /// re-renders even if the hash would match (facts changed underneath).
     context_dirty: AtomicBool,
-    /// Optional Codex vault path for materialization on session end.
-    /// When set, `SessionEnd` materializes facts and episodes to the vault
-    /// and reinforces facts referenced by vault documents.
-    codex_vault_path: Option<std::path::PathBuf>,
+    /// Boot-captured managed owner for every durable memory operation.
+    memory_binding: crate::memory_service::MemoryBinding,
     /// Model for session-end fact extraction. When set, SessionEnd uses
     /// quick_completion to extract novel facts from the session summary.
     extraction_model: Option<String>,
+    session_id: Mutex<Option<String>>,
+    session_end_tasks: Arc<Mutex<SessionEndTaskState>>,
+    status_root: std::path::PathBuf,
 }
 
 impl MemoryFeature {
-    /// Create a new memory feature with the given backend and mind.
-    pub fn new(backend: Arc<dyn MemoryBackend>, mind: String) -> Self {
+    pub(crate) fn new(memory_binding: crate::memory_service::MemoryBinding, mind: String) -> Self {
         Self {
-            backend,
             renderer: MarkdownRenderer,
             mind,
             working_memory: Mutex::new(Vec::new()),
             pending_status_refresh: AtomicBool::new(false),
             embed_service: None,
             last_context_hash: Mutex::new(0),
+            last_context_turn: Mutex::new(None),
             context_dirty: AtomicBool::new(true), // force initial render
-            codex_vault_path: None,
+            memory_binding,
             extraction_model: None,
+            session_id: Mutex::new(None),
+            session_end_tasks: Arc::new(Mutex::new(SessionEndTaskState::default())),
+            status_root: std::env::current_dir().unwrap_or_default(),
         }
     }
 
@@ -82,9 +145,8 @@ impl MemoryFeature {
         self
     }
 
-    /// Set the Codex vault path for automatic materialization on session end.
-    pub fn with_codex_vault(mut self, path: std::path::PathBuf) -> Self {
-        self.codex_vault_path = Some(path);
+    pub(crate) fn with_status_root(mut self, root: std::path::PathBuf) -> Self {
+        self.status_root = root;
         self
     }
 
@@ -94,13 +156,17 @@ impl MemoryFeature {
         self
     }
 
-    /// Get the backend for direct access (used by other features).
-    pub fn backend(&self) -> &Arc<dyn MemoryBackend> {
-        &self.backend
-    }
-
     fn parse_section_arg(section_str: &str) -> anyhow::Result<Section> {
-        serde_json::from_value(Value::String(section_str.into())).map_err(|_| {
+        let normalized = match section_str {
+            "architecture" => "Architecture",
+            "decisions" => "Decisions",
+            "constraints" => "Constraints",
+            "known_issues" | "known issues" => "Known Issues",
+            "patterns_conventions" | "patterns & conventions" => "Patterns & Conventions",
+            "specs" => "Specs",
+            other => other,
+        };
+        serde_json::from_value(Value::String(normalized.into())).map_err(|_| {
             anyhow::anyhow!(
                 "invalid memory section '{section_str}'; expected one of Architecture, Decisions, Constraints, Known Issues, Patterns & Conventions, Specs"
             )
@@ -110,6 +176,74 @@ impl MemoryFeature {
     /// Get the current mind identifier.
     pub fn mind(&self) -> &str {
         &self.mind
+    }
+
+    fn tool_operation_id(&self, call_id: &str, operation: &str) -> anyhow::Result<String> {
+        let session = self
+            .session_id
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("memory session identity is unavailable"))?;
+        Ok(format!("tool:{session}:{call_id}:{operation}"))
+    }
+
+    async fn invoke(
+        &self,
+        request: crate::memory_service::MemoryRequestV1,
+    ) -> Result<crate::memory_service::MemoryPayloadV1, MemoryFeatureInvokeError> {
+        self.memory_binding
+            .invoke(request)
+            .await
+            .map(|response| response.payload)
+            .map_err(MemoryFeatureInvokeError)
+    }
+
+    async fn apply_mutation(
+        &self,
+        operation_id: String,
+        mutation: MemoryMutation,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<omegon_memory::MemoryMutationOutcome> {
+        match self
+            .invoke(crate::memory_service::MemoryRequestV1::ApplyMutation {
+                scope: crate::memory_service::MemoryScopeV1::Project,
+                operation_id,
+                mutation,
+                cancellation,
+            })
+            .await?
+        {
+            crate::memory_service::MemoryPayloadV1::Mutation(outcome) => Ok(outcome),
+            _ => anyhow::bail!("managed memory returned an unexpected mutation response"),
+        }
+    }
+
+    async fn get_fact(
+        &self,
+        id: String,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<Option<omegon_memory::Fact>> {
+        match self
+            .invoke(crate::memory_service::MemoryRequestV1::GetFact {
+                scope: crate::memory_service::MemoryScopeV1::Project,
+                id,
+                cancellation,
+            })
+            .await?
+        {
+            crate::memory_service::MemoryPayloadV1::Fact(fact) => Ok(*fact),
+            _ => anyhow::bail!("managed memory returned an unexpected fact response"),
+        }
+    }
+
+    async fn refresh_status(&self) {
+        crate::status::refresh_managed_memory_status_for_mind(
+            &self.memory_binding,
+            &self.status_root,
+            &self.mind,
+        )
+        .await;
     }
 }
 
@@ -141,16 +275,11 @@ fn parse_extracted_facts(text: &str) -> Vec<String> {
             stripped.to_string()
         })
         .filter(|s| s.len() >= 10)
+        .take(100)
         .collect()
 }
 
-async fn extract_and_store_facts(
-    model: &str,
-    summary: &str,
-    backend: &Arc<dyn MemoryBackend>,
-    mind: &str,
-    embed_svc: Option<&Arc<dyn EmbeddingService>>,
-) -> anyhow::Result<usize> {
+async fn extract_facts(model: &str, summary: &str) -> anyhow::Result<Vec<String>> {
     let prompt = format!(
         "Extract discrete, reusable facts from this session summary. \
          Each fact should be a single sentence that would be useful context \
@@ -164,75 +293,298 @@ async fn extract_and_store_facts(
         .await
         .map_err(|e| anyhow::anyhow!("extraction LLM call failed: {e}"))?;
 
-    let facts = parse_extracted_facts(&result.text);
-    if facts.is_empty() {
-        return Ok(0);
-    }
-
-    let mut stored = 0;
-    for fact_text in &facts {
-        let store_result = backend
-            .store_fact(StoreFact {
-                mind: mind.to_string(),
-                content: fact_text.to_string(),
-                section: Section::Architecture,
-                source: Some("session-extraction".into()),
-                decay_profile: DecayProfileName::Standard,
-            })
-            .await;
-
-        match store_result {
-            Ok(result) => {
-                if matches!(result.action, StoreAction::Stored) {
-                    if let Some(svc) = embed_svc {
-                        spawn_auto_embed(
-                            svc,
-                            backend,
-                            result.fact.id.clone(),
-                            fact_text.to_string(),
-                        );
-                    }
-                    stored += 1;
-                }
-            }
-            Err(e) => {
-                tracing::debug!(error = %e, "failed to store extracted fact");
-            }
-        }
-    }
-
-    Ok(stored)
+    Ok(parse_extracted_facts(&result.text))
 }
 
-fn spawn_auto_embed(
+async fn persist_embedding(
     embed_svc: &Arc<dyn EmbeddingService>,
-    backend: &Arc<dyn MemoryBackend>,
-    fact_id: String,
+    binding: &crate::memory_service::MemoryBinding,
+    fact: FactPrecondition,
     content: String,
+    operation_id: String,
+    cancellation: tokio_util::sync::CancellationToken,
 ) {
-    let embed_svc = embed_svc.clone();
-    let backend = backend.clone();
-    tokio::spawn(async move {
-        match embed_svc.embed(&content).await {
-            Ok(embedding) => {
-                if let Err(e) = backend
-                    .store_embedding(&fact_id, embed_svc.model_name(), &embedding)
-                    .await
-                {
-                    tracing::warn!(fact_id = %fact_id, error = %e, "auto-embed store failed");
-                }
-            }
-            Err(e) => {
-                tracing::debug!(fact_id = %fact_id, error = %e, "auto-embed generation failed");
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        embed_svc.embed(&content),
+    )
+    .await
+    {
+        Ok(Ok(embedding)) => {
+            if let Err(error) = binding
+                .invoke(crate::memory_service::MemoryRequestV1::ApplyMutation {
+                    scope: crate::memory_service::MemoryScopeV1::Project,
+                    operation_id,
+                    mutation: MemoryMutation::StoreEmbedding {
+                        fact: fact.clone(),
+                        model_name: embed_svc.model_name().to_string(),
+                        embedding,
+                    },
+                    cancellation,
+                })
+                .await
+            {
+                tracing::warn!(fact_id = %fact.id, ?error, "auto-embed store failed");
             }
         }
-    });
+        Ok(Err(error)) => {
+            tracing::debug!(fact_id = %fact.id, %error, "auto-embed generation failed");
+        }
+        Err(_) => tracing::warn!(fact_id = %fact.id, "auto-embed generation timed out"),
+    }
+}
+
+struct SessionEndPipelineInput {
+    mind: String,
+    memory_binding: crate::memory_service::MemoryBinding,
+    extraction_model: Option<String>,
+    embed_service: Option<Arc<dyn EmbeddingService>>,
+    prompt_text: String,
+    outcome_text: String,
+    session_id: String,
+    status_root: std::path::PathBuf,
+    turns: u32,
+    tool_calls: u32,
+    duration_secs: f64,
+}
+
+async fn run_session_end_pipeline(input: SessionEndPipelineInput) {
+    const EPISODE_PHASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    const EXTRACTION_PHASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    const FACT_WRITE_PHASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    const EMBEDDING_PHASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    const VAULT_PHASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+    let now = chrono::Utc::now();
+    let session_key = format!("{:x}", Sha256::digest(input.session_id.as_bytes()));
+
+    let episode_cancellation = tokio_util::sync::CancellationToken::new();
+    let episode =
+        input
+            .memory_binding
+            .invoke(crate::memory_service::MemoryRequestV1::ApplyMutation {
+                scope: crate::memory_service::MemoryScopeV1::Project,
+                operation_id: format!("session:{session_key}:episode"),
+                mutation: MemoryMutation::StoreEpisode {
+                    request: StoreEpisode {
+                        mind: input.mind.clone(),
+                        title: format!(
+                            "Session {}: {}t {}tc",
+                            now.format("%Y-%m-%d"),
+                            input.turns,
+                            input.tool_calls
+                        ),
+                        narrative: format!(
+                            "Session on {date}: {turns} turns, {tools} tool calls, {duration:.0}s. \
+                         Auto-recorded by harness at session end.",
+                            date = now.format("%Y-%m-%d"),
+                            turns = input.turns,
+                            tools = input.tool_calls,
+                            duration = input.duration_secs,
+                        ),
+                        date: Some(now.format("%Y-%m-%d").to_string()),
+                        affected_nodes: vec![],
+                        affected_changes: vec![],
+                        files_changed: vec![],
+                        tags: vec!["auto".into()],
+                        tool_calls_count: Some(input.tool_calls),
+                    },
+                },
+                cancellation: episode_cancellation.clone(),
+            });
+    match tokio::time::timeout(EPISODE_PHASE_TIMEOUT, episode).await {
+        Ok(Err(error)) => tracing::warn!(?error, "session episode storage failed"),
+        Err(_) => {
+            episode_cancellation.cancel();
+            tracing::warn!("session episode storage timed out");
+        }
+        _ => {}
+    }
+
+    let extracted_facts = if let Some(model) = input.extraction_model.as_deref()
+        && (!input.prompt_text.is_empty() || !input.outcome_text.is_empty())
+    {
+        let summary = format!(
+            "User asked: {}\n\nOutcome: {}",
+            if input.prompt_text.is_empty() {
+                "(no prompt recorded)"
+            } else {
+                &input.prompt_text
+            },
+            if input.outcome_text.is_empty() {
+                "(no outcome recorded)"
+            } else {
+                &input.outcome_text
+            },
+        );
+        match tokio::time::timeout(EXTRACTION_PHASE_TIMEOUT, extract_facts(model, &summary)).await {
+            Ok(Ok(facts)) => facts,
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "session-end fact extraction failed");
+                Vec::new()
+            }
+            Err(_) => {
+                tracing::warn!("session-end fact extraction timed out");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    let fact_write_cancellation = tokio_util::sync::CancellationToken::new();
+    let fact_writes = async {
+        let mut stored = Vec::new();
+        for (index, content) in extracted_facts.into_iter().enumerate() {
+            let response = input
+                .memory_binding
+                .invoke(crate::memory_service::MemoryRequestV1::ApplyMutation {
+                    scope: crate::memory_service::MemoryScopeV1::Project,
+                    operation_id: format!("session:{session_key}:fact:{index}"),
+                    mutation: MemoryMutation::StoreFact {
+                        request: StoreFact {
+                            mind: input.mind.clone(),
+                            content: content.clone(),
+                            section: Section::Architecture,
+                            source: Some("session-extraction".into()),
+                            decay_profile: DecayProfileName::Standard,
+                        },
+                    },
+                    cancellation: fact_write_cancellation.clone(),
+                })
+                .await;
+            match response {
+                Ok(crate::memory_service::MemoryResponseV1 {
+                    payload: crate::memory_service::MemoryPayloadV1::Mutation(outcome),
+                    ..
+                }) => {
+                    if let MemoryMutationEffect::FactStored {
+                        fact_id,
+                        version,
+                        action: StoreAction::Stored,
+                    } = outcome.effect
+                    {
+                        stored.push((
+                            FactPrecondition {
+                                id: fact_id,
+                                expected_version: version,
+                            },
+                            content,
+                        ));
+                    }
+                }
+                Ok(_) => tracing::debug!("session fact store returned an unexpected response"),
+                Err(error) => tracing::debug!(?error, "failed to store extracted fact"),
+            }
+        }
+        stored
+    };
+    let stored_facts = match tokio::time::timeout(FACT_WRITE_PHASE_TIMEOUT, fact_writes).await {
+        Ok(stored) => stored,
+        Err(_) => {
+            fact_write_cancellation.cancel();
+            tracing::warn!("session-end managed fact writes timed out");
+            Vec::new()
+        }
+    };
+
+    if let Some(service) = input.embed_service {
+        let embedding_cancellation = tokio_util::sync::CancellationToken::new();
+        let mut embeddings = tokio::task::JoinSet::new();
+        for (index, (fact, content)) in stored_facts.into_iter().enumerate() {
+            let service = service.clone();
+            let binding = input.memory_binding.clone();
+            let cancellation = embedding_cancellation.clone();
+            let operation_id = format!("session:{session_key}:embedding:{index}");
+            embeddings.spawn(async move {
+                persist_embedding(
+                    &service,
+                    &binding,
+                    fact,
+                    content,
+                    operation_id,
+                    cancellation,
+                )
+                .await;
+            });
+        }
+        if tokio::time::timeout(EMBEDDING_PHASE_TIMEOUT, async {
+            while let Some(result) = embeddings.join_next().await {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "session-end embedding task failed");
+                }
+            }
+        })
+        .await
+        .is_err()
+        {
+            embedding_cancellation.cancel();
+            embeddings.abort_all();
+            while embeddings.join_next().await.is_some() {}
+            tracing::warn!("session-end managed embeddings timed out");
+        }
+    }
+
+    let vault_cancellation = tokio_util::sync::CancellationToken::new();
+    match tokio::time::timeout(
+        VAULT_PHASE_TIMEOUT,
+        input
+            .memory_binding
+            .invoke(crate::memory_service::MemoryRequestV1::VaultSessionEnd {
+                scope: crate::memory_service::MemoryScopeV1::Project,
+                mind: input.mind.clone(),
+                cancellation: vault_cancellation.clone(),
+            }),
+    )
+    .await
+    {
+        Ok(Err(error))
+            if !matches!(
+                error,
+                ManagedServiceCallError::Operation(ref error)
+                    if matches!(
+                        error.code,
+                        crate::memory_service::MemoryServiceErrorCodeV1::Unavailable
+                            | crate::memory_service::MemoryServiceErrorCodeV1::SyncNotConfigured
+                    )
+            ) =>
+        {
+            tracing::warn!(?error, "vault session-end synchronization failed");
+        }
+        Err(_) => {
+            vault_cancellation.cancel();
+            tracing::warn!("vault session-end synchronization timed out");
+        }
+        _ => {}
+    }
+
+    crate::status::refresh_managed_memory_status_for_mind(
+        &input.memory_binding,
+        &input.status_root,
+        &input.mind,
+    )
+    .await;
 }
 
 #[async_trait]
 impl Feature for MemoryFeature {
     fn name(&self) -> &str {
         "memory"
+    }
+
+    fn runtime_contribution_generation_id(&self) -> Option<RuntimeContributionGenerationId> {
+        Some(
+            RuntimeContributionGenerationId::new(crate::memory_service::MEMORY_GENERATION)
+                .expect("static generation id is valid"),
+        )
+    }
+
+    fn runtime_lifecycle_policy(&self) -> Option<RuntimeLifecyclePolicy> {
+        Some(crate::memory_service::memory_lifecycle_policy())
+    }
+
+    fn runtime_transition_policy(&self) -> Option<RuntimeCompositionTransitionPolicy> {
+        Some(crate::memory_service::memory_transition_policy())
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
@@ -260,7 +612,7 @@ or facts better represented as Flynt/project documents.".into(),
                         }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_RECALL.into(),
@@ -316,7 +668,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_SUPERSEDE.into(),
@@ -331,7 +683,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         "content": { "type": "string" }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_CONNECT.into(),
@@ -347,7 +699,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         "description": { "type": "string" }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_FOCUS.into(),
@@ -363,7 +715,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_RELEASE.into(),
@@ -373,7 +725,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                     "type": "object",
                     "properties": {}
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_EPISODES.into(),
@@ -408,7 +760,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
             ToolDefinition {
                 name: crate::tool_registry::memory::MEMORY_SEARCH_ARCHIVE.into(),
@@ -444,7 +796,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         "artifact_ref_sub": { "type": "string" }
                     }
                 }),
-                capabilities: vec![omegon_traits::ToolCapability::Orientation],
+                capabilities: vec![omegon_traits::ToolCapability::StateChanging],
             },
         ]
     }
@@ -452,9 +804,9 @@ Also use it when you notice a gap — if you're unsure whether something was alr
     async fn execute(
         &self,
         tool_name: &str,
-        _call_id: &str,
+        call_id: &str,
         args: Value,
-        _cancel: tokio_util::sync::CancellationToken,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
             crate::tool_registry::memory::MEMORY_STORE => {
@@ -462,40 +814,61 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 let section_str = args["section"].as_str().unwrap_or("Architecture");
                 let section = Self::parse_section_arg(section_str)?;
 
-                let result = self
-                    .backend
-                    .store_fact(StoreFact {
-                        mind: self.mind.clone(),
-                        content: content.clone(),
-                        section,
-                        decay_profile: DecayProfileName::Standard,
-                        source: Some("manual".into()),
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-                // Auto-embed newly stored facts (fire-and-forget)
-                if matches!(result.action, StoreAction::Stored)
+                let source = args["source"].as_str().unwrap_or("manual");
+                let outcome = self
+                    .apply_mutation(
+                        self.tool_operation_id(call_id, "store")?,
+                        MemoryMutation::StoreFact {
+                            request: StoreFact {
+                                mind: self.mind.clone(),
+                                content: content.clone(),
+                                section,
+                                decay_profile: DecayProfileName::Standard,
+                                source: Some(source.into()),
+                            },
+                        },
+                        cancel.clone(),
+                    )
+                    .await?;
+                let MemoryMutationEffect::FactStored {
+                    fact_id,
+                    version,
+                    action,
+                } = outcome.effect
+                else {
+                    anyhow::bail!("managed memory returned an unexpected store effect");
+                };
+                // A replay is rendered from its durable receipt even if the
+                // fact has since been archived or superseded.
+                if !outcome.replayed
+                    && matches!(action, StoreAction::Stored)
                     && let Some(ref embed_svc) = self.embed_service
                 {
-                    spawn_auto_embed(
+                    persist_embedding(
                         embed_svc,
-                        &self.backend,
-                        result.fact.id.clone(),
+                        &self.memory_binding,
+                        FactPrecondition {
+                            id: fact_id.clone(),
+                            expected_version: version,
+                        },
                         content.clone(),
-                    );
+                        self.tool_operation_id(call_id, &format!("embedding:{fact_id}"))?,
+                        cancel.clone(),
+                    )
+                    .await;
                 }
 
-                let msg = match result.action {
+                let msg = match action {
                     StoreAction::Stored => format!("Stored in {}: {}", section_str, content),
                     StoreAction::Reinforced => format!("Reinforced existing fact: {}", content),
                     StoreAction::Deduplicated => "Duplicate — fact already exists".to_string(),
                 };
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
                 self.context_dirty.store(true, Ordering::Relaxed);
+                self.refresh_status().await;
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text { text: msg }],
-                    details: serde_json::json!({ "id": result.fact.id, "action": format!("{:?}", result.action) }),
+                    details: serde_json::json!({ "id": fact_id, "action": format!("{:?}", action) }),
                 })
             }
             crate::tool_registry::memory::MEMORY_RECALL => {
@@ -508,56 +881,37 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                         details: serde_json::json!({ "is_error": true }),
                     });
                 }
-                let k = args["k"].as_u64().unwrap_or(10) as usize;
-                let fetch_k = k * 2; // over-fetch for RRF merge headroom
+                let k = usize::try_from(args["k"].as_u64().unwrap_or(10))
+                    .unwrap_or(10_000)
+                    .min(10_000);
+                let fetch_k = k.saturating_mul(2).min(10_000); // over-fetch for RRF merge headroom
 
-                // FTS search — always available
-                let fts_results = self
-                    .backend
-                    .fts_search(&self.mind, &query, fetch_k)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-                // Vector search — best-effort when embedding service is available
-                let vec_results = if let Some(ref embed_svc) = self.embed_service {
+                let query_vector = if let Some(ref embed_svc) = self.embed_service {
                     match embed_svc.embed(&query).await {
-                        Ok(query_embedding) => {
-                            match self
-                                .backend
-                                .vector_search(&self.mind, &query_embedding, fetch_k, 0.1)
-                                .await
-                            {
-                                Ok(results) => results,
-                                Err(omegon_memory::MemoryError::NoEmbeddings) => vec![],
-                                Err(e) => {
-                                    tracing::debug!(error = %e, "vector search unavailable, FTS-only");
-                                    vec![]
-                                }
-                            }
-                        }
+                        Ok(query_embedding) => Some(query_embedding),
                         Err(e) => {
                             tracing::debug!(error = %e, "embedding generation failed, FTS-only");
-                            vec![]
+                            None
                         }
                     }
                 } else {
-                    vec![]
+                    None
                 };
-
-                // Merge: RRF if both sources contributed, else FTS-only
-                let mut results = if vec_results.is_empty() {
-                    fts_results
-                } else {
-                    omegon_memory::rrf_merge(&fts_results, &vec_results, 60.0, fetch_k)
+                let crate::memory_service::MemoryPayloadV1::ScoredFacts(results) = self
+                    .invoke(crate::memory_service::MemoryRequestV1::HybridSearch {
+                        scope: crate::memory_service::MemoryScopeV1::Project,
+                        mind: self.mind.clone(),
+                        query,
+                        query_vector,
+                        limit: k,
+                        fetch_limit: fetch_k,
+                        min_similarity: 0.1,
+                        cancellation: cancel,
+                    })
+                    .await?
+                else {
+                    anyhow::bail!("managed memory returned an unexpected search response");
                 };
-
-                // 1-hop edge expansion
-                results = MemoryMindService::new(self.backend.clone(), self.mind.clone())
-                    .expand_edges(results, fetch_k)
-                    .await;
-
-                // Final truncation
-                results.truncate(k);
 
                 if results.is_empty() {
                     return Ok(ToolResult {
@@ -594,11 +948,28 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 })
             }
             crate::tool_registry::memory::MEMORY_QUERY => {
-                let facts = self
-                    .backend
-                    .list_facts(&self.mind, FactFilter::default())
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let mut facts = Vec::new();
+                let mut cursor = None;
+                loop {
+                    let payload = self
+                        .invoke(crate::memory_service::MemoryRequestV1::ListFactsPage {
+                            scope: crate::memory_service::MemoryScopeV1::Project,
+                            mind: self.mind.clone(),
+                            filter: omegon_memory::FactFilter::default(),
+                            limit: 1_000,
+                            cursor,
+                            cancellation: cancel.clone(),
+                        })
+                        .await?;
+                    let crate::memory_service::MemoryPayloadV1::FactPage(page) = payload else {
+                        anyhow::bail!("managed memory returned an unexpected fact page");
+                    };
+                    facts.extend(page.facts);
+                    cursor = page.next_cursor;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
 
                 if facts.is_empty() {
                     return Ok(ToolResult {
@@ -674,14 +1045,27 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                             .collect()
                     })
                     .unwrap_or_default();
-                let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
-                let count = self
-                    .backend
-                    .archive_facts(&id_refs)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let outcome = self
+                    .invoke(crate::memory_service::MemoryRequestV1::ApplyToolMutation {
+                        scope: crate::memory_service::MemoryScopeV1::Project,
+                        operation_id: self.tool_operation_id(call_id, "archive")?,
+                        mutation: crate::memory_service::MemoryToolMutationV1::Archive {
+                            mind: self.mind.clone(),
+                            fact_ids: ids,
+                        },
+                        cancellation: cancel.clone(),
+                    })
+                    .await?;
+                let crate::memory_service::MemoryPayloadV1::Mutation(outcome) = outcome else {
+                    anyhow::bail!("managed memory returned an unexpected archive effect");
+                };
+                let MemoryMutationEffect::FactsTransitioned { facts, .. } = outcome.effect else {
+                    anyhow::bail!("managed memory returned an unexpected archive effect");
+                };
+                let count = facts.len();
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
                 self.context_dirty.store(true, Ordering::Relaxed);
+                self.refresh_status().await;
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
                         text: format!("Archived {count} fact(s)."),
@@ -695,56 +1079,91 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 let section_str = args["section"].as_str().unwrap_or("Architecture");
                 let section = Self::parse_section_arg(section_str)?;
 
-                let new_fact = self
-                    .backend
-                    .supersede_fact(
-                        &fact_id,
-                        StoreFact {
-                            mind: self.mind.clone(),
-                            content: content.clone(),
-                            section,
-                            decay_profile: DecayProfileName::Standard,
-                            source: Some("manual".into()),
+                let outcome = self
+                    .invoke(crate::memory_service::MemoryRequestV1::ApplyToolMutation {
+                        scope: crate::memory_service::MemoryScopeV1::Project,
+                        operation_id: self.tool_operation_id(call_id, "supersede")?,
+                        mutation: crate::memory_service::MemoryToolMutationV1::Supersede {
+                            fact_id: fact_id.clone(),
+                            replacement: StoreFact {
+                                mind: self.mind.clone(),
+                                content: content.clone(),
+                                section,
+                                decay_profile: DecayProfileName::Standard,
+                                source: Some("manual".into()),
+                            },
                         },
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        cancellation: cancel.clone(),
+                    })
+                    .await?;
+                let crate::memory_service::MemoryPayloadV1::Mutation(outcome) = outcome else {
+                    anyhow::bail!("managed memory returned an unexpected supersede effect");
+                };
+                let MemoryMutationEffect::FactSuperseded { replacement, .. } = outcome.effect
+                else {
+                    anyhow::bail!("managed memory returned an unexpected supersede effect");
+                };
 
-                // Auto-embed the replacement fact
-                if let Some(ref embed_svc) = self.embed_service {
-                    spawn_auto_embed(embed_svc, &self.backend, new_fact.id.clone(), content);
+                // Replays are rendered entirely from the durable receipt. The replacement may
+                // have transitioned again since the original supersede committed.
+                if !outcome.replayed
+                    && let Some(ref embed_svc) = self.embed_service
+                {
+                    let new_fact = self
+                        .get_fact(replacement.id.clone(), cancel.clone())
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("replacement memory fact is unavailable"))?;
+                    persist_embedding(
+                        embed_svc,
+                        &self.memory_binding,
+                        replacement.clone(),
+                        content,
+                        self.tool_operation_id(call_id, &format!("embedding:{}", new_fact.id))?,
+                        cancel.clone(),
+                    )
+                    .await;
                 }
 
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
                 self.context_dirty.store(true, Ordering::Relaxed);
+                self.refresh_status().await;
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
-                        text: format!("Superseded {} → new fact {}", fact_id, new_fact.id),
+                        text: format!("Superseded {} → new fact {}", fact_id, replacement.id),
                     }],
-                    details: serde_json::json!({ "old_id": fact_id, "new_id": new_fact.id }),
+                    details: serde_json::json!({ "old_id": fact_id, "new_id": replacement.id }),
                 })
             }
             crate::tool_registry::memory::MEMORY_CONNECT => {
-                let edge = self
-                    .backend
-                    .create_edge(CreateEdge {
-                        source_id: args["source_fact_id"].as_str().unwrap_or("").into(),
-                        target_id: args["target_fact_id"].as_str().unwrap_or("").into(),
-                        relation: args["relation"].as_str().unwrap_or("").into(),
-                        description: args["description"].as_str().map(String::from),
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let source_id = args["source_fact_id"].as_str().unwrap_or("").to_string();
+                let target_id = args["target_fact_id"].as_str().unwrap_or("").to_string();
+                let relation = args["relation"].as_str().unwrap_or("").to_string();
+                let outcome = self
+                    .apply_mutation(
+                        self.tool_operation_id(call_id, "connect")?,
+                        MemoryMutation::CreateEdge {
+                            mind: self.mind.clone(),
+                            request: CreateEdge {
+                                source_id: source_id.clone(),
+                                target_id: target_id.clone(),
+                                relation: relation.clone(),
+                                description: args["description"].as_str().map(String::from),
+                            },
+                        },
+                        cancel.clone(),
+                    )
+                    .await?;
+                let MemoryMutationEffect::EdgeCreated { edge_id } = outcome.effect else {
+                    anyhow::bail!("managed memory returned an unexpected edge effect");
+                };
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
                 self.context_dirty.store(true, Ordering::Relaxed);
+                self.refresh_status().await;
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
-                        text: format!(
-                            "Connected {} → {} ({})",
-                            edge.source_id, edge.target_id, edge.relation
-                        ),
+                        text: format!("Connected {} → {} ({})", source_id, target_id, relation),
                     }],
-                    details: serde_json::json!({ "edge_id": edge.id }),
+                    details: serde_json::json!({ "edge_id": edge_id }),
                 })
             }
             crate::tool_registry::memory::MEMORY_FOCUS => {
@@ -757,9 +1176,20 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                     })
                     .unwrap_or_default();
                 let count = ids.len();
-                self.working_memory.lock().unwrap().extend(ids);
+                {
+                    let mut current = self.working_memory.lock().unwrap();
+                    if current.len().saturating_add(count) > crate::memory_service::MAX_CONTEXT_PINS
+                    {
+                        anyhow::bail!(
+                            "memory focus exceeds the {} pin limit",
+                            crate::memory_service::MAX_CONTEXT_PINS
+                        );
+                    }
+                    current.extend(ids);
+                }
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
                 self.context_dirty.store(true, Ordering::Relaxed);
+                self.refresh_status().await;
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
                         text: format!("Pinned {count} fact(s) to working memory."),
@@ -771,6 +1201,7 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 self.working_memory.lock().unwrap().clear();
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
                 self.context_dirty.store(true, Ordering::Relaxed);
+                self.refresh_status().await;
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text {
                         text: "Working memory cleared.".into(),
@@ -780,12 +1211,21 @@ Also use it when you notice a gap — if you're unsure whether something was alr
             }
             crate::tool_registry::memory::MEMORY_EPISODES => {
                 let query = args["query"].as_str().unwrap_or("").to_string();
-                let k = args["k"].as_u64().unwrap_or(5) as usize;
-                let episodes = self
-                    .backend
-                    .search_episodes(&self.mind, &query, k)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let k = usize::try_from(args["k"].as_u64().unwrap_or(5))
+                    .unwrap_or(10_000)
+                    .min(10_000);
+                let crate::memory_service::MemoryPayloadV1::Episodes(episodes) = self
+                    .invoke(crate::memory_service::MemoryRequestV1::SearchEpisodes {
+                        scope: crate::memory_service::MemoryScopeV1::Project,
+                        mind: self.mind.clone(),
+                        query,
+                        limit: k,
+                        cancellation: cancel,
+                    })
+                    .await?
+                else {
+                    anyhow::bail!("managed memory returned an unexpected episode response");
+                };
                 if episodes.is_empty() {
                     return Ok(ToolResult {
                         content: vec![ContentBlock::Text {
@@ -821,11 +1261,18 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 let query = args["query"].as_str().unwrap_or("").to_string();
                 // Search archived facts using FTS - for now this searches all facts,
                 // we'd need to update the backend to filter for archived specifically
-                let results = self
-                    .backend
-                    .fts_search(&self.mind, &query, 20)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let crate::memory_service::MemoryPayloadV1::ScoredFacts(results) = self
+                    .invoke(crate::memory_service::MemoryRequestV1::FtsSearch {
+                        scope: crate::memory_service::MemoryScopeV1::Project,
+                        mind: self.mind.clone(),
+                        query,
+                        limit: 20,
+                        cancellation: cancel,
+                    })
+                    .await?
+                else {
+                    anyhow::bail!("managed memory returned an unexpected archive search response");
+                };
                 if results.is_empty() {
                     return Ok(ToolResult {
                         content: vec![ContentBlock::Text {
@@ -854,31 +1301,49 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 let authority = args["authority"].as_str().unwrap_or("inferred");
                 let source_kind = args["source_kind"].as_str().unwrap_or("unknown");
 
-                let result = self
-                    .backend
-                    .store_fact(StoreFact {
-                        mind: self.mind.clone(),
-                        content: content.clone(),
-                        section,
-                        decay_profile: DecayProfileName::Standard,
-                        source: Some(format!("lifecycle:{source_kind}")),
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let outcome = self
+                    .apply_mutation(
+                        self.tool_operation_id(call_id, "lifecycle")?,
+                        MemoryMutation::StoreFact {
+                            request: StoreFact {
+                                mind: self.mind.clone(),
+                                content: content.clone(),
+                                section,
+                                decay_profile: DecayProfileName::Standard,
+                                source: Some(format!("lifecycle:{source_kind}")),
+                            },
+                        },
+                        cancel.clone(),
+                    )
+                    .await?;
+                let MemoryMutationEffect::FactStored {
+                    fact_id,
+                    version,
+                    action,
+                } = outcome.effect
+                else {
+                    anyhow::bail!("managed memory returned an unexpected lifecycle store effect");
+                };
 
                 // Auto-embed newly ingested lifecycle facts
-                if matches!(result.action, StoreAction::Stored)
+                if matches!(action, StoreAction::Stored)
                     && let Some(ref embed_svc) = self.embed_service
                 {
-                    spawn_auto_embed(
+                    persist_embedding(
                         embed_svc,
-                        &self.backend,
-                        result.fact.id.clone(),
+                        &self.memory_binding,
+                        FactPrecondition {
+                            id: fact_id.clone(),
+                            expected_version: version,
+                        },
                         content.clone(),
-                    );
+                        self.tool_operation_id(call_id, &format!("embedding:{fact_id}"))?,
+                        cancel.clone(),
+                    )
+                    .await;
                 }
 
-                let msg = match result.action {
+                let msg = match action {
                     StoreAction::Stored => format!(
                         "Ingested ({authority}/{source_kind}): {}",
                         content.chars().take(80).collect::<String>()
@@ -890,9 +1355,10 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 };
                 self.pending_status_refresh.store(true, Ordering::Relaxed);
                 self.context_dirty.store(true, Ordering::Relaxed);
+                self.refresh_status().await;
                 Ok(ToolResult {
                     content: vec![ContentBlock::Text { text: msg }],
-                    details: serde_json::json!({ "action": format!("{:?}", result.action), "id": result.fact.id }),
+                    details: serde_json::json!({ "action": format!("{:?}", action), "id": fact_id }),
                 })
             }
             _ => anyhow::bail!("Unknown memory tool: {tool_name}"),
@@ -901,6 +1367,10 @@ Also use it when you notice a gap — if you're unsure whether something was alr
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
         match event {
+            BusEvent::SessionStart { session_id, .. } => {
+                *self.session_id.lock().unwrap() = Some(session_id.clone());
+                Vec::new()
+            }
             BusEvent::ToolEnd { name, is_error, .. }
                 if !is_error
                     && matches!(
@@ -918,10 +1388,6 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 vec![BusRequest::RefreshHarnessStatus]
             }
 
-            // On session end, persist a template episode so memory_episodes
-            // has a time-indexed record of every session.  This runs
-            // synchronously via block_on — store_episode is a fast SQLite
-            // write so the latency is negligible.
             BusEvent::SessionEnd {
                 turns,
                 tool_calls,
@@ -929,139 +1395,76 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                 initial_prompt,
                 outcome_summary,
             } if *turns > 0 => {
-                let backend = self.backend.clone();
                 let mind = self.mind.clone();
-                let vault_path = self.codex_vault_path.clone();
+                let memory_binding = self.memory_binding.clone();
                 let extraction_model = self.extraction_model.clone();
                 let embed_svc = self.embed_service.clone();
                 let prompt_text = initial_prompt.clone().unwrap_or_default();
                 let outcome_text = outcome_summary.clone().unwrap_or_default();
+                let Some(session_id) = self.session_id.lock().unwrap().clone() else {
+                    self.session_end_tasks
+                        .lock()
+                        .unwrap()
+                        .failures
+                        .push("session-end event had no stable session identity".into());
+                    return vec![];
+                };
+                let status_root = self.status_root.clone();
                 let (t, tc, dur) = (*turns, *tool_calls, *duration_secs);
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    std::thread::scope(|scope| {
-                        let _ = scope
-                            .spawn(|| {
-                                handle.block_on(async {
-                                    let now = chrono::Utc::now();
-                                    let title = format!(
-                                        "Session {}: {}t {}tc",
-                                        now.format("%Y-%m-%d"),
-                                        t,
-                                        tc
-                                    );
-                                    let narrative = format!(
-                                        "Session on {date}: {t} turns, {tc} tool calls, \
-                                         {dur:.0}s. Auto-recorded by harness at session end.",
-                                        date = now.format("%Y-%m-%d"),
-                                    );
-                                    if let Err(e) = backend
-                                        .store_episode(StoreEpisode {
-                                            mind: mind.clone(),
-                                            title,
-                                            narrative,
-                                            date: Some(now.format("%Y-%m-%d").to_string()),
-                                            affected_nodes: vec![],
-                                            affected_changes: vec![],
-                                            files_changed: vec![],
-                                            tags: vec!["auto".into()],
-                                            tool_calls_count: Some(tc),
-                                        })
-                                        .await
-                                    {
-                                        tracing::warn!("Session episode storage failed: {e}");
-                                    }
-
-                                    if let Some(ref model) = extraction_model
-                                        && (!prompt_text.is_empty() || !outcome_text.is_empty())
-                                    {
-                                        let model = model.clone();
-                                        let backend = backend.clone();
-                                        let mind = mind.clone();
-                                        let embed_svc = embed_svc.clone();
-                                        let prompt_text = prompt_text.clone();
-                                        let outcome_text = outcome_text.clone();
-                                        // Fire-and-forget — don't block shutdown
-                                        tokio::spawn(async move {
-                                            let summary = format!(
-                                                "User asked: {}\n\nOutcome: {}",
-                                                if prompt_text.is_empty() { "(no prompt recorded)".to_string() } else { prompt_text },
-                                                if outcome_text.is_empty() { "(no outcome recorded)".to_string() } else { outcome_text },
-                                            );
-                                            match extract_and_store_facts(
-                                                &model, &summary, &backend, &mind, embed_svc.as_ref(),
-                                            ).await {
-                                                Ok(count) if count > 0 => {
-                                                    tracing::info!(facts = count, "session-end fact extraction");
-                                                }
-                                                Err(e) => {
-                                                    tracing::debug!(error = %e, "session-end fact extraction failed");
-                                                }
-                                                _ => {}
-                                            }
-                                        });
-                                    }
-
-                                    if let Some(ref vp) = vault_path {
-                                        // Import Codex-authored facts first
-                                        match omegon_memory::vault_sync::import_from_vault(
-                                            backend.as_ref(), vp, &mind,
-                                        ).await {
-                                            Ok(r) if r.facts_imported > 0 => {
-                                                tracing::info!(
-                                                    imported = r.facts_imported,
-                                                    "imported facts from Codex vault"
-                                                );
-                                            }
-                                            Err(e) => tracing::warn!("vault import failed: {e}"),
-                                            _ => {}
-                                        }
-
-                                        // Reinforce facts referenced by vault notes
-                                        match omegon_memory::vault_sync::reinforce_referenced_facts(
-                                            backend.as_ref(), vp,
-                                        ).await {
-                                            Ok(r) => {
-                                                if r.facts_reinforced > 0 {
-                                                    tracing::info!(
-                                                        reinforced = r.facts_reinforced,
-                                                        dangling = r.references_dangling,
-                                                        superseded = r.references_superseded.len(),
-                                                        "reinforced facts referenced by vault notes"
-                                                    );
-                                                }
-                                            }
-                                            Err(e) => tracing::warn!("vault reinforcement failed: {e}"),
-                                        }
-
-                                        // Materialize facts to vault
-                                        match omegon_memory::vault_sync::materialize_to_vault(
-                                            backend.as_ref(), vp, &mind,
-                                        ).await {
-                                            Ok(r) => {
-                                                tracing::info!(
-                                                    sections = r.sections_written,
-                                                    facts = r.facts_written,
-                                                    "materialized memory to Codex vault"
-                                                );
-                                            }
-                                            Err(e) => tracing::warn!("vault materialization failed: {e}"),
-                                        }
-
-                                        // Materialize episodes
-                                        match omegon_memory::vault_sync::materialize_episodes_to_vault(
-                                            backend.as_ref(), vp, &mind, 20,
-                                        ).await {
-                                            Ok(n) if n > 0 => {
-                                                tracing::info!(episodes = n, "materialized episodes to Codex vault");
-                                            }
-                                            Err(e) => tracing::warn!("episode materialization failed: {e}"),
-                                            _ => {}
-                                        }
-                                    }
-                                })
-                            })
-                            .join();
+                let cancellation = tokio_util::sync::CancellationToken::new();
+                let worker_cancellation = cancellation.clone();
+                let handle = std::thread::Builder::new()
+                    .name(format!("memory-session-end-{session_id}"))
+                    .spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .map_err(|error| error.to_string())?;
+                        runtime.block_on(async {
+                            tokio::select! {
+                                _ = worker_cancellation.cancelled() => {}
+                                _ = async {
+                                    run_session_end_pipeline(SessionEndPipelineInput {
+                                        mind,
+                                        memory_binding,
+                                        extraction_model,
+                                        embed_service: embed_svc,
+                                        prompt_text,
+                                        outcome_text,
+                                        session_id,
+                                        status_root,
+                                        turns: t,
+                                        tool_calls: tc,
+                                        duration_secs: dur,
+                                    })
+                                    .await;
+                                } => {}
+                            }
+                        });
+                        Ok(())
                     });
+                let mut tasks = self.session_end_tasks.lock().unwrap();
+                if !tasks.accepting {
+                    cancellation.cancel();
+                    if let Ok(handle) = handle {
+                        tasks.tasks.push(SessionEndTask {
+                            cancellation,
+                            handle,
+                        });
+                    }
+                    tasks
+                        .failures
+                        .push("session-end work arrived after shutdown admission closed".into());
+                } else {
+                    match handle {
+                        Ok(handle) => tasks.tasks.push(SessionEndTask {
+                            cancellation,
+                            handle,
+                        }),
+                        Err(error) => tasks
+                            .failures
+                            .push(format!("failed to spawn session-end task: {error}")),
+                    }
                 }
                 vec![]
             }
@@ -1070,35 +1473,78 @@ Also use it when you notice a gap — if you're unsure whether something was alr
         }
     }
 
-    fn provide_context(&self, _signals: &ContextSignals<'_>) -> Option<ContextInjection> {
+    async fn prepare_managed_shutdown(&mut self) -> anyhow::Result<()> {
+        let (tasks, mut failures) = {
+            let mut state = self.session_end_tasks.lock().unwrap();
+            state.accepting = false;
+            let tasks = std::mem::take(&mut state.tasks);
+            let failures = std::mem::take(&mut state.failures);
+            (tasks, failures)
+        };
+        for task in &tasks {
+            task.cancellation.cancel();
+        }
+        for task in tasks {
+            match tokio::task::spawn_blocking(move || task.handle.join()).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => failures.push(error),
+                Ok(Err(_)) => failures.push("session-end task panicked".into()),
+                Err(error) => failures.push(format!("session-end join task failed: {error}")),
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(failures.join("; "))
+        }
+    }
+
+    fn provide_context(&self, signals: &ContextSignals<'_>) -> Option<ContextInjection> {
         // Run async in a blocking context since provide_context is sync
         let mind = self.mind.clone();
         let wm_ids = self.working_memory.lock().unwrap().clone();
 
-        // Use tokio::runtime::Handle to block on async backend calls
-        let handle = tokio::runtime::Handle::try_current().ok()?;
-        let backend = &self.backend;
+        let binding = self.memory_binding.clone();
         let renderer = &self.renderer;
+        let turn_number = signals.turn_number;
+        // ContextSignals budgets are tokens. Four characters per token is a
+        // conservative upper bound used throughout prompt assembly.
+        let context_budget_chars = signals.context_budget_tokens.saturating_mul(4);
+        if context_budget_chars == 0 {
+            return None;
+        }
 
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
-                    handle.block_on(async {
-                        let facts = backend
-                            .list_facts(&mind, FactFilter::default())
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .ok()?;
+                    runtime.block_on(async {
+                        let response = binding
+                            .invoke(crate::memory_service::MemoryRequestV1::ContextSnapshot {
+                                scope: crate::memory_service::MemoryScopeV1::Project,
+                                mind,
+                                working_memory: wm_ids,
+                                fact_limit: 10_000,
+                                episode_limit: 1,
+                                cancellation: tokio_util::sync::CancellationToken::new(),
+                            })
                             .await
                             .ok()?;
-                        let episodes = backend.list_episodes(&mind, 1).await.ok()?;
+                        let crate::memory_service::MemoryPayloadV1::ContextSnapshot(snapshot) =
+                            response.payload
+                        else {
+                            return None;
+                        };
 
-                        // Resolve working memory facts
-                        let mut wm_facts = Vec::new();
-                        for id in &wm_ids {
-                            if let Ok(Some(f)) = backend.get_fact(id).await {
-                                wm_facts.push(f);
-                            }
-                        }
-
-                        let rendered = renderer.render_context(&facts, &episodes, &wm_facts, 8_000);
+                        let rendered = renderer.render_context(
+                            &snapshot.facts,
+                            &snapshot.episodes,
+                            &snapshot.working_memory,
+                            context_budget_chars,
+                        );
                         if rendered.markdown.is_empty() {
                             return None;
                         }
@@ -1114,10 +1560,18 @@ Also use it when you notice a gap — if you're unsure whether something was alr
                             .context_dirty
                             .swap(false, std::sync::atomic::Ordering::Relaxed);
                         let mut last_hash = self.last_context_hash.lock().unwrap();
-                        if !dirty && *last_hash == content_hash && content_hash != 0 {
+                        let mut last_turn = self.last_context_turn.lock().unwrap();
+                        let injection_alive =
+                            last_turn.is_some_and(|last| turn_number.saturating_sub(last) < 3);
+                        if !dirty
+                            && *last_hash == content_hash
+                            && content_hash != 0
+                            && injection_alive
+                        {
                             return None; // existing injection persists via TTL
                         }
                         *last_hash = content_hash;
+                        *last_turn = Some(turn_number);
 
                         Some(ContextInjection {
                             source: "memory".into(),
@@ -1136,13 +1590,39 @@ Also use it when you notice a gap — if you're unsure whether something was alr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omegon_memory::{InMemoryBackend, MemoryBackend};
-    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    async fn managed_feature() -> (MemoryFeature, crate::bus::EventBus, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let binding = crate::memory_service::MemoryBinding::default();
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(crate::memory_service::MemoryDeclarationFeature));
+        let candidate =
+            crate::memory_service::start_candidate(crate::memory_service::MemoryWorkerConfig {
+                project_memory_root: dir.path().to_path_buf(),
+                project_db_path: dir.path().join("facts.db"),
+                project_jsonl_path: dir.path().join("facts.jsonl"),
+                global_db_path: None,
+                vault: None,
+                startup_sync_enabled: false,
+            })
+            .await
+            .unwrap();
+        bus.stage_managed_generation("memory", candidate).unwrap();
+        bus.try_finalize_managed().await.unwrap();
+        binding.capture(&bus).unwrap();
+        let mut feature =
+            MemoryFeature::new(binding, "test".into()).with_status_root(dir.path().to_path_buf());
+        feature.on_event(&BusEvent::SessionStart {
+            session_id: "fixture-session".into(),
+            cwd: dir.path().to_path_buf(),
+        });
+        (feature, bus, dir)
+    }
 
     #[tokio::test]
     async fn feature_exposes_12_tools() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let feature = MemoryFeature::new(Default::default(), "test".into());
         let tools = feature.tools();
         assert_eq!(tools.len(), 12, "Should have exactly 12 memory tools");
 
@@ -1161,10 +1641,47 @@ mod tests {
         assert!(names.contains(&"memory_ingest_lifecycle"));
     }
 
+    #[test]
+    fn durable_memory_mutations_are_declared_state_changing() {
+        let feature = MemoryFeature::new(Default::default(), "test".into());
+        let tools = feature.tools();
+
+        for name in [
+            "memory_store",
+            "memory_archive",
+            "memory_supersede",
+            "memory_connect",
+            "memory_focus",
+            "memory_release",
+            "memory_compact",
+            "memory_ingest_lifecycle",
+        ] {
+            let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+            assert!(
+                tool.capabilities
+                    .contains(&omegon_traits::ToolCapability::StateChanging),
+                "{name} must declare mutation authority"
+            );
+        }
+        for name in [
+            "memory_recall",
+            "memory_query",
+            "memory_episodes",
+            "memory_search_archive",
+        ] {
+            let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+            assert!(
+                !tool
+                    .capabilities
+                    .contains(&omegon_traits::ToolCapability::StateChanging),
+                "{name} must remain read-only"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn store_and_query_integration() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let (feature, mut bus, _dir) = managed_feature().await;
         let cancel = tokio_util::sync::CancellationToken::new();
 
         // Store a fact
@@ -1185,12 +1702,16 @@ mod tests {
             text.contains("microservices"),
             "query should return stored fact: {text}"
         );
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
     }
 
     #[tokio::test]
     async fn recall_search() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let (feature, mut bus, _dir) = managed_feature().await;
         let cancel = tokio_util::sync::CancellationToken::new();
 
         // Store a fact
@@ -1215,12 +1736,16 @@ mod tests {
             text.contains("OAuth2"),
             "recall should find auth fact: {text}"
         );
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
     }
 
     #[tokio::test]
     async fn recall_requires_non_empty_query() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let feature = MemoryFeature::new(Default::default(), "test".into());
         let cancel = tokio_util::sync::CancellationToken::new();
 
         let result = feature
@@ -1240,8 +1765,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_store_rejects_invalid_section() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let feature = MemoryFeature::new(Default::default(), "test".into());
         let cancel = tokio_util::sync::CancellationToken::new();
 
         let err = feature
@@ -1259,8 +1783,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_supersede_rejects_invalid_section() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let (feature, mut bus, _dir) = managed_feature().await;
         let cancel = tokio_util::sync::CancellationToken::new();
 
         let stored = feature
@@ -1285,12 +1808,16 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("invalid memory section 'Notes'"));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
     }
 
     #[tokio::test]
     async fn memory_ingest_lifecycle_rejects_invalid_section() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let feature = MemoryFeature::new(Default::default(), "test".into());
         let cancel = tokio_util::sync::CancellationToken::new();
 
         let err = feature
@@ -1313,8 +1840,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_query_large_store_reports_inventory_only() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let (feature, mut bus, _dir) = managed_feature().await;
         let cancel = tokio_util::sync::CancellationToken::new();
 
         for i in 0..201 {
@@ -1342,20 +1868,37 @@ mod tests {
         assert!(text.contains("## Architecture (201 facts)"));
         assert!(!text.contains("Large store fact 0"));
         assert_eq!(result.details["inventory_only"], true);
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
     }
 
     #[tokio::test]
     async fn working_memory_focus_release() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let (feature, mut bus, _dir) = managed_feature().await;
         let cancel = tokio_util::sync::CancellationToken::new();
+        let mut ids = Vec::new();
+        for index in 1..=3 {
+            let stored = feature
+                .execute(
+                    "memory_store",
+                    &format!("focus-store-{index}"),
+                    serde_json::json!({"section": "Architecture", "content": format!("Focus fact {index}")}),
+                    cancel.clone(),
+                )
+                .await
+                .unwrap();
+            ids.push(stored.details["id"].as_str().unwrap().to_string());
+        }
 
         // Focus some fact IDs
         feature
             .execute(
                 "memory_focus",
                 "c1",
-                serde_json::json!({"fact_ids": ["f1", "f2", "f3"]}),
+                serde_json::json!({"fact_ids": ids}),
                 cancel.clone(),
             )
             .await
@@ -1364,9 +1907,6 @@ mod tests {
         {
             let wm = feature.working_memory.lock().unwrap();
             assert_eq!(wm.len(), 3);
-            assert!(wm.contains(&"f1".to_string()));
-            assert!(wm.contains(&"f2".to_string()));
-            assert!(wm.contains(&"f3".to_string()));
         }
 
         // Release working memory
@@ -1384,12 +1924,16 @@ mod tests {
             let wm = feature.working_memory.lock().unwrap();
             assert!(wm.is_empty());
         }
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
     }
 
     #[tokio::test]
     async fn memory_store_requests_harness_refresh_on_tool_end() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let mut feature = MemoryFeature::new(backend, "test".into());
+        let (mut feature, mut bus, _dir) = managed_feature().await;
         let cancel = tokio_util::sync::CancellationToken::new();
 
         feature
@@ -1415,19 +1959,32 @@ mod tests {
             requests.as_slice(),
             [BusRequest::RefreshHarnessStatus]
         ));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
     }
 
     #[tokio::test]
     async fn memory_focus_requests_harness_refresh_on_tool_end() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let mut feature = MemoryFeature::new(backend, "test".into());
+        let (mut feature, mut bus, _dir) = managed_feature().await;
         let cancel = tokio_util::sync::CancellationToken::new();
+        let stored = feature
+            .execute(
+                "memory_store",
+                "focus-refresh-store",
+                serde_json::json!({"section": "Architecture", "content": "Focus refresh fact"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
 
         feature
             .execute(
                 "memory_focus",
                 "c1",
-                serde_json::json!({"fact_ids": ["f1", "f2"]}),
+                serde_json::json!({"fact_ids": [stored.details["id"]]}),
                 cancel,
             )
             .await
@@ -1446,12 +2003,16 @@ mod tests {
             requests.as_slice(),
             [BusRequest::RefreshHarnessStatus]
         ));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
     }
 
     #[tokio::test]
     async fn memory_archive() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend, "test".into());
+        let (feature, mut bus, _dir) = managed_feature().await;
         let cancel = tokio_util::sync::CancellationToken::new();
 
         // Store a fact first
@@ -1485,16 +2046,525 @@ mod tests {
                 .unwrap()
                 .contains("Archived 1 fact(s)")
         );
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambient_context_preserves_pin_order_hash_dirty_ttl_and_priority() {
+        let (feature, mut bus, _dir) = managed_feature().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let first = feature
+            .execute(
+                "memory_store",
+                "context-first",
+                serde_json::json!({"section": "Architecture", "content": "First ambient context fact"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        let second = feature
+            .execute(
+                "memory_store",
+                "context-second",
+                serde_json::json!({"section": "Decisions", "content": "Second ambient context fact"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        feature
+            .execute(
+                "memory_focus",
+                "context-focus",
+                serde_json::json!({"fact_ids": [second.details["id"], first.details["id"]]}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+
+        let signals = ContextSignals {
+            user_prompt: "",
+            recent_tools: &[],
+            recent_files: &[],
+            lifecycle_phase: &LifecyclePhase::Idle,
+            turn_number: 1,
+            context_budget_tokens: 100_000,
+        };
+        let injection = feature.provide_context(&signals).expect("memory context");
+        assert_eq!(injection.priority, 200);
+        assert_eq!(injection.ttl_turns, 3);
+        let second_position = injection
+            .content
+            .find("Second ambient context fact")
+            .unwrap();
+        let first_position = injection
+            .content
+            .find("First ambient context fact")
+            .unwrap();
+        assert!(second_position < first_position);
+        assert!(feature.provide_context(&signals).is_none());
+
+        let expired_signals = ContextSignals {
+            turn_number: 4,
+            ..signals
+        };
+        let reinjected = feature
+            .provide_context(&expired_signals)
+            .expect("unchanged memory reinjects after TTL");
+        assert_eq!(reinjected.content, injection.content);
+
+        feature
+            .execute("memory_release", "context-release", Value::Null, cancel)
+            .await
+            .unwrap();
+        let refreshed = feature
+            .provide_context(&signals)
+            .expect("dirty context refresh");
+        assert!(!refreshed.content.contains("## Working Memory (pinned)"));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_and_supersede_replay_exact_outcomes_and_conflict_on_changed_payload() {
+        let (mut feature, mut bus, _dir) = managed_feature().await;
+        feature.on_event(&BusEvent::SessionStart {
+            session_id: "replay-session".into(),
+            cwd: std::path::PathBuf::from("."),
+        });
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let archived = feature
+            .execute(
+                "memory_store",
+                "archive-store",
+                serde_json::json!({"section": "Architecture", "content": "Replay archive fact"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        let archive_args = serde_json::json!({"fact_ids": [archived.details["id"]]});
+        let first = feature
+            .execute(
+                "memory_archive",
+                "archive-call",
+                archive_args.clone(),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        let replay = feature
+            .execute(
+                "memory_archive",
+                "archive-call",
+                archive_args,
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.content[0].as_text(), replay.content[0].as_text());
+        assert_eq!(first.details, replay.details);
+        let conflict = feature
+            .execute(
+                "memory_archive",
+                "archive-call",
+                serde_json::json!({"fact_ids": []}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(conflict.to_string(), "memory:operation_conflict");
+
+        let stored = feature
+            .execute(
+                "memory_store",
+                "store-replay-call",
+                serde_json::json!({"section": "Architecture", "content": "Exact store replay"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        feature
+            .execute(
+                "memory_archive",
+                "store-replay-archive",
+                serde_json::json!({"fact_ids": [stored.details["id"]]}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        let replay = feature
+            .execute(
+                "memory_store",
+                "store-replay-call",
+                serde_json::json!({"section": "Architecture", "content": "Exact store replay"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stored.content[0].as_text(), replay.content[0].as_text());
+        assert_eq!(stored.details, replay.details);
+
+        let original = feature
+            .execute(
+                "memory_store",
+                "supersede-store",
+                serde_json::json!({"section": "Architecture", "content": "Replay supersede original"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        let supersede_args = serde_json::json!({
+            "fact_id": original.details["id"],
+            "section": "Decisions",
+            "content": "Replay supersede replacement"
+        });
+        let first = feature
+            .execute(
+                "memory_supersede",
+                "supersede-call",
+                supersede_args.clone(),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        let replacement_id = first.details["new_id"].as_str().unwrap().to_string();
+        feature
+            .execute(
+                "memory_archive",
+                "archive-replacement-call",
+                serde_json::json!({"fact_ids": [replacement_id]}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        let replay = feature
+            .execute(
+                "memory_supersede",
+                "supersede-call",
+                supersede_args,
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.content[0].as_text(), replay.content[0].as_text());
+        assert_eq!(first.details, replay.details);
+        let conflict = feature
+            .execute(
+                "memory_supersede",
+                "supersede-call",
+                serde_json::json!({
+                    "fact_id": original.details["id"],
+                    "section": "Decisions",
+                    "content": "Changed replacement"
+                }),
+                cancel,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(conflict.to_string(), "memory:operation_conflict");
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn identical_call_ids_are_isolated_by_session_identity() {
+        let (mut feature, mut bus, _dir) = managed_feature().await;
+        let cancel = CancellationToken::new();
+        feature.on_event(&BusEvent::SessionStart {
+            session_id: "session-one".into(),
+            cwd: ".".into(),
+        });
+        feature
+            .execute(
+                "memory_store",
+                "same-call",
+                serde_json::json!({"content": "first session", "section": "Architecture"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        feature.on_event(&BusEvent::SessionStart {
+            session_id: "session-two".into(),
+            cwd: ".".into(),
+        });
+        feature
+            .execute(
+                "memory_store",
+                "same-call",
+                serde_json::json!({"content": "second session", "section": "Architecture"}),
+                cancel,
+            )
+            .await
+            .unwrap();
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_and_cancelled_calls_preserve_typed_evidence() {
+        let unavailable = MemoryFeature::new(Default::default(), "test".into())
+            .execute(
+                "memory_query",
+                "absent",
+                Value::Null,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(unavailable.to_string(), "memory:unavailable");
+
+        let (feature, mut bus, _dir) = managed_feature().await;
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let cancelled = feature
+            .execute("memory_query", "cancelled", Value::Null, cancellation)
+            .await
+            .unwrap_err();
+        assert_eq!(cancelled.to_string(), "memory:cancelled");
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_mutation_refresh_uses_independent_cancellation() {
+        let (feature, mut bus, dir) = managed_feature().await;
+        let original = CancellationToken::new();
+        feature
+            .apply_mutation(
+                "refresh-race-store".into(),
+                MemoryMutation::StoreFact {
+                    request: StoreFact {
+                        mind: "test".into(),
+                        content: "Committed before caller cancellation".into(),
+                        section: Section::Architecture,
+                        decay_profile: DecayProfileName::Standard,
+                        source: None,
+                    },
+                },
+                original.clone(),
+            )
+            .await
+            .unwrap();
+        original.cancel();
+        feature.refresh_status().await;
+        let snapshot = crate::status::managed_memory_status_snapshot_for(dir.path());
+        assert!(snapshot.available);
+        assert_eq!(snapshot.status.total_facts, 1);
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambient_context_honors_render_budget_and_focus_limit() {
+        let (feature, mut bus, _dir) = managed_feature().await;
+        let cancel = CancellationToken::new();
+        feature
+            .execute(
+                "memory_store",
+                "budget-store",
+                serde_json::json!({"section": "Architecture", "content": "A long ambient fact that must be bounded by the supplied context budget"}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        let signals = ContextSignals {
+            user_prompt: "",
+            recent_tools: &[],
+            recent_files: &[],
+            lifecycle_phase: &LifecyclePhase::Idle,
+            turn_number: 1,
+            context_budget_tokens: 100,
+        };
+        let injection = feature.provide_context(&signals).expect("bounded context");
+        assert!(injection.content.chars().count() <= 400);
+
+        let tiny_signals = ContextSignals {
+            turn_number: 2,
+            context_budget_tokens: 1,
+            ..signals
+        };
+        assert!(feature.provide_context(&tiny_signals).is_none());
+
+        feature
+            .execute(
+                "memory_focus",
+                "unresolved-pin",
+                serde_json::json!({"fact_ids": ["session-local-unresolved"]}),
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            feature.working_memory.lock().unwrap().as_slice(),
+            ["session-local-unresolved"]
+        );
+        feature.working_memory.lock().unwrap().clear();
+
+        let too_many = (0..=crate::memory_service::MAX_CONTEXT_PINS)
+            .map(|index| format!("fact-{index}"))
+            .collect::<Vec<_>>();
+        let error = feature
+            .execute(
+                "memory_focus",
+                "too-many-pins",
+                serde_json::json!({"fact_ids": too_many}),
+                cancel,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("pin limit"));
+        assert!(feature.working_memory.lock().unwrap().is_empty());
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_focus_updates_enforce_pin_limit_atomically() {
+        let (feature, mut bus, _dir) = managed_feature().await;
+        let feature = Arc::new(feature);
+        let request = |prefix: &str| {
+            (0..600)
+                .map(|index| format!("{prefix}-{index}"))
+                .collect::<Vec<_>>()
+        };
+        let first = {
+            let feature = feature.clone();
+            let ids = request("first");
+            tokio::spawn(async move {
+                feature
+                    .execute(
+                        "memory_focus",
+                        "concurrent-focus-first",
+                        serde_json::json!({"fact_ids": ids}),
+                        CancellationToken::new(),
+                    )
+                    .await
+            })
+        };
+        let second = {
+            let feature = feature.clone();
+            let ids = request("second");
+            tokio::spawn(async move {
+                feature
+                    .execute(
+                        "memory_focus",
+                        "concurrent-focus-second",
+                        serde_json::json!({"fact_ids": ids}),
+                        CancellationToken::new(),
+                    )
+                    .await
+            })
+        };
+        let (first, second) = tokio::join!(first, second);
+        let outcomes = [first.unwrap(), second.unwrap()];
+        assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
+        assert_eq!(feature.working_memory.lock().unwrap().len(), 600);
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_end_pipeline_completes_on_current_thread_runtime() {
+        let (mut feature, mut bus, _dir) = managed_feature().await;
+        feature.on_event(&BusEvent::SessionStart {
+            session_id: "current-thread-session".into(),
+            cwd: std::path::PathBuf::from("."),
+        });
+        let start = std::time::Instant::now();
+        feature.on_event(&BusEvent::SessionEnd {
+            turns: 1,
+            tool_calls: 2,
+            duration_secs: 3.0,
+            initial_prompt: Some("test".into()),
+            outcome_summary: Some("done".into()),
+        });
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        let mut episode_count = 0;
+        for _ in 0..50 {
+            let payload = feature
+                .invoke(crate::memory_service::MemoryRequestV1::ListEpisodes {
+                    scope: crate::memory_service::MemoryScopeV1::Project,
+                    mind: "test".into(),
+                    limit: 10,
+                    cancellation: CancellationToken::new(),
+                })
+                .await
+                .unwrap();
+            let crate::memory_service::MemoryPayloadV1::Episodes(episodes) = payload else {
+                panic!("episode payload");
+            };
+            episode_count = episodes.len();
+            if episode_count == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(episode_count, 1);
+        feature.prepare_managed_shutdown().await.unwrap();
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
     }
 
     #[test]
-    fn backend_accessor() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(InMemoryBackend::new());
-        let feature = MemoryFeature::new(backend.clone(), "test".into());
+    fn session_end_pipeline_has_ordered_independent_phase_budgets() {
+        let source = include_str!("memory.rs");
+        let pipeline = source
+            .split("async fn run_session_end_pipeline")
+            .nth(1)
+            .and_then(|tail| tail.split("impl Feature for MemoryFeature").next())
+            .expect("session-end pipeline source");
+        let episode = pipeline.find("EPISODE_PHASE_TIMEOUT").unwrap();
+        let extraction = pipeline.find("EXTRACTION_PHASE_TIMEOUT").unwrap();
+        let fact_write = pipeline.find("FACT_WRITE_PHASE_TIMEOUT").unwrap();
+        let embedding = pipeline.find("EMBEDDING_PHASE_TIMEOUT").unwrap();
+        let vault = pipeline.find("VAULT_PHASE_TIMEOUT").unwrap();
+        let vault_request = pipeline
+            .find("MemoryRequestV1::VaultSessionEnd")
+            .expect("vault session-end request");
 
-        // Should be able to access the backend
-        let _backend_ref = feature.backend();
+        assert!(episode < extraction);
+        assert!(extraction < fact_write);
+        assert!(fact_write < embedding);
+        assert!(embedding < vault);
+        assert!(vault < vault_request);
+        assert!(pipeline.contains("embeddings.abort_all()"));
+        assert!(pipeline.contains("vault_cancellation.cancel()"));
+        assert!(!pipeline.contains("Duration::from_secs(75)"));
+    }
+
+    #[test]
+    fn feature_retains_only_managed_binding_and_mind() {
+        let feature = MemoryFeature::new(Default::default(), "test".into());
         assert_eq!(feature.mind(), "test");
+        assert!(!feature.memory_binding.available());
     }
 
     #[test]

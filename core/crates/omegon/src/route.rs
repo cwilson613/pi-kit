@@ -551,6 +551,10 @@ pub struct RouteSnapshot {
 }
 
 impl RouteSnapshot {
+    pub fn selected_model(&self) -> &str {
+        selected_model_from_route(&self.route)
+    }
+
     pub fn serving_model(&self) -> Option<&str> {
         match &self.route {
             ProviderRoute::Serving { model } => Some(model),
@@ -573,6 +577,19 @@ impl RouteSnapshot {
             ));
         }
         lines.join("\n")
+    }
+}
+
+fn selected_model_from_route(route: &ProviderRoute) -> &str {
+    match route {
+        ProviderRoute::Serving { model }
+        | ProviderRoute::Fallback {
+            selected: model, ..
+        }
+        | ProviderRoute::Disconnected {
+            selected: model, ..
+        } => model.as_str(),
+        ProviderRoute::LoginPending { prior, .. } => selected_model_from_route(prior),
     }
 }
 
@@ -671,7 +688,23 @@ impl RouteController {
             },
             selected_state => {
                 let mut attempts = Vec::new();
+                let compatible_fallbacks = crate::provider_contributions::registry()
+                    .fallback_targets(
+                        &selected_provider,
+                        crate::providers::model_id_from_spec(&selected_model),
+                    )
+                    .collect::<Vec<_>>();
                 for provider in fallback_providers {
+                    let Some(provider) = crate::provider_contributions::registry()
+                        .get(provider)
+                        .map(|contribution| contribution.provider_id.as_str())
+                    else {
+                        continue;
+                    };
+                    if !compatible_fallbacks.contains(&provider) {
+                        tracing::warn!(selected_model = %selected_model, fallback_provider = %provider, "ignoring fallback provider without declared model-family compatibility");
+                        continue;
+                    }
                     crate::auth::trace_auth_store_probe(provider, "route_startup:fallback");
                     let state = ledger.probe_provider(provider);
                     tracing::info!(selected_model = %selected_model, fallback_provider = %provider, credential_state = %state.summary(), "provider route fallback credential probe");
@@ -686,7 +719,7 @@ impl RouteController {
                         };
                     }
                     attempts.push(ProviderAttempt {
-                        provider: provider.clone(),
+                        provider: provider.to_string(),
                         state,
                     });
                 }
@@ -1680,8 +1713,8 @@ mod tests {
     async fn configured_fallback_startup_emits_fallback_route_summary() {
         let route = RouteController::resolve_startup(
             "openai-codex:gpt-5.5".into(),
-            &["anthropic".to_string()],
-            &ledger(&[("openai-codex", missing()), ("anthropic", valid())]),
+            &["openai".to_string()],
+            &ledger(&[("openai-codex", missing()), ("openai", valid())]),
         )
         .await;
         assert!(matches!(route, ProviderRoute::Fallback { .. }));
@@ -1708,11 +1741,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configured_fallback_without_declared_family_compatibility_is_rejected() {
+        let route = RouteController::resolve_startup(
+            "openai-codex:gpt-5.5".into(),
+            &["anthropic".to_string()],
+            &ledger(&[("openai-codex", missing()), ("anthropic", valid())]),
+        )
+        .await;
+
+        assert!(matches!(route, ProviderRoute::Disconnected { .. }));
+    }
+
+    #[tokio::test]
     async fn startup_matrix_is_total_and_fallback_is_explicit() {
         let selected_states = [valid(), expired(), missing()];
         let fallback_sets: Vec<Vec<String>> = vec![
             vec![],
-            vec!["anthropic".to_string()],
+            vec!["openai".to_string()],
             vec!["google".to_string()],
         ];
 
@@ -1720,7 +1765,7 @@ mod tests {
             for fallback_providers in &fallback_sets {
                 let ledger = ledger(&[
                     ("openai-codex", selected_state.clone()),
-                    ("anthropic", valid()),
+                    ("openai", valid()),
                     ("google", missing()),
                 ]);
                 let route = RouteController::resolve_startup(
@@ -1734,9 +1779,9 @@ mod tests {
                     (CredentialState::Valid { .. }, _, ProviderRoute::Serving { .. }) => {}
                     (_, [], ProviderRoute::Disconnected { .. }) => {}
                     (_, [provider], ProviderRoute::Fallback { serving, .. })
-                        if provider == "anthropic" =>
+                        if provider == "openai" =>
                     {
-                        assert!(serving.starts_with("anthropic:"));
+                        assert!(serving.starts_with("openai:"));
                     }
                     (_, [provider], ProviderRoute::Disconnected { reason, .. })
                         if provider == "google" =>

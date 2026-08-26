@@ -1,0 +1,29 @@
+[package]
+name = "omegon-maintain"
+description = "Independent diagnostic and recovery companion for Omegon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "omegon-maintain"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+clap.workspace = true
+flate2 = "1.0"
+jiff = "0.2"
+libc = "0.2"
+omegon-maintenance-contracts = { path = "../omegon-maintenance-contracts" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+sigstore-verify = { version = "=0.11.0", default-features = false }
+tar = "0.4"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+base64 = "0.22"
+tempfile = "3"

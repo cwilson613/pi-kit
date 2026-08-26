@@ -574,6 +574,34 @@ fn format_results(results: &[SearchResult]) -> String {
 
 #[async_trait]
 impl ToolProvider for WebSearchProvider {
+    fn runtime_tool_policy(&self, tool_name: &str) -> Option<omegon_traits::RuntimeToolPolicy> {
+        use omegon_traits::{
+            RuntimeDeduplication, RuntimeEffect, RuntimeExecutionPolicy, RuntimeIdempotency,
+            RuntimeParallelism, RuntimePrincipalClass, RuntimeRetryClass, RuntimeTimeoutClass,
+            RuntimeToolPolicy, RuntimeTransactionBehavior,
+        };
+
+        matches!(
+            tool_name,
+            crate::tool_registry::web_search::WEB_SEARCH
+                | crate::tool_registry::web_search::WEB_FETCH
+        )
+        .then(|| RuntimeToolPolicy {
+            effects: vec![RuntimeEffect::NetworkAccess, RuntimeEffect::SecretDelivery],
+            execution: RuntimeExecutionPolicy {
+                principals: vec![RuntimePrincipalClass::Model],
+                timeout_class: RuntimeTimeoutClass::Immediate,
+                retry_class: RuntimeRetryClass::IdempotentFailure,
+                idempotency: RuntimeIdempotency::Idempotent,
+                deduplication: RuntimeDeduplication::Unsupported,
+                parallelism: RuntimeParallelism::ParallelSafe,
+                transaction: RuntimeTransactionBehavior::None,
+                mutation_fence: None,
+                max_attempts: Some(2),
+            },
+        })
+    }
+
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {

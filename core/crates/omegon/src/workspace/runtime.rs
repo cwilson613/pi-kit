@@ -2,13 +2,24 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
+#[cfg(unix)]
+use sha2::{Digest, Sha256};
 
 use super::types::{WorkspaceLease, WorkspaceRegistry};
 
 const STALE_HEARTBEAT_SECS: i64 = 300;
 
 pub fn workspace_root(cwd: &Path) -> PathBuf {
-    crate::setup::find_project_root(cwd)
+    let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    for ancestor in canonical.ancestors() {
+        if ancestor.join(".git").is_file() && dirs::home_dir().as_deref() != Some(ancestor) {
+            return ancestor.to_path_buf();
+        }
+        if ancestor.join(".git").is_dir() {
+            break;
+        }
+    }
+    crate::setup::find_project_root(&canonical)
 }
 
 pub fn runtime_dir(cwd: &Path) -> PathBuf {
@@ -17,7 +28,7 @@ pub fn runtime_dir(cwd: &Path) -> PathBuf {
 
 /// Per-instance lease path: `.omegon/runtime/{instance_id}/workspace.json`.
 pub fn instance_lease_path(cwd: &Path, instance_id: &str) -> PathBuf {
-    crate::paths::runtime_instance_dir(cwd, instance_id).join("workspace.json")
+    runtime_dir(cwd).join(instance_id).join("workspace.json")
 }
 
 /// Legacy shared lease path (pre-isolation). Used as read fallback.
@@ -36,7 +47,7 @@ pub fn ensure_runtime_dir(cwd: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn ensure_instance_dir(cwd: &Path, instance_id: &str) -> anyhow::Result<PathBuf> {
-    let dir = crate::paths::runtime_instance_dir(cwd, instance_id);
+    let dir = runtime_dir(cwd).join(instance_id);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     Ok(dir)
 }
@@ -110,9 +121,15 @@ pub fn read_all_active_leases(cwd: &Path) -> Vec<(String, WorkspaceLease)> {
             continue;
         };
 
-        if let Some(epoch) = heartbeat_epoch_secs(&lease.last_heartbeat)
-            && !heartbeat_is_stale(now, epoch)
+        let ownership_fresh = ownership_heartbeat_is_fresh(&path, now);
+        if ownership_fresh
+            || heartbeat_epoch_secs(&lease.last_heartbeat)
+                .is_some_and(|epoch| !heartbeat_is_stale(now, epoch))
         {
+            let mut lease = lease;
+            if ownership_fresh {
+                lease.last_heartbeat = current_timestamp();
+            }
             leases.push((dir_name, lease));
         }
     }
@@ -143,10 +160,214 @@ pub fn write_workspace_registry(cwd: &Path, registry: &WorkspaceRegistry) -> any
 
 /// Remove this instance's runtime directory on clean shutdown.
 pub fn cleanup_instance(cwd: &Path, instance_id: &str) {
-    let dir = crate::paths::runtime_instance_dir(cwd, instance_id);
+    let dir = runtime_dir(cwd).join(instance_id);
     if dir.is_dir() {
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+pub struct RuntimeOwnership {
+    runtime_id: String,
+    runtime_directory: PathBuf,
+    heartbeat: Option<tokio::task::JoinHandle<()>>,
+    retain_evidence: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    managed_retention: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RuntimeOwnership {
+    pub fn start(cwd: &Path, mode: &str) -> anyhow::Result<Self> {
+        let root = workspace_root(cwd).canonicalize()?;
+        let runtime_id = format!("{mode}-{}-{}", std::process::id(), uuid::Uuid::new_v4());
+        omegon_maintenance_contracts::validate_child_name(runtime_id.as_bytes())?;
+        let record = ownership_record(&root, &runtime_id)?;
+        let runtime_directory = runtime_dir(&root).join(&runtime_id);
+        std::fs::create_dir_all(&runtime_directory)?;
+        let directory = match omegon_maintenance_contracts::open_secure_root(&runtime_directory) {
+            Ok(directory) => directory,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&runtime_directory);
+                return Err(error.into());
+            }
+        };
+        let mut record = record;
+        if let Err(error) = omegon_maintenance_contracts::replace_record_at(
+            &directory,
+            b"ownership-v1.json",
+            &record,
+            "runtime-start",
+        ) {
+            let _ = std::fs::remove_dir_all(&runtime_directory);
+            return Err(error.into());
+        }
+        let heartbeat_directory = match directory.try_clone() {
+            Ok(directory) => directory,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&runtime_directory);
+                return Err(error.into());
+            }
+        };
+        let heartbeat = tokio::runtime::Handle::try_current().ok().map(|handle| {
+            handle.spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let Some(ticks) = omegon_maintenance_contracts::current_monotonic_ns() else {
+                        tracing::warn!("runtime ownership monotonic clock became unavailable");
+                        continue;
+                    };
+                    if let Err(error) = record
+                        .refresh_heartbeat(ownership_timestamp(), ticks)
+                        .and_then(|()| {
+                            omegon_maintenance_contracts::replace_record_at(
+                                &heartbeat_directory,
+                                b"ownership-v1.json",
+                                &record,
+                                "runtime-heartbeat",
+                            )
+                        })
+                    {
+                        tracing::warn!(%error, "could not refresh runtime ownership heartbeat");
+                    }
+                }
+            })
+        });
+        Ok(Self {
+            runtime_id,
+            runtime_directory,
+            heartbeat,
+            retain_evidence: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            managed_retention: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    }
+
+    pub fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
+
+    pub(crate) fn retention_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.managed_retention)
+    }
+
+    pub(crate) fn retain_for_stale_pruning(&self) {
+        self.retain_evidence
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_stub() -> Self {
+        Self {
+            runtime_id: "test-instance".into(),
+            runtime_directory: std::env::temp_dir()
+                .join(format!("omegon-runtime-test-stub-{}", uuid::Uuid::new_v4())),
+            heartbeat: None,
+            retain_evidence: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            managed_retention: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+}
+
+impl Drop for RuntimeOwnership {
+    fn drop(&mut self) {
+        if let Some(heartbeat) = self.heartbeat.take() {
+            heartbeat.abort();
+        }
+        if self
+            .retain_evidence
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .managed_retention
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            tracing::warn!(
+                path = %self.runtime_directory.display(),
+                "retaining degraded runtime ownership evidence for stale pruning"
+            );
+            return;
+        }
+        if let Err(error) = std::fs::remove_dir_all(&self.runtime_directory)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %self.runtime_directory.display(), %error, "could not remove runtime ownership directory");
+        }
+    }
+}
+
+fn ownership_record(
+    workspace_root: &Path,
+    runtime_id: &str,
+) -> anyhow::Result<omegon_maintenance_contracts::OwnershipRecordV1> {
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+
+    #[cfg(not(unix))]
+    anyhow::bail!("runtime ownership v1 requires Unix");
+    #[cfg(unix)]
+    {
+        let authority_path = std::env::var_os("OMEGON_HOST_WORKSPACE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace_root.to_path_buf());
+        let normalized = omegon_maintenance_contracts::normalize_workspace_path(
+            authority_path.as_os_str().as_bytes(),
+        )?;
+        let workspace_key = omegon_maintenance_contracts::workspace_key("unix", &normalized);
+        let pid = std::process::id();
+        let boot_id = omegon_maintenance_contracts::current_boot_id()
+            .ok_or_else(|| anyhow::anyhow!("could not observe platform boot identity"))?;
+        let process_start_token = match omegon_maintenance_contracts::observe_process_start(pid) {
+            omegon_maintenance_contracts::ProcessObservation::Present(token) => token,
+            evidence => anyhow::bail!("could not observe current process identity: {evidence:?}"),
+        };
+        let heartbeat_monotonic_ticks = omegon_maintenance_contracts::current_monotonic_ns()
+            .ok_or_else(|| anyhow::anyhow!("could not read monotonic clock"))?;
+        static EXECUTABLE_DIGEST: std::sync::OnceLock<omegon_maintenance_contracts::AuthorityKey> =
+            std::sync::OnceLock::new();
+        let digest = if let Some(digest) = EXECUTABLE_DIGEST.get() {
+            *digest
+        } else {
+            let executable = std::env::current_exe()?;
+            let digest = omegon_maintenance_contracts::AuthorityKey::from_bytes(
+                Sha256::digest(std::fs::read(executable)?).into(),
+            );
+            let _ = EXECUTABLE_DIGEST.set(digest);
+            digest
+        };
+        let writer = omegon_maintenance_contracts::ArtifactIdentityV1 {
+            version: env!("CARGO_PKG_VERSION").into(),
+            commit: env!("OMEGON_GIT_SHA").into(),
+            target: env!("OMEGON_BUILD_TARGET").into(),
+            digest,
+        };
+        let cross_boundary = std::env::var_os("OMEGON_INSIDE_OCI").is_some()
+            || std::env::var_os("OMEGON_INSIDE_SANDBOX").is_some();
+        Ok(omegon_maintenance_contracts::OwnershipRecordV1::new(
+            runtime_id.to_string(),
+            format!("generation-{}", uuid::Uuid::new_v4()),
+            workspace_key,
+            boot_id,
+            pid,
+            None,
+            process_start_token,
+            if cross_boundary {
+                omegon_maintenance_contracts::LifecycleBoundary::CrossBoundary
+            } else {
+                omegon_maintenance_contracts::LifecycleBoundary::OwnedProcessTree
+            },
+            if cross_boundary {
+                omegon_maintenance_contracts::CleanupCapability::Unverifiable
+            } else {
+                omegon_maintenance_contracts::CleanupCapability::BestEffort
+            },
+            writer,
+            ownership_timestamp(),
+            heartbeat_monotonic_ticks,
+        )?)
+    }
+}
+
+fn ownership_timestamp() -> String {
+    Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 /// Prune stale instance directories (heartbeat older than 5 minutes AND PID dead).
@@ -163,6 +384,10 @@ pub fn prune_stale_instances(cwd: &Path) -> Vec<String> {
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
+            continue;
+        }
+        // V1 ownership is pruned only by the maintenance evidence decision table.
+        if path.join("ownership-v1.json").is_file() {
             continue;
         }
         let dir_name = match entry.file_name().into_string() {
@@ -192,11 +417,16 @@ pub fn prune_stale_instances(cwd: &Path) -> Vec<String> {
         }
 
         // Check if the PID is still alive
+        #[cfg(unix)]
         let pid_alive = dir_name
             .rsplit_once('-')
             .and_then(|(_, pid_str)| pid_str.parse::<i32>().ok())
             .map(|pid| unsafe { libc::kill(pid, 0) } == 0)
             .unwrap_or(false);
+        // Without a secure process-identity probe, retain the directory rather than
+        // risking deletion of a live runtime owned by another process.
+        #[cfg(not(unix))]
+        let pid_alive = true;
 
         if !pid_alive {
             let _ = std::fs::remove_dir_all(&path);
@@ -220,6 +450,48 @@ pub fn prune_stale_instances(cwd: &Path) -> Vec<String> {
     }
 
     pruned
+}
+
+fn ownership_heartbeat_is_fresh(runtime_directory: &Path, now: i64) -> bool {
+    let Ok(bytes) = std::fs::read(runtime_directory.join("ownership-v1.json")) else {
+        return false;
+    };
+    let Ok(record) = omegon_maintenance_contracts::parse_record::<
+        omegon_maintenance_contracts::OwnershipRecordV1,
+    >(&bytes) else {
+        return false;
+    };
+    let Some(runtime_id) = runtime_directory.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if record.runtime_id != runtime_id {
+        return false;
+    }
+    let root = runtime_directory
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent);
+    #[cfg(unix)]
+    let workspace_matches = std::env::var_os("OMEGON_HOST_WORKSPACE")
+        .map(PathBuf::from)
+        .or_else(|| root.map(Path::to_path_buf))
+        .is_some_and(|root| {
+            use std::os::unix::ffi::OsStrExt;
+            omegon_maintenance_contracts::normalize_workspace_path(root.as_os_str().as_bytes())
+                .ok()
+                .is_some_and(|path| {
+                    record.workspace_key
+                        == omegon_maintenance_contracts::workspace_key("unix", &path)
+                })
+        });
+    #[cfg(not(unix))]
+    let workspace_matches = false;
+    if !workspace_matches {
+        return false;
+    }
+    heartbeat_epoch_secs(&record.heartbeat_utc).is_some_and(|heartbeat| {
+        heartbeat <= now.saturating_add(STALE_HEARTBEAT_SECS) && !heartbeat_is_stale(now, heartbeat)
+    })
 }
 
 pub fn current_timestamp() -> String {
@@ -281,6 +553,70 @@ mod tests {
             workspace_registry_path(&cwd),
             root.join(".omegon/runtime/workspaces.json")
         );
+        assert_eq!(
+            instance_lease_path(&cwd, "runtime-test"),
+            root.join(".omegon/runtime/runtime-test/workspace.json")
+        );
+    }
+
+    #[test]
+    fn linked_worktree_is_its_own_workspace_root() {
+        let main = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(main.path().join(".git/worktrees/linked")).unwrap();
+        let linked = tempfile::tempdir().unwrap();
+        std::fs::write(
+            linked.path().join(".git"),
+            format!(
+                "gitdir: {}\n",
+                main.path().join(".git/worktrees/linked").display()
+            ),
+        )
+        .unwrap();
+        let nested = linked.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(
+            workspace_root(&nested),
+            linked.path().canonicalize().unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runtime_ownership_writes_valid_unique_record_and_cleans_up() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".git")).unwrap();
+        let nested = project.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let first = RuntimeOwnership::start(&nested, "test").unwrap();
+        let second = RuntimeOwnership::start(&nested, "test").unwrap();
+        assert_ne!(first.runtime_id(), second.runtime_id());
+        let first_dir = runtime_dir(&nested).join(first.runtime_id());
+        let bytes = std::fs::read(first_dir.join("ownership-v1.json")).unwrap();
+        let record: omegon_maintenance_contracts::OwnershipRecordV1 =
+            omegon_maintenance_contracts::parse_record(&bytes).unwrap();
+        assert_eq!(record.runtime_id, first.runtime_id());
+        assert_eq!(record.pid, std::process::id());
+        assert_eq!(record.expires_after_seconds, 300);
+        let second_dir = runtime_dir(&nested).join(second.runtime_id());
+        drop(first);
+        assert!(!first_dir.exists());
+        assert!(second_dir.exists());
+        drop(second);
+        assert!(!second_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn degraded_runtime_ownership_is_retained_for_stale_pruning() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".git")).unwrap();
+        let ownership = RuntimeOwnership::start(project.path(), "test-degraded").unwrap();
+        let directory = runtime_dir(project.path()).join(ownership.runtime_id());
+        ownership.retain_for_stale_pruning();
+
+        drop(ownership);
+
+        assert!(directory.join("ownership-v1.json").exists());
     }
 
     #[test]

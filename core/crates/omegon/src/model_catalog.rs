@@ -602,6 +602,47 @@ impl ModelCatalog {
     }
 }
 
+pub(crate) fn model_menu_snapshot(
+    catalog: &ModelCatalog,
+    preferences: &crate::model_preferences::ModelMenuPreferences,
+) -> crate::surfaces::model_menu::ModelMenuSnapshot {
+    use crate::surfaces::model_menu::{ModelMenuModelSnapshot, ModelMenuSnapshot};
+
+    ModelMenuSnapshot {
+        providers: catalog
+            .providers
+            .iter()
+            .map(|(provider, models)| {
+                (
+                    provider.clone(),
+                    models
+                        .iter()
+                        .map(|model| ModelMenuModelSnapshot {
+                            id: model.id.clone(),
+                            name: model.name.clone(),
+                            description: model.description.clone(),
+                            context_input: model.context_input,
+                            capabilities: model
+                                .capabilities
+                                .iter()
+                                .map(|capability| capability.as_str().to_string())
+                                .collect(),
+                            available: model.available,
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+        freshness: catalog.freshness.clone(),
+        favorites: preferences
+            .providers
+            .iter()
+            .filter(|(_, preference)| preference.customized)
+            .map(|(provider, preference)| (provider.clone(), preference.favorites.clone()))
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

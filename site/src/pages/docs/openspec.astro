@@ -14,6 +14,11 @@ import Docs from "../../layouts/Docs.astro";
     <em>before</em> code is written — they are the source of truth for correctness. The full
     lifecycle: propose, specify, plan, test, implement, verify, archive.
   </p>
+  <p>
+    OpenSpec uses an optional managed lifecycle service. If it cannot start, lifecycle tools and
+    surfaces remain visible with typed unavailable state, while unrelated tools, context, sessions,
+    and frontends continue without a direct repository or ledger fallback.
+  </p>
 
   <img src="/diagrams/openspec-lifecycle.svg" alt="OpenSpec lifecycle from proposal and scenarios through planning, implementation, verification, and archive" class="diagram" />
 
@@ -54,7 +59,7 @@ Given a routing request for grade "B"
 And providers [anthropic, openai-codex, ollama] are available
 When the route controller scores providers
 Then the selected route preserves the requested grade intent
-And the served bridge reports the authenticated provider/model that actually handles turns</code></pre>
+And the serving route reports the authenticated provider/model that receives the request</code></pre>
 
   <h2>Directory Structure</h2>
   <pre><code>openspec/

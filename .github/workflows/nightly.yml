@@ -83,7 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG='${{ steps.nightly.outputs.tag }}'
-          gh workflow run release.yml --ref main -f tag_name="$TAG"
+          gh workflow run release.yml --ref "$TAG" -f tag_name="$TAG"
 
       - name: Summarize nightly cutoff
         if: always()

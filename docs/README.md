@@ -19,8 +19,7 @@ For user-facing docs, edit `site/src/pages/docs/` and the command snippets in `s
 
 - `README.md` at the repository root: product overview, install, core concepts, and source build path.
 - `CONTRIBUTING.md`: branch policy, validation commands, release flow, and workspace layout.
-- `EXTENSIONS.md`: extension system overview.
-- `EXTENSION_SDK.md`: extension authoring quick start and protocol reference.
+- `docs/extensions.md`: canonical host-runtime guide for extension/plugin/MCP identity, trust, lifecycle, cleanup, and diagnostics. The standalone `omegon-extension-rs` repository owns SDK APIs.
 - `docs/omegon-install.md`: distribution notes, Linux glibc caveats, and update contract.
 - `docs/provider-credential-map.md`: provider auth and credential behavior.
 - `docs/omegon-session.md`: session persistence behavior.
@@ -32,6 +31,9 @@ For user-facing docs, edit `site/src/pages/docs/` and the command snippets in `s
 - `docs/project-memory.md`: project memory behavior.
 - `docs/openapi-tools.md`: project-local OpenAPI specs compiled into agent tools.
 - `docs/prompt-and-user-command-surfaces.md`: reusable prompt definitions, `/prompt` routing, safety verdicts, and user-defined command aliases.
+- [`docs/harness-architecture-parity/`](harness-architecture-parity/README.md): evidence-pinned architecture matrix, harness profiles, and philosophy/tradeoff analysis for OpenCode, Omegon, Pi, and DeepSeek Harness.
+- [`docs/selective-kernel-decomposition.md`](selective-kernel-decomposition.md): adopted assessment of DeepSeek Harness's "everything is a plugin" philosophy and the selective decomposition of Omegon into a constitutional kernel, system modules, services, external contributions, content packs, and frontend adapters.
+- [`docs/omegon-maintain.md`](omegon-maintain.md): Slice-zero contract for the independent maintenance executable, including commands, trust boundaries, mutation roots, deadlines, structured output, packaging, and deferred operations.
 
 ## Directory Boundaries
 

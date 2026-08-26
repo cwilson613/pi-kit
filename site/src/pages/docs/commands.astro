@@ -1,11 +1,14 @@
 ---
 import Docs from "../../layouts/Docs.astro";
+import { snippet } from "../../lib/snippets";
 ---
 <Docs title="Commands" description="Complete reference for slash commands available in Omegon sessions.">
   <h1>Command Reference</h1>
   <p>
     Type <code>/</code> in the editor to see the command palette with fuzzy search.
-    All commands are prefixed with <code>/</code>.
+    All commands are prefixed with <code>/</code>. This reference describes native TUI slash
+    handling unless another surface is named; it does not imply that every command has identical
+    CLI, ACP, daemon, or web support.
   </p>
   <p>
     <strong>Slim mode note:</strong> In <code>om</code> (slim mode), <code>/help</code> shows
@@ -18,12 +21,23 @@ import Docs from "../../layouts/Docs.astro";
   <table>
     <thead><tr><th>Command</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>/model [name]</code></td><td>View or switch model. Opens selector popup, or pass a model ID directly.</td></tr>
+      <tr><td><code>/model</code> / <code>/model route</code></td><td>In the native TUI, open the model menu at current route state. This is not a cross-surface route-history command.</td></tr>
+      <tr><td><code>/model list</code></td><td>In the native TUI, open the concrete model selector.</td></tr>
+      <tr><td><code>/model providers</code></td><td>In the native TUI, open the model menu's provider view.</td></tr>
+      <tr><td><code>/model &lt;provider:model&gt;</code></td><td>Pin an exact concrete selected route for future turns.</td></tr>
+      <tr><td><code>/model grade &lt;F|D|C|B|A|S&gt;</code></td><td>Set provider-neutral capability-grade intent.</td></tr>
+      <tr><td><code>/model provider &lt;auto|local|upstream|endpoint&gt;</code></td><td>Set provider or endpoint selection intent; an endpoint ID may replace <code>endpoint</code>.</td></tr>
+      <tr><td><code>/model policy &lt;exact|minimum|nearest&gt;</code></td><td>Set grade matching policy. <code>exact</code> is exact grade, not a concrete route pin.</td></tr>
+      <tr><td><code>/model unpin</code></td><td>Clear the exact concrete model override and resume grade/provider intent routing.</td></tr>
       <tr><td><code>/think [level]</code></td><td>Set thinking level: <code>off</code>, <code>minimal</code>, <code>low</code>, <code>medium</code>, or <code>high</code>.</td></tr>
       <tr><td><code>/context compact</code></td><td>Trigger context compaction. Use <code>standard</code>, <code>extended</code>, or <code>massive</code> to select a context class.</td></tr>
       <tr><td><code>/context reset</code> / <code>/context clear</code></td><td>Save the current session and start a fresh conversation with cleared live context.</td></tr>
     </tbody>
   </table>
+  <p>
+    Current model/status views show current state only. No supported command lists the append-only
+    historical route leases recorded for session-backed or sessionless dispatch.
+  </p>
 
   <h2>Session &amp; Memory</h2>
   <table>
@@ -32,7 +46,7 @@ import Docs from "../../layouts/Docs.astro";
       <tr><td><code>/stats</code></td><td>Session telemetry — turns, tool calls, tokens, duration.</td></tr>
       <tr><td><code>/new</code></td><td>Save the current session and start a fresh one.</td></tr>
       <tr><td><code>/memory</code></td><td>Memory statistics — facts, episodes, working memory.</td></tr>
-      <tr><td><code>/sessions</code></td><td>List saved sessions. Resume with <code>--resume</code> flag.</td></tr>
+      <tr><td><code>{snippet("slash.sessions")}</code></td><td>List saved sessions with lineage-aware resume metadata. Resume with <code>--resume</code>.</td></tr>
       <tr><td><code>/note [text]</code></td><td>Capture a note for later (persists across sessions).</td></tr>
       <tr><td><code>/notes [clear]</code></td><td>Show or clear pending notes.</td></tr>
     </tbody>
@@ -70,13 +84,20 @@ import Docs from "../../layouts/Docs.astro";
       <tr><td><code>/init [action]</code></td><td>Initialize project — scan &amp; migrate agent conventions. Args: <code>scan</code>, <code>migrate</code>.</td></tr>
       <tr><td><code>/migrate [source]</code></td><td>Import from other tools: <code>auto</code>, <code>claude-code</code>, <code>codex</code>, <code>cursor</code>, <code>aider</code>.</td></tr>
       <tr><td><code>/checkin</code></td><td>Triage what needs attention now — open designs, active changes, recent issues.</td></tr>
-      <tr><td><code>/status</code></td><td>Show harness status — providers, secrets, routing state, and runtime health.</td></tr>
+      <tr><td><code>/status</code></td><td>Show harness and composition status, including providers, routing, the active composition generation, contribution health and cleanup assurance, candidate diagnostics, and compatibility-dispatch parity.</td></tr>
       <tr><td><code>/milestone [action]</code></td><td>Release milestone management: <code>freeze</code>, <code>status</code>.</td></tr>
       <tr><td><code>/delegate [status]</code></td><td>Delegate task management across sessions.</td></tr>
       <tr><td><code>/chronos [sub]</code></td><td>Date/time context: <code>week</code>, <code>month</code>, <code>quarter</code>, <code>relative</code>, <code>iso</code>, <code>epoch</code>, <code>tz</code>, <code>range</code>, <code>all</code>.</td></tr>
       <tr><td><code>/update</code></td><td>Check for updates, inspect release notes, and install verified stable, RC, or nightly builds depending on the selected update lane.</td></tr>
     </tbody>
   </table>
+
+  <p>
+    <code>/status</code> reports the current composition and lifecycle projection. It does not list
+    historical unknown invocations or mutation-fence evidence, and no supported slash command
+    currently reconciles or clears that state. See the <a href="/docs/recovery">recovery guide</a>
+    before retrying a mutation with unknown completion.
+  </p>
 
   <h2>Long-Running Automation</h2>
   <table>
@@ -116,7 +137,10 @@ import Docs from "../../layouts/Docs.astro";
       <tr><td><code>/dash</code></td><td>Open Omegon's local browser compatibility/debug surface (real-time live state over WebSocket).</td></tr>
       <tr><td><code>/mouse [on|off]</code></td><td>Toggle pane mouse interaction. Mouse capture must be enabled for click and double-click interactions.</td></tr>
       <tr><td><code>/copy [plain|raw|answer|latest|session]</code></td><td>Copy the selected segment, latest answer, or session projection.</td></tr>
-      <tr><td><code>/transcript [file|open|scrollback]</code></td><td>Write or open a clean Markdown transcript.</td></tr>
+      <tr><td><code>{snippet("slash.transcript")}</code> / <code>/transcript file|open</code></td><td>Write or open the exact committed semantic transcript for full lineage.</td></tr>
+      <tr><td><code>{snippet("slash.transcript_suffix")}</code></td><td>Write the explicitly labeled exact semantic suffix for mixed lineage. Legacy and mixed full-session exact transcript requests are unavailable.</td></tr>
+      <tr><td><code>{snippet("slash.session_export")}</code> / <code>/session-export file|open</code></td><td>Write or open presentation/evidence output with provenance, freshness, partial/abandoned evidence, and overlay disclosure.</td></tr>
+      <tr><td><code>{snippet("slash.session_export_scrollback")}</code></td><td>Export current presentation scrollback. This is not exact transcript authority.</td></tr>
       <tr><td><code>/warp</code></td><td>Toggle live between <code>om</code> (slim) and <code>omegon</code> (full) runtime posture.</td></tr>
       <tr><td><code>/shackle</code></td><td>Force slim <code>om</code>-style posture: copy-friendly, conversation-first, lower-pressure surfaces.</td></tr>
       <tr><td><code>/unshackle</code></td><td>Force full <code>omegon</code> posture with the broader harness surfaces.</td></tr>
@@ -139,14 +163,14 @@ import Docs from "../../layouts/Docs.astro";
   <h2>Agent tools</h2>
   <p>In addition to slash commands, the agent has access to structured tools that it calls autonomously.</p>
 
-  <h3>Always available</h3>
-  <p>These tools are available in both <code>om</code> (slim) and <code>omegon</code> (full) modes:</p>
+  <h3>Default inventory</h3>
+  <p>These tools are declared in both <code>om</code> (slim) and <code>omegon</code> (full) modes. Optional backing services can still report typed unavailability:</p>
   <ul>
     <li><code>read</code> / <code>edit</code> / <code>write</code> / <code>bash</code> / <code>change</code> / <code>commit</code> — file and system operations with atomic edits and commits</li>
     <li><code>memory_store</code> / <code>memory_recall</code> / <code>memory_query</code> / <code>memory_episodes</code> — persistent project memory across sessions</li>
     <li><code>web_search</code> — multi-provider web search</li>
     <li><code>api_*</code> — project REST API tools generated from <code>.omegon/openapi.toml</code> when configured</li>
-    <li><code>codebase_search</code> — ranked discovery across code and project knowledge</li>
+    <li><code>codebase_search</code> / <code>codebase_index</code> — ranked discovery and indexing across code and project knowledge; calls report typed unavailability if the managed codescan service cannot start</li>
     <li><code>chronos</code> — authoritative date/time</li>
     <li><code>whoami</code> — auth status across development tools</li>
     <li><code>manage_tools</code> — enable/disable tools or whole tool groups</li>
@@ -160,7 +184,6 @@ import Docs from "../../layouts/Docs.astro";
     <li><code>design_tree</code> / <code>design_tree_update</code> — query and mutate design knowledge.</li>
     <li><code>cleave_assess</code> / <code>cleave_run</code> — assess and execute coordinated decomposition when enabled.</li>
     <li><code>delegate</code> / <code>delegate_result</code> / <code>delegate_status</code> — bounded subordinate work.</li>
-    <li><code>codebase_search</code> — ranked concept search across code and project knowledge.</li>
     <li><code>ask_local_model</code> / <code>list_local_models</code> / <code>manage_ollama</code> — local inference controls when installed.</li>
     <li>Generated <code>api_*</code> tools — project-configured OpenAPI operations.</li>
   </ul>

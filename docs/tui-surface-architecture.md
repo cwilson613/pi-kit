@@ -33,7 +33,10 @@ Rules:
 1. `surfaces::*` must not import Ratatui.
 2. `surfaces::*` must not import ACP wire types.
 3. `surfaces::*` should describe semantic state, not colors, borders, `Rect`s, or protocol field names.
-4. TUI-owned backing state implements projection traits in TUI adapter modules when needed.
+4. `surfaces::*` accepts owner-neutral snapshots and action descriptors; it does not import feature, service, or domain implementations.
+5. Filesystem, process, credential, registry, and service-health probing belongs to the concrete producer, which adapts the result before projection.
+6. TUI-owned backing state implements projection traits in TUI adapter modules when needed.
+7. TUI, ACP, Web, IPC, CLI, and daemon adapters share semantic projection and action-availability policy; adapters own only serialization, redaction, and declared transport narrowing.
 
 ## ACP adapter
 

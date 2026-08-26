@@ -37,6 +37,36 @@ struct ScopedHomeEnv {
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
+struct ScopedOmegonHomeEnv {
+    prev: Option<std::ffi::OsString>,
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl ScopedOmegonHomeEnv {
+    fn set(home: &Path) -> Self {
+        let guard = crate::test_support::env::lock();
+        let prev = std::env::var_os("OMEGON_HOME");
+        // SAFETY: serialized by the shared process-environment test lock.
+        unsafe { std::env::set_var("OMEGON_HOME", home) };
+        Self {
+            prev,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for ScopedOmegonHomeEnv {
+    fn drop(&mut self) {
+        // SAFETY: the shared process-environment test lock is still held.
+        unsafe {
+            match self.prev.take() {
+                Some(value) => std::env::set_var("OMEGON_HOME", value),
+                None => std::env::remove_var("OMEGON_HOME"),
+            }
+        }
+    }
+}
+
 impl ScopedHomeEnv {
     fn set(home: &Path) -> Self {
         let guard = crate::auth::TEST_AUTH_ENV_LOCK
@@ -2630,8 +2660,8 @@ fn turn_terminal_reasons_release_active_gate_and_remain_visible() {
     }
 }
 
-#[test]
-fn supervisor_completion_terminalizes_tui_when_agent_end_is_missing() {
+#[tokio::test]
+async fn supervisor_completion_without_agent_end_allows_second_submission() {
     let mut app = active_test_app();
     app.handle_agent_event(AgentEvent::RuntimePromptStarted {
         runtime_turn_id: 41,
@@ -2667,6 +2697,26 @@ fn supervisor_completion_terminalizes_tui_when_agent_end_is_missing() {
     app.handle_agent_event(AgentEvent::AgentEnd);
     assert!(!app.agent_active);
     assert!(!app.conversation.is_streaming());
+
+    let (tx, mut rx) = test_tx_with_rx();
+    assert_eq!(
+        app.handle_ui_action(
+            UiAction::SubmitPrompt(SubmitPromptAction {
+                text: "next turn".into(),
+                attachments: Vec::new(),
+                source: PromptSource::LocalTui,
+                queue_mode: app.queue_mode,
+                metadata: PromptMetadata::default(),
+            }),
+            &tx,
+        )
+        .await,
+        UiActionOutcome::accepted()
+    );
+    assert!(matches!(
+        rx.recv().await,
+        Some(TuiCommand::SubmitPrompt(PromptSubmission { text, .. })) if text == "next turn"
+    ));
 }
 
 #[test]
@@ -2697,6 +2747,26 @@ fn authoritative_idle_queue_snapshot_recovers_missed_terminal_events() {
     assert!(!app.agent_active);
     assert!(!app.conversation.is_streaming());
     assert_eq!(app.runtime_turn_id, None);
+}
+
+#[test]
+fn authoritative_idle_queue_snapshot_recovers_without_prompt_started_event() {
+    let mut app = active_test_app();
+    app.handle_agent_event(AgentEvent::TurnStart { turn: 1 });
+    app.handle_agent_event(AgentEvent::MessageChunk {
+        text: "finished response".into(),
+    });
+
+    app.handle_agent_event(AgentEvent::RuntimeQueueUpdated {
+        snapshot_json: serde_json::json!({
+            "depth": 0,
+            "active": null,
+            "items": [],
+        }),
+    });
+
+    assert!(!app.agent_active);
+    assert!(!app.conversation.is_streaming());
 }
 
 #[test]
@@ -4573,6 +4643,7 @@ fn slash_compact_is_unknown() {
 #[test]
 fn slash_persona_no_args_opens_selector() {
     let dir = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(dir.path());
     let plugin_dir = dir.path().join(".omegon/plugins/test-persona");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("PERSONA.md"), "Be useful.\n").unwrap();
@@ -4592,9 +4663,8 @@ directive = "PERSONA.md"
     )
     .unwrap();
 
-    let _cwd = push_current_dir(dir.path());
-
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().display().to_string();
     let tx = test_tx();
     let result = app.handle_slash_command("/persona", &tx);
 
@@ -4624,6 +4694,7 @@ fn slash_persona_off_deactivates() {
 #[test]
 fn slash_tone_no_args_opens_selector() {
     let dir = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(dir.path());
     let plugin_dir = dir.path().join(".omegon/plugins/test-tone");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("TONE.md"), "Stay concise.\n").unwrap();
@@ -4643,9 +4714,8 @@ directive = "TONE.md"
     )
     .unwrap();
 
-    let _cwd = push_current_dir(dir.path());
-
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().display().to_string();
     let tx = test_tx();
     let result = app.handle_slash_command("/tone", &tx);
 
@@ -5193,6 +5263,7 @@ fn context_selector_confirm_changes_settings() {
 #[test]
 fn persona_selector_confirm_activates_selected_persona() {
     let dir = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(dir.path());
     let plugin_dir = dir.path().join(".omegon/plugins/test-persona");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("PERSONA.md"), "Be useful.\n").unwrap();
@@ -5212,9 +5283,8 @@ directive = "PERSONA.md"
     )
     .unwrap();
 
-    let _cwd = push_current_dir(dir.path());
-
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().display().to_string();
     app.open_persona_selector();
     let tx = test_tx();
     let message = app.confirm_selector(&tx);
@@ -5234,6 +5304,7 @@ directive = "PERSONA.md"
 #[test]
 fn tone_selector_confirm_activates_selected_tone() {
     let dir = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(dir.path());
     let plugin_dir = dir.path().join(".omegon/plugins/test-tone");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("TONE.md"), "Stay concise.\n").unwrap();
@@ -5253,9 +5324,8 @@ directive = "TONE.md"
     )
     .unwrap();
 
-    let _cwd = push_current_dir(dir.path());
-
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().display().to_string();
     app.open_tone_selector();
     let tx = test_tx();
     let message = app.confirm_selector(&tx);
@@ -6052,6 +6122,7 @@ activation: always
     let _cwd = push_current_dir(dir.path());
 
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().to_string_lossy().into_owned();
     let (tx, mut rx) = test_tx_with_rx();
     let result = app.handle_slash_command("/skills reload", &tx);
 
@@ -6507,6 +6578,7 @@ Loaded by runtime substrate refresh.
     let _cwd = push_current_dir(dir.path());
 
     let mut app = test_app();
+    app.footer_data.cwd = dir.path().to_string_lossy().into_owned();
     let before_generation = app.runtime_generation;
     assert_eq!(
         app.augment_registry
@@ -9097,7 +9169,12 @@ fn settings_menu_renders_profile_source_and_drift_actions() {
 #[test]
 fn settings_profile_source_line_separates_source_from_full_path() {
     let path = std::path::PathBuf::from("/tmp/omegon-project/.omegon/profile.json");
-    let line = settings_profile_source_line(&crate::settings::ProfileSource::Project(path.clone()));
+    let line = settings_profile_source_line(&crate::surfaces::profile::ProfileSourceProjection {
+        kind: crate::surfaces::profile::ProfileSourceKind::Project,
+        path: Some(path.clone()),
+        label: "project".into(),
+        display: format!("project:{}", path.display()),
+    });
 
     assert_eq!(line, format!("profile: project · file: {}", path.display()));
     assert!(!line.contains("project:/tmp"));

@@ -1,51 +1,27 @@
 //! codebase_search and codebase_index tools backed by omegon-codescan.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
 use async_trait::async_trait;
+use omegon_codescan::SearchScope;
 use omegon_traits::{ContentBlock, ToolDefinition, ToolProvider, ToolResult};
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
-use omegon_codescan::{BM25Index, Indexer, ScanCache, SearchScope};
-
-/// Rate-limit for the background HEAD-check task. One check per 30s max.
-const HEAD_CHECK_INTERVAL_SECS: u64 = 30;
+use crate::codescan_service::{
+    CodescanBinding, CodescanRequest, CodescanResponse, unavailable_code,
+};
 
 pub struct CodescanProvider {
     repo_path: PathBuf,
-    cache: Arc<Mutex<Option<ScanCache>>>,
-    /// Last time we spawned a background HEAD-check task.
-    last_head_check: Arc<Mutex<Option<Instant>>>,
+    codescan: CodescanBinding,
 }
 
 impl CodescanProvider {
-    pub fn new(repo_path: PathBuf) -> Self {
+    pub(crate) fn new(repo_path: PathBuf, codescan: CodescanBinding) -> Self {
         Self {
             repo_path,
-            cache: Arc::new(Mutex::new(None)),
-            last_head_check: Arc::new(Mutex::new(None)),
+            codescan,
         }
-    }
-
-    fn db_path(&self) -> PathBuf {
-        self.repo_path.join(".omegon/codescan.db")
-    }
-
-    fn with_cache<F, R>(&self, f: F) -> anyhow::Result<R>
-    where
-        F: FnOnce(&mut ScanCache) -> anyhow::Result<R>,
-    {
-        let mut guard = self
-            .cache
-            .lock()
-            .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
-        if guard.is_none() {
-            *guard = Some(ScanCache::open(&self.db_path())?);
-        }
-        f(guard.as_mut().unwrap())
     }
 
     fn resolve_within(&self, args: &Value) -> anyhow::Result<Option<PathBuf>> {
@@ -73,14 +49,24 @@ impl CodescanProvider {
         Ok(Some(rel.to_path_buf()))
     }
 
-    fn path_in_within(path: &Path, within: Option<&Path>) -> bool {
-        within.is_none_or(|within| path.starts_with(within))
+    fn unavailable_result(&self, code: &str) -> ToolResult {
+        ToolResult {
+            content: vec![ContentBlock::Text {
+                text: "Codescan is unavailable for this workspace.".into(),
+            }],
+            details: json!({
+                "available": false,
+                "code": code,
+                "service": "service:codescan",
+                "root": self.repo_path.display().to_string(),
+            }),
+        }
     }
 
-    fn execute_search(
+    async fn execute_search(
         &self,
         args: &Value,
-        cancel: &CancellationToken,
+        cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let query = args["query"]
             .as_str()
@@ -102,24 +88,38 @@ impl CodescanProvider {
 
         let scope = SearchScope::parse(scope_str);
 
-        let (code_chunks, mut knowledge_chunks) = self.with_cache(|cache| {
-            Indexer::run_with_cancel(&self.repo_path, cache, || cancel.is_cancelled())?;
-            Ok((cache.all_code_chunks()?, cache.all_knowledge_chunks()?))
-        })?;
-
-        let code_chunks: Vec<_> = code_chunks
-            .into_iter()
-            .filter(|c| Self::path_in_within(&c.path, within.as_deref()))
-            .collect();
-        knowledge_chunks.retain(|c| Self::path_in_within(&c.path, within.as_deref()));
-
-        if !tag_filter.is_empty() {
-            knowledge_chunks.retain(|c| tag_filter.iter().any(|t| c.tags.contains(t)));
-        }
-
-        let idx = BM25Index::build(&code_chunks, &knowledge_chunks);
-        let results =
-            idx.search_with_cancel(query, scope, max_results, || cancel.is_cancelled())?;
+        let Some(handle) = self.codescan.handle() else {
+            return Ok(self.unavailable_result("service:unavailable"));
+        };
+        let response = handle
+            .invoke(CodescanRequest::Search {
+                query: query.into(),
+                scope,
+                max_results,
+                tags: tag_filter,
+                within: within.clone(),
+                cancellation: cancel,
+            })
+            .await;
+        let (results, indexed_code_chunks, indexed_knowledge_chunks) = match response {
+            Ok(CodescanResponse::Search {
+                results,
+                indexed_code_chunks,
+                indexed_knowledge_chunks,
+            }) => (results, indexed_code_chunks, indexed_knowledge_chunks),
+            Ok(_) => anyhow::bail!("codescan returned an unexpected search response"),
+            Err(
+                error @ (omegon_traits::ManagedServiceCallError::GenerationDraining
+                | omegon_traits::ManagedServiceCallError::GenerationDegraded
+                | omegon_traits::ManagedServiceCallError::GenerationRetired),
+            ) => {
+                return Ok(self.unavailable_result(unavailable_code(&error)));
+            }
+            Err(omegon_traits::ManagedServiceCallError::Operation(error)) => {
+                anyhow::bail!(error)
+            }
+            Err(error) => anyhow::bail!("codescan search failed: {}", unavailable_code(&error)),
+        };
 
         if results.is_empty() {
             return Ok(ToolResult {
@@ -178,9 +178,6 @@ impl CodescanProvider {
         }
         table.push_str("*Use `read` with offset/limit for full chunk content.*");
 
-        // Spawn background HEAD check (rate-limited)
-        self.maybe_spawn_head_check();
-
         Ok(ToolResult {
             content: vec![ContentBlock::Text { text: table }],
             details: json!({
@@ -188,8 +185,8 @@ impl CodescanProvider {
                 "scope": scope_str,
                 "within": within.as_ref().map(|p| p.display().to_string()),
                 "root": self.repo_path.display().to_string(),
-                "indexed_code_chunks": code_chunks.len(),
-                "indexed_knowledge_chunks": knowledge_chunks.len(),
+                "indexed_code_chunks": indexed_code_chunks,
+                "indexed_knowledge_chunks": indexed_knowledge_chunks,
                 "results": results.iter().map(|r| json!({
                     "file": r.file,
                     "start_line": r.start_line,
@@ -203,20 +200,36 @@ impl CodescanProvider {
         })
     }
 
-    fn execute_index(
+    async fn execute_index(
         &self,
         args: &Value,
-        cancel: &CancellationToken,
+        cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let invalidate = args["invalidate"].as_bool().unwrap_or(false);
-        let stats = self.with_cache(|cache| {
-            if invalidate {
-                cache.clear_all()?;
-                // Also clear HEAD so fast-path doesn't short-circuit after clear
-                let _ = cache.set_meta("last_head", "");
+        let Some(handle) = self.codescan.handle() else {
+            return Ok(self.unavailable_result("service:unavailable"));
+        };
+        let stats = match handle
+            .invoke(CodescanRequest::Index {
+                invalidate,
+                cancellation: cancel,
+            })
+            .await
+        {
+            Ok(CodescanResponse::Index(stats)) => stats,
+            Ok(_) => anyhow::bail!("codescan returned an unexpected index response"),
+            Err(
+                error @ (omegon_traits::ManagedServiceCallError::GenerationDraining
+                | omegon_traits::ManagedServiceCallError::GenerationDegraded
+                | omegon_traits::ManagedServiceCallError::GenerationRetired),
+            ) => {
+                return Ok(self.unavailable_result(unavailable_code(&error)));
             }
-            Indexer::run_with_cancel(&self.repo_path, cache, || cancel.is_cancelled())
-        })?;
+            Err(omegon_traits::ManagedServiceCallError::Operation(error)) => {
+                anyhow::bail!(error)
+            }
+            Err(error) => anyhow::bail!("codescan index failed: {}", unavailable_code(&error)),
+        };
         let text = format!(
             "## codebase_index\n\n**Status:** {}\n\n\
             | Metric | Count |\n|--------|-------|\n\
@@ -246,57 +259,6 @@ impl CodescanProvider {
                 "duration_ms": stats.duration_ms,
             }),
         })
-    }
-
-    /// Spawn a background task that checks git HEAD and triggers incremental
-    /// reindex if HEAD has changed. Rate-limited to once per HEAD_CHECK_INTERVAL_SECS.
-    fn maybe_spawn_head_check(&self) {
-        {
-            let mut last = match self.last_head_check.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            if let Some(t) = *last
-                && t.elapsed() < Duration::from_secs(HEAD_CHECK_INTERVAL_SECS)
-            {
-                return; // still within cooldown — skip
-            }
-            *last = Some(Instant::now());
-        }
-
-        let repo_path = self.repo_path.clone();
-        let cache_arc = Arc::clone(&self.cache);
-        crate::task_spawn::spawn_best_effort("codescan-head-check", async move {
-            let head_sha = git2::Repository::discover(&repo_path).ok().and_then(|r| {
-                r.head()
-                    .ok()
-                    .and_then(|h| h.target())
-                    .map(|oid| oid.to_string())
-            });
-            let Some(head) = head_sha else {
-                return;
-            };
-            if head.is_empty() {
-                return;
-            }
-
-            // Only reindex if HEAD actually changed
-            let needs = {
-                let g = cache_arc.lock().ok();
-                g.as_ref()
-                    .and_then(|g| g.as_ref())
-                    .map(|c| c.get_meta("last_head").as_deref() != Some(&head))
-                    .unwrap_or(false)
-            };
-
-            if needs {
-                let mut g = cache_arc.lock().ok();
-                if let Some(Some(cache)) = g.as_mut().map(|g| g.as_mut()) {
-                    let _ = Indexer::run(&repo_path, cache);
-                    tracing::info!(head = %head, "codescan: incremental reindex on HEAD change");
-                }
-            }
-        });
     }
 }
 
@@ -350,8 +312,12 @@ impl ToolProvider for CodescanProvider {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         match tool_name {
-            crate::tool_registry::codescan::CODEBASE_SEARCH => self.execute_search(&args, &cancel),
-            crate::tool_registry::codescan::CODEBASE_INDEX => self.execute_index(&args, &cancel),
+            crate::tool_registry::codescan::CODEBASE_SEARCH => {
+                self.execute_search(&args, cancel).await
+            }
+            crate::tool_registry::codescan::CODEBASE_INDEX => {
+                self.execute_index(&args, cancel).await
+            }
             _ => anyhow::bail!("Unknown codescan tool: {tool_name}"),
         }
     }
@@ -361,10 +327,29 @@ impl ToolProvider for CodescanProvider {
 mod tests {
     use super::*;
 
-    #[test]
-    fn tool_definitions_have_correct_names() {
+    async fn managed_provider(path: PathBuf) -> (crate::bus::EventBus, CodescanProvider) {
+        let binding = CodescanBinding::default();
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
+            path.clone(),
+            binding.clone(),
+        )));
+        bus.stage_managed_generation(
+            "codescan",
+            crate::codescan_service::start_candidate(path.clone())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+        binding.capture(&bus).unwrap();
+        (bus, CodescanProvider::new(path, binding))
+    }
+
+    #[tokio::test]
+    async fn tool_definitions_have_correct_names() {
         let dir = tempfile::tempdir().unwrap();
-        let p = CodescanProvider::new(dir.path().to_path_buf());
+        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
         let tools = p.tools();
         assert_eq!(tools.len(), 2);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -373,22 +358,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn head_check_is_rate_limited() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = CodescanProvider::new(dir.path().to_path_buf());
-        // First call sets the timestamp
-        p.maybe_spawn_head_check();
-        let t1 = p.last_head_check.lock().unwrap().unwrap();
-        // Second immediate call should NOT update the timestamp (cooldown active)
-        p.maybe_spawn_head_check();
-        let t2 = p.last_head_check.lock().unwrap().unwrap();
-        assert_eq!(t1, t2, "timestamp should not change within cooldown");
-    }
-
-    #[tokio::test]
     async fn execute_index_returns_stats() {
         let dir = tempfile::tempdir().unwrap();
-        let p = CodescanProvider::new(dir.path().to_path_buf());
+        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
         let result = p
             .execute("codebase_index", "tc", json!({}), CancellationToken::new())
             .await
@@ -403,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn execute_search_empty_returns_no_results() {
         let dir = tempfile::tempdir().unwrap();
-        let p = CodescanProvider::new(dir.path().to_path_buf());
+        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
         let result = p
             .execute(
                 "codebase_search",
@@ -436,7 +408,7 @@ mod tests {
         )
         .unwrap();
 
-        let p = CodescanProvider::new(dir.path().to_path_buf());
+        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
         let result = p
             .execute(
                 "codebase_search",
@@ -460,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn execute_search_rejects_within_traversal() {
         let dir = tempfile::tempdir().unwrap();
-        let p = CodescanProvider::new(dir.path().to_path_buf());
+        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
         let err = p
             .execute(
                 "codebase_search",
@@ -476,7 +448,7 @@ mod tests {
     #[tokio::test]
     async fn execute_search_respects_pre_cancelled_token() {
         let dir = tempfile::tempdir().unwrap();
-        let p = CodescanProvider::new(dir.path().to_path_buf());
+        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
         let cancel = CancellationToken::new();
         cancel.cancel();
         let err = p
@@ -484,5 +456,24 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cancelled"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn unavailable_service_keeps_tools_declared_and_returns_typed_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = CodescanProvider::new(dir.path().to_path_buf(), CodescanBinding::default());
+        assert_eq!(p.tools().len(), 2);
+
+        let result = p
+            .execute(
+                "codebase_search",
+                "tc",
+                json!({"query": "anything"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.details["available"], false);
+        assert_eq!(result.details["code"], "service:unavailable");
     }
 }

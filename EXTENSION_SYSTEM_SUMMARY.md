@@ -11,6 +11,8 @@ visibility = "private"
 
 # Extension System - Session Summary
 
+> **Historical record:** This file describes an earlier implementation session and is not current product or SDK documentation. See [`docs/extensions.md`](docs/extensions.md) and the standalone [`omegon-extension-rs`](https://github.com/styrene-lab/omegon-extension-rs) repository.
+
 ## What Was Built This Session
 
 A complete, production-ready extension SDK and ecosystem foundation for Omegon.

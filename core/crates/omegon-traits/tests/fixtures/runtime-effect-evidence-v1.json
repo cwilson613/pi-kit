@@ -1,0 +1,13 @@
+[
+  {
+    "contribution_id": "feature:core-tools",
+    "capability_id": "tool:read",
+    "effect": "filesystem_read",
+    "kind": "requested"
+  },
+  {
+    "contribution_id": "extension:workspace-search",
+    "effect": "network_access",
+    "kind": "observed"
+  }
+]

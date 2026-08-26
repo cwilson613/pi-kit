@@ -11,7 +11,7 @@ import { snippet } from "../../lib/snippets";
   <table>
     <thead><tr><th>Layer</th><th>Method</th><th>What it covers</th><th>Verification</th></tr></thead>
     <tbody>
-      <tr><td>CI release artifacts</td><td>Sigstore cosign (keyless, OIDC)</td><td>Published GitHub release archives consumed by downstream packaging</td><td><code>cosign verify-blob</code></td></tr>
+      <tr><td>CI release artifacts</td><td>Sigstore bundle v0.3 (keyless, OIDC)</td><td>Archive, provenance, and both executable identities</td><td><code>omegon-maintain release verify</code></td></tr>
       <tr><td>Local macOS validation binary</td><td>Apple Developer ID (YubiKey)</td><td>Operator workstation build produced before publish</td><td><code>codesign -dvvv</code></td></tr>
       <tr><td>Provenance</td><td>GitHub Attestations (SLSA)</td><td>CI build provenance for published release assets</td><td><code>gh attestation verify</code></td></tr>
     </tbody>
@@ -22,11 +22,17 @@ import { snippet } from "../../lib/snippets";
   </p>
 
   <h3>Verify a Release</h3>
-  <pre><code># Cosign (CI-signed releases)
-{snippet("verify.cosign_verify")}
+  <pre><code># Offline package and companion verification
+{snippet("verify.release_verify")}
 
-# GitHub Attestations
+# Additional online provenance check
 {snippet("verify.gh_attestation")}</code></pre>
+  <p>
+    The offline verifier accepts only explicit absolute archive, manifest, and bundle operands.
+    It applies compiled repository, workflow, issuer, and tag policy and does not discover,
+    download, extract, or execute release content. GitHub Attestations are supplementary online
+    provenance evidence, not a substitute for package-pair verification.
+  </p>
 
   <h2>SBOM</h2>
   <p>
@@ -83,6 +89,35 @@ import { snippet } from "../../lib/snippets";
     until you choose a scope in the permission modal. The prompt shows the tool, exact target,
     and proposed directory before any grant is installed.
   </p>
+  <p>
+    A known capability with no matching permission rule currently receives the permission
+    layer's allow default. That default does not admit arbitrary names: privileged calls must
+    resolve a current declared owner, capability, effects, principal, and surface before Omegon
+    issues an execution lease. Unknown or incomplete declarations fail closed.
+  </p>
+
+  <h2>Dynamic Contribution Trust</h2>
+  <p>
+    Extension, executable plugin, and MCP code requires separate stable-identity admission through
+    <code>permissions.trustedContributionCode</code>. Installation, enablement, activation markers,
+    and <code>trustedDirectories</code> are not code-trust grants.
+  </p>
+  <pre><code>{`{
+  "permissions": {
+    "trustedContributionCode": [
+      "extension:my-extension",
+      "plugin:my-plugin",
+      "mcp:project",
+      "mcp:acp-client"
+    ]
+  }
+}`}</code></pre>
+  <p>
+    Omegon binds each runtime permit to the current admitted source or configuration digest, but
+    the profile grant remains identity-based across updates. Review changed bundles before installing
+    them. Native processes, scripts, local MCP, and current OCI paths are trusted execution, not
+    verified confinement or a security sandbox.
+  </p>
   <table>
     <thead><tr><th>Key</th><th>Scope</th><th>Effect</th></tr></thead>
     <tbody>
@@ -105,7 +140,8 @@ import { snippet } from "../../lib/snippets";
   <pre><code>omegon --dangerously-bypass-permissions</code></pre>
   <p>
     This bypasses Omegon's interactive tool-policy and filesystem-boundary mediation for that
-    process. It does not write trusted-directory grants, and it cannot override operating-system
+    process. It does not write trusted-directory grants, add trusted contribution IDs, bypass
+    contribution preflight, or mint verified-confinement evidence. It cannot override operating-system
     permissions, macOS privacy controls, container or mount boundaries, missing credentials, or
     upstream API authorization. Use it only in an environment where you accept the consequences
     of every tool call made by the agent and its inherited child runs.
@@ -114,11 +150,12 @@ import { snippet } from "../../lib/snippets";
   <h2>Process Safety</h2>
   <ul>
     <li>The agent executes tools directly under a layered tool policy. Per-tool rules can allow, prompt, or deny operations with wildcard subject matching.</li>
-    <li>Policy prompts are currently allow-once decisions until durable grants are configured; unknown tools remain default-open unless policy says otherwise.</li>
+    <li>Policy prompts are currently allow-once decisions until durable grants are configured; the no-rule allow default applies only after capability admission and cannot make an unknown tool executable.</li>
     <li>Bash mediation is static and advisory for common shell forms. Hard filesystem containment belongs to the sandbox layer.</li>
     <li>Outside-workspace file prompts wait for an explicit operator decision instead of timing out as denial; run cancellation still unblocks the wait.</li>
     <li>All tool calls are logged in the conversation with full arguments and results.</li>
-    <li><code>Esc</code> or <code>Ctrl+C</code> cancels the active turn immediately.</li>
+    <li><code>Esc</code> or <code>Ctrl+C</code> requests cancellation immediately. The turn remains busy while owned cleanup runs, and effects outside Omegon's ownership boundary may remain unknown or best-effort.</li>
+    <li><code>/status</code> distinguishes strict host-owned cleanup from best-effort or unverified cross-boundary cleanup and reports contribution quarantine diagnostics.</li>
     <li>Session auto-save means you can always audit what happened.</li>
     <li>The <code>--max-turns</code> flag limits how many turns the agent can take before stopping.</li>
   </ul>

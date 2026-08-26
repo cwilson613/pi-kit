@@ -1,9 +1,9 @@
-use std::path::Path;
-
 use serde_json::Value;
 
-pub fn projection_json(repo_root: &Path) -> Value {
-    let projection = crate::tools::lifecycle_plan_projection(repo_root);
+pub fn projection_json(snapshot: Option<&styrene_work_runtime::WorkSnapshot>) -> Value {
+    let projection = snapshot
+        .map(crate::surfaces::plans::from_work_snapshot)
+        .unwrap_or_default();
     serde_json::json!({
         "plans": projection.entries,
         "tasks": projection.tasks,
@@ -221,6 +221,18 @@ mod tests {
             ],
             "task_identity_findings": [{ "line": 2, "task_id": "1.2", "stable_id": "dup", "message": "duplicate" }]
         })
+    }
+
+    #[test]
+    fn absent_work_service_has_exact_empty_repository_shape() {
+        assert_eq!(
+            projection_json(None),
+            serde_json::json!({
+                "plans": [],
+                "tasks": [],
+                "task_identity_findings": [],
+            })
+        );
     }
 
     #[test]

@@ -289,38 +289,43 @@ impl LoopFeature {
         every: &str,
         max_runs: Option<u32>,
     ) -> anyhow::Result<String> {
-        let (_manifest, body, path) = crate::prompts::get_prompt(prompt)?;
-        let safety = crate::prompts::safety_verdict(&body);
-        if safety.is_blocked() {
-            anyhow::bail!("prompt is blocked by safety verdict: {safety:?}");
-        }
+        crate::prompts::with_prompt_for_project(
+            &self.project_root,
+            prompt,
+            |_manifest, body, path| {
+                let safety = crate::prompts::safety_verdict(body);
+                if safety.is_blocked() {
+                    anyhow::bail!("prompt is blocked by safety verdict: {safety:?}");
+                }
 
-        let mut hasher = Sha256::new();
-        hasher.update(body.as_bytes());
-        let prompt_sha256 = format!("{:x}", hasher.finalize());
-        let id = format!("loop-{}", uuid::Uuid::new_v4().simple());
-        let job = LoopJob {
-            id: id.clone(),
-            prompt: prompt.to_string(),
-            trigger: LoopTrigger::Every {
-                duration: every.to_string(),
+                let mut hasher = Sha256::new();
+                hasher.update(body.as_bytes());
+                let prompt_sha256 = format!("{:x}", hasher.finalize());
+                let id = format!("loop-{}", uuid::Uuid::new_v4().simple());
+                let job = LoopJob {
+                    id: id.clone(),
+                    prompt: prompt.to_string(),
+                    trigger: LoopTrigger::Every {
+                        duration: every.to_string(),
+                    },
+                    stop: max_runs
+                        .map(|max_runs| LoopStop::MaxRuns { max_runs })
+                        .unwrap_or(LoopStop::OperatorStop),
+                    concurrency: LoopConcurrencyPolicy::SkipIfRunning,
+                    enabled: true,
+                    prompt_path: path.display().to_string(),
+                    prompt_sha256,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+
+                let mut jobs = self.load_jobs()?;
+                jobs.push(job);
+                self.save_jobs(&jobs)?;
+                Ok(format!(
+                    "Registered loop job `{id}` for prompt `{prompt}` every {every}. Execution is pending daemon scheduler wiring."
+                ))
             },
-            stop: max_runs
-                .map(|max_runs| LoopStop::MaxRuns { max_runs })
-                .unwrap_or(LoopStop::OperatorStop),
-            concurrency: LoopConcurrencyPolicy::SkipIfRunning,
-            enabled: true,
-            prompt_path: path.display().to_string(),
-            prompt_sha256,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
-
-        let mut jobs = self.load_jobs()?;
-        jobs.push(job);
-        self.save_jobs(&jobs)?;
-        Ok(format!(
-            "Registered loop job `{id}` for prompt `{prompt}` every {every}. Execution is pending daemon scheduler wiring."
-        ))
+        )?
     }
 }
 

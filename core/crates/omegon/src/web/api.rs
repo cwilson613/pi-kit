@@ -386,7 +386,7 @@ fn default_live_session_summary(state: &WebState) -> Result<WebSessionSummary, S
         .observe()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(WebSessionSummary {
-        session_id: "default".to_string(),
+        session_id: state.session_id(),
         cwd: cwd.to_string_lossy().to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         turns: session.turns,
@@ -397,8 +397,8 @@ fn default_live_session_summary(state: &WebState) -> Result<WebSessionSummary, S
     })
 }
 
-fn validate_native_session_id(session_id: &str) -> Result<(), StatusCode> {
-    if session_id == "default" {
+fn validate_native_session_id(state: &WebState, session_id: &str) -> Result<(), StatusCode> {
+    if session_id == "default" || session_id == state.session_id() {
         Ok(())
     } else {
         Err(StatusCode::NOT_FOUND)
@@ -758,7 +758,7 @@ pub async fn get_native_session(
     headers: HeaderMap,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Result<Json<WebSessionShowResponse>, StatusCode> {
-    validate_native_session_id(&session_id)?;
+    validate_native_session_id(&state, &session_id)?;
     let principal =
         super::rbac::principal_from_headers(&state, &headers).map_err(|error| error.status())?;
     if let Err(error) = super::rbac::require_principal_operation(
@@ -788,7 +788,7 @@ pub async fn get_native_session_surfaces(
     headers: HeaderMap,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Result<Json<super::surfaces::WebSurfacesSnapshot>, StatusCode> {
-    validate_native_session_id(&session_id)?;
+    validate_native_session_id(&state, &session_id)?;
     let principal =
         super::rbac::principal_from_headers(&state, &headers).map_err(|error| error.status())?;
     if let Err(error) = super::rbac::require_principal_operation(
@@ -817,7 +817,7 @@ pub async fn post_native_session_action(
     Json<crate::ui_runtime::envelope::UiActionOutcomeEnvelope>,
 ) {
     let action_id = request.action_id.clone();
-    if validate_native_session_id(&session_id).is_err() {
+    if validate_native_session_id(&state, &session_id).is_err() {
         return (
             StatusCode::NOT_FOUND,
             Json(
@@ -873,16 +873,20 @@ pub async fn post_native_session_action(
 }
 
 /// GET /api/web/sessions — browser-native saved session list.
-pub async fn get_web_sessions() -> Result<Json<WebSessionListResponse>, StatusCode> {
+pub async fn get_web_sessions(
+    State(state): State<WebState>,
+) -> Result<Json<WebSessionListResponse>, StatusCode> {
     let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut sessions: Vec<WebSessionSummary> = crate::session::list_sessions(&cwd)
         .into_iter()
         .map(web_session_summary)
         .collect();
+    let current_session_id = state.session_id();
+    sessions.retain(|session| session.session_id != current_session_id);
     sessions.insert(
         0,
         WebSessionSummary {
-            session_id: "default".to_string(),
+            session_id: current_session_id,
             cwd: cwd.to_string_lossy().to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             turns: 0,
@@ -901,10 +905,11 @@ pub async fn get_web_session(
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Result<Json<WebSessionShowResponse>, StatusCode> {
     let cwd = std::env::current_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let session = if session_id == "default" {
+    let current_session_id = state.session_id();
+    let session = if session_id == "default" || session_id == current_session_id {
         let observed_session = state.handles.session().observe().unwrap_or_default();
         WebSessionSummary {
-            session_id: "default".to_string(),
+            session_id: current_session_id,
             cwd: cwd.to_string_lossy().to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             turns: observed_session.turns,
@@ -921,7 +926,7 @@ pub async fn get_web_session(
             .ok_or(StatusCode::NOT_FOUND)?
     };
 
-    let links = if session.session_id == "default" {
+    let links = if session.current {
         native_default_session_links()
     } else {
         historical_web_session_links(&session.session_id)
@@ -932,14 +937,62 @@ pub async fn get_web_session(
     } else {
         HISTORICAL_SESSION_ALLOCATION_MODE
     };
+    let snapshot = if session.current {
+        super::surfaces::project_web_surfaces(&state)
+    } else {
+        historical_surfaces(&state, &session.session_id)?
+    };
 
     Ok(Json(WebSessionShowResponse {
         schema_version: 1,
         session,
         allocation_mode: allocation_mode.to_string(),
         links,
-        snapshot: super::surfaces::project_web_surfaces(&state),
+        snapshot,
     }))
+}
+
+/// GET /api/web/sessions/{session_id}/surfaces — validated read-only historical projection.
+pub async fn get_web_session_surfaces(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<Json<super::surfaces::WebSurfacesSnapshot>, StatusCode> {
+    let principal =
+        super::rbac::principal_from_headers(&state, &headers).map_err(|error| error.status())?;
+    super::rbac::require_principal_operation(
+        &principal,
+        omegon_rbac::OmegonOperation::SurfaceRead,
+        &super::rbac::RbacContext {
+            route: "/api/web/sessions/{session_id}/surfaces",
+            session_id: Some(&session_id),
+            ..super::rbac::RbacContext::default()
+        },
+    )
+    .map_err(|error| error.status())?;
+    if session_id == "default" || session_id == state.session_id() {
+        return Ok(Json(super::surfaces::project_web_surfaces(&state)));
+    }
+    Ok(Json(historical_surfaces(&state, &session_id)?))
+}
+
+fn historical_surfaces(
+    state: &WebState,
+    session_id: &str,
+) -> Result<super::surfaces::WebSurfacesSnapshot, StatusCode> {
+    let entry = crate::session::list_sessions(&state.workspace_root)
+        .into_iter()
+        .find(|entry| entry.meta.session_id == session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let target = crate::session_consumers::SessionViewTarget {
+        snapshot: entry.path,
+        session_id: session_id.to_string(),
+        stream_id: None,
+        generation: 0,
+        kind: crate::session_consumers::SessionViewKind::Resume,
+    };
+    super::surfaces::project_historical_web_surfaces(state, &target)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
 /// GET /api/web/attachments/{id} — retrieve a staged browser attachment.
@@ -1044,7 +1097,7 @@ fn resolve_web_attachment_paths(ids: &[String]) -> Result<Vec<String>, String> {
 pub async fn post_web_action(
     State(state): State<WebState>,
     headers: HeaderMap,
-    Json(request): Json<WebActionRequest>,
+    Json(mut request): Json<WebActionRequest>,
 ) -> (
     StatusCode,
     Json<crate::ui_runtime::envelope::UiActionOutcomeEnvelope>,
@@ -1061,7 +1114,10 @@ pub async fn post_web_action(
             ),
         );
     }
-    if request.session_id != "default" {
+    if request.session_id == "default" {
+        request.session_id = state.session_id();
+    }
+    if request.session_id != state.session_id() {
         return (
             StatusCode::NOT_FOUND,
             Json(
@@ -1418,6 +1474,7 @@ pub async fn get_workspace_leases_status() -> Result<Json<WorkspaceLeasesRespons
 pub async fn get_lifecycle_snapshot(
     State(state): State<WebState>,
 ) -> Json<LifecycleSnapshotResponse> {
+    refresh_lifecycle(&state.handles).await;
     let snapshot = build_snapshot(&state);
     Json(LifecycleSnapshotResponse {
         schema_version: 1,
@@ -1428,6 +1485,7 @@ pub async fn get_lifecycle_snapshot(
 
 /// GET /api/lifecycle/design — design tree read model.
 pub async fn get_lifecycle_design(State(state): State<WebState>) -> Json<LifecycleDesignResponse> {
+    refresh_lifecycle(&state.handles).await;
     let snapshot = build_snapshot(&state);
     Json(LifecycleDesignResponse {
         schema_version: 1,
@@ -1440,12 +1498,14 @@ pub async fn get_lifecycle_design_node(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<WebState>,
 ) -> Result<Json<LifecycleDesignNodeResponse>, StatusCode> {
-    let Some(lifecycle) = state.handles.lifecycle.as_ref() else {
-        return Err(StatusCode::NOT_FOUND);
-    };
-    let node = lifecycle
-        .design_node(&id)
+    refresh_lifecycle(&state.handles).await;
+    let node = state
+        .handles
+        .lifecycle_service
+        .observe()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .repository
+        .and_then(|repository| repository.design.nodes.get(&id).cloned())
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(LifecycleDesignNodeResponse {
         schema_version: 1,
@@ -1456,19 +1516,21 @@ pub async fn get_lifecycle_design_node(
 fn lifecycle_nodes(
     state: &WebState,
 ) -> Result<std::collections::HashMap<String, crate::lifecycle::types::DesignNode>, StatusCode> {
-    let Some(lifecycle) = state.handles.lifecycle.as_ref() else {
-        return Ok(std::collections::HashMap::new());
-    };
-    lifecycle
-        .design_tree_snapshot(false)
-        .map(|snapshot| snapshot.nodes)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    Ok(state
+        .handles
+        .lifecycle_service
+        .observe()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .repository
+        .map(|repository| repository.design.nodes.clone())
+        .unwrap_or_default())
 }
 
 /// GET /api/lifecycle/design/ready — decided nodes whose dependencies are implemented.
 pub async fn get_lifecycle_design_ready(
     State(state): State<WebState>,
 ) -> Result<Json<LifecycleDesignReadyResponse>, StatusCode> {
+    refresh_lifecycle(&state.handles).await;
     let nodes = lifecycle_nodes(&state)?;
     Ok(Json(LifecycleDesignReadyResponse {
         schema_version: 1,
@@ -1480,6 +1542,7 @@ pub async fn get_lifecycle_design_ready(
 pub async fn get_lifecycle_design_blocked(
     State(state): State<WebState>,
 ) -> Result<Json<LifecycleDesignBlockedResponse>, StatusCode> {
+    refresh_lifecycle(&state.handles).await;
     let nodes = lifecycle_nodes(&state)?;
     Ok(Json(LifecycleDesignBlockedResponse {
         schema_version: 1,
@@ -1491,6 +1554,7 @@ pub async fn get_lifecycle_design_blocked(
 pub async fn get_lifecycle_design_frontier(
     State(state): State<WebState>,
 ) -> Result<Json<LifecycleDesignFrontierResponse>, StatusCode> {
+    refresh_lifecycle(&state.handles).await;
     let nodes = lifecycle_nodes(&state)?;
     Ok(Json(LifecycleDesignFrontierResponse {
         schema_version: 1,
@@ -1855,17 +1919,32 @@ pub async fn post_event(
 
 /// GET /api/graph — graph data for force-directed layout.
 pub async fn get_graph(State(state): State<WebState>) -> Json<GraphData> {
+    refresh_lifecycle(&state.handles).await;
     Json(build_graph_data(&state.handles))
+}
+
+pub(crate) async fn refresh_lifecycle(handles: &crate::runtime_state::RuntimeStateHandles) {
+    if handles.lifecycle_service.binding().available()
+        && let Err(error) = handles
+            .lifecycle_service
+            .refresh(
+                crate::lifecycle::read_model::SnapshotOptions::default(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+    {
+        tracing::debug!(error = %error, "managed lifecycle projection refresh failed");
+    }
 }
 
 pub fn build_graph_data(handles: &crate::runtime_state::RuntimeStateHandles) -> GraphData {
     let mut nodes = Vec::new();
     let mut links = Vec::new();
 
-    if let Some(ref lifecycle) = handles.lifecycle
-        && let Ok(snapshot) = lifecycle.design_tree_snapshot(false)
+    if let Ok(observation) = handles.lifecycle_service.observe()
+        && let Some(repository) = observation.repository
     {
-        let all = &snapshot.nodes;
+        let all = &repository.design.nodes;
         for node in all.values() {
             let group = match node.status {
                 NodeStatus::Seed => 0,
@@ -1921,6 +2000,7 @@ fn node_brief(node: &crate::lifecycle::types::DesignNode) -> NodeBrief {
 
 /// GET /api/state — build a full snapshot from the shared handles.
 pub async fn get_state(State(state): State<WebState>) -> Json<StateSnapshot> {
+    refresh_lifecycle(&state.handles).await;
     let snapshot = build_snapshot(&state);
     Json(snapshot)
 }
@@ -1954,10 +2034,10 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
     };
 
     // Read lifecycle state
-    if let Some(ref lifecycle) = state.handles.lifecycle
-        && let Ok(snapshot) = lifecycle.design_tree_snapshot(false)
+    if let Ok(observation) = state.handles.lifecycle_service.observe()
+        && let Some(repository) = observation.repository
     {
-        let nodes = &snapshot.nodes;
+        let nodes = &repository.design.nodes;
         design.counts.total = nodes.len();
 
         for node in nodes.values() {
@@ -1987,33 +2067,37 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
         }
 
         // Focused node
-        if let Some(id) = snapshot.focused_node_id.as_deref()
+        if let Some(id) = observation.focus.node_id.as_deref()
             && let Some(node) = nodes.get(id)
         {
-            let sections = crate::lifecycle::design::read_node_sections(node);
             let children = crate::lifecycle::design::get_children(nodes, id);
             design.focused = Some(FocusedNode {
                 id: node.id.clone(),
                 title: node.title.clone(),
                 status: node.status.as_str().to_string(),
                 open_questions: node.open_questions.clone(),
-                decisions: sections.map(|s| s.decisions.len()).unwrap_or(0),
+                decisions: repository
+                    .sections
+                    .get(id)
+                    .map(|sections| sections.decisions.len())
+                    .unwrap_or(0),
                 children: children.len(),
             });
         }
     }
 
-    if let Some(ref lifecycle) = state.handles.lifecycle
-        && let Ok(snapshot) = lifecycle.openspec_snapshot(Default::default())
+    if let Ok(observation) = state.handles.lifecycle_service.observe()
+        && let Some(repository) = observation.repository
     {
+        let snapshot = &repository.lifecycle.openspec;
         openspec.total_tasks = snapshot.total_tasks;
         openspec.done_tasks = snapshot.done_tasks;
         openspec.changes = snapshot
             .changes
-            .into_iter()
+            .iter()
             .map(|change| ChangeSnapshot {
-                name: change.name,
-                stage: change.lifecycle_state,
+                name: change.name.clone(),
+                stage: change.lifecycle_state.clone(),
                 has_specs: change.has_specs,
                 has_tasks: change.has_tasks,
                 total_tasks: change.total_tasks,
@@ -2096,7 +2180,14 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
                 busy: state.handles.session().observe().unwrap_or_default().busy,
                 git_branch: harness.as_ref().and_then(|h| h.git_branch.clone()),
                 git_detached: harness.as_ref().is_some_and(|h| h.git_detached),
-                session_id: None,
+                session_id: Some(state.session_id()),
+                session_generation: None,
+                stream_id: None,
+                projection_status: None,
+                projection_frontier: None,
+                context_revision: None,
+                queue_depth: 0,
+                active_turn: None,
             };
             let harness_projection = omegon_traits::IpcHarnessSnapshot {
                 context_class: harness
@@ -2282,6 +2373,7 @@ mod tests {
                     .path()
                     .join("assistant-runs.db"),
             ),
+            workspace_root: std::sync::Arc::new(std::path::PathBuf::from(".")),
             daemon_events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             daemon_status: std::sync::Arc::new(std::sync::Mutex::new(WebDaemonStatus::default())),
             pending_permissions: std::sync::Arc::new(std::sync::Mutex::new(
@@ -2290,9 +2382,10 @@ mod tests {
             pending_operator_waits: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
-            conversation_log: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::VecDeque::new(),
+            conversation: std::sync::Arc::new(std::sync::Mutex::new(
+                super::super::WebConversationAccumulator::default(),
             )),
+            session_view_binding: None,
             plan_surface: std::sync::Arc::new(std::sync::Mutex::new(
                 omegon_traits::PlanSurfaceProjection::default(),
             )),
@@ -2900,11 +2993,67 @@ required = ["MISSING_REQUIRED_TOKEN"]
         let home = tempfile::tempdir().unwrap();
         let _cwd = crate::test_support::cwd::CurrentDirGuard::enter_async(home.path()).await;
 
-        let response = get_web_sessions().await.unwrap().0;
+        let state = test_state();
+        let response = get_web_sessions(State(state)).await.unwrap().0;
 
         assert_eq!(response.sessions.len(), 1);
         assert_eq!(response.sessions[0].session_id, "default");
         assert!(response.sessions[0].current);
+    }
+
+    #[tokio::test]
+    async fn historical_surface_endpoint_reads_requested_validated_projection() {
+        let home = tempfile::tempdir().unwrap();
+        let _cwd = crate::test_support::cwd::CurrentDirGuard::enter_async(home.path()).await;
+        let workspace_root = home.path().canonicalize().unwrap();
+        let sessions = crate::session::sessions_dir(&workspace_root).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        const SESSION_ID: &str = "2026-08-22T00-00-00_deadbeef";
+        let snapshot = sessions.join(format!("{SESSION_ID}.json"));
+        std::fs::write(&snapshot, "{}").unwrap();
+        std::fs::write(
+            sessions.join(format!("{SESSION_ID}.meta.json")),
+            serde_json::to_vec(&crate::session::SessionMeta {
+                session_id: SESSION_ID.into(),
+                cwd: workspace_root.display().to_string(),
+                created_at: "2026-08-22T00:00:00Z".into(),
+                turns: 1,
+                tool_calls: 0,
+                description: "historical fixture".into(),
+                friendly_name: String::new(),
+                last_prompt_snippet: "fixture prompt".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        crate::session_consumers::publish_test_projection(
+            &snapshot,
+            "mixed-legacy-full.authority.jsonl",
+            SESSION_ID,
+        );
+        let state = test_state().with_workspace_root(workspace_root);
+        assert!(
+            crate::session::list_sessions(&state.workspace_root)
+                .iter()
+                .any(|entry| entry.meta.session_id == SESSION_ID),
+            "historical fixture must be discoverable under {} (sessions {})",
+            state.workspace_root.display(),
+            sessions.display()
+        );
+
+        let response = get_web_session_surfaces(
+            State(state),
+            auth_headers(),
+            axum::extract::Path(SESSION_ID.into()),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(response.session_id, SESSION_ID);
+        assert_eq!(response.projection.exactness, "exact_suffix");
+        assert!(!response.surfaces.editor.accepts_prompt);
+        assert!(!response.surfaces.footer.busy);
     }
 
     #[tokio::test]
@@ -3439,6 +3588,31 @@ required = ["BRAVE_API_KEY"]
         assert!(!snap.cleave.active);
         assert!(snap.harness.is_none());
         assert_eq!(snap.instance.identity.instance_id, "web-compat");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_surfaces_project_managed_host_observation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::write(
+            dir.path().join("docs/managed.md"),
+            "---\nid: managed\ntitle: Managed Node\nstatus: decided\ndependencies: []\nopen_questions: []\n---\n\n## Overview\nManaged.\n",
+        )
+        .unwrap();
+        let (_bus, binding) = crate::lifecycle_service::test_binding(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        let mut state = test_state();
+        state.handles.lifecycle_service = crate::runtime_state::LifecycleHostHandle::new(binding);
+
+        refresh_lifecycle(&state.handles).await;
+        let snapshot = build_snapshot(&state);
+        assert_eq!(snapshot.design.counts.total, 1);
+        assert_eq!(snapshot.design.all_nodes[0].id, "managed");
+
+        let graph = build_graph_data(&state.handles);
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(graph.nodes[0].title, "Managed Node");
     }
 
     #[test]

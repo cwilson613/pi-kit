@@ -3,6 +3,16 @@ set -euo pipefail
 
 launcher_path="${BASH_SOURCE[0]}"
 launcher_real="$(cd "$(dirname "$launcher_path")" && pwd -P)/$(basename "$launcher_path")"
+invocation_name="$(basename "$0")"
+if [[ "$invocation_name" == "omegon-maintain" ]]; then
+    binary_name="omegon-maintain"
+    override_value="${OMEGON_MAINTAIN_BIN:-}"
+    override_label="OMEGON_MAINTAIN_BIN"
+else
+    binary_name="omegon"
+    override_value="${OMEGON_BIN:-}"
+    override_label="OMEGON_BIN"
+fi
 
 is_executable_target() {
     local candidate="$1"
@@ -26,8 +36,8 @@ repo_root_from() {
 
 target_for_root() {
     local root="$1"
-    local rel="$root/target/release/omegon"
-    local dev="$root/target/dev-release/omegon"
+    local rel="$root/target/release/$binary_name"
+    local dev="$root/target/dev-release/$binary_name"
     local rel_mtime=0 dev_mtime=0
 
     # `just link` builds release while `just run` builds dev-release. When both
@@ -53,12 +63,12 @@ target_for_root() {
 resolve_target() {
     local target="" root="" channel="${OMEGON_CHANNEL:-default}"
 
-    if [[ -n "${OMEGON_BIN:-}" ]]; then
-        if is_executable_target "$OMEGON_BIN"; then
-            printf 'env:OMEGON_BIN\t%s\n' "$OMEGON_BIN"
+    if [[ -n "$override_value" ]]; then
+        if is_executable_target "$override_value"; then
+            printf 'env:%s\t%s\n' "$override_label" "$override_value"
             return 0
         fi
-        printf 'omegon launcher: OMEGON_BIN is not executable or points to launcher: %s\n' "$OMEGON_BIN" >&2
+        printf 'omegon launcher: %s is not executable or points to launcher: %s\n' "$override_label" "$override_value" >&2
         return 1
     fi
 
@@ -87,14 +97,20 @@ resolve_target() {
         return 1
     fi
 
-    target="$HOME/.omegon/bin/omegon"
+    target="$HOME/.omegon/current/$binary_name"
+    if is_executable_target "$target"; then
+        printf 'activated-release\t%s\n' "$target"
+        return 0
+    fi
+
+    target="$HOME/.omegon/bin/$binary_name"
     if is_executable_target "$target"; then
         printf 'fallback-installed\t%s\n' "$target"
         return 0
     fi
 
     printf 'omegon launcher: no runnable binary found\n' >&2
-    printf 'checked: OMEGON_BIN, OMEGON_DEV_ROOT, nearest checkout, ~/.omegon/channels/%s, ~/.omegon/bin/omegon\n' "$channel" >&2
+    printf 'checked: %s, OMEGON_DEV_ROOT, nearest checkout, ~/.omegon/channels/%s, ~/.omegon/current/%s, ~/.omegon/bin/%s\n' "$override_label" "$channel" "$binary_name" "$binary_name" >&2
     printf 'run: just build && just link from an Omegon checkout\n' >&2
     return 127
 }

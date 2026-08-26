@@ -11,6 +11,8 @@ visibility = "private"
 
 # Omegon Extension Ecosystem
 
+> **Compatibility archive:** This long-form guide contains historical SDK and runtime details. Use [`docs/extensions.md`](docs/extensions.md) for current host trust, lifecycle, cleanup, and diagnostics, and the standalone [`omegon-extension-rs`](https://github.com/styrene-lab/omegon-extension-rs) repository for the current SDK contract.
+
 This document provides an overview of Omegon's extension system — how it works, what's available for developers, and how to build extensions.
 
 ## Build your first extension in 60 seconds

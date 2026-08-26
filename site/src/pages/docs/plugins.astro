@@ -55,6 +55,74 @@ import Docs from "../../layouts/Docs.astro";
     <li>Showing persona/tone state changes as toast notifications</li>
   </ul>
 
+  <h2>Trust dynamic plugin code</h2>
+  <p>
+    Persona and tone data remain non-executable. Plugins that evaluate Pkl, run
+    scripts or OCI tools, call HTTP endpoints, or connect MCP servers require a
+    separate trusted-code entry before evaluation or connection. Installation,
+    activation markers, extension selection, and trusted directories do not grant
+    this authority.
+  </p>
+
+  <h2>Shipped content packs</h2>
+  <p>
+    Shipped personas, tones, prompts, skills, workflows, and catalog data use the independently
+    versioned <code>omegon-shipped</code> content pack. Omegon validates its identity, version,
+    digest, provenance, compatibility, and content-only capability requests before inventory.
+    The current standalone persona, tone, and workflow categories can be empty.
+  </p>
+  <p>
+    The process pins one content generation at boot. Replacing the pack changes new processes
+    without rebuilding Omegon and cannot alter active sessions. Pack residency never activates
+    a persona or tone and never grants prompt, tool, effect, executable, or path authority.
+    If the pack is unavailable, Omegon retains its six constitutional host axioms, omits optional
+    extension and tool guidance, and disables model-driven session compaction locally.
+  </p>
+  <pre><code>{`{
+  "permissions": {
+    "trustedContributionCode": [
+      "plugin:my-plugin",
+      "mcp:project",
+      "mcp:acp-client"
+    ]
+  }
+}`}</code></pre>
+  <p>
+    Plugin IDs use the plugin directory name. <code>mcp:project</code> admits the
+    frozen server set from <code>.omegon/mcp.toml</code>;
+    <code>mcp:acp-client</code> separately admits MCP servers supplied by an ACP client.
+    The host binds each admission to the current plugin snapshot or MCP configuration digest.
+    The stable profile grant survives updates, so changed bytes still require operator review.
+    No currently supported dynamic plugin or MCP path supplies verified confinement.
+  </p>
+
+  <h2>Plugin and MCP lifecycle</h2>
+  <p>
+    Plugin and MCP discovery joins the same metadata-only candidate inventory as native
+    extensions. Discovery captures stable identity and source digest without evaluating Pkl,
+    starting scripts or containers, connecting HTTP or MCP, resolving secrets, or publishing
+    registrations. Trust admission must succeed before the existing transport adapter probes.
+  </p>
+  <ul>
+    <li>MCP uses one per-server deadline for connection, required tool discovery, and optional resource, template, and prompt discovery.</li>
+    <li>Slice 2 does not automatically restart MCP services; MCP and remote-service cleanup is reported as best effort.</li>
+    <li>Armory context, script, and OCI processes are bounded, and owned process groups are killed and reaped on timeout or cancellation.</li>
+    <li>HTTP plugin failures degrade locally rather than claiming strict cleanup.</li>
+    <li>A failed candidate cannot replace the prior accepted graph. One generation owner performs rollback and shutdown for native, MCP, and manifest adapters. <code>/status</code> reports the active composition, contribution health, cleanup assurance, coded diagnostics, and compatibility parity.</li>
+  </ul>
+  <p>
+    Quarantine prevents ordinary activation or silent respawn; it does not mean the code ran in a sandbox.
+  </p>
+
+  <h2>MCP HostActions</h2>
+  <p>
+    MCP result metadata may propose declarative HostActions, but the server does not execute host
+    effects by declaration alone. Omegon requires the dispatching MCP tool's live parent lease,
+    verifies that requested effects fit within it, and consumes each child identity once. Manual
+    approval is only one gate and cannot widen project policy, runtime policy, or origin trust.
+    A lease-less or over-broad action fails closed.
+  </p>
+
   <h2>Dynamic tool inventory</h2>
   <p>
     Tool visibility is assembled at runtime from core tools, enabled capability groups,

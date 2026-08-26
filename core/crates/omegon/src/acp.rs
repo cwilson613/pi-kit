@@ -672,6 +672,28 @@ struct AcpTurnState {
     last_error: Option<String>,
 }
 
+const ACP_CANONICAL_NOTIFICATION_DRAIN_LIMIT: usize = 256;
+
+#[derive(Debug, Default)]
+pub(crate) struct AcpCanonicalNotificationDrain {
+    canonical_complete: bool,
+    drained: usize,
+}
+
+impl AcpCanonicalNotificationDrain {
+    pub(crate) fn mark_complete(&mut self) {
+        self.canonical_complete = true;
+    }
+
+    pub(crate) fn permit_queued_event(&mut self) -> bool {
+        if !self.canonical_complete || self.drained >= ACP_CANONICAL_NOTIFICATION_DRAIN_LIMIT {
+            return false;
+        }
+        self.drained += 1;
+        true
+    }
+}
+
 pub struct OmegonAcpAgent {
     model: String,
     transport: &'static str,
@@ -681,6 +703,17 @@ pub struct OmegonAcpAgent {
     session_cwd: RefCell<Option<std::path::PathBuf>>,
     turn_state: RefCell<AcpTurnState>,
     secrets: RefCell<Option<std::sync::Arc<omegon_secrets::SecretsManager>>>,
+    work_snapshot: RefCell<Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>>,
+    work_snapshot_rx: RefCell<
+        Option<
+            tokio::sync::oneshot::Receiver<
+                Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
+            >,
+        >,
+    >,
+    lifecycle_binding: RefCell<Option<crate::lifecycle_service::LifecycleBinding>>,
+    lifecycle_binding_rx:
+        RefCell<Option<tokio::sync::oneshot::Receiver<crate::lifecycle_service::LifecycleBinding>>>,
     host_caps: RefCell<HostCapabilities>,
     extension_metadata: Rc<RefCell<std::collections::BTreeMap<String, serde_json::Value>>>,
     extension_rpc_handles:
@@ -691,6 +724,13 @@ pub struct OmegonAcpAgent {
 }
 
 impl OmegonAcpAgent {
+    fn clear_work_snapshot_capture(&self) {
+        self.work_snapshot.borrow_mut().take();
+        self.work_snapshot_rx.borrow_mut().take();
+        self.lifecycle_binding.borrow_mut().take();
+        self.lifecycle_binding_rx.borrow_mut().take();
+    }
+
     pub fn new(model: &str) -> Self {
         Self::new_with_extension_metadata(model, Default::default())
     }
@@ -747,6 +787,10 @@ impl OmegonAcpAgent {
             session_cwd: RefCell::new(None),
             turn_state: RefCell::new(AcpTurnState::default()),
             secrets: RefCell::new(None),
+            work_snapshot: RefCell::new(None),
+            work_snapshot_rx: RefCell::new(None),
+            lifecycle_binding: RefCell::new(None),
+            lifecycle_binding_rx: RefCell::new(None),
             host_caps: RefCell::new(HostCapabilities::default()),
             extension_metadata: Rc::new(RefCell::new(extension_metadata)),
             extension_rpc_handles: Rc::new(RefCell::new(Default::default())),
@@ -791,8 +835,8 @@ impl OmegonAcpAgent {
     ) -> Vec<SessionConfigOption> {
         let catalog = crate::model_catalog::ModelCatalog::discover();
         let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
-        let projection =
-            crate::surfaces::model_menu::project_model_menu(&catalog, &preferences, current_model);
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
+        let projection = crate::surfaces::model_menu::project_model_menu(&snapshot, current_model);
         let mut model_options: Vec<SessionConfigSelectOption> = projection
             .favorite_groups
             .into_iter()
@@ -815,8 +859,7 @@ impl OmegonAcpAgent {
         // provider inventory and de-duplicating favorites.
         for provider in projection.providers {
             let Some(group) = crate::surfaces::model_menu::project_provider_inventory(
-                &catalog,
-                &preferences,
+                &snapshot,
                 current_model,
                 &provider.provider_id,
             ) else {
@@ -946,6 +989,17 @@ impl OmegonAcpAgent {
     }
 
     fn ensure_worker(&self, cwd: &std::path::Path) {
+        let cwd_changed = self
+            .session_cwd
+            .borrow()
+            .as_ref()
+            .is_some_and(|active| active != cwd);
+        if cwd_changed {
+            if let Some(worker) = self.worker.borrow_mut().take() {
+                let _ = worker.request_tx.try_send(WorkerRequest::Shutdown);
+            }
+            self.clear_work_snapshot_capture();
+        }
         if self.worker.borrow().is_none() {
             // Build HostContext if the client advertised any delegatable capabilities.
             let host_ctx = if self.host_caps.borrow().has_any_delegation() {
@@ -994,6 +1048,18 @@ impl OmegonAcpAgent {
                     *secrets_cell.borrow_mut() = Some(mgr);
                 }
             });
+            let work_snapshot_rx = std::mem::replace(
+                &mut handle.work_snapshot_rx,
+                tokio::sync::oneshot::channel().1,
+            );
+            self.work_snapshot.borrow_mut().take();
+            *self.work_snapshot_rx.borrow_mut() = Some(work_snapshot_rx);
+            let lifecycle_binding_rx = std::mem::replace(
+                &mut handle.lifecycle_binding_rx,
+                tokio::sync::oneshot::channel().1,
+            );
+            self.lifecycle_binding.borrow_mut().take();
+            *self.lifecycle_binding_rx.borrow_mut() = Some(lifecycle_binding_rx);
 
             // Persistent lifecycle subscriber. Worker setup can emit extension
             // metadata/handles before any prompt is sent; prompt-time subscribers
@@ -1334,20 +1400,17 @@ impl OmegonAcpAgent {
 
     async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse> {
         let cwd = args.cwd.clone();
-        *self.session_cwd.borrow_mut() = Some(cwd.clone());
-
-        // Create session ID *before* ensure_worker so the proxy pump
-        // receives the correct session ID for host RPC calls.
-        let sid = SessionId::new(format!(
-            "omegon-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ));
-        *self.session_id.borrow_mut() = Some(sid.clone());
-
         self.ensure_worker(&cwd);
+        let (ack, replaced) = tokio::sync::oneshot::channel();
+        self.send_to_worker_ack(WorkerRequest::NewSession { ack })
+            .await;
+        let session_id = replaced
+            .await
+            .map_err(|_| Error::internal_error())?
+            .map_err(|message| Error::new(i32::from(ErrorCode::InternalError), message))?;
+        let sid = SessionId::new(session_id);
+        *self.session_cwd.borrow_mut() = Some(cwd.clone());
+        *self.session_id.borrow_mut() = Some(sid.clone());
 
         // Forward client-provided MCP servers to the worker.
         if !args.mcp_servers.is_empty() {
@@ -1468,6 +1531,7 @@ impl OmegonAcpAgent {
             .map(|w| w.event_rx.resubscribe());
 
         let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let (canonical_complete_tx, mut canonical_complete_rx) = tokio::sync::watch::channel(false);
 
         if let Some(mut event_rx) = event_rx {
             let conn = self.conn.clone();
@@ -1488,8 +1552,31 @@ impl OmegonAcpAgent {
                 let mut surface_adapter =
                     AcpConversationSurfaceAdapter::with_turn_id(stream_sid.to_string());
                 let mut native_plan_tool_ids = std::collections::BTreeSet::new();
+                let mut canonical_drain = AcpCanonicalNotificationDrain::default();
                 loop {
-                    match event_rx.recv().await {
+                    let event = if *canonical_complete_rx.borrow() {
+                        canonical_drain.mark_complete();
+                        if !canonical_drain.permit_queued_event() {
+                            break;
+                        }
+                        match event_rx.try_recv() {
+                            Ok(event) => Ok(event),
+                            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                            | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                        }
+                    } else {
+                        tokio::select! {
+                            event = event_rx.recv() => event,
+                            changed = canonical_complete_rx.changed() => {
+                                if changed.is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                    };
+                    match event {
                         Ok(WorkerEvent::TextChunk(text)) => {
                             shadow_surface_update(
                                 conn.borrow().as_ref(),
@@ -1820,6 +1907,8 @@ impl OmegonAcpAgent {
         let worker_resp = match response_rx.await {
             Ok(response) => response,
             Err(_) => {
+                canonical_complete_tx.send_replace(true);
+                let _ = done_rx.await;
                 *self.turn_state.borrow_mut() = AcpTurnState {
                     phase: AcpTurnPhase::Failed,
                     last_error: Some("ACP worker dropped the prompt response".into()),
@@ -1827,6 +1916,7 @@ impl OmegonAcpAgent {
                 return Err(Error::internal_error());
             }
         };
+        canonical_complete_tx.send_replace(true);
         let _ = done_rx.await;
 
         let next_turn_state = if let Some(error) = &worker_resp.error {
@@ -2042,26 +2132,35 @@ impl OmegonAcpAgent {
             .map_err(|_| Error::internal_error())?
             .map_err(|message| Error::new(i32::from(ErrorCode::InternalError), message))?;
 
-        // ACP load-session requires the agent to replay the restored transcript
-        // through session/update notifications before returning. Historical tool
-        // activity is intentionally absent from this projection so replay cannot
-        // fabricate live execution state.
+        // Worker replacement and transport identity publish together before any
+        // best-effort historical notifications. A disconnected client cannot
+        // leave the worker on the target while transport state still names the
+        // old session.
+        *self.session_cwd.borrow_mut() = Some(args.cwd.clone());
+        *self.session_id.borrow_mut() = Some(args.session_id.clone());
+
+        // Historical tool activity is intentionally absent so replay cannot
+        // fabricate live execution state. Notification loss does not roll back
+        // or split the already-published host identity.
         if let Some(connection) = self.conn.borrow().clone() {
-            for message in replay {
+            let _ = send_session_update(
+                &connection,
+                args.session_id.clone(),
+                SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title(format!(
+                    "Session history: {} (frontier {})",
+                    replay.status, replay.frontier_sequence
+                ))),
+            )
+            .await;
+            for message in replay.messages {
                 let content = ContentChunk::new(ContentBlock::Text(TextContent::new(message.text)));
                 let update = match message.role {
                     acp_worker::AcpReplayRole::User => SessionUpdate::UserMessageChunk(content),
                     acp_worker::AcpReplayRole::Agent => SessionUpdate::AgentMessageChunk(content),
                 };
-                send_session_update(&connection, args.session_id.clone(), update).await?;
+                let _ = send_session_update(&connection, args.session_id.clone(), update).await;
             }
         }
-
-        // Publish the new active identity only after worker restoration and
-        // transcript replay both succeed. A malformed session or failed client
-        // notification must not leave transport state pointing at partial content.
-        *self.session_cwd.borrow_mut() = Some(args.cwd.clone());
-        *self.session_id.borrow_mut() = Some(args.session_id.clone());
 
         let (model, thinking, _posture, context, profile) = self.current_settings();
         let mut response = LoadSessionResponse::new();
@@ -2094,6 +2193,7 @@ impl OmegonAcpAgent {
         self.send_to_worker(WorkerRequest::Cancel).await;
         self.send_to_worker(WorkerRequest::Shutdown).await;
         *self.worker.borrow_mut() = None;
+        self.clear_work_snapshot_capture();
         *self.session_id.borrow_mut() = None;
         *self.session_cwd.borrow_mut() = None;
         *self.turn_state.borrow_mut() = AcpTurnState::default();
@@ -2116,11 +2216,23 @@ impl OmegonAcpAgent {
 
 impl OmegonAcpAgent {
     fn acp_plan_projection_json(&self) -> serde_json::Value {
-        let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
-        let repo_root = crate::setup::find_project_root(&cwd);
-        crate::acp_plan_tasks::projection_json(&repo_root)
+        if self.work_snapshot.borrow().is_none() {
+            let received = self
+                .work_snapshot_rx
+                .borrow_mut()
+                .as_mut()
+                .map(tokio::sync::oneshot::Receiver::try_recv);
+            if let Some(Ok(snapshot)) = received {
+                *self.work_snapshot.borrow_mut() = snapshot;
+                self.work_snapshot_rx.borrow_mut().take();
+            } else if matches!(
+                received,
+                Some(Err(tokio::sync::oneshot::error::TryRecvError::Closed))
+            ) {
+                self.work_snapshot_rx.borrow_mut().take();
+            }
+        }
+        crate::acp_plan_tasks::projection_json(self.work_snapshot.borrow().as_deref())
     }
 
     fn repo_relative_path(&self, path: &std::path::Path) -> String {
@@ -2448,26 +2560,33 @@ impl OmegonAcpAgent {
         })
     }
 
-    fn lifecycle_repo_root(&self) -> std::path::PathBuf {
-        let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
-        crate::setup::find_project_root(&cwd)
+    async fn captured_lifecycle_binding(
+        &self,
+    ) -> anyhow::Result<crate::lifecycle_service::LifecycleBinding> {
+        if let Some(binding) = self.lifecycle_binding.borrow().clone() {
+            return Ok(binding);
+        }
+        let receiver = self.lifecycle_binding_rx.borrow_mut().take();
+        let binding = receiver
+            .ok_or_else(|| anyhow::anyhow!("managed lifecycle service is unavailable"))?
+            .await
+            .map_err(|_| anyhow::anyhow!("managed lifecycle binding transfer failed"))?;
+        *self.lifecycle_binding.borrow_mut() = Some(binding.clone());
+        Ok(binding)
     }
 
-    fn lifecycle_read_handle(&self) -> crate::lifecycle::read_model::LifecycleReadHandle {
-        let repo_root = self.lifecycle_repo_root();
-        let provider = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::lifecycle::context::LifecycleContextProvider::new(&repo_root),
-        ));
-        let opsx = std::sync::Arc::new(std::sync::Mutex::new(
-            omegon_opsx::Lifecycle::load(omegon_opsx::JsonFileStore::new(&repo_root))
-                .expect("lifecycle store should load"),
-        ));
-        crate::lifecycle::read_model::LifecycleReadHandle::new(provider, opsx, repo_root)
+    async fn lifecycle_request(
+        &self,
+        request: crate::lifecycle_service::LifecycleRequestV1,
+    ) -> anyhow::Result<crate::lifecycle_service::LifecycleResponseV1> {
+        self.captured_lifecycle_binding()
+            .await?
+            .invoke(request)
+            .await
+            .map_err(|error| anyhow::anyhow!("managed lifecycle request failed: {error:?}"))
     }
 
-    fn acp_lifecycle_snapshot_json(
+    async fn acp_lifecycle_snapshot_json(
         &self,
         params: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
@@ -2479,13 +2598,21 @@ impl OmegonAcpAgent {
             .get("include_specs")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let snapshot = self.lifecycle_read_handle().snapshot(
-            crate::lifecycle::read_model::SnapshotOptions {
-                include_archived,
-                include_specs,
-            },
-        )?;
+        let response = self
+            .lifecycle_request(crate::lifecycle_service::LifecycleRequestV1::Snapshot {
+                options: crate::lifecycle::read_model::SnapshotOptions {
+                    include_archived,
+                    include_specs,
+                },
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await?;
+        let crate::lifecycle_service::LifecyclePayloadV1::Snapshot(snapshot) = response.payload
+        else {
+            anyhow::bail!("managed lifecycle returned an unexpected snapshot response");
+        };
         Ok(serde_json::json!({
+            "revision": response.revision,
             "openspec": {
                 "total_tasks": snapshot.openspec.total_tasks,
                 "done_tasks": snapshot.openspec.done_tasks,
@@ -2518,11 +2645,17 @@ impl OmegonAcpAgent {
         }))
     }
 
-    fn acp_lifecycle_design_list_json(&self) -> anyhow::Result<serde_json::Value> {
-        let repo_root = self.lifecycle_repo_root();
-        let mut provider = crate::lifecycle::context::LifecycleContextProvider::new(&repo_root);
-        provider.refresh();
-        let nodes = provider.all_nodes();
+    async fn acp_lifecycle_design_list_json(&self) -> anyhow::Result<serde_json::Value> {
+        let response = self
+            .lifecycle_request(crate::lifecycle_service::LifecycleRequestV1::DesignTree {
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await?;
+        let crate::lifecycle_service::LifecyclePayloadV1::DesignTree(snapshot) = response.payload
+        else {
+            anyhow::bail!("managed lifecycle returned an unexpected design-tree response");
+        };
+        let nodes = snapshot.nodes;
         let list = nodes
             .values()
             .filter(|n| !crate::lifecycle::query::is_archived(n))
@@ -2538,14 +2671,14 @@ impl OmegonAcpAgent {
                     "branches": n.branches,
                     "openspec_change": n.openspec_change,
                     "priority": n.priority,
-                    "children": crate::lifecycle::design::get_children(nodes, &n.id).len(),
+                    "children": crate::lifecycle::design::get_children(&nodes, &n.id).len(),
                 })
             })
             .collect::<Vec<_>>();
-        Ok(serde_json::json!({ "nodes": list }))
+        Ok(serde_json::json!({ "revision": response.revision, "nodes": list }))
     }
 
-    fn acp_lifecycle_design_get_json(
+    async fn acp_lifecycle_design_get_json(
         &self,
         params: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
@@ -2553,14 +2686,29 @@ impl OmegonAcpAgent {
             .get("node_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("node_id required"))?;
-        let repo_root = self.lifecycle_repo_root();
-        let provider = crate::lifecycle::context::LifecycleContextProvider::new(&repo_root);
-        let node = provider
-            .get_node(node_id)
+        let response = self
+            .lifecycle_request(
+                crate::lifecycle_service::LifecycleRequestV1::ObserveDesignNode {
+                    id: node_id.into(),
+                    include_sections: true,
+                    include_tree_context: true,
+                    cancellation: tokio_util::sync::CancellationToken::new(),
+                },
+            )
+            .await?;
+        let crate::lifecycle_service::LifecyclePayloadV1::DesignNode(observation) =
+            response.payload
+        else {
+            anyhow::bail!("managed lifecycle returned an unexpected design-node response");
+        };
+        let observation = observation
+            .as_ref()
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Node '{node_id}' not found"))?;
-        let sections = crate::lifecycle::design::read_node_sections(node);
-        let children = crate::lifecycle::query::children(provider.all_nodes(), node_id);
+        let node = &observation.node;
+        let sections = observation.sections.as_ref();
         let mut result = serde_json::json!({
+            "revision": response.revision,
             "id": node.id,
             "title": node.title,
             "status": node.status.as_str(),
@@ -2572,17 +2720,17 @@ impl OmegonAcpAgent {
             "branches": node.branches,
             "openspec_change": node.openspec_change,
             "priority": node.priority,
-            "children": children.into_iter().map(|c| serde_json::json!({
-                "id": c.id,
-                "title": c.title,
-                "status": c.status,
+            "children": observation.children.as_deref().unwrap_or_default().iter().map(|child| serde_json::json!({
+                "id": child.id,
+                "title": child.title,
+                "status": child.status,
             })).collect::<Vec<_>>(),
         });
         if let Some(s) = sections {
             result["overview"] = serde_json::json!(s.overview);
             result["research"] = serde_json::json!(
                 s.research
-                    .into_iter()
+                    .iter()
                     .map(|r| serde_json::json!({
                         "heading": r.heading,
                         "content": r.content,
@@ -2591,7 +2739,7 @@ impl OmegonAcpAgent {
             );
             result["decisions"] = serde_json::json!(
                 s.decisions
-                    .into_iter()
+                    .iter()
                     .map(|d| serde_json::json!({
                         "title": d.title,
                         "status": d.status,
@@ -2604,35 +2752,52 @@ impl OmegonAcpAgent {
         Ok(result)
     }
 
-    fn acp_lifecycle_design_query_json(&self, query: &str) -> anyhow::Result<serde_json::Value> {
-        let repo_root = self.lifecycle_repo_root();
-        let provider = crate::lifecycle::context::LifecycleContextProvider::new(&repo_root);
-        let nodes = provider.all_nodes();
-        match query {
-            "ready" => Ok(serde_json::json!({
-                "nodes": crate::lifecycle::query::ready(nodes).into_iter().map(|n| serde_json::json!({
+    async fn acp_lifecycle_design_query_json(
+        &self,
+        query: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let query_kind = match query {
+            "ready" => crate::lifecycle_service::LifecycleReadQueryV1::Ready,
+            "blocked" => crate::lifecycle_service::LifecycleReadQueryV1::Blocked,
+            "frontier" => crate::lifecycle_service::LifecycleReadQueryV1::Frontier,
+            _ => anyhow::bail!("unknown lifecycle design query: {query}"),
+        };
+        let response = self
+            .lifecycle_request(crate::lifecycle_service::LifecycleRequestV1::QueryDesign {
+                query: query_kind,
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await?;
+        match response.payload {
+            crate::lifecycle_service::LifecyclePayloadV1::Ready(nodes) => Ok(serde_json::json!({
+                "revision": response.revision,
+                "nodes": nodes.into_iter().map(|n| serde_json::json!({
                     "id": n.id,
                     "title": n.title,
                     "priority": n.priority,
                 })).collect::<Vec<_>>()
             })),
-            "blocked" => Ok(serde_json::json!({
-                "nodes": crate::lifecycle::query::blocked(nodes).into_iter().map(|n| serde_json::json!({
+            crate::lifecycle_service::LifecyclePayloadV1::Blocked(nodes) => Ok(serde_json::json!({
+                "revision": response.revision,
+                "nodes": nodes.into_iter().map(|n| serde_json::json!({
                     "id": n.id,
                     "title": n.title,
                     "status": n.status,
                     "blocked_by": n.blocked_by,
                 })).collect::<Vec<_>>()
             })),
-            "frontier" => Ok(serde_json::json!({
-                "nodes": crate::lifecycle::query::frontier(nodes).into_iter().map(|n| serde_json::json!({
-                    "id": n.id,
-                    "title": n.title,
-                    "status": n.status,
-                    "open_questions": n.open_questions,
-                })).collect::<Vec<_>>()
-            })),
-            _ => anyhow::bail!("unknown lifecycle design query: {query}"),
+            crate::lifecycle_service::LifecyclePayloadV1::Frontier(nodes) => {
+                Ok(serde_json::json!({
+                    "revision": response.revision,
+                    "nodes": nodes.into_iter().map(|n| serde_json::json!({
+                        "id": n.id,
+                        "title": n.title,
+                        "status": n.status,
+                        "open_questions": n.open_questions,
+                    })).collect::<Vec<_>>()
+                }))
+            }
+            _ => anyhow::bail!("managed lifecycle returned an unexpected design-query response"),
         }
     }
 
@@ -2650,16 +2815,21 @@ impl OmegonAcpAgent {
         use crate::extensions::{ExtensionManifest, ExtensionState, config_store};
 
         let extensions_dir = crate::extension_cli::extensions_dir()?;
+        let session_cwd = self
+            .session_cwd
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
 
         match method {
             "runtime/status" => Ok(self.runtime_status_json()),
 
-            "lifecycle/snapshot" => self.acp_lifecycle_snapshot_json(params),
-            "lifecycle/design/list" => self.acp_lifecycle_design_list_json(),
-            "lifecycle/design/get" => self.acp_lifecycle_design_get_json(params),
-            "lifecycle/design/ready" => self.acp_lifecycle_design_query_json("ready"),
-            "lifecycle/design/blocked" => self.acp_lifecycle_design_query_json("blocked"),
-            "lifecycle/design/frontier" => self.acp_lifecycle_design_query_json("frontier"),
+            "lifecycle/snapshot" => self.acp_lifecycle_snapshot_json(params).await,
+            "lifecycle/design/list" => self.acp_lifecycle_design_list_json().await,
+            "lifecycle/design/get" => self.acp_lifecycle_design_get_json(params).await,
+            "lifecycle/design/ready" => self.acp_lifecycle_design_query_json("ready").await,
+            "lifecycle/design/blocked" => self.acp_lifecycle_design_query_json("blocked").await,
+            "lifecycle/design/frontier" => self.acp_lifecycle_design_query_json("frontier").await,
 
             "provider/status" => Ok(self.provider_status_json()),
 
@@ -3082,13 +3252,38 @@ impl OmegonAcpAgent {
                     .get("params")
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!({}));
-                extension_rpc::call_extension_rpc(
-                    &self.extension_rpc_handles,
-                    extension,
-                    rpc_method,
-                    rpc_params,
-                )
-                .await
+                if rpc_method.trim().is_empty() {
+                    anyhow::bail!("invalid_request: 'method' field must not be empty");
+                }
+                if !self.extension_rpc_handles.borrow().contains_key(extension) {
+                    anyhow::bail!(
+                        "extension_not_loaded: extension '{extension}' is not loaded or is not callable"
+                    );
+                }
+                let request_tx = self
+                    .worker
+                    .borrow()
+                    .as_ref()
+                    .map(|worker| worker.request_tx.clone())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("worker_unavailable: ACP worker is not running")
+                    })?;
+                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                request_tx
+                    .send(WorkerRequest::ExtensionRpcCall {
+                        extension: extension.to_string(),
+                        method: rpc_method.to_string(),
+                        params: rpc_params,
+                        response_tx,
+                    })
+                    .await
+                    .map_err(|_| anyhow::anyhow!("worker_unavailable: ACP worker stopped"))?;
+                response_rx
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("worker_unavailable: ACP worker dropped response")
+                    })?
+                    .map_err(|error| anyhow::anyhow!("method_failed: {error}"))
             }
 
             "extensions/get" => {
@@ -3209,22 +3404,7 @@ impl OmegonAcpAgent {
                 let value = params["value"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'value' field"))?;
-                let ext_dir = extensions_dir.join(ext_name);
-                if !ext_dir.exists() {
-                    anyhow::bail!("extension '{ext_name}' not found");
-                }
-                let manifest = ExtensionManifest::from_extension_dir(&ext_dir)?;
-                if !manifest.config.is_empty() {
-                    let field = manifest.config.get(key).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "unknown config key '{key}' for extension '{ext_name}'. \
-                             Declared keys: {:?}",
-                            manifest.config.keys().collect::<Vec<_>>()
-                        )
-                    })?;
-                    config_store::validate_field(field, value)?;
-                }
-                config_store::write_config_value(&ext_dir, key, value)?;
+                crate::extension_cli::set_config(ext_name, key, value)?;
                 Ok(serde_json::json!({ "ok": true }))
             }
 
@@ -3378,13 +3558,7 @@ impl OmegonAcpAgent {
                 let ext_name = params["extension"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'extension' field"))?;
-                let ext_dir = extensions_dir.join(ext_name);
-                if !ext_dir.exists() {
-                    anyhow::bail!("extension '{ext_name}' not found");
-                }
-                let mut state = ExtensionState::load(&ext_dir).unwrap_or_default();
-                state.mark_enabled();
-                state.save(&ext_dir)?;
+                crate::extension_cli::enable(ext_name)?;
                 Ok(serde_json::json!({ "ok": true }))
             }
 
@@ -3392,13 +3566,7 @@ impl OmegonAcpAgent {
                 let ext_name = params["extension"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'extension' field"))?;
-                let ext_dir = extensions_dir.join(ext_name);
-                if !ext_dir.exists() {
-                    anyhow::bail!("extension '{ext_name}' not found");
-                }
-                let mut state = ExtensionState::load(&ext_dir).unwrap_or_default();
-                state.mark_disabled();
-                state.save(&ext_dir)?;
+                crate::extension_cli::disable(ext_name)?;
                 Ok(serde_json::json!({ "ok": true }))
             }
 
@@ -3514,8 +3682,9 @@ impl OmegonAcpAgent {
 
             "catalog/list" => {
                 let home = crate::paths::omegon_home()?;
-                let entries: Vec<serde_json::Value> = crate::catalog::list(&home)
-                    .into_iter()
+                let listing = crate::catalog::list(&home)?;
+                let entries: Vec<serde_json::Value> = listing
+                    .iter()
                     .map(|e| {
                         serde_json::json!({
                             "id": e.id,
@@ -3542,7 +3711,7 @@ impl OmegonAcpAgent {
                     "version": m.agent.version,
                     "description": m.agent.description,
                     "domain": m.agent.domain,
-                    "path": resolved.bundle_dir.display().to_string(),
+                    "path": resolved.display_bundle_dir().display().to_string(),
                 });
                 let obj = result.as_object_mut().unwrap();
                 if let Some(ref persona) = m.persona {
@@ -3605,114 +3774,76 @@ impl OmegonAcpAgent {
                 let agent_id = params["id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'id' field"))?;
-                if agent_id.contains('/')
-                    || agent_id.contains('\\')
-                    || agent_id.contains("..")
-                    || agent_id.contains('\0')
-                {
-                    anyhow::bail!("invalid agent ID: path traversal rejected");
-                }
                 let home = crate::paths::omegon_home()?;
-                let catalog_dir = home.join("catalog");
-                // Find by directory name or by agent.id in manifests
-                let entries = crate::catalog::list(&home);
-                let entry = entries
-                    .iter()
-                    .find(|e| e.id == agent_id)
-                    .ok_or_else(|| anyhow::anyhow!("catalog agent '{agent_id}' not found"))?;
-                if entry.bundle_dir.exists() {
-                    // Safety: ensure we're only removing from within catalog/
-                    if !entry.bundle_dir.starts_with(&catalog_dir) {
-                        anyhow::bail!("refusing to remove agent outside catalog directory");
-                    }
-                    std::fs::remove_dir_all(&entry.bundle_dir)?;
-                }
+                crate::catalog::remove(&home, agent_id)?;
                 Ok(serde_json::json!({ "ok": true }))
             }
 
             // ── Personas ──────────────────────────────────────────
-            "personas/list" => {
-                let (personas, tones) = crate::plugins::persona_loader::scan_available();
-                let persona_entries: Vec<serde_json::Value> = personas
-                    .iter()
-                    .map(|p| {
-                        let directive =
-                            std::fs::read_to_string(p.path.join("PERSONA.md")).unwrap_or_default();
-                        serde_json::json!({
-                            "id": p.id,
-                            "name": p.name,
-                            "description": p.description,
-                            "directive_preview": if directive.len() > 500 {
-                                format!("{}...", crate::util::truncate_str(&directive, 500))
-                            } else {
-                                directive
-                            },
-                            "path": p.path.display().to_string(),
+            "personas/list" => Ok(crate::plugins::persona_loader::with_available(
+                &session_cwd,
+                |personas, tones| {
+                    let persona_entries: Vec<serde_json::Value> = personas
+                        .iter()
+                        .map(|p| {
+                            let directive = p
+                                .persona()
+                                .map(|persona| persona.directive.as_str())
+                                .unwrap_or("");
+                            serde_json::json!({
+                                "id": p.id,
+                                "name": p.name,
+                                "description": p.description,
+                                "directive_preview": if directive.len() > 500 {
+                                    format!("{}...", crate::util::truncate_str(directive, 500))
+                                } else {
+                                    directive.to_string()
+                                },
+                                "path": p.path.display().to_string(),
+                            })
                         })
-                    })
-                    .collect();
-                let tone_entries: Vec<serde_json::Value> = tones
-                    .iter()
-                    .map(|t| {
-                        serde_json::json!({
-                            "id": t.id,
-                            "name": t.name,
-                            "description": t.description,
-                            "path": t.path.display().to_string(),
+                        .collect();
+                    let tone_entries: Vec<serde_json::Value> = tones
+                        .iter()
+                        .map(|t| {
+                            serde_json::json!({
+                                "id": t.id,
+                                "name": t.name,
+                                "description": t.description,
+                                "path": t.path.display().to_string(),
+                            })
                         })
+                        .collect();
+                    serde_json::json!({
+                        "personas": persona_entries,
+                        "tones": tone_entries,
                     })
-                    .collect();
-                Ok(serde_json::json!({
-                    "personas": persona_entries,
-                    "tones": tone_entries,
-                }))
-            }
+                },
+            )),
 
             "personas/get" => {
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'id' field"))?;
-                let (personas, _) = crate::plugins::persona_loader::scan_available();
-                let p = personas
-                    .iter()
-                    .find(|p| p.id == id)
-                    .ok_or_else(|| anyhow::anyhow!("persona '{id}' not found"))?;
-                let directive =
-                    std::fs::read_to_string(p.path.join("PERSONA.md")).unwrap_or_default();
-                let manifest_content =
-                    std::fs::read_to_string(p.path.join("plugin.toml")).unwrap_or_default();
-
-                // Parse disabled_tools and badge from manifest
-                let manifest =
-                    crate::plugins::armory::ArmoryManifest::parse(&manifest_content).ok();
-                let disabled_tools: Vec<String> = manifest
-                    .as_ref()
-                    .and_then(|m| m.persona.as_ref())
-                    .and_then(|p| p.tools.as_ref())
-                    .map(|t| t.disable.clone())
-                    .unwrap_or_default();
-                let activated_skills: Vec<String> = manifest
-                    .as_ref()
-                    .and_then(|m| m.persona.as_ref())
-                    .and_then(|p| p.skills.as_ref())
-                    .map(|s| s.activate.clone())
-                    .unwrap_or_default();
-                let badge = manifest
-                    .as_ref()
-                    .and_then(|m| m.persona.as_ref())
-                    .and_then(|p| p.style.as_ref())
-                    .and_then(|s| s.badge.clone());
-
-                Ok(serde_json::json!({
-                    "id": p.id,
-                    "name": p.name,
-                    "description": p.description,
-                    "directive": directive,
-                    "disabled_tools": disabled_tools,
-                    "activated_skills": activated_skills,
-                    "badge": badge,
-                    "path": p.path.display().to_string(),
-                }))
+                crate::plugins::persona_loader::with_available(&session_cwd, |personas, _| {
+                    let p = personas
+                        .iter()
+                        .find(|p| p.id == id)
+                        .ok_or_else(|| anyhow::anyhow!("persona '{id}' not found"))?;
+                    let loaded = p
+                        .persona()
+                        .ok_or_else(|| anyhow::anyhow!("persona '{id}' content is unavailable"))?;
+                    Ok(serde_json::json!({
+                        "id": p.id,
+                        "name": p.name,
+                        "description": p.description,
+                        "directive": loaded.directive,
+                        "disabled_tools": loaded.disabled_tools,
+                        "activated_skills": loaded.activated_skills,
+                        "badge": loaded.badge,
+                        "path": p.path.display().to_string(),
+                    }))
+                })
             }
 
             "personas/create" => {
@@ -3746,54 +3877,16 @@ impl OmegonAcpAgent {
                 if slug.is_empty() || slug.contains("..") {
                     anyhow::bail!("invalid persona name — must contain alphanumeric characters");
                 }
-                let home = crate::paths::omegon_home()?;
-                let persona_dir = home.join("armory/personas").join(&slug);
-                std::fs::create_dir_all(&persona_dir)?;
-
                 let id = format!("user.{slug}");
-
-                // Build plugin.toml via toml serialization to prevent injection
-                let mut plugin = toml::Table::new();
-                let mut plugin_section = toml::Table::new();
-                plugin_section.insert("type".into(), "persona".into());
-                plugin_section.insert("id".into(), id.clone().into());
-                plugin_section.insert("name".into(), name.into());
-                plugin_section.insert("version".into(), "1.0.0".into());
-                plugin_section.insert("description".into(), description.into());
-                plugin.insert("plugin".into(), toml::Value::Table(plugin_section));
-
-                let mut persona = toml::Table::new();
-                let mut identity = toml::Table::new();
-                identity.insert("directive".into(), "PERSONA.md".into());
-                persona.insert("identity".into(), toml::Value::Table(identity));
-
-                if !disabled_tools.is_empty() {
-                    let mut tools = toml::Table::new();
-                    tools.insert(
-                        "disable".into(),
-                        toml::Value::Array(
-                            disabled_tools
-                                .iter()
-                                .map(|s| toml::Value::String(s.clone()))
-                                .collect(),
-                        ),
-                    );
-                    persona.insert("tools".into(), toml::Value::Table(tools));
-                }
-
-                if let Some(b) = badge {
-                    let mut style = toml::Table::new();
-                    style.insert("badge".into(), b.into());
-                    persona.insert("style".into(), toml::Value::Table(style));
-                }
-
-                plugin.insert("persona".into(), toml::Value::Table(persona));
-
-                std::fs::write(
-                    persona_dir.join("plugin.toml"),
-                    toml::to_string_pretty(&plugin)?,
+                let persona_dir = crate::plugins::persona_loader::create_user_persona(
+                    &session_cwd,
+                    &slug,
+                    name,
+                    description,
+                    badge,
+                    &disabled_tools,
+                    directive,
                 )?;
-                std::fs::write(persona_dir.join("PERSONA.md"), directive)?;
 
                 Ok(serde_json::json!({
                     "ok": true,
@@ -3806,108 +3899,41 @@ impl OmegonAcpAgent {
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'id' field"))?;
-                let (personas, _) = crate::plugins::persona_loader::scan_available();
-                match personas.iter().find(|p| p.id == id) {
-                    Some(p) => {
-                        if p.path.exists() {
-                            std::fs::remove_dir_all(&p.path)?;
-                        }
-                        Ok(serde_json::json!({ "ok": true }))
-                    }
-                    None => anyhow::bail!("persona '{id}' not found"),
-                }
+                crate::plugins::persona_loader::delete_persona(&session_cwd, id)?;
+                Ok(serde_json::json!({ "ok": true }))
             }
 
             "personas/update" => {
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'id' field"))?;
-                let (personas, _) = crate::plugins::persona_loader::scan_available();
-                let p = personas
-                    .iter()
-                    .find(|p| p.id == id)
-                    .ok_or_else(|| anyhow::anyhow!("persona '{id}' not found"))?;
-                if !p.path.exists() {
-                    anyhow::bail!("persona directory not found at {}", p.path.display());
-                }
-
-                // Update directive if provided
-                if let Some(directive) = params.get("directive").and_then(|v| v.as_str()) {
-                    std::fs::write(p.path.join("PERSONA.md"), directive)?;
-                }
-
-                // Update manifest fields if any are provided
-                let manifest_path = p.path.join("plugin.toml");
-                let manifest_content = std::fs::read_to_string(&manifest_path)?;
-                let mut manifest: toml::Table = toml::from_str(&manifest_content)?;
-
-                if let Some(name) = params.get("name").and_then(|v| v.as_str())
-                    && let Some(plugin) = manifest.get_mut("plugin").and_then(|v| v.as_table_mut())
-                {
-                    plugin.insert("name".into(), name.into());
-                }
-                if let Some(desc) = params.get("description").and_then(|v| v.as_str())
-                    && let Some(plugin) = manifest.get_mut("plugin").and_then(|v| v.as_table_mut())
-                {
-                    plugin.insert("description".into(), desc.into());
-                }
-                if let Some(badge) = params.get("badge").and_then(|v| v.as_str()) {
-                    let persona = manifest
-                        .entry("persona")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    let style = persona
-                        .entry("style")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    style.insert("badge".into(), badge.into());
-                }
-                if let Some(disabled_tools) =
-                    params.get("disabled_tools").and_then(|v| v.as_array())
-                {
-                    let tools_arr: Vec<toml::Value> = disabled_tools
-                        .iter()
-                        .filter_map(|v| v.as_str().map(|s| toml::Value::String(s.to_string())))
-                        .collect();
-                    let persona = manifest
-                        .entry("persona")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    let tools = persona
-                        .entry("tools")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    tools.insert("disable".into(), toml::Value::Array(tools_arr));
-                }
-                if let Some(activated_skills) =
-                    params.get("activated_skills").and_then(|v| v.as_array())
-                {
-                    let skills_arr: Vec<toml::Value> = activated_skills
-                        .iter()
-                        .filter_map(|v| v.as_str().map(|s| toml::Value::String(s.to_string())))
-                        .collect();
-                    let persona = manifest
-                        .entry("persona")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    let skills = persona
-                        .entry("skills")
-                        .or_insert(toml::Value::Table(toml::Table::new()))
-                        .as_table_mut()
-                        .unwrap();
-                    skills.insert("activate".into(), toml::Value::Array(skills_arr));
-                }
-
-                std::fs::write(&manifest_path, toml::to_string_pretty(&manifest)?)?;
+                let string_array = |name: &str| {
+                    params
+                        .get(name)
+                        .and_then(|value| value.as_array())
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(String::from))
+                                .collect()
+                        })
+                };
+                let path = crate::plugins::persona_loader::update_persona(
+                    &session_cwd,
+                    id,
+                    crate::plugins::persona_loader::PersonaUpdate {
+                        directive: params.get("directive").and_then(|v| v.as_str()),
+                        name: params.get("name").and_then(|v| v.as_str()),
+                        description: params.get("description").and_then(|v| v.as_str()),
+                        badge: params.get("badge").and_then(|v| v.as_str()),
+                        disabled_tools: string_array("disabled_tools"),
+                        activated_skills: string_array("activated_skills"),
+                    },
+                )?;
 
                 Ok(serde_json::json!({
                     "ok": true,
-                    "path": p.path.display().to_string(),
+                    "path": path.display().to_string(),
                 }))
             }
 
@@ -4093,33 +4119,31 @@ impl OmegonAcpAgent {
             }
 
             // ── Prompt definitions ───────────────────────────────
-            "prompts/list" => {
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
-                Ok(
-                    serde_json::json!({ "prompts": crate::prompts::list_structured_for_project(&cwd)? }),
-                )
-            }
+            "prompts/list" => Ok(crate::prompts::with_list_for_project(
+                &session_cwd,
+                |prompts| serde_json::json!({ "prompts": prompts }),
+            )),
             "prompts/get" => {
                 let name = params["name"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'name' field"))?;
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
-                let (manifest, body, path) = crate::prompts::get_prompt_for_project(&cwd, name)?;
-                Ok(serde_json::json!({
-                    "name": name,
-                    "id": manifest.id,
-                    "title": manifest.title,
-                    "description": manifest.description,
-                    "tags": manifest.tags,
-                    "aliases": manifest.aliases,
-                    "safety": crate::prompts::safety_verdict(&body),
-                    "body": body,
-                    "path": path.display().to_string(),
-                }))
+                crate::prompts::with_prompt_for_project(
+                    &session_cwd,
+                    name,
+                    |manifest, body, path| {
+                        serde_json::json!({
+                            "name": name,
+                            "id": &manifest.id,
+                            "title": &manifest.title,
+                            "description": &manifest.description,
+                            "tags": &manifest.tags,
+                            "aliases": &manifest.aliases,
+                            "safety": crate::prompts::safety_verdict(body),
+                            "body": body,
+                            "path": path.display().to_string(),
+                        })
+                    },
+                )
             }
             "prompts/create" => {
                 let name = params["name"]
@@ -4132,11 +4156,8 @@ impl OmegonAcpAgent {
                     .get("project_local")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
                 let path = crate::prompts::write_prompt_for_project(
-                    &cwd,
+                    &session_cwd,
                     name,
                     content,
                     project_local,
@@ -4155,11 +4176,8 @@ impl OmegonAcpAgent {
                     .get("project_local")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
                 let path = crate::prompts::write_prompt_for_project(
-                    &cwd,
+                    &session_cwd,
                     name,
                     content,
                     project_local,
@@ -4171,36 +4189,35 @@ impl OmegonAcpAgent {
                 let name = params["name"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'name' field"))?;
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
-                let scope = crate::prompts::delete_prompt_for_project(&cwd, name)?;
+                let scope = crate::prompts::delete_prompt_for_project(&session_cwd, name)?;
                 Ok(serde_json::json!({ "ok": true, "scope": scope }))
             }
             "prompts/preview" | "prompts/resolve" | "prompts/submit" => {
                 let name = params["name"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'name' field"))?;
-                let cwd = self.session_cwd.borrow().clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
-                let (_manifest, body, path) = crate::prompts::get_prompt_for_project(&cwd, name)?;
                 let deprecated = method.ends_with("/submit");
-                Ok(serde_json::json!({
-                    "ok": true,
-                    "action": "preview",
-                    "deprecated": deprecated,
-                    "replacement": if deprecated { Some("_prompts/preview") } else { None },
-                    "execution_performed": false,
-                    "safety": crate::prompts::safety_verdict(&body),
-                    "prompt": body,
-                    "path": path.display().to_string(),
-                    "note": if deprecated {
-                        "Deprecated compatibility alias for preview; no submit, queue, or execution was performed."
-                    } else {
-                        "Prompt resolved for preview; direct ACP turn enqueue requires a stronger confirmation/trust flow."
-                    }
-                }))
+                crate::prompts::with_prompt_for_project(
+                    &session_cwd,
+                    name,
+                    |_manifest, body, path| {
+                        serde_json::json!({
+                            "ok": true,
+                            "action": "preview",
+                            "deprecated": deprecated,
+                            "replacement": if deprecated { Some("_prompts/preview") } else { None },
+                            "execution_performed": false,
+                            "safety": crate::prompts::safety_verdict(body),
+                            "prompt": body,
+                            "path": path.display().to_string(),
+                            "note": if deprecated {
+                                "Deprecated compatibility alias for preview; no submit, queue, or execution was performed."
+                            } else {
+                                "Prompt resolved for preview; direct ACP turn enqueue requires a stronger confirmation/trust flow."
+                            }
+                        })
+                    },
+                )
             }
 
             // ── Control requests (TUI parity) ────────────────────
@@ -5038,6 +5055,10 @@ mod extension_metadata_tests {
         .unwrap();
         let agent = Rc::new(OmegonAcpAgent::new("test-model"));
         *agent.session_cwd.borrow_mut() = Some(home.path().to_path_buf());
+        let (_bus, binding) = crate::lifecycle_service::test_binding(home.path().to_path_buf())
+            .await
+            .unwrap();
+        *agent.lifecycle_binding.borrow_mut() = Some(binding);
 
         let ready = handle_acp_request_result(
             agent.clone(),
@@ -5081,6 +5102,10 @@ mod extension_metadata_tests {
         .unwrap();
         let agent = Rc::new(OmegonAcpAgent::new("test-model"));
         *agent.session_cwd.borrow_mut() = Some(home.path().to_path_buf());
+        let (_bus, binding) = crate::lifecycle_service::test_binding(home.path().to_path_buf())
+            .await
+            .unwrap();
+        *agent.lifecycle_binding.borrow_mut() = Some(binding);
 
         let snapshot =
             handle_acp_request_result(agent, "_lifecycle/snapshot", &serde_json::json!({}))
@@ -5214,7 +5239,11 @@ mod extension_metadata_tests {
         )
         .unwrap();
         let agent = Rc::new(OmegonAcpAgent::new("test-model"));
-        *agent.session_cwd.borrow_mut() = Some(home.path().to_path_buf());
+        *agent.work_snapshot.borrow_mut() = Some(
+            crate::features::work_aggregation::WorkAggregationFeature::from_repository(home.path())
+                .await
+                .snapshot(),
+        );
 
         let plans = handle_acp_request_result(agent.clone(), "_plans/list", &serde_json::json!({}))
             .await
@@ -5304,6 +5333,20 @@ mod extension_metadata_tests {
         assert_eq!(stale["code"], "stale_revision");
     }
 
+    #[test]
+    fn worker_replacement_clears_cached_work_generation_and_pending_handoff() {
+        let agent = OmegonAcpAgent::new("test-model");
+        let runtime = styrene_work_runtime::WorkRuntime::new(Vec::new());
+        *agent.work_snapshot.borrow_mut() = Some(std::sync::Arc::new(runtime.snapshot().clone()));
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        *agent.work_snapshot_rx.borrow_mut() = Some(rx);
+
+        agent.clear_work_snapshot_capture();
+
+        assert!(agent.work_snapshot.borrow().is_none());
+        assert!(agent.work_snapshot_rx.borrow().is_none());
+    }
+
     #[tokio::test]
     async fn acp_plan_projection_reports_task_identity_findings() {
         let home = tempfile::tempdir().unwrap();
@@ -5326,7 +5369,11 @@ mod extension_metadata_tests {
         .unwrap();
 
         let agent = Rc::new(OmegonAcpAgent::new("test-model"));
-        *agent.session_cwd.borrow_mut() = Some(home.path().to_path_buf());
+        *agent.work_snapshot.borrow_mut() = Some(
+            crate::features::work_aggregation::WorkAggregationFeature::from_repository(home.path())
+                .await
+                .snapshot(),
+        );
         let response =
             handle_acp_request_result(agent.clone(), "_plans/list", &serde_json::json!({}))
                 .await
@@ -6003,19 +6050,23 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-    let extension_metadata = if let Some(id) = agent_id {
+    let _runtime_ownership = crate::workspace::runtime::RuntimeOwnership::start(cwd, "acp-stdio")?;
+
+    let (extension_metadata, _admitted_manifest) = if let Some(id) = agent_id {
         let shared_settings = crate::settings::shared(model);
-        crate::apply_agent_manifest_pre_setup(id, cwd, &shared_settings)?;
-        crate::setup::AgentSetup::new_with_safety(
+        let admitted = crate::apply_agent_manifest_pre_setup(id, cwd, &shared_settings)?;
+        let metadata = crate::setup::AgentSetup::new_with_safety_and_mode(
             cwd,
             None,
             Some(shared_settings),
             dangerously_bypass_permissions,
+            "acp",
         )
         .await?
-        .extension_metadata
+        .extension_metadata;
+        (metadata, Some(admitted))
     } else {
-        Default::default()
+        (Default::default(), None)
     };
 
     let agent = Rc::new(OmegonAcpAgent::new_with_extension_metadata_and_safety(
@@ -6023,6 +6074,7 @@ pub async fn run(
         extension_metadata,
         dangerously_bypass_permissions,
     ));
+    drop(_admitted_manifest);
 
     let stdout = tokio::io::stdout().compat_write();
     let stdin = tokio::io::stdin().compat();
@@ -6052,6 +6104,8 @@ pub async fn run_server(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
+
+    let _runtime_ownership = crate::workspace::runtime::RuntimeOwnership::start(cwd, "acp-server")?;
 
     let bind_addr: std::net::SocketAddr = addr
         .parse()

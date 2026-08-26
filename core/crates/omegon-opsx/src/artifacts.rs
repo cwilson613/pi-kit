@@ -48,6 +48,20 @@ pub struct TaskWriteReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedArtifactWrite {
+    pub path: PathBuf,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedTaskWrite {
+    pub write: PlannedArtifactWrite,
+    pub report: TaskWriteReport,
+    pub total_tasks: usize,
+    pub done_tasks: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskStableIdValidationReport {
     pub path: PathBuf,
     pub findings: Vec<TaskStableIdFinding>,
@@ -69,18 +83,26 @@ pub struct TaskStableIdFinding {
 
 #[derive(Debug, Clone)]
 pub struct OpenSpecRepository {
-    repo_root: PathBuf,
+    openspec_root: PathBuf,
 }
 
 impl OpenSpecRepository {
     pub fn new(repo_root: impl Into<PathBuf>) -> Self {
+        let repo_root = repo_root.into();
         Self {
-            repo_root: repo_root.into(),
+            openspec_root: repo_root.join("openspec"),
+        }
+    }
+
+    /// Construct a repository from an already resolved OpenSpec artifact root.
+    pub fn from_openspec_root(openspec_root: impl Into<PathBuf>) -> Self {
+        Self {
+            openspec_root: openspec_root.into(),
         }
     }
 
     pub fn openspec_dir(&self) -> PathBuf {
-        self.repo_root.join("openspec")
+        self.openspec_root.clone()
     }
 
     pub fn active_change_dir(&self, name: &str) -> PathBuf {
@@ -103,11 +125,10 @@ impl OpenSpecRepository {
                 "Change '{change_name}' does not exist"
             )));
         }
-        let relative = safe_spec_relative_path(domain)?;
-        let path = change_dir.join("specs").join(relative);
-        atomic_write(&path, content.as_bytes())?;
+        let plan = plan_spec_write(&change_dir, domain, content)?;
+        atomic_write(&plan.path, &plan.bytes)?;
         self.write_active_state(change_name, ChangeState::Specced)?;
-        Ok(path)
+        Ok(plan.path)
     }
 
     pub fn validate_task_stable_ids(
@@ -302,6 +323,46 @@ fn set_task_checkbox_status_at(
     status: TaskCheckboxStatus,
 ) -> Result<TaskWriteReport, OpsxError> {
     let content = fs::read_to_string(path).map_err(store_error)?;
+    let plan =
+        plan_task_checkbox_status(path, &content, change_name, group_title, task_id, status)?;
+    atomic_write(path, &plan.write.bytes)?;
+    Ok(plan.report)
+}
+
+/// Plan a spec artifact write without touching the filesystem.
+pub fn plan_spec_write(
+    change_dir: &Path,
+    domain: &str,
+    content: &str,
+) -> Result<PlannedArtifactWrite, OpsxError> {
+    let relative = safe_spec_relative_path(domain)?;
+    Ok(PlannedArtifactWrite {
+        path: change_dir.join("specs").join(relative),
+        bytes: content.as_bytes().to_vec(),
+    })
+}
+
+/// Plan a proposal state rewrite without touching the filesystem.
+pub fn plan_proposal_state(
+    proposal: &Path,
+    content: &str,
+    state: ChangeState,
+) -> Result<PlannedArtifactWrite, OpsxError> {
+    Ok(PlannedArtifactWrite {
+        path: proposal.into(),
+        bytes: render_state_metadata(content, state, proposal)?.into_bytes(),
+    })
+}
+
+/// Plan one exact task checkbox rewrite without touching the filesystem.
+pub fn plan_task_checkbox_status(
+    path: &Path,
+    content: &str,
+    change_name: &str,
+    group_title: &str,
+    task_id: &str,
+    status: TaskCheckboxStatus,
+) -> Result<PlannedTaskWrite, OpsxError> {
     let newline = if content.contains("\r\n") {
         "\r\n"
     } else {
@@ -355,16 +416,43 @@ fn set_task_checkbox_status_at(
     let (index, previous_done, description, start, end) = task_matches.remove(0);
     let new_done = status == TaskCheckboxStatus::Done;
     lines[index].replace_range(start..end, status.marker());
-    atomic_write(path, (lines.join(newline) + newline).as_bytes())?;
-    Ok(TaskWriteReport {
-        path: path.into(),
-        line: index + 1,
-        change: change_name.into(),
-        group: group_title.into(),
-        task_id: task_id.into(),
-        previous_done,
-        new_done,
-        description,
+    let bytes = (lines.join(newline) + newline).into_bytes();
+    let (total_tasks, done_tasks) =
+        task_counts_content(std::str::from_utf8(&bytes).map_err(|error| {
+            OpsxError::StoreError(format!(
+                "planned OpenSpec task content is not UTF-8: {error}"
+            ))
+        })?);
+    Ok(PlannedTaskWrite {
+        write: PlannedArtifactWrite {
+            path: path.into(),
+            bytes,
+        },
+        report: TaskWriteReport {
+            path: path.into(),
+            line: index + 1,
+            change: change_name.into(),
+            group: group_title.into(),
+            task_id: task_id.into(),
+            previous_done,
+            new_done,
+            description,
+        },
+        total_tasks,
+        done_tasks,
+    })
+}
+
+pub fn task_counts_content(content: &str) -> (usize, usize) {
+    content.lines().fold((0, 0), |(total, done), line| {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("- [ ]") {
+            (total + 1, done)
+        } else if trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]") {
+            (total + 1, done + 1)
+        } else {
+            (total, done)
+        }
     })
 }
 
@@ -474,16 +562,7 @@ fn task_counts(path: &Path) -> (usize, usize) {
     let Ok(content) = fs::read_to_string(path) else {
         return (0, 0);
     };
-    content.lines().fold((0, 0), |(total, done), line| {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("- [ ]") {
-            (total + 1, done)
-        } else if trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]") {
-            (total + 1, done + 1)
-        } else {
-            (total, done)
-        }
-    })
+    task_counts_content(&content)
 }
 
 fn atomic_write(path: &Path, content: &[u8]) -> Result<(), OpsxError> {
@@ -537,6 +616,26 @@ mod tests {
     }
 
     #[test]
+    fn explicit_root_reads_primary_layout_without_changing_new_compatibility() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp.path().join("ai/openspec");
+        let change = primary.join("changes/primary-change");
+        fs::create_dir_all(&change).unwrap();
+        fs::write(change.join("proposal.md"), "# Primary\n").unwrap();
+
+        assert!(
+            OpenSpecRepository::from_openspec_root(&primary)
+                .read_active("primary-change")
+                .is_some()
+        );
+        assert!(
+            OpenSpecRepository::new(temp.path())
+                .read_active("primary-change")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn adds_nested_spec_and_rejects_traversal() {
         let temp = tempfile::tempdir().unwrap();
         let change = temp.path().join("openspec/changes/demo");
@@ -578,6 +677,41 @@ mod tests {
         let content = fs::read_to_string(change.join("tasks.md")).unwrap();
         assert!(content.contains("- [x] 1.1 First"));
         assert!(content.contains("\r\n"));
+    }
+
+    #[test]
+    fn planners_return_exact_bytes_without_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let change = temp.path().join("change");
+        let proposal = change.join("proposal.md");
+        let tasks = change.join("tasks.md");
+        let spec = plan_spec_write(&change, "auth/tokens", "# Tokens\n").unwrap();
+        let state = plan_proposal_state(
+            &proposal,
+            "---\nstate: proposed\n---\n# Demo\n",
+            ChangeState::Specced,
+        )
+        .unwrap();
+        let task = plan_task_checkbox_status(
+            &tasks,
+            "## Work\n- [ ] 1.1 First\n",
+            "demo",
+            "Work",
+            "1.1",
+            TaskCheckboxStatus::Done,
+        )
+        .unwrap();
+
+        assert_eq!(spec.path, change.join("specs/auth/tokens.md"));
+        assert_eq!(spec.bytes, b"# Tokens\n");
+        assert!(
+            std::str::from_utf8(&state.bytes)
+                .unwrap()
+                .contains("state: specced")
+        );
+        assert_eq!(task.write.bytes, b"## Work\n- [x] 1.1 First\n");
+        assert_eq!((task.total_tasks, task.done_tasks), (1, 1));
+        assert!(!change.exists());
     }
 
     #[test]

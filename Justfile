@@ -63,6 +63,12 @@ test-profile *args:
 # Run Python unit tests for developer tooling scripts.
 test-dev-scripts:
     python3 -m unittest scripts/test_affected_crates.py scripts/test_test_profile.py scripts/test_dirty_report.py scripts/test_dirty_report_git.py
+    python3 -m unittest tests/test_release_manifest.py tests/test_validate_companion.py tests/test_verify_homebrew_formula.py
+    python3 -m unittest tests/test_content_pack_packaging.py
+    python3 -m unittest tests/test_composition_release_gates.py
+    python3 -m unittest tests/test_release_closeout.py
+    python3 scripts/check_no_embedded_content.py
+    python3 scripts/check_optional_domain_isolation.py
     python3 scripts/tests/test_omegon_launcher.py
 
 # Check provider-published model context docs against the local registry.
@@ -139,6 +145,35 @@ check-omegon-matrix:
 # Assert the no-TUI feature matrix has not retained terminal presentation crates.
 check-omegon-headless-deps:
     python3 scripts/check_headless_dependency_boundary.py
+
+# Assert the recovery companion excludes normal runtime-domain dependencies.
+check-maintenance-deps:
+    python3 scripts/check_maintenance_dependency_boundary.py
+
+# Validate every optional extraction lane against kernel, maintenance, test, and docs evidence.
+check-optional-domain-isolation:
+    python3 scripts/check_optional_domain_isolation.py
+    python3 scripts/check_maintenance_dependency_boundary.py
+
+# Build and exercise the source composition through Cargo.
+check-source-composition cargo_profile="release":
+    python3 scripts/check_composition_matrix.py --path source --cargo-profile "{{cargo_profile}}"
+    python3 scripts/check_composition_authority.py
+
+# Exercise a previously installed linked-development channel and its assets.
+check-linked-composition binary_dir linked_home target:
+    python3 scripts/check_composition_matrix.py --path linked --binary-dir "{{binary_dir}}" --linked-home "{{linked_home}}" --target "{{target}}"
+    python3 scripts/check_composition_authority.py
+
+# Exercise an archive and enforce target-aware runtime/build budgets.
+check-release-composition binary_dir archive target:
+    python3 scripts/check_composition_matrix.py --path release --archive "{{archive}}" --target "{{target}}"
+    python3 scripts/check_composition_budgets.py --binary-dir "{{binary_dir}}" --archive "{{archive}}" --target "{{target}}"
+    python3 scripts/check_composition_authority.py
+
+# Validate deterministic closeout evidence and exercise the real maintenance artifact.
+check-release-closeout maintain="target/release/omegon-maintain":
+    python3 scripts/check_release_closeout.py --maintain "{{maintain}}" --run-maintenance-tests
 
 # Assert the UI InterfaceBoundary contract remains renderer-neutral and backend-internal-free.
 check-interface-boundary:
@@ -269,7 +304,16 @@ bench-task task harness:
 
 # Build release binary
 build:
-    {{cargo}} build --release -p omegon
+    {{cargo}} build --release -p omegon -p omegon-maintain
+
+# Build and independently launch-test the source companion pair.
+validate-companion profile="release":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{cargo}} build --profile "{{profile}}" -p omegon -p omegon-maintain
+    python3 scripts/validate_companion.py \
+        --omegon "target/{{profile}}/omegon" \
+        --maintain "target/{{profile}}/omegon-maintain"
 
 # Install/update the stable launcher and register this checkout as an Omegon channel.
 # Usage: just link [channel]  (default channel: default)
@@ -284,36 +328,31 @@ link channel="default":
         exit 1
     fi
     echo "── Building release binary for current HEAD ──"
-    {{cargo}} build --release -p omegon
+    {{cargo}} build --release -p omegon -p omegon-maintain
     BINARY="$(pwd)/target/release/omegon"
-    if [ ! -x "$BINARY" ]; then
-        echo "No release binary found at $BINARY"
+    MAINTAIN_BINARY="$(pwd)/target/release/omegon-maintain"
+    if [ ! -x "$BINARY" ] || [ ! -x "$MAINTAIN_BINARY" ]; then
+        echo "Release companion pair is incomplete: $BINARY + $MAINTAIN_BINARY"
         exit 1
     fi
 
     mkdir -p "$HOME/.local/bin" "$HOME/.omegon/channels" "$HOME/.omegon/bin"
     install -m 0755 scripts/omegon-launcher.sh "$HOME/.local/bin/omegon"
     install -m 0755 scripts/omegon-launcher.sh "$HOME/.local/bin/om"
+    install -m 0755 scripts/omegon-launcher.sh "$HOME/.local/bin/omegon-maintain"
     printf '%s\n' "$(pwd)" > "$HOME/.omegon/channels/{{channel}}"
 
     # Keep a stable fallback copy for invocations outside any checkout/channel.
     install -m 0755 "$BINARY" "$HOME/.omegon/bin/omegon"
+    install -m 0755 "$MAINTAIN_BINARY" "$HOME/.omegon/bin/omegon-maintain"
+    TARGET_TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
+    python3 scripts/package_release.py --binary-dir "$(pwd)/target/release" \
+        --target "$TARGET_TRIPLE" --lock-dir "$HOME/.omegon/share/omegon/composition"
 
-    # Install the shipped contribution pack beside the stable fallback binary.
-    # Runtime discovery resolves ~/.omegon/share/omegon from ~/.omegon/bin/omegon.
-    PACK_ROOT="$HOME/.omegon/share/omegon"
-    rm -rf "$PACK_ROOT/skills"
-    mkdir -p "$PACK_ROOT/skills"
-    install -m 0644 skills/manifest.txt "$PACK_ROOT/skills/manifest.txt"
-    while IFS= read -r skill; do
-        case "$skill" in ''|'#'*) continue ;; esac
-        if [ ! -f "skills/$skill/SKILL.md" ]; then
-            echo "shipped skill manifest references missing skills/$skill/SKILL.md" >&2
-            exit 1
-        fi
-        mkdir -p "$PACK_ROOT/skills/$skill"
-        cp -R "skills/$skill/." "$PACK_ROOT/skills/$skill/"
-    done < skills/manifest.txt
+    # Install one validated, independently replaceable shipped content pack.
+    PACK_ROOT="$HOME/.omegon/share/omegon/content-packs/omegon-shipped"
+    python3 scripts/content_pack_manifest.py --check
+    python3 scripts/content_pack_manifest.py --install-root "$PACK_ROOT"
 
     # Leave a compatibility snippet, but the PATH launcher is now canonical.
     ALIAS_FILE="$HOME/.omegon/dev-alias.sh"
@@ -322,9 +361,15 @@ link channel="default":
 
     echo "✓ launcher → $HOME/.local/bin/omegon"
     echo "✓ launcher → $HOME/.local/bin/om"
+    echo "✓ launcher → $HOME/.local/bin/omegon-maintain"
     echo "✓ channel {{channel}} → $(pwd)"
     echo "✓ fallback → $HOME/.omegon/bin/omegon"
+    echo "✓ fallback → $HOME/.omegon/bin/omegon-maintain"
     "$HOME/.local/bin/omegon" --which
+    "$HOME/.local/bin/omegon-maintain" --which
+    python3 scripts/validate_companion.py \
+        --omegon "$BINARY" \
+        --maintain "$MAINTAIN_BINARY"
     just install-skills
     just install-catalog
     just install-default-extensions
@@ -477,7 +522,7 @@ oci-smoke image="ghcr.io/styrene-lab/omegon-full":
         -v "$HOME/.omegon:/data/omegon${omegon_home_opts}" \
         -w /workspace \
         "{{image}}" \
-        bash -lc 'omegon --version && git --version && just --version && rg --version && jq --version && python --version && node --version && rustc --version && cargo --version && kubectl version --client=true && helm version --short'
+        bash -lc 'omegon --version && omegon-maintain --version && omegon-maintain --json identity | jq -e '\''.status == "success"'\'' >/dev/null && git --version && just --version && rg --version && jq --version && python --version && node --version && rustc --version && cargo --version && kubectl version --client=true && helm version --short'
 
 # Install bundled skills to ~/.omegon/skills/ so they are available to all projects.
 # Uses the binary itself (embedded assets) so this works for both source and brew installs.
@@ -1067,23 +1112,23 @@ brew-tap:
 
 # Build for Linux x86_64 (via zig cross-linker — no containers, no QEMU)
 build-linux-amd64:
-    {{cargo}} zigbuild --release --target x86_64-unknown-linux-gnu -p omegon
-    @ls -lh target/x86_64-unknown-linux-gnu/release/omegon
-    @file target/x86_64-unknown-linux-gnu/release/omegon
+    {{cargo}} zigbuild --release --target x86_64-unknown-linux-gnu -p omegon -p omegon-maintain
+    @ls -lh target/x86_64-unknown-linux-gnu/release/{omegon,omegon-maintain}
+    @file target/x86_64-unknown-linux-gnu/release/{omegon,omegon-maintain}
 
 # Build for Linux aarch64 (via zig cross-linker)
 build-linux-arm64:
-    {{cargo}} zigbuild --release --target aarch64-unknown-linux-gnu -p omegon
-    @ls -lh target/aarch64-unknown-linux-gnu/release/omegon
-    @file target/aarch64-unknown-linux-gnu/release/omegon
+    {{cargo}} zigbuild --release --target aarch64-unknown-linux-gnu -p omegon -p omegon-maintain
+    @ls -lh target/aarch64-unknown-linux-gnu/release/{omegon,omegon-maintain}
+    @file target/aarch64-unknown-linux-gnu/release/{omegon,omegon-maintain}
 
 # Build all release targets (macOS native + Linux via zig)
 build-all: build build-linux-amd64 build-linux-arm64
     @echo ""
     @echo "Built:"
-    @ls -lh target/release/omegon
-    @ls -lh target/x86_64-unknown-linux-gnu/release/omegon
-    @ls -lh target/aarch64-unknown-linux-gnu/release/omegon
+    @ls -lh target/release/{omegon,omegon-maintain}
+    @ls -lh target/x86_64-unknown-linux-gnu/release/{omegon,omegon-maintain}
+    @ls -lh target/aarch64-unknown-linux-gnu/release/{omegon,omegon-maintain}
 
 # Package release archives for all targets
 package:
@@ -1094,10 +1139,13 @@ package:
     mkdir -p "$DIST"
 
     package_target() {
-        local TARGET=$1 BINARY=$2
+        local TARGET=$1 BINARY_DIR=$2
         local ARCHIVE="omegon-${VERSION}-${TARGET}.tar.gz"
-        strip "$BINARY" 2>/dev/null || llvm-strip "$BINARY" 2>/dev/null || true
-        tar czf "${DIST}/${ARCHIVE}" -C "$(dirname "$BINARY")" omegon
+        for binary in omegon omegon-maintain; do
+            [ -x "$BINARY_DIR/$binary" ] || { echo "missing release companion: $BINARY_DIR/$binary" >&2; exit 1; }
+            strip "$BINARY_DIR/$binary" 2>/dev/null || llvm-strip "$BINARY_DIR/$binary" 2>/dev/null || true
+        done
+        python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "${DIST}/${ARCHIVE}"
         shasum -a 256 "${DIST}/${ARCHIVE}" >> "${DIST}/checksums.sha256"
         echo "  ${ARCHIVE} ($(du -h "${DIST}/${ARCHIVE}" | cut -f1))"
     }
@@ -1107,17 +1155,17 @@ package:
 
     # macOS arm64 (native build)
     if [ -f target/release/omegon ]; then
-        package_target "aarch64-apple-darwin" "target/release/omegon"
+        package_target "aarch64-apple-darwin" "target/release"
     fi
 
     # Linux x86_64
     if [ -f target/x86_64-unknown-linux-gnu/release/omegon ]; then
-        package_target "x86_64-unknown-linux-gnu" "target/x86_64-unknown-linux-gnu/release/omegon"
+        package_target "x86_64-unknown-linux-gnu" "target/x86_64-unknown-linux-gnu/release"
     fi
 
     # Linux aarch64
     if [ -f target/aarch64-unknown-linux-gnu/release/omegon ]; then
-        package_target "aarch64-unknown-linux-gnu" "target/aarch64-unknown-linux-gnu/release/omegon"
+        package_target "aarch64-unknown-linux-gnu" "target/aarch64-unknown-linux-gnu/release"
     fi
 
     echo ""

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 omegon-extension = "0.25"
+omegon-maintenance-contracts = { path = "../omegon-maintenance-contracts" }
 omegon-traits = { path = "../omegon-traits" }
 omegon-git = { path = "../omegon-git" }
 git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }
@@ -25,6 +26,8 @@ omegon-secrets = { path = "../omegon-secrets", features = ["agent"] }
 omegon-opsx = { path = "../omegon-opsx" }
 omegon-skills = { path = "../omegon-skills" }
 omegon-web = { path = "../omegon-web" }
+styrene-work-model = { path = "../styrene-work-model" }
+styrene-work-runtime = { path = "../styrene-work-runtime" }
 tokio = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
@@ -41,7 +44,7 @@ rusqlite = { workspace = true }
 tokio-util = { workspace = true }
 indexmap = { workspace = true }
 flynt-models = { workspace = true }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 dirs = "6.0.0"
 socket2 = { version = "0.5", features = ["all"] }
 unicode-truncate = "2.0"
@@ -57,6 +60,8 @@ crossterm = { version = "0.29.0", optional = true }
 reqwest = { version = "0.13.2", features = ["json", "stream", "blocking"] }
 tokio-stream = "0.1.18"
 sha2 = "0.10.9"
+fs2 = "0.4"
+tempfile = "3.27.0"
 secrecy = "0.10"
 sysinfo = "0.33"
 getrandom = "0.4.2"
@@ -109,4 +114,3 @@ local-embeddings = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
 
 [dev-dependencies]
 insta = "1.46"
-tempfile = "3.27.0"

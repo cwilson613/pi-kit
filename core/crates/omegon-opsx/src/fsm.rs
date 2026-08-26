@@ -20,13 +20,19 @@ pub struct Lifecycle<S: StateStore> {
     store: S,
     /// Private — all access through methods. No direct mutation.
     state: LifecycleState,
+    /// Last state positively persisted by this owner.
+    persisted_state: LifecycleState,
 }
 
 impl<S: StateStore> Lifecycle<S> {
     /// Load or initialize the lifecycle from the store.
     pub fn load(store: S) -> Result<Self, OpsxError> {
         let state = store.load()?;
-        Ok(Self { store, state })
+        Ok(Self {
+            store,
+            persisted_state: state.clone(),
+            state,
+        })
     }
 
     /// Persist the current state to the store.
@@ -41,7 +47,24 @@ impl<S: StateStore> Lifecycle<S> {
             );
             self.state.audit_log.drain(..trim);
         }
-        self.store.save(&self.state)
+        let expected_revision = self.persisted_state.revision;
+        let Some(next_revision) = expected_revision.checked_add(1) else {
+            self.state = self.persisted_state.clone();
+            return Err(OpsxError::StoreError(
+                "lifecycle state revision overflow".to_string(),
+            ));
+        };
+        self.state.revision = next_revision;
+        match self.store.save(&self.state, expected_revision) {
+            Ok(()) => {
+                self.persisted_state = self.state.clone();
+                Ok(())
+            }
+            Err(error) => {
+                self.state = self.persisted_state.clone();
+                Err(error)
+            }
+        }
     }
 
     /// Get the current state (read-only).
@@ -501,19 +524,10 @@ impl<S: StateStore> Lifecycle<S> {
             _ => {}
         }
 
-        let previous_updated_at = self.state.changes[idx].updated_at.clone();
         let from_str = from.as_str().to_string();
         self.state.changes[idx].state = target;
         self.state.changes[idx].updated_at = iso_now();
-        if let Err(error) =
-            self.audit_and_save("change", name, &from_str, target.as_str(), None, false)
-        {
-            self.state.changes[idx].state = from;
-            self.state.changes[idx].updated_at = previous_updated_at;
-            self.state.audit_log.pop();
-            return Err(error);
-        }
-        Ok(())
+        self.audit_and_save("change", name, &from_str, target.as_str(), None, false)
     }
 
     /// Archive a change while performing the content-store archive step as
@@ -910,7 +924,7 @@ mod tests {
             Ok(LifecycleState::default())
         }
 
-        fn save(&self, _state: &LifecycleState) -> Result<(), OpsxError> {
+        fn save(&self, _state: &LifecycleState, _expected_revision: u64) -> Result<(), OpsxError> {
             Err(OpsxError::StoreError("forced save failure".into()))
         }
     }
@@ -924,7 +938,7 @@ mod tests {
             Ok(LifecycleState::default())
         }
 
-        fn save(&self, _state: &LifecycleState) -> Result<(), OpsxError> {
+        fn save(&self, _state: &LifecycleState, _expected_revision: u64) -> Result<(), OpsxError> {
             if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
                 Err(OpsxError::StoreError("forced save failure".into()))
             } else {
@@ -1175,6 +1189,42 @@ mod tests {
         assert!(matches!(error, OpsxError::StoreError(_)));
         assert_eq!(lc.state().changes[0].state, ChangeState::Proposed);
         assert_eq!(lc.audit_log().len(), audit_len);
+    }
+
+    #[test]
+    fn failed_create_save_restores_entire_in_memory_state() {
+        let mut lc = Lifecycle::load(FailingSaveStore).unwrap();
+
+        let error = lc.create_node("demo", "Demo", None).unwrap_err();
+
+        assert!(matches!(error, OpsxError::StoreError(_)));
+        assert!(lc.nodes().is_empty());
+        assert!(lc.audit_log().is_empty());
+        assert_eq!(lc.state().revision, 0);
+    }
+
+    #[test]
+    fn stale_lifecycle_owner_cannot_overwrite_newer_revision() {
+        let temp = TempDir::new().unwrap();
+        let mut first = Lifecycle::load(JsonFileStore::new(temp.path())).unwrap();
+        let mut stale = Lifecycle::load(JsonFileStore::new(temp.path())).unwrap();
+        first.create_node("first", "First", None).unwrap();
+
+        let error = stale.create_node("stale", "Stale", None).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OpsxError::RevisionConflict {
+                expected: 0,
+                actual: 1
+            }
+        ));
+        assert!(stale.nodes().is_empty());
+        assert_eq!(stale.state().revision, 0);
+        let reopened = Lifecycle::load(JsonFileStore::new(temp.path())).unwrap();
+        assert_eq!(reopened.state().revision, 1);
+        assert!(reopened.get_node("first").is_some());
+        assert!(reopened.get_node("stale").is_none());
     }
 
     #[test]

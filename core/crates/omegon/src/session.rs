@@ -11,8 +11,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::conversation::ConversationState;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ResumeLoadError {
+    #[error("session resume authority failed: {0}")]
+    Authority(#[source] anyhow::Error),
+    #[error("saved session could not be restored: {0}")]
+    Snapshot(#[source] anyhow::Error),
+}
+
 /// Metadata stored alongside each session for listing without loading the full file.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub session_id: String,
     pub cwd: String,
@@ -27,10 +35,134 @@ pub struct SessionMeta {
 }
 
 /// A listed session entry (from scanning the directory).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSource {
+    FullSpine,
+    Mixed,
+    LegacyCompatibility,
+}
+
 #[derive(Debug)]
 pub struct SessionEntry {
     pub path: PathBuf,
     pub meta: SessionMeta,
+    pub source: SessionSource,
+}
+
+pub fn load_for_resume(
+    cwd: &Path,
+    path: &Path,
+) -> Result<(ConversationState, SessionMeta), ResumeLoadError> {
+    let home_path = crate::paths::omegon_home().map_err(ResumeLoadError::Authority)?;
+    load_for_resume_with_home(cwd, path, &home_path)
+}
+
+pub(crate) fn import_legacy_resume(
+    authority: &mut crate::session_authority::SessionAuthority,
+    conversation: &ConversationState,
+    metadata: &SessionMeta,
+    snapshot: &Path,
+    workspace: &Path,
+    recorded_at: &str,
+) -> anyhow::Result<bool> {
+    if authority.state().session_id.as_deref() != Some(metadata.session_id.as_str())
+        || snapshot.file_stem().and_then(|value| value.to_str())
+            != Some(metadata.session_id.as_str())
+    {
+        anyhow::bail!("legacy compatibility import identity does not match semantic authority");
+    }
+    if !authority.import_legacy_compatibility_base(&conversation.build_llm_view(), recorded_at)? {
+        return Ok(false);
+    }
+    let binding = crate::session_host_storage::SessionStorageBinding::from_open_authority(
+        snapshot,
+        &metadata.session_id,
+        authority,
+        workspace,
+    );
+    crate::session_host_storage::save_full_spine(&binding, conversation, Some(metadata))?;
+    Ok(true)
+}
+
+fn load_for_resume_with_home(
+    cwd: &Path,
+    path: &Path,
+    home_path: &Path,
+) -> Result<(ConversationState, SessionMeta), ResumeLoadError> {
+    let session_id = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| is_canonical_session_id(value))
+        .ok_or_else(|| {
+            ResumeLoadError::Authority(anyhow::anyhow!(
+                "selected session path has no canonical session ID"
+            ))
+        })?;
+    if !home_path.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            if let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(home_path)
+                && error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(ResumeLoadError::Authority(error.into()));
+            }
+        }
+        #[cfg(not(unix))]
+        if let Err(error) = std::fs::create_dir(home_path)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(ResumeLoadError::Authority(error.into()));
+        }
+    }
+    let home = omegon_maintenance_contracts::open_secure_root(home_path)
+        .map_err(|error| ResumeLoadError::Authority(error.into()))?;
+    let home_identity = omegon_maintenance_contracts::path_identity(&home)
+        .map_err(|error| ResumeLoadError::Authority(error.into()))?;
+    let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+        &home,
+        home_identity,
+        &uuid::Uuid::new_v4().to_string(),
+        false,
+    )
+    .map_err(|error| ResumeLoadError::Authority(error.into()))?;
+    let normalized =
+        omegon_maintenance_contracts::normalize_workspace_path(cwd.as_os_str().as_encoded_bytes())
+            .map_err(|error| ResumeLoadError::Authority(anyhow::anyhow!(error)))?;
+    let workspace_key = omegon_maintenance_contracts::workspace_key("unix", &normalized);
+    let _admission = state
+        .admit_session_resume(session_id, workspace_key, false)
+        .map_err(|error| ResumeLoadError::Authority(error.into()))?;
+
+    if let Some(loaded) = crate::session_host_storage::load_resume(path, session_id, cwd)
+        .map_err(ResumeLoadError::Authority)?
+    {
+        return Ok(loaded);
+    }
+
+    let (conversation, meta) = crate::session_host_storage::load_compatibility_pair(path)
+        .map_err(ResumeLoadError::Snapshot)?;
+    if meta.session_id != session_id {
+        return Err(ResumeLoadError::Authority(anyhow::anyhow!(
+            "session metadata identity does not match selected session"
+        )));
+    }
+    let meta_workspace =
+        omegon_maintenance_contracts::normalize_workspace_path(meta.cwd.as_bytes())
+            .map_err(|error| ResumeLoadError::Authority(anyhow::anyhow!(error)))?;
+    if meta_workspace != normalized {
+        return Err(ResumeLoadError::Authority(anyhow::anyhow!(
+            "session metadata belongs to a different workspace"
+        )));
+    }
+    if conversation.turn_count() != meta.turns
+        || conversation.intent.stats.tool_calls != meta.tool_calls
+    {
+        return Err(ResumeLoadError::Authority(anyhow::anyhow!(
+            "compatibility snapshot does not match its session metadata"
+        )));
+    }
+    Ok((conversation, meta))
 }
 
 /// Get the sessions directory for a given cwd.
@@ -158,17 +290,28 @@ pub fn save_session(
     conversation: &ConversationState,
     cwd: &Path,
     resume_id: Option<&str>,
-) -> anyhow::Result<PathBuf> {
+) -> Result<PathBuf, SessionSaveError> {
     let dir =
         sessions_dir(cwd).ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    fs::create_dir_all(&dir)?;
+    save_session_in_dir(conversation, cwd, resume_id, &dir)
+}
+
+fn save_session_in_dir(
+    conversation: &ConversationState,
+    cwd: &Path,
+    resume_id: Option<&str>,
+    dir: &Path,
+) -> Result<PathBuf, SessionSaveError> {
+    fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
 
     // When resuming, overwrite the original session file so the chain stays clean.
     // When starting fresh, generate a new timestamped ID.
     let session_id = match resume_id {
         Some(id) if is_canonical_session_id(id) => id.to_string(),
         Some(id) => {
-            anyhow::bail!("Invalid session id '{id}'; sessions must use Omegon canonical ids")
+            return Err(SessionSaveError::Semantic(anyhow::anyhow!(
+                "Invalid session id '{id}'; sessions must use Omegon canonical ids"
+            )));
         }
         None => allocate_session_id(),
     };
@@ -209,11 +352,23 @@ pub fn save_session(
         last_prompt_snippet,
     };
 
-    conversation.save_session(&path)?;
+    let semantic_durable = crate::session_host_storage::has_authority(&path)?;
+    let compatibility_pair_required = if semantic_durable {
+        let binding =
+            crate::session_host_storage::SessionStorageBinding::discover(&path, &session_id, cwd)?;
+        crate::session_host_storage::save_full_spine(
+            &binding,
+            conversation,
+            existing_meta.as_ref(),
+        )?;
+        crate::session_host_storage::compatibility_pair_required(&binding)?
+    } else {
+        true
+    };
 
-    let meta_path = path.with_extension("meta.json");
-    let meta_json = serde_json::to_string_pretty(&meta)?;
-    crate::filelock::atomic_write_locked(&meta_path, meta_json.as_bytes())?;
+    if compatibility_pair_required {
+        publish_compatibility_mirrors(conversation, &path, &meta, semantic_durable)?;
+    }
 
     tracing::info!(
         session_id,
@@ -223,6 +378,54 @@ pub fn save_session(
     );
 
     Ok(path)
+}
+
+pub(crate) fn publish_compatibility_mirrors(
+    conversation: &ConversationState,
+    path: &Path,
+    meta: &SessionMeta,
+    semantic_durable: bool,
+) -> Result<(), SessionSaveError> {
+    // Legacy import files retain their schema-v1 external shape.
+    if let Err(source) = conversation.save_session(path) {
+        return Err(if semantic_durable {
+            SessionSaveError::PartialPublication {
+                publication: "session_snapshot",
+                source,
+            }
+        } else {
+            SessionSaveError::Mirror(source)
+        });
+    }
+    let meta_json = serde_json::to_string_pretty(meta).map_err(anyhow::Error::from)?;
+    if let Err(source) = crate::filelock::atomic_write_locked_private(
+        &path.with_extension("meta.json"),
+        meta_json.as_bytes(),
+    ) {
+        return Err(if semantic_durable {
+            SessionSaveError::PartialPublication {
+                publication: "session_metadata",
+                source,
+            }
+        } else {
+            SessionSaveError::Mirror(source)
+        });
+    }
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionSaveError {
+    #[error(transparent)]
+    Semantic(#[from] anyhow::Error),
+    #[error("compatibility mirror publication failed: {0}")]
+    Mirror(anyhow::Error),
+    #[error("partial_publication: semantic save is durable but {publication} failed: {source}")]
+    PartialPublication {
+        publication: &'static str,
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 /// List saved sessions for a cwd, sorted newest first.
@@ -280,7 +483,19 @@ pub fn list_sessions(cwd: &Path) -> Vec<SessionEntry> {
         entries.push(SessionEntry {
             path: session_path,
             meta,
+            source: SessionSource::LegacyCompatibility,
         });
+    }
+
+    for catalog in crate::session_host_storage::list_catalogs(&dir, cwd) {
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|entry| entry.meta.session_id == catalog.meta.session_id)
+        {
+            *existing = catalog;
+        } else {
+            entries.push(catalog);
+        }
     }
 
     // Canonical session ids start with sortable timestamps — newest first.
@@ -394,6 +609,91 @@ mod tests {
         assert!(!is_canonical_session_id("2026-1-02T03-04-05_deadbeef"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn guarded_resume_rejects_settled_session_deny() {
+        use omegon_maintenance_contracts::{
+            SCHEMA_VERSION, SessionDenyRecordV1, SessionDenyState, create_record_no_replace_at,
+            derive_key, normalize_workspace_path, open_secure_root, path_identity, session_key,
+            workspace_key,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let home_path = directory.path().join("home");
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&home_path).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let session_id = "2026-08-17T00-00-00_00000000";
+        let path = directory.path().join(format!("{session_id}.json"));
+        ConversationState::new().save_session(&path).unwrap();
+        let meta = SessionMeta {
+            session_id: session_id.into(),
+            cwd: workspace.to_string_lossy().into_owned(),
+            created_at: "2026-08-17T00:00:00Z".into(),
+            turns: 0,
+            tool_calls: 0,
+            description: String::new(),
+            friendly_name: String::new(),
+            last_prompt_snippet: String::new(),
+        };
+        fs::write(
+            path.with_extension("meta.json"),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            path.with_extension("meta.json"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        load_for_resume_with_home(&workspace, &path, &home_path).unwrap();
+
+        let home = open_secure_root(&home_path).unwrap();
+        let identity = path_identity(&home).unwrap();
+        let state = omegon_maintenance_contracts::MaintenanceStateV1::bootstrap(
+            &home,
+            identity,
+            "11111111-1111-1111-1111-111111111111",
+            false,
+        )
+        .unwrap();
+        let normalized =
+            normalize_workspace_path(workspace.as_os_str().as_encoded_bytes()).unwrap();
+        let workspace_authority = workspace_key("unix", &normalized);
+        let session_authority = session_key(session_id, workspace_authority);
+        let request_id = "00000000-0000-0000-0000-000000000001";
+        let deny = SessionDenyRecordV1 {
+            schema_version: SCHEMA_VERSION,
+            record_kind: "session_deny".into(),
+            record_id: derive_key(
+                "session-deny",
+                &[session_authority.as_bytes(), request_id.as_bytes()],
+            ),
+            session_key: session_authority,
+            session_id: session_id.into(),
+            workspace_key: workspace_authority,
+            state: SessionDenyState::ResumeDenied,
+            request_id: request_id.into(),
+            created_at: "2026-08-17T00:00:00Z".into(),
+        };
+        let name = format!("{session_authority}.json");
+        create_record_no_replace_at(&state.session_deny, name.as_bytes(), &deny, "test").unwrap();
+        assert!(matches!(
+            load_for_resume_with_home(&workspace, &path, &home_path),
+            Err(ResumeLoadError::Authority(_))
+        ));
+        fs::write(
+            home_path.join("maintain/v1/session-deny").join(name),
+            b"{not-json",
+        )
+        .unwrap();
+        assert!(matches!(
+            load_for_resume_with_home(&workspace, &path, &home_path),
+            Err(ResumeLoadError::Authority(_))
+        ));
+    }
+
     #[test]
     fn days_to_ymd_epoch() {
         let (y, m, d) = days_to_ymd(0);
@@ -456,6 +756,46 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn full_semantic_save_does_not_publish_compatibility_pair() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let sessions = directory.path().join("sessions");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&sessions).unwrap();
+        let id = "2026-08-23T07-00-00_deadbeef";
+        let snapshot = sessions.join(format!("{id}.json"));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/session-semantic-v1/full-spine-crash-prefix.authority.jsonl");
+        fs::write(
+            snapshot.with_file_name(format!("{id}.authority.jsonl")),
+            fs::read_to_string(fixture)
+                .unwrap()
+                .replace("fixture-session", id),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                snapshot.with_file_name(format!("{id}.authority.jsonl")),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+
+        let saved = save_session_in_dir(&ConversationState::new(), &workspace, Some(id), &sessions)
+            .unwrap();
+        assert_eq!(saved, snapshot);
+        assert!(!snapshot.exists());
+        assert!(!snapshot.with_extension("meta.json").exists());
+        assert!(
+            snapshot
+                .with_file_name(format!("{id}.catalog.v1.json"))
+                .exists()
+        );
+    }
+
     /// Helper: list from a specific directory (bypasses sessions_dir home detection)
     fn list_from_dir(dir: &Path) -> Vec<SessionEntry> {
         let mut entries = Vec::new();
@@ -483,6 +823,7 @@ mod tests {
             entries.push(SessionEntry {
                 path: session_path,
                 meta,
+                source: SessionSource::LegacyCompatibility,
             });
         }
         entries
@@ -533,6 +874,7 @@ mod tests {
                     friendly_name: String::new(),
                     last_prompt_snippet: String::new(),
                 },
+                source: SessionSource::LegacyCompatibility,
             },
             SessionEntry {
                 path: PathBuf::from("a_earlier.json"),
@@ -546,6 +888,7 @@ mod tests {
                     friendly_name: String::new(),
                     last_prompt_snippet: String::new(),
                 },
+                source: SessionSource::LegacyCompatibility,
             },
         ];
         // Newest first means b_later is first

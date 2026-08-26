@@ -10,6 +10,7 @@
 pub mod commit;
 pub mod jj;
 pub mod merge;
+pub mod process;
 pub mod repo;
 pub mod status;
 pub mod submodule;

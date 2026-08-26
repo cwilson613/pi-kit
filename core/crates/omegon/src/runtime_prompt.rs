@@ -4,7 +4,7 @@
 //! and how the supervisor should queue it. They deliberately contain no I/O or
 //! supervisor loop policy.
 
-use crate::tui;
+use crate::operator_commands;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
@@ -12,6 +12,8 @@ use std::path::PathBuf;
 pub(crate) enum RuntimeActorKind {
     Tui,
     Auspex,
+    AcpClient,
+    BoundedHost,
     IpcClient,
     WebClient,
     DaemonEvent,
@@ -29,6 +31,8 @@ impl RuntimeActor {
         let kind = match via {
             "tui" => RuntimeActorKind::Tui,
             "auspex" => RuntimeActorKind::Auspex,
+            "acp" => RuntimeActorKind::AcpClient,
+            "bounded" => RuntimeActorKind::BoundedHost,
             "ipc" => RuntimeActorKind::IpcClient,
             "websocket" | "http-event-ingress" => RuntimeActorKind::WebClient,
             _ => RuntimeActorKind::System,
@@ -44,6 +48,8 @@ impl RuntimeActor {
             match self.kind {
                 RuntimeActorKind::Tui => "tui",
                 RuntimeActorKind::Auspex => "auspex",
+                RuntimeActorKind::AcpClient => "acp-client",
+                RuntimeActorKind::BoundedHost => "bounded-host",
                 RuntimeActorKind::IpcClient => "ipc-client",
                 RuntimeActorKind::WebClient => "web-client",
                 RuntimeActorKind::DaemonEvent => "daemon-event",
@@ -73,6 +79,8 @@ impl RuntimeActor {
 pub(crate) enum ControlSurface {
     Tui,
     Ipc,
+    Acp,
+    Bounded,
     WebSocket,
     HttpEventIngress,
     Internal,
@@ -83,6 +91,8 @@ impl ControlSurface {
         match via {
             "tui" => Self::Tui,
             "ipc" | "auspex" => Self::Ipc,
+            "acp" => Self::Acp,
+            "bounded" => Self::Bounded,
             "websocket" => Self::WebSocket,
             "http-event-ingress" => Self::HttpEventIngress,
             _ => Self::Internal,
@@ -93,6 +103,8 @@ impl ControlSurface {
         match self {
             ControlSurface::Tui => "tui",
             ControlSurface::Ipc => "ipc",
+            ControlSurface::Acp => "acp",
+            ControlSurface::Bounded => "bounded",
             ControlSurface::WebSocket => "websocket",
             ControlSurface::HttpEventIngress => "http-event-ingress",
             ControlSurface::Internal => "internal",
@@ -109,11 +121,11 @@ pub(crate) enum QueueMode {
 }
 
 impl QueueMode {
-    pub(crate) fn from_tui(mode: tui::PromptQueueMode) -> Self {
+    pub(crate) fn from_submission(mode: operator_commands::PromptQueueMode) -> Self {
         match mode {
-            tui::PromptQueueMode::InterruptAfterTurn => Self::InterruptAfterTurn,
-            tui::PromptQueueMode::UntilReady => Self::UntilReady,
-            tui::PromptQueueMode::Immediate => Self::Immediate,
+            operator_commands::PromptQueueMode::InterruptAfterTurn => Self::InterruptAfterTurn,
+            operator_commands::PromptQueueMode::UntilReady => Self::UntilReady,
+            operator_commands::PromptQueueMode::Immediate => Self::Immediate,
         }
     }
 
@@ -140,45 +152,50 @@ pub(crate) struct RuntimePromptSubmission {
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) actor: RuntimeActor,
     pub(crate) via: ControlSurface,
-    pub(crate) metadata: tui::PromptMetadata,
+    pub(crate) metadata: operator_commands::PromptMetadata,
     pub(crate) queue_mode: QueueMode,
 }
 
 impl RuntimePromptSubmission {
-    pub(crate) fn from_tui(submission: tui::PromptSubmission) -> Self {
+    pub(crate) fn from_submission(submission: operator_commands::PromptSubmission) -> Self {
         Self {
             text: submission.text,
             image_paths: submission.image_paths,
             actor: RuntimeActor::from_submission(submission.submitted_by, submission.via),
             via: ControlSurface::from_via(submission.via),
             metadata: submission.metadata,
-            queue_mode: QueueMode::from_tui(submission.queue_mode),
+            queue_mode: QueueMode::from_submission(submission.queue_mode),
         }
     }
 
-    pub(crate) fn from_voice(text: String, metadata: tui::VoicePromptMetadata) -> Self {
-        Self::from_tui(tui::PromptSubmission {
+    pub(crate) fn from_voice(
+        text: String,
+        metadata: operator_commands::VoicePromptMetadata,
+    ) -> Self {
+        Self::from_submission(operator_commands::PromptSubmission {
             text: format!("🎙 {}", text.trim()),
             image_paths: Vec::new(),
             submitted_by: "voice".to_string(),
             via: "voice",
-            queue_mode: tui::PromptQueueMode::UntilReady,
-            metadata: tui::PromptMetadata {
+            queue_mode: operator_commands::PromptQueueMode::UntilReady,
+            metadata: operator_commands::PromptMetadata {
                 voice: Some(metadata),
             },
         })
     }
 
-    pub(crate) fn into_tui(self) -> tui::PromptSubmission {
-        tui::PromptSubmission {
+    pub(crate) fn into_submission(self) -> operator_commands::PromptSubmission {
+        operator_commands::PromptSubmission {
             text: self.text,
             image_paths: self.image_paths,
             submitted_by: self.actor.label,
             via: self.via.label(),
             queue_mode: match self.queue_mode {
-                QueueMode::InterruptAfterTurn => tui::PromptQueueMode::InterruptAfterTurn,
-                QueueMode::UntilReady => tui::PromptQueueMode::UntilReady,
-                QueueMode::Immediate => tui::PromptQueueMode::Immediate,
+                QueueMode::InterruptAfterTurn => {
+                    operator_commands::PromptQueueMode::InterruptAfterTurn
+                }
+                QueueMode::UntilReady => operator_commands::PromptQueueMode::UntilReady,
+                QueueMode::Immediate => operator_commands::PromptQueueMode::Immediate,
             },
             metadata: self.metadata,
         }
@@ -188,11 +205,12 @@ impl RuntimePromptSubmission {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PromptEnvelope {
     pub(crate) id: u64,
+    pub(crate) authority_prompt_id: Option<uuid::Uuid>,
     pub(crate) text: String,
     pub(crate) image_paths: Vec<PathBuf>,
     pub(crate) submitted_by: RuntimeActor,
     pub(crate) via: ControlSurface,
-    pub(crate) metadata: tui::PromptMetadata,
+    pub(crate) metadata: operator_commands::PromptMetadata,
     pub(crate) queue_mode: QueueMode,
     pub(crate) queued_at: std::time::Instant,
 }
@@ -220,19 +238,38 @@ impl PromptQueue {
         image_paths: Vec<PathBuf>,
         actor: RuntimeActor,
         via: ControlSurface,
-        metadata: tui::PromptMetadata,
+        metadata: operator_commands::PromptMetadata,
         queue_mode: Option<QueueMode>,
+    ) -> u64 {
+        self.enqueue_submission(
+            RuntimePromptSubmission {
+                text,
+                image_paths,
+                actor,
+                via,
+                metadata,
+                queue_mode: queue_mode.unwrap_or(self.default_queue_mode),
+            },
+            None,
+        )
+    }
+
+    pub(crate) fn enqueue_submission(
+        &mut self,
+        submission: RuntimePromptSubmission,
+        authority_prompt_id: Option<uuid::Uuid>,
     ) -> u64 {
         self.next_prompt_id += 1;
         let prompt_id = self.next_prompt_id;
         self.prompts.push_back(PromptEnvelope {
             id: prompt_id,
-            text,
-            image_paths,
-            submitted_by: actor,
-            via,
-            metadata,
-            queue_mode: queue_mode.unwrap_or(self.default_queue_mode),
+            authority_prompt_id,
+            text: submission.text,
+            image_paths: submission.image_paths,
+            submitted_by: submission.actor,
+            via: submission.via,
+            metadata: submission.metadata,
+            queue_mode: submission.queue_mode,
             queued_at: std::time::Instant::now(),
         });
         prompt_id
@@ -335,7 +372,7 @@ mod tests {
             vec![],
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             None,
         );
         let second = queue.enqueue(
@@ -343,7 +380,7 @@ mod tests {
             vec![],
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             Some(QueueMode::InterruptAfterTurn),
         );
 
@@ -370,7 +407,7 @@ mod tests {
             vec![PathBuf::from("image.png")],
             RuntimeActor::auspex(),
             ControlSurface::Ipc,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             Some(QueueMode::InterruptAfterTurn),
         );
 
@@ -395,7 +432,7 @@ mod tests {
                 .collect(),
             RuntimeActor::tui(),
             ControlSurface::Tui,
-            tui::PromptMetadata::default(),
+            operator_commands::PromptMetadata::default(),
             Some(QueueMode::Immediate),
         );
 
@@ -408,6 +445,11 @@ mod tests {
     #[test]
     fn control_surface_labels_are_transport_specific() {
         assert_eq!(ControlSurface::WebSocket.label(), "websocket");
+        assert_eq!(ControlSurface::Acp.label(), "acp");
+        assert_eq!(
+            RuntimeActor::from_submission(String::new(), "acp").display_label(),
+            "acp-client"
+        );
         assert_eq!(
             ControlSurface::HttpEventIngress.label(),
             "http-event-ingress"

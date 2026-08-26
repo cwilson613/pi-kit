@@ -9,9 +9,11 @@ Two responsibilities:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +22,18 @@ TARGETS = (
     "x86_64-apple-darwin",
     "aarch64-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
 )
 
-FORMULA_TARGET_ORDER = TARGETS
+FORMULA_TARGET_ORDER = TARGETS[:4]
+PACKAGE_EXECUTABLES = ("omegon", "omegon-maintain")
+RESIDENT_LOCKS = tuple(f"{name}.composition-lock.json" for name in PACKAGE_EXECUTABLES)
+CONTENT_PREFIX = "share/omegon/content-packs/omegon-shipped/"
+CONTENT_MANIFEST = f"{CONTENT_PREFIX}content-pack.toml"
+DOMAIN_PREFIX = b"omegon-maint-v1\0"
+MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_MEMBER_BYTES = 1024 * 1024 * 1024
+MAX_AGGREGATE_BYTES = 4 * 1024 * 1024 * 1024
 
 
 def infer_channel(tag: str) -> str:
@@ -108,6 +119,129 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=False) + "\n")
 
 
+def derive_package_record_id(archive_digest: str, target: str, version: str) -> str:
+    digest = hashlib.sha256(DOMAIN_PREFIX)
+    for field in (b"package", bytes.fromhex(archive_digest), target.encode(), version.encode()):
+        digest.update(len(field).to_bytes(8, "big"))
+        digest.update(field)
+    return digest.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def build_package_manifest(
+    *, archive: Path, tag: str, target: str, repo: str, commit: str
+) -> dict[str, Any]:
+    if target not in TARGETS:
+        raise ValueError(f"Unsupported package target: {target}")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Package commit must be 40 lowercase hexadecimal characters")
+    version = tag.removeprefix("v")
+    expected_name = f"omegon-{version}-{target}.tar.gz"
+    if archive.name != expected_name:
+        raise ValueError(f"Package archive must be named {expected_name}")
+    if archive.stat().st_size > MAX_ARCHIVE_BYTES:
+        raise ValueError("Package archive exceeds the compressed-byte limit")
+
+    members = []
+    seen: set[str] = set()
+    aggregate_size = 0
+    with tarfile.open(archive, mode="r:gz") as package:
+        for member in package:
+            allowed = member.name in PACKAGE_EXECUTABLES or member.name in RESIDENT_LOCKS or member.name.startswith(CONTENT_PREFIX)
+            if not member.isfile() or not allowed or member.name in seen:
+                raise ValueError(f"Invalid package archive member: {member.name}")
+            expected_mode = 0o755 if member.name in PACKAGE_EXECUTABLES else 0o644
+            if member.mode != expected_mode:
+                raise ValueError(f"Package member {member.name} must have mode {expected_mode:04o}")
+            aggregate_size += member.size
+            if member.size > MAX_MEMBER_BYTES or aggregate_size > MAX_AGGREGATE_BYTES:
+                raise ValueError("Package member exceeds the uncompressed-byte limit")
+            stream = package.extractfile(member)
+            if stream is None:
+                raise ValueError(f"Cannot read package member: {member.name}")
+            digest = hashlib.sha256()
+            consumed = 0
+            while consumed < member.size:
+                block = stream.read(min(1024 * 1024, member.size - consumed))
+                if not block:
+                    break
+                consumed += len(block)
+                digest.update(block)
+            if consumed != member.size or stream.read(1):
+                raise ValueError(f"Package member size changed while reading: {member.name}")
+            members.append(
+                {
+                    "path": member.name,
+                    "mode": member.mode,
+                    "size": member.size,
+                    "digest": digest.hexdigest(),
+                }
+            )
+            seen.add(member.name)
+    if not set(PACKAGE_EXECUTABLES + RESIDENT_LOCKS).issubset(seen) or CONTENT_MANIFEST not in seen:
+        raise ValueError("Package archive must contain both root executables, resident locks, and the content-pack manifest")
+    members.sort(key=lambda member: member["path"])
+
+    archive_digest = sha256_file(archive)
+    git_ref = f"refs/tags/{tag}"
+    member_by_path = {member["path"]: member for member in members}
+    composition_locks = [
+        {
+            "artifact_digest": member_by_path[executable]["digest"],
+            "artifact_path": executable,
+            "fallback": "fail_closed",
+            "identity": f"executable:{executable}",
+            "protocol_maximum": 1,
+            "protocol_minimum": 1,
+            "required": True,
+            "resident_lock_path": lock_path,
+            "targets": [target],
+        }
+        for executable, lock_path in zip(PACKAGE_EXECUTABLES, RESIDENT_LOCKS, strict=True)
+    ]
+    composition_locks.append(
+        {
+            "artifact_digest": member_by_path[CONTENT_MANIFEST]["digest"],
+            "artifact_path": CONTENT_MANIFEST,
+            "fallback": "typed_unavailable",
+            "identity": "content-pack:omegon-shipped",
+            "protocol_maximum": 1,
+            "protocol_minimum": 1,
+            "required": False,
+            "resident_lock_path": None,
+            "targets": [target],
+        }
+    )
+    return {
+        "archive_digest": archive_digest,
+        "archive_filename": archive.name,
+        "commit": commit,
+        "composition_locks": composition_locks,
+        "git_ref": git_ref,
+        "issuer": "https://token.actions.githubusercontent.com",
+        "members": members,
+        "record_id": derive_package_record_id(archive_digest, target, version),
+        "record_kind": "package_manifest",
+        "repository": repo,
+        "schema_version": 1,
+        "tag": tag,
+        "target": target,
+        "version": version,
+        "workflow_identity": f"https://github.com/{repo}/.github/workflows/release.yml@{git_ref}",
+    }
+
+
+def write_canonical_json(path: Path, data: dict[str, Any]) -> None:
+    path.write_text(json.dumps(data, separators=(",", ":"), sort_keys=True) + "\n")
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
@@ -185,6 +319,16 @@ def main(argv: list[str] | None = None) -> int:
     generate.add_argument("--repo", required=True)
     generate.add_argument("--commit", required=True)
 
+    package = subparsers.add_parser(
+        "generate-package", help="Generate a canonical PackageManifestV1"
+    )
+    package.add_argument("--archive", type=Path, required=True)
+    package.add_argument("--tag", required=True)
+    package.add_argument("--target", required=True)
+    package.add_argument("--output", type=Path, required=True)
+    package.add_argument("--repo", required=True)
+    package.add_argument("--commit", required=True)
+
     homebrew = subparsers.add_parser("update-homebrew", help="Update Homebrew formula from manifest")
     homebrew.add_argument("--manifest", type=Path, required=True)
     homebrew.add_argument("--formula", type=Path, required=True)
@@ -200,6 +344,15 @@ def main(argv: list[str] | None = None) -> int:
                 commit=args.commit,
             )
             write_json(args.output, manifest)
+        elif args.command == "generate-package":
+            manifest = build_package_manifest(
+                archive=args.archive,
+                tag=args.tag,
+                target=args.target,
+                repo=args.repo,
+                commit=args.commit,
+            )
+            write_canonical_json(args.output, manifest)
         elif args.command == "update-homebrew":
             update_homebrew_formula(manifest_path=args.manifest, formula_path=args.formula)
         else:

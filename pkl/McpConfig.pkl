@@ -2,6 +2,9 @@
 ///
 /// Declares MCP servers for tool/resource/prompt discovery.
 /// Stored at `.omegon/mcp.toml` (project-level) or in plugin manifests.
+/// Project configuration is admitted as mcp:project before secret-template
+/// resolution, process spawn, or network connection. ACP-supplied configuration
+/// uses mcp:acp-client. OCI configuration is not verified confinement.
 ///
 /// Example:
 /// ```

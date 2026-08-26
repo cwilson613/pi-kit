@@ -14,6 +14,20 @@ related: []
 
 Split model routing into conceptual model identity and concrete provider route identity so routes like github-copilot:claude-sonnet-4-6 and anthropic:claude-sonnet-4-6 are operationally distinct routes serving the same conceptual model. Capability, model class, UX grouping, degradation, and benchmark evidence operate on conceptual model identity when identity equivalence is established; auth, transport, cost, quota, availability, diagnostics, deployment-specific capability verification, and execution operate on provider route identity. Unknown or internal deployments remain valid route identities without requiring a conceptual-model mapping or quality grade.
 
+## Current implementation status
+
+The identity and layered-inventory model remains the target architecture.
+Implemented Slice 4 scope is narrower: validated built-in provider
+contributions, one cross-host route service, selected-versus-serving bridge
+identity, directed selected-family fallback declarations, and durable
+pre-dispatch route leases. Inventory evidence diagnostics are implemented but
+are not currently consumed as dispatch eligibility gates. Do not infer that all
+conceptual-model equivalence, endpoint fitness, grade, modality, capability, or
+serving-family checks described below are enforced during dispatch.
+
+The canonical current boundary is
+[Provider contributions and route leases](provider-contributions-and-route-leases.md).
+
 ## Research
 
 ### Second- and third-order effects
@@ -69,6 +83,14 @@ Provider route metadata must own context envelope, output limit, transport diale
 **Status:** decided
 
 **Rationale:** Resolution composes an embedded bootstrap registry, signed/cached evidence snapshots, organization and user endpoint configuration, project/session overlays, discovery, and active probes. Fields merge with provenance rather than whole records replacing one another. Refresh validates a complete candidate snapshot and atomically activates it; failures retain the last known-good generation. Long-running operations record the generation and may fail over only within their authorized routing envelope.
+
+### Provider contributions bind executable semantics to inventory authority
+
+**Status:** implemented
+
+**Rationale:** Endpoint and offering inventory remains layered data, but an understood provider integration also needs release-coupled executable semantics. Omegon validates one contribution per built-in inference provider that binds stable owner/generation identity, inventory authority, accepted credential class, effective tool-schema support, bridge-factory identity, modality/capability evidence requirements, and explicit directed fallback compatibility. Factory identities are serialized metadata resolved inside the integration crate, not executable pointers in shared contracts. A contribution does not make every inventory offering eligible and does not replace offering-level evidence.
+
+Fallback relations are model-family bounded and non-transitive. Sharing an OpenAI-compatible wire protocol is not compatibility evidence. Route policy and admission may narrow a declared relation but cannot manufacture one. Cross-host route selection and durable request leases are now implemented by the common route service. Current fallback validation checks the selected model against the source declaration's family; it does not establish broader serving-offering or serving-family equivalence.
 
 ### Novel model-service semantics stay behind explicit integration boundaries
 

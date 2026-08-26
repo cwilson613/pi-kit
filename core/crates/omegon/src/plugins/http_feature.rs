@@ -14,16 +14,34 @@ use super::tool_capabilities::{ExternalExecutionHint, resolve_external_tool_capa
 pub struct HttpPluginFeature {
     manifest: PluginManifest,
     client: reqwest::Client,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
 }
 
 impl HttpPluginFeature {
+    #[cfg(test)]
     pub fn new(manifest: PluginManifest) -> Self {
+        let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test_id(
+            &format!("plugin:{}", manifest.plugin.name),
+            omegon_traits::RuntimeDynamicSourceKind::PluginHttp,
+        )
+        .expect("test plugin identity is valid");
+        Self::new_admitted(manifest, admission)
+    }
+
+    pub(crate) fn new_admitted(
+        manifest: PluginManifest,
+        admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    ) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .user_agent("omegon-plugin/1.0")
             .build()
             .unwrap_or_default();
-        Self { manifest, client }
+        Self {
+            manifest,
+            client,
+            admission,
+        }
     }
 
     /// Resolve template variables from env + tool args.
@@ -43,6 +61,10 @@ impl HttpPluginFeature {
 
     /// Fire-and-forget event POST (best-effort, no error propagation).
     async fn post_event(&self, endpoint: &str, payload: &Value) {
+        if let Err(error) = self.admission.validate() {
+            tracing::warn!(plugin = %self.manifest.plugin.name, %error, "plugin event denied by trust admission");
+            return;
+        }
         let url = resolve_template(endpoint, &HashMap::new());
         match self
             .client
@@ -67,6 +89,32 @@ impl HttpPluginFeature {
 impl Feature for HttpPluginFeature {
     fn name(&self) -> &str {
         &self.manifest.plugin.name
+    }
+
+    fn tool_provenance(&self) -> omegon_traits::ToolProvenance {
+        omegon_traits::ToolProvenance::Extension {
+            name: self.manifest.plugin.name.clone(),
+        }
+    }
+
+    fn runtime_lifecycle_policy(&self) -> Option<omegon_traits::RuntimeLifecyclePolicy> {
+        Some(omegon_traits::RuntimeLifecyclePolicy {
+            requirement: omegon_traits::RuntimeLifecycleRequirement::Optional,
+            failure_disposition: omegon_traits::RuntimeFailureDisposition::DegradeLocally,
+            readiness_timeout_ms: 15_000,
+            heartbeat_timeout_ms: None,
+            restart_limit: 0,
+        })
+    }
+
+    fn runtime_transition_policy(
+        &self,
+    ) -> Option<omegon_traits::RuntimeCompositionTransitionPolicy> {
+        Some(omegon_traits::RuntimeCompositionTransitionPolicy {
+            activation_boundary: omegon_traits::RuntimeActivationBoundary::Boot,
+            cleanup: omegon_traits::RuntimeCleanupRequirement::BestEffort,
+            cleanup_timeout_ms: 500,
+        })
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
@@ -99,6 +147,7 @@ impl Feature for HttpPluginFeature {
         args: Value,
         _cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.admission.validate()?;
         let tool = self
             .manifest
             .tools
@@ -204,6 +253,10 @@ impl Feature for HttpPluginFeature {
     }
 
     fn on_event(&mut self, event: &BusEvent) -> Vec<BusRequest> {
+        if let Err(error) = self.admission.validate() {
+            tracing::warn!(plugin = %self.manifest.plugin.name, %error, "plugin event denied by trust admission");
+            return vec![];
+        }
         let events = match &self.manifest.events {
             Some(e) => e,
             None => return vec![],

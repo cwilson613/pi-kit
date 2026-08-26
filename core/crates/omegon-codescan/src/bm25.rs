@@ -57,29 +57,43 @@ pub struct BM25Index {
 
 impl BM25Index {
     pub fn build(code: &[CodeChunk], knowledge: &[KnowledgeChunk]) -> Self {
-        let code_docs: Vec<_> = code
-            .iter()
-            .map(|c| {
-                let scope = c.parent_scope.as_deref().unwrap_or("");
-                let text = format!("{} {} {} {}", scope, c.item_name, c.item_kind, c.text);
-                (c.clone(), tokenize(&text))
-            })
-            .collect();
-        let knowledge_docs: Vec<_> = knowledge
-            .iter()
-            .map(|c| {
-                let text = format!("{} {} {}", c.heading, c.tags.join(" "), c.text);
-                (c.clone(), tokenize(&text))
-            })
-            .collect();
+        Self::build_with_cancel(code, knowledge, || false)
+            .expect("an uncancelled BM25 build cannot fail")
+    }
+
+    pub fn build_with_cancel(
+        code: &[CodeChunk],
+        knowledge: &[KnowledgeChunk],
+        is_cancelled: impl Fn() -> bool,
+    ) -> anyhow::Result<Self> {
+        let mut code_docs = Vec::with_capacity(code.len());
+        for chunk in code {
+            if is_cancelled() {
+                anyhow::bail!("codebase search cancelled");
+            }
+            let scope = chunk.parent_scope.as_deref().unwrap_or("");
+            let text = format!(
+                "{} {} {} {}",
+                scope, chunk.item_name, chunk.item_kind, chunk.text
+            );
+            code_docs.push((chunk.clone(), tokenize(&text)));
+        }
+        let mut knowledge_docs = Vec::with_capacity(knowledge.len());
+        for chunk in knowledge {
+            if is_cancelled() {
+                anyhow::bail!("codebase search cancelled");
+            }
+            let text = format!("{} {} {}", chunk.heading, chunk.tags.join(" "), chunk.text);
+            knowledge_docs.push((chunk.clone(), tokenize(&text)));
+        }
         let avg_code_len = avg_len(&code_docs);
         let avg_knowledge_len = avg_len(&knowledge_docs);
-        Self {
+        Ok(Self {
             code_docs,
             knowledge_docs,
             avg_code_len,
             avg_knowledge_len,
-        }
+        })
     }
 
     pub fn search(&self, query: &str, scope: SearchScope, max_results: usize) -> Vec<SearchChunk> {
@@ -300,5 +314,19 @@ mod tests {
         let idx = BM25Index::build(&code, &[]);
         let res = idx.search("common token", SearchScope::Code, 5);
         assert!(res.len() <= 5);
+    }
+
+    #[test]
+    fn build_honors_cancellation_between_chunks() {
+        let code = vec![
+            mk_code("one", "first chunk"),
+            mk_code("two", "second chunk"),
+        ];
+        let checks = std::cell::Cell::new(0);
+        let result = BM25Index::build_with_cancel(&code, &[], || {
+            checks.set(checks.get() + 1);
+            checks.get() > 1
+        });
+        assert!(result.is_err());
     }
 }

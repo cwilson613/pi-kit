@@ -35,6 +35,8 @@ Implement the plugin loader that reads ~/.omegon/plugins/*/plugin.toml manifests
 
 ## Implementation Notes
 
+Executable plugin manifests now adapt into the shared dynamic contribution lifecycle. Static discovery reads bounded manifest bytes, captures the stable `plugin:<directory-name>` identity and source digest, and requests trust without evaluating Pkl, connecting HTTP or MCP, resolving secrets, or starting script and OCI processes. After admission, the existing HTTP, MCP, script, and OCI adapters perform bounded readiness and freeze their declarations. EventBus graph publication is the only registration visibility boundary. One generation owner handles candidate rollback and runtime cleanup together with native extensions; transport adapters retain their protocol and confinement behavior.
+
 ### File Scope
 
 - `crates/omegon/src/plugins/mod.rs` (new) — Plugin loader — manifest discovery, parsing, activation check
@@ -45,6 +47,7 @@ Implement the plugin loader that reads ~/.omegon/plugins/*/plugin.toml manifests
 
 ### Constraints
 
+- Static discovery must not evaluate or execute an untrusted candidate
 - Plugin activation must be fast — only check marker files and env vars, no HTTP at activation time
 - HTTP tool calls must have timeouts (5s default) and graceful degradation
 - Plugin context injection follows the same TTL/priority system as native context

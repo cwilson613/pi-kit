@@ -346,29 +346,23 @@ fn cleanup_branch_helper(
     // Cherry-pick each non-ceremony commit
     for (oid, msg) in commits {
         let first_line = msg.lines().next().unwrap_or("(no message)");
-        let output = std::process::Command::new("git")
-            .args(["cherry-pick", &oid.to_string()])
-            .current_dir(repo_path)
-            .output()
+        let output =
+            crate::process::run("git", ["cherry-pick", &oid.to_string()], repo_path, &|| {
+                false
+            })
             .with_context(|| format!("cherry-pick {} failed", first_line))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Abort cherry-pick and restore
-            let _ = std::process::Command::new("git")
-                .args(["cherry-pick", "--abort"])
-                .current_dir(repo_path)
-                .output();
+            let _ = crate::process::run("git", ["cherry-pick", "--abort"], repo_path, &|| false);
             anyhow::bail!("cherry-pick failed for '{}': {}", first_line, stderr.trim());
         }
     }
 
     // Switch back to the original branch
     // (checkout_head with FORCE to get back to where we were)
-    let _ = std::process::Command::new("git")
-        .args(["checkout", "-"])
-        .current_dir(repo_path)
-        .output();
+    let _ = crate::process::run("git", ["checkout", "-"], repo_path, &|| false);
 
     Ok(())
 }

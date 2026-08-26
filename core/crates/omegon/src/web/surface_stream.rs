@@ -208,14 +208,28 @@ async fn handle_surface_stream(socket: WebSocket, state: WebState) {
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                 revision += 1;
-                let message = WebSurfaceStreamEnvelope::lagged(revision, n);
-                let _ = ws_tx
+                tracing::debug!("web surface client lagged by {n} events; reconciling snapshot");
+                while events_rx.try_recv().is_ok() {}
+                state.reconcile_semantic_session();
+                let snapshot = super::surfaces::project_web_surfaces(&state);
+                let message = WebSurfaceStreamEnvelope::new(
+                    snapshot.session_id.clone(),
+                    revision,
+                    "snapshot",
+                    None,
+                    serde_json::to_value(snapshot).unwrap_or_else(|_| json!({})),
+                );
+                if ws_tx
                     .send(Message::Text(
                         serde_json::to_string(&message)
                             .unwrap_or_else(|_| "{}".to_string())
                             .into(),
                     ))
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
         }

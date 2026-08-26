@@ -1,0 +1,27 @@
+[
+  {
+    "code": "graph:ambiguous_binding",
+    "severity": "error",
+    "subject": {
+      "contribution_id": "feature:core-tools",
+      "capability_id": "tool:read",
+      "invocation": {
+        "kind": "tool",
+        "name": "read",
+        "role": "canonical"
+      }
+    },
+    "related_contributions": ["extension:alternate-tools"],
+    "related_capabilities": ["tool:alternate-read"],
+    "message": "tool invocation read has multiple candidate owners"
+  },
+  {
+    "code": "graph:missing_dependency",
+    "severity": "error",
+    "subject": {
+      "contribution_id": "feature:core-tools"
+    },
+    "related_capabilities": ["service:workspace"],
+    "message": "required workspace service is absent"
+  }
+]

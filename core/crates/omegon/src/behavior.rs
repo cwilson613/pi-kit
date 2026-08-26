@@ -9,6 +9,259 @@ use crate::conversation::{ConversationState, TaskMode, ToolCall, ToolResultEntry
 pub(crate) use omegon_traits::ProgressSignal;
 use omegon_traits::{DriftKind, OodaPhase, ProgressNudgeReason, ToolCapability, ToolDefinition};
 use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+pub(crate) trait BehaviorPolicyService: std::any::Any + Send + Sync {
+    fn infer_unpinned_task_mode(&self, prompt: &str) -> TaskMode;
+    fn assess_turn(&self, input: &BehaviorTurnInput) -> BehaviorTurnAssessment;
+    fn assess_pressure(&self, input: &BehaviorPressureInput) -> BehaviorPressureAssessment;
+    fn assess_text(&self, text: &str) -> BehaviorTextAssessment;
+    fn message(&self, kind: BehaviorMessageKind) -> String;
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct DefaultBehaviorPolicy;
+
+#[derive(Clone)]
+pub(crate) struct BehaviorPolicyBinding {
+    pub(crate) capability_id: omegon_traits::RuntimeCapabilityId,
+    pub(crate) owner: omegon_traits::RuntimeContributionId,
+    pub(crate) generation_id: omegon_traits::RuntimeContributionGenerationId,
+    pub(crate) service: Arc<dyn BehaviorPolicyService>,
+}
+
+impl std::fmt::Debug for BehaviorPolicyBinding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BehaviorPolicyBinding")
+            .field("capability_id", &self.capability_id)
+            .field("owner", &self.owner)
+            .field("generation_id", &self.generation_id)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BehaviorToolOutcome {
+    Succeeded,
+    Failed,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BehaviorToolView {
+    pub(crate) name: String,
+    pub(crate) target: Option<PathBuf>,
+    pub(crate) outcome: BehaviorToolOutcome,
+    pub(crate) targeted_validation: bool,
+    capabilities: BTreeSet<ToolCapability>,
+}
+
+impl BehaviorToolView {
+    fn has(&self, capability: ToolCapability) -> bool {
+        self.capabilities.contains(&capability)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BehaviorIntentView {
+    pub(crate) task_mode: TaskMode,
+    pub(crate) files_read: Vec<PathBuf>,
+    pub(crate) has_modified_files: bool,
+    pub(crate) low_novelty_revisit_streak: u32,
+}
+
+impl BehaviorIntentView {
+    fn from_conversation(conversation: &ConversationState) -> Self {
+        Self {
+            task_mode: conversation.intent.task_mode,
+            files_read: conversation.intent.files_read.iter().cloned().collect(),
+            has_modified_files: !conversation.intent.files_modified.is_empty(),
+            low_novelty_revisit_streak: conversation
+                .intent
+                .evidence_ledger
+                .low_novelty_revisit_streak(),
+        }
+    }
+
+    fn has_read(&self, path: &Path) -> bool {
+        self.files_read.iter().any(|read| read == path)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BehaviorObservationView {
+    pub(crate) progress_boundary: bool,
+    pub(crate) file_mutated: bool,
+    pub(crate) validation_run: bool,
+}
+
+impl BehaviorObservationView {
+    pub(crate) fn from_events(events: &[crate::observation::ObservationEvent]) -> Self {
+        Self {
+            progress_boundary: events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::observation::ObservationEvent::ProgressBoundary { .. }
+                )
+            }),
+            file_mutated: events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::observation::ObservationEvent::FileMutated { .. }
+                )
+            }),
+            validation_run: events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::observation::ObservationEvent::ValidationRun { .. }
+                )
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BehaviorTurnInput {
+    pub(crate) turn: u32,
+    pub(crate) constraints_before: usize,
+    pub(crate) constraints_after: usize,
+    pub(crate) intent: BehaviorIntentView,
+    pub(crate) tools: Vec<BehaviorToolView>,
+    pub(crate) observations: BehaviorObservationView,
+}
+
+impl BehaviorTurnInput {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_host(
+        turn: u32,
+        constraints_before: usize,
+        constraints_after: usize,
+        conversation: &ConversationState,
+        catalog: &ToolCapabilityCatalog,
+        tool_calls: &[ToolCall],
+        results: &[ToolResultEntry],
+        observations: &[crate::observation::ObservationEvent],
+    ) -> Self {
+        Self {
+            turn,
+            constraints_before,
+            constraints_after,
+            intent: BehaviorIntentView::from_conversation(conversation),
+            tools: tool_views(catalog, tool_calls, results),
+            observations: BehaviorObservationView::from_events(observations),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BehaviorTurnAssessment {
+    pub(crate) dominant_phase: Option<OodaPhase>,
+    pub(crate) drift_kind: Option<DriftKind>,
+    pub(crate) progress_signal: ProgressSignal,
+    pub(crate) evidence: EvidenceAssessment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BehaviorConfigView {
+    pub(crate) enforce_first_turn_execution_bias: bool,
+    pub(crate) slim_execution_bias: bool,
+    pub(crate) tier: BehavioralTier,
+}
+
+impl BehaviorConfigView {
+    pub(crate) fn from_host(config: &super::r#loop::LoopConfig) -> Self {
+        Self {
+            enforce_first_turn_execution_bias: config.enforce_first_turn_execution_bias,
+            slim_execution_bias: is_slim_execution_bias(config),
+            tier: behavioral_tier(config),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BehaviorControllerView {
+    pub(crate) consecutive_tool_continuations: u32,
+    pub(crate) orientation_churn_streak: u32,
+    pub(crate) repeated_action_failure_streak: u32,
+    pub(crate) validation_thrash_streak: u32,
+    pub(crate) closure_stall_streak: u32,
+    pub(crate) constraint_discovery_streak: u32,
+    pub(crate) local_evidence_sufficient_streak: u32,
+    pub(crate) evidence_sufficient_streak: u32,
+}
+
+impl From<&ControllerState> for BehaviorControllerView {
+    fn from(controller: &ControllerState) -> Self {
+        Self {
+            consecutive_tool_continuations: controller.consecutive_tool_continuations,
+            orientation_churn_streak: controller.orientation_churn_streak,
+            repeated_action_failure_streak: controller.repeated_action_failure_streak,
+            validation_thrash_streak: controller.validation_thrash_streak,
+            closure_stall_streak: controller.closure_stall_streak,
+            constraint_discovery_streak: controller.constraint_discovery_streak,
+            local_evidence_sufficient_streak: controller.local_evidence_sufficient_streak,
+            evidence_sufficient_streak: controller.evidence_sufficient_streak,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BehaviorPressureInput {
+    pub(crate) turn: u32,
+    pub(crate) config: BehaviorConfigView,
+    pub(crate) intent: BehaviorIntentView,
+    pub(crate) tools: Vec<BehaviorToolView>,
+    pub(crate) dominant_phase: Option<OodaPhase>,
+    pub(crate) controller: BehaviorControllerView,
+}
+
+impl BehaviorPressureInput {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_host(
+        turn: u32,
+        config: &super::r#loop::LoopConfig,
+        conversation: &ConversationState,
+        catalog: &ToolCapabilityCatalog,
+        tool_calls: &[ToolCall],
+        results: &[ToolResultEntry],
+        dominant_phase: Option<OodaPhase>,
+        controller: &ControllerState,
+    ) -> Self {
+        Self {
+            turn,
+            config: BehaviorConfigView::from_host(config),
+            intent: BehaviorIntentView::from_conversation(conversation),
+            tools: tool_views(catalog, tool_calls, results),
+            dominant_phase,
+            controller: controller.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BehaviorPressureAssessment {
+    pub(crate) first_turn_orientation_churn: bool,
+    pub(crate) execution_pressure: bool,
+    pub(crate) continuation_tier: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BehaviorTextAssessment {
+    pub(crate) substantive_interleaved_prose: bool,
+    pub(crate) pathological_meta_response: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BehaviorMessageKind {
+    FirstTurn(BehavioralTier),
+    ExecutionPressure(BehavioralTier),
+    Continuation { tier: u8, behavior: BehavioralTier },
+    Evidence(BehavioralTier),
+    LocalFirst(BehavioralTier),
+    MetaRetry,
+}
 
 // ─── Task-mode inference ────────────────────────────────────────────────────
 
@@ -124,6 +377,47 @@ impl ToolCapabilityCatalog {
     }
 }
 
+fn tool_views(
+    catalog: &ToolCapabilityCatalog,
+    tool_calls: &[ToolCall],
+    results: &[ToolResultEntry],
+) -> Vec<BehaviorToolView> {
+    tool_calls
+        .iter()
+        .map(|call| {
+            let outcome = match results.iter().find(|result| result.call_id == call.id) {
+                Some(result) if result.is_error => BehaviorToolOutcome::Failed,
+                Some(_) => BehaviorToolOutcome::Succeeded,
+                None => BehaviorToolOutcome::Missing,
+            };
+            let targeted_validation = catalog.has(&call.name, ToolCapability::Validation)
+                && call
+                    .arguments
+                    .get("level")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("standard")
+                    != "full"
+                && (call.arguments.get("path").is_some()
+                    || call
+                        .arguments
+                        .get("paths")
+                        .and_then(|value| value.as_array())
+                        .is_some_and(|paths| !paths.is_empty() && paths.len() <= 2));
+            BehaviorToolView {
+                name: call.name.clone(),
+                target: call
+                    .arguments
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .map(PathBuf::from),
+                outcome,
+                targeted_validation,
+                capabilities: catalog.capabilities_for(&call.name).into_iter().collect(),
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn is_orientation_tool(catalog: &ToolCapabilityCatalog, name: &str) -> bool {
     catalog.has(name, ToolCapability::Orientation)
 }
@@ -207,57 +501,7 @@ pub(crate) fn classify_turn_phase(
     tool_calls: &[ToolCall],
     results: &[ToolResultEntry],
 ) -> Option<OodaPhase> {
-    if tool_calls.is_empty() {
-        return None;
-    }
-
-    // Tools that produce output or change state are Act.
-    if tool_calls.iter().any(|call| {
-        catalog.has(&call.name, ToolCapability::StateChanging)
-            || is_validation_tool_name(catalog, &call.name)
-    }) {
-        return Some(OodaPhase::Act);
-    }
-
-    let successful_mutation = tool_calls.iter().any(|call| {
-        is_mutation_tool_name(catalog, &call.name)
-            && results
-                .iter()
-                .find(|result| result.call_id == call.id)
-                .is_some_and(|result| !result.is_error)
-    });
-    if successful_mutation {
-        return Some(OodaPhase::Act);
-    }
-
-    if tool_calls
-        .iter()
-        .all(|call| is_orientation_tool(catalog, &call.name))
-    {
-        return Some(OodaPhase::Observe);
-    }
-
-    if tool_calls
-        .iter()
-        .all(|call| is_repo_inspection_tool(catalog, &call.name))
-    {
-        return Some(OodaPhase::Observe);
-    }
-
-    if tool_calls
-        .iter()
-        .all(|call| is_validation_tool_name(catalog, &call.name))
-    {
-        return Some(OodaPhase::Act);
-    }
-
-    if tool_calls.iter().any(|call| {
-        is_mutation_tool_name(catalog, &call.name) || is_validation_tool_name(catalog, &call.name)
-    }) {
-        return Some(OodaPhase::Act);
-    }
-
-    Some(OodaPhase::Orient)
+    phase_from_view(&tool_views(catalog, tool_calls, results))
 }
 
 pub(crate) fn classify_drift_kind(
@@ -267,98 +511,15 @@ pub(crate) fn classify_drift_kind(
     tool_calls: &[ToolCall],
     results: &[ToolResultEntry],
 ) -> Option<DriftKind> {
-    let broad_orientation_calls = tool_calls
-        .iter()
-        .filter(|call| is_broad_orientation_tool(catalog, &call.name))
-        .count();
-    let broad_repo_inspection_calls = tool_calls
-        .iter()
-        .filter(|call| is_broad_repo_inspection_tool(catalog, &call.name))
-        .count();
-    let targeted_repo_inspection_calls = tool_calls
-        .iter()
-        .filter(|call| is_targeted_repo_inspection_tool(catalog, &call.name))
-        .count();
-
-    let research_mode = conversation.intent.task_mode == TaskMode::Research;
-
-    if !research_mode
-        && conversation.intent.files_modified.is_empty()
-        && !conversation.intent.files_read.is_empty()
-        && tool_calls
-            .iter()
-            .all(|call| is_repo_inspection_tool(catalog, &call.name))
-        && turn >= 4
-        && broad_repo_inspection_calls > 0
-        && targeted_repo_inspection_calls <= 1
-    {
-        return Some(DriftKind::OrientationChurn);
-    }
-
-    if !research_mode
-        && conversation.intent.files_modified.is_empty()
-        && conversation.intent.files_read.is_empty()
-        && turn >= 3
-        && broad_orientation_calls == tool_calls.len()
-    {
-        return Some(DriftKind::OrientationChurn);
-    }
-
-    let failing_mutations: Vec<&ToolCall> = tool_calls
-        .iter()
-        .filter(|call| {
-            is_mutation_tool_name(catalog, &call.name)
-                && results
-                    .iter()
-                    .find(|result| result.call_id == call.id)
-                    .is_some_and(|result| result.is_error)
-        })
-        .collect();
-    let repeated_mutation_failures = failing_mutations.len() >= 2
-        && failing_mutations.iter().enumerate().any(|(idx, call)| {
-            let path = call.arguments.get("path").and_then(|v| v.as_str());
-            failing_mutations
-                .iter()
-                .enumerate()
-                .filter(|(other_idx, other)| *other_idx != idx && other.name == call.name)
-                .any(|(_, other)| {
-                    let other_path = other.arguments.get("path").and_then(|v| v.as_str());
-                    match (path, other_path) {
-                        (Some(path), Some(other_path)) => path == other_path,
-                        (None, None) => true,
-                        _ => false,
-                    }
-                })
-        });
-    if repeated_mutation_failures {
-        return Some(DriftKind::RepeatedActionFailure);
-    }
-
-    let validation_calls = tool_calls
-        .iter()
-        .filter(|call| is_validation_tool_name(catalog, &call.name))
-        .count();
-    let targeted_validation = matches!(
-        classify_validation_scope(catalog, tool_calls, results),
-        ProgressSignal::TargetedValidation
-    );
-    if validation_calls >= 2
-        && conversation.intent.files_modified.is_empty()
-        && !targeted_validation
-    {
-        return Some(DriftKind::ValidationThrash);
-    }
-
-    if !conversation.intent.files_modified.is_empty()
-        && tool_calls
-            .iter()
-            .all(|call| is_repo_inspection_tool(catalog, &call.name))
-        && broad_repo_inspection_calls > 0
-    {
-        return Some(DriftKind::ClosureStall);
-    }
-
-    None
+    let input = BehaviorTurnInput {
+        turn,
+        constraints_before: 0,
+        constraints_after: 0,
+        intent: BehaviorIntentView::from_conversation(conversation),
+        tools: tool_views(catalog, tool_calls, results),
+        observations: BehaviorObservationView::default(),
+    };
+    drift_from_view(&input)
 }
 
 pub(crate) fn progress_nudge_reason_for_drift(drift: DriftKind) -> ProgressNudgeReason {
@@ -726,47 +887,14 @@ pub(crate) fn classify_progress_signal(
 ) -> ProgressSignal {
     let observations =
         crate::observation::ObservationNormalizer::new(catalog).normalize(tool_calls, results);
-    if observations.iter().any(|event| {
-        matches!(
-            event,
-            crate::observation::ObservationEvent::ProgressBoundary { .. }
-        )
-    }) {
-        return ProgressSignal::Commit;
-    }
-    if observations.iter().any(|event| {
-        matches!(
-            event,
-            crate::observation::ObservationEvent::FileMutated { .. }
-        )
-    }) {
-        return ProgressSignal::Mutation;
-    }
-    if observations.iter().any(|event| {
-        matches!(
-            event,
-            crate::observation::ObservationEvent::ValidationRun { .. }
-        )
-    }) {
-        return ProgressSignal::TargetedValidation;
-    }
-
-    let validation_signal = classify_validation_scope(catalog, tool_calls, results);
-    if !matches!(validation_signal, ProgressSignal::None) {
-        return validation_signal;
-    }
-
-    if detect_constraint_discovery(
+    progress_from_view(&BehaviorTurnInput {
+        turn: 0,
         constraints_before,
         constraints_after,
-        catalog,
-        tool_calls,
-        results,
-    ) {
-        return ProgressSignal::ConstraintDiscovery;
-    }
-
-    ProgressSignal::None
+        intent: BehaviorIntentView::from_conversation(&ConversationState::new()),
+        tools: tool_views(catalog, tool_calls, results),
+        observations: BehaviorObservationView::from_events(&observations),
+    })
 }
 
 pub(crate) fn assess_evidence(
@@ -775,104 +903,14 @@ pub(crate) fn assess_evidence(
     tool_calls: &[ToolCall],
     results: &[ToolResultEntry],
 ) -> EvidenceAssessment {
-    if conversation.intent.files_read.is_empty() {
-        return EvidenceAssessment {
-            local: EvidenceSufficiency::None,
-            global: EvidenceSufficiency::None,
-        };
-    }
-
-    if !conversation.intent.files_modified.is_empty() {
-        return EvidenceAssessment {
-            local: EvidenceSufficiency::Actionable,
-            global: EvidenceSufficiency::Actionable,
-        };
-    }
-
-    let targeted_validation = matches!(
-        classify_validation_scope(catalog, tool_calls, results),
-        ProgressSignal::TargetedValidation
-    );
-    let failed_mutation_on_known_target = tool_calls.iter().any(|call| {
-        is_mutation_tool_name(catalog, &call.name)
-            && call
-                .arguments
-                .get("path")
-                .and_then(|v| v.as_str())
-                .is_some_and(|path| {
-                    conversation
-                        .intent
-                        .files_read
-                        .iter()
-                        .any(|read| read == std::path::Path::new(path))
-                        && results
-                            .iter()
-                            .find(|result| result.call_id == call.id)
-                            .is_some_and(|result| result.is_error)
-                })
-    });
-    let inspection_backed_by_validation_failure = tool_calls.iter().any(|call| {
-        is_repo_inspection_tool(catalog, &call.name)
-            && results.iter().any(|result| result.is_error)
-            && tool_calls
-                .iter()
-                .any(|validation| is_validation_tool_name(catalog, &validation.name))
-    });
-
-    let targeted_reads: Vec<&str> = tool_calls
-        .iter()
-        .filter(|call| is_targeted_repo_inspection_tool(catalog, &call.name))
-        .filter_map(|call| call.arguments.get("path").and_then(|v| v.as_str()))
-        .collect();
-    let narrow_target_cluster = !targeted_reads.is_empty()
-        && tool_calls
-            .iter()
-            .all(|call| is_repo_inspection_tool(catalog, &call.name))
-        && !tool_calls
-            .iter()
-            .any(|call| is_broad_repo_inspection_tool(catalog, &call.name));
-    let targeted_paths_known = narrow_target_cluster
-        && targeted_reads.iter().all(|path| {
-            conversation
-                .intent
-                .files_read
-                .iter()
-                .any(|read| read == std::path::Path::new(path))
-        });
-    let low_novelty_revisit_streak = conversation
-        .intent
-        .evidence_ledger
-        .low_novelty_revisit_streak();
-    let global = if targeted_validation
-        || failed_mutation_on_known_target
-        || inspection_backed_by_validation_failure
-    {
-        EvidenceSufficiency::Actionable
-    } else {
-        EvidenceSufficiency::None
-    };
-    if conversation.intent.task_mode == TaskMode::Research
-        && global != EvidenceSufficiency::Actionable
-    {
-        return EvidenceAssessment {
-            local: if targeted_paths_known {
-                EvidenceSufficiency::Targeted
-            } else {
-                EvidenceSufficiency::None
-            },
-            global,
-        };
-    }
-
-    let local = if targeted_paths_known && low_novelty_revisit_streak >= 2 {
-        EvidenceSufficiency::Actionable
-    } else if targeted_paths_known || !conversation.intent.files_read.is_empty() {
-        EvidenceSufficiency::Targeted
-    } else {
-        EvidenceSufficiency::None
-    };
-
-    EvidenceAssessment { local, global }
+    evidence_from_view(&BehaviorTurnInput {
+        turn: 0,
+        constraints_before: 0,
+        constraints_after: 0,
+        intent: BehaviorIntentView::from_conversation(conversation),
+        tools: tool_views(catalog, tool_calls, results),
+        observations: BehaviorObservationView::default(),
+    })
 }
 
 pub(crate) fn is_slim_execution_bias(config: &super::r#loop::LoopConfig) -> bool {
@@ -1122,6 +1160,389 @@ pub(crate) fn auto_delegate_tool_call(
             "background": plan.background,
             "worker_profile": plan.worker_profile,
         }),
+    }
+}
+
+fn phase_from_view(tools: &[BehaviorToolView]) -> Option<OodaPhase> {
+    if tools.is_empty() {
+        return None;
+    }
+    if tools
+        .iter()
+        .any(|tool| tool.has(ToolCapability::StateChanging) || tool.has(ToolCapability::Validation))
+    {
+        return Some(OodaPhase::Act);
+    }
+    if tools.iter().any(|tool| tool.has(ToolCapability::Mutation)) {
+        return Some(OodaPhase::Act);
+    }
+    if tools
+        .iter()
+        .all(|tool| tool.has(ToolCapability::Orientation))
+        || tools
+            .iter()
+            .all(|tool| tool.has(ToolCapability::RepoInspection))
+    {
+        return Some(OodaPhase::Observe);
+    }
+    Some(OodaPhase::Orient)
+}
+
+fn validation_signal_from_view(tools: &[BehaviorToolView]) -> ProgressSignal {
+    let successful: Vec<&BehaviorToolView> = tools
+        .iter()
+        .filter(|tool| {
+            tool.has(ToolCapability::Validation) && tool.outcome == BehaviorToolOutcome::Succeeded
+        })
+        .collect();
+    if successful.is_empty() {
+        ProgressSignal::None
+    } else if successful.iter().any(|tool| tool.targeted_validation) {
+        ProgressSignal::TargetedValidation
+    } else {
+        ProgressSignal::BroadValidation
+    }
+}
+
+fn drift_from_view(input: &BehaviorTurnInput) -> Option<DriftKind> {
+    let broad_orientation = input
+        .tools
+        .iter()
+        .filter(|tool| tool.has(ToolCapability::BroadOrientation))
+        .count();
+    let broad_inspection = input
+        .tools
+        .iter()
+        .filter(|tool| tool.has(ToolCapability::BroadRepoInspection))
+        .count();
+    let targeted_inspection = input
+        .tools
+        .iter()
+        .filter(|tool| tool.has(ToolCapability::TargetedRepoInspection))
+        .count();
+    let research = input.intent.task_mode == TaskMode::Research;
+
+    if !research
+        && !input.intent.has_modified_files
+        && !input.intent.files_read.is_empty()
+        && input
+            .tools
+            .iter()
+            .all(|tool| tool.has(ToolCapability::RepoInspection))
+        && input.turn >= 4
+        && broad_inspection > 0
+        && targeted_inspection <= 1
+    {
+        return Some(DriftKind::OrientationChurn);
+    }
+    if !research
+        && !input.intent.has_modified_files
+        && input.intent.files_read.is_empty()
+        && input.turn >= 3
+        && broad_orientation == input.tools.len()
+    {
+        return Some(DriftKind::OrientationChurn);
+    }
+
+    let failing_mutations: Vec<&BehaviorToolView> = input
+        .tools
+        .iter()
+        .filter(|tool| {
+            tool.has(ToolCapability::Mutation) && tool.outcome == BehaviorToolOutcome::Failed
+        })
+        .collect();
+    if failing_mutations.len() >= 2
+        && failing_mutations.iter().enumerate().any(|(index, tool)| {
+            failing_mutations
+                .iter()
+                .enumerate()
+                .any(|(other_index, other)| {
+                    index != other_index && tool.name == other.name && tool.target == other.target
+                })
+        })
+    {
+        return Some(DriftKind::RepeatedActionFailure);
+    }
+
+    let validation_calls = input
+        .tools
+        .iter()
+        .filter(|tool| tool.has(ToolCapability::Validation))
+        .count();
+    if validation_calls >= 2
+        && !input.intent.has_modified_files
+        && validation_signal_from_view(&input.tools) != ProgressSignal::TargetedValidation
+    {
+        return Some(DriftKind::ValidationThrash);
+    }
+    if input.intent.has_modified_files
+        && input
+            .tools
+            .iter()
+            .all(|tool| tool.has(ToolCapability::RepoInspection))
+        && broad_inspection > 0
+    {
+        return Some(DriftKind::ClosureStall);
+    }
+    None
+}
+
+fn progress_from_view(input: &BehaviorTurnInput) -> ProgressSignal {
+    if input.observations.progress_boundary {
+        return ProgressSignal::Commit;
+    }
+    if input.observations.file_mutated {
+        return ProgressSignal::Mutation;
+    }
+    if input.observations.validation_run {
+        return ProgressSignal::TargetedValidation;
+    }
+    let validation = validation_signal_from_view(&input.tools);
+    if validation != ProgressSignal::None {
+        return validation;
+    }
+    if input.constraints_after > input.constraints_before
+        && input.tools.iter().any(|tool| {
+            tool.has(ToolCapability::RepoInspection)
+                || tool.has(ToolCapability::Validation)
+                || (tool.has(ToolCapability::Mutation)
+                    && tool.outcome == BehaviorToolOutcome::Failed)
+        })
+    {
+        return ProgressSignal::ConstraintDiscovery;
+    }
+    ProgressSignal::None
+}
+
+fn evidence_from_view(input: &BehaviorTurnInput) -> EvidenceAssessment {
+    if input.intent.files_read.is_empty() {
+        return EvidenceAssessment::default();
+    }
+    if input.intent.has_modified_files {
+        return EvidenceAssessment {
+            local: EvidenceSufficiency::Actionable,
+            global: EvidenceSufficiency::Actionable,
+        };
+    }
+
+    let targeted_validation =
+        validation_signal_from_view(&input.tools) == ProgressSignal::TargetedValidation;
+    let failed_mutation_on_known_target = input.tools.iter().any(|tool| {
+        tool.has(ToolCapability::Mutation)
+            && tool.outcome == BehaviorToolOutcome::Failed
+            && tool
+                .target
+                .as_deref()
+                .is_some_and(|target| input.intent.has_read(target))
+    });
+    let inspection_backed_by_validation_failure = input
+        .tools
+        .iter()
+        .any(|tool| tool.has(ToolCapability::RepoInspection))
+        && input
+            .tools
+            .iter()
+            .any(|tool| tool.outcome == BehaviorToolOutcome::Failed)
+        && input
+            .tools
+            .iter()
+            .any(|tool| tool.has(ToolCapability::Validation));
+    let targeted_reads: Vec<&Path> = input
+        .tools
+        .iter()
+        .filter(|tool| tool.has(ToolCapability::TargetedRepoInspection))
+        .filter_map(|tool| tool.target.as_deref())
+        .collect();
+    let narrow_target_cluster = !targeted_reads.is_empty()
+        && input
+            .tools
+            .iter()
+            .all(|tool| tool.has(ToolCapability::RepoInspection))
+        && !input
+            .tools
+            .iter()
+            .any(|tool| tool.has(ToolCapability::BroadRepoInspection));
+    let targeted_paths_known = narrow_target_cluster
+        && targeted_reads
+            .iter()
+            .all(|target| input.intent.has_read(target));
+    let global = if targeted_validation
+        || failed_mutation_on_known_target
+        || inspection_backed_by_validation_failure
+    {
+        EvidenceSufficiency::Actionable
+    } else {
+        EvidenceSufficiency::None
+    };
+    if input.intent.task_mode == TaskMode::Research && global != EvidenceSufficiency::Actionable {
+        return EvidenceAssessment {
+            local: if targeted_paths_known {
+                EvidenceSufficiency::Targeted
+            } else {
+                EvidenceSufficiency::None
+            },
+            global,
+        };
+    }
+    let local = if targeted_paths_known && input.intent.low_novelty_revisit_streak >= 2 {
+        EvidenceSufficiency::Actionable
+    } else if targeted_paths_known || !input.intent.files_read.is_empty() {
+        EvidenceSufficiency::Targeted
+    } else {
+        EvidenceSufficiency::None
+    };
+    EvidenceAssessment { local, global }
+}
+
+fn pressure_from_view(input: &BehaviorPressureInput) -> BehaviorPressureAssessment {
+    let first_turn_orientation_churn = input.config.enforce_first_turn_execution_bias
+        && input.turn == 1
+        && !input.tools.is_empty()
+        && input
+            .tools
+            .iter()
+            .all(|tool| tool.has(ToolCapability::Orientation))
+        && input.intent.files_read.is_empty()
+        && !input.intent.has_modified_files;
+
+    let execution_pressure = if input.intent.task_mode == TaskMode::Research
+        || input.tools.is_empty()
+        || input.intent.has_modified_files
+        || input.intent.files_read.is_empty()
+        || !input
+            .tools
+            .iter()
+            .all(|tool| tool.has(ToolCapability::RepoInspection))
+    {
+        false
+    } else {
+        let broad = input
+            .tools
+            .iter()
+            .any(|tool| tool.has(ToolCapability::BroadRepoInspection));
+        let (broad_threshold, targeted_threshold) = match input.config.tier {
+            BehavioralTier::Constrained => (3, 4),
+            BehavioralTier::Standard => (5, 6),
+        };
+        (input.turn >= broad_threshold && broad) || (input.turn >= targeted_threshold && !broad)
+    };
+
+    let continuation_tier = if input.tools.is_empty()
+        || !matches!(
+            input.dominant_phase,
+            Some(OodaPhase::Observe | OodaPhase::Orient)
+        ) {
+        None
+    } else {
+        let controller = input.controller;
+        let research = input.intent.task_mode == TaskMode::Research;
+        let local_first = !research
+            && input.config.slim_execution_bias
+            && controller.local_evidence_sufficient_streak > 0
+            && !input.intent.files_read.is_empty()
+            && !input.intent.has_modified_files;
+        let constrained = input.config.tier == BehavioralTier::Constrained;
+        let (tier1, tier2, tier3) = if research {
+            if constrained {
+                (8, 12, 16)
+            } else {
+                (16, 24, 32)
+            }
+        } else if local_first {
+            if constrained { (2, 3, 5) } else { (4, 6, 8) }
+        } else if controller.evidence_sufficient_streak > 0 {
+            if constrained { (3, 4, 6) } else { (6, 8, 10) }
+        } else if input.config.slim_execution_bias {
+            if constrained { (4, 6, 8) } else { (8, 12, 16) }
+        } else if constrained {
+            (3, 5, 7)
+        } else {
+            (12, 16, 20)
+        };
+        let c = controller;
+        let force_tier_three = (local_first
+            && (c.consecutive_tool_continuations >= tier1
+                || c.orientation_churn_streak >= tier1
+                || c.closure_stall_streak >= tier1))
+            || (c.evidence_sufficient_streak > 0
+                && (c.consecutive_tool_continuations >= tier2
+                    || c.orientation_churn_streak >= tier1
+                    || c.closure_stall_streak >= tier1));
+        if force_tier_three {
+            Some(3)
+        } else if c.constraint_discovery_streak >= 2 && !research {
+            Some(2)
+        } else if c.consecutive_tool_continuations >= tier3
+            || c.orientation_churn_streak >= tier2
+            || c.closure_stall_streak >= tier2
+            || c.validation_thrash_streak >= tier2
+        {
+            Some(3)
+        } else if c.consecutive_tool_continuations >= tier2
+            || c.orientation_churn_streak >= tier1
+            || c.repeated_action_failure_streak >= 2
+        {
+            Some(2)
+        } else if c.consecutive_tool_continuations >= tier1 {
+            Some(1)
+        } else {
+            None
+        }
+    };
+
+    BehaviorPressureAssessment {
+        first_turn_orientation_churn,
+        execution_pressure,
+        continuation_tier,
+    }
+}
+
+impl BehaviorPolicyService for DefaultBehaviorPolicy {
+    fn infer_unpinned_task_mode(&self, prompt: &str) -> TaskMode {
+        infer_task_mode_from_prompt(prompt)
+    }
+
+    fn assess_turn(&self, input: &BehaviorTurnInput) -> BehaviorTurnAssessment {
+        BehaviorTurnAssessment {
+            dominant_phase: phase_from_view(&input.tools),
+            drift_kind: drift_from_view(input),
+            progress_signal: progress_from_view(input),
+            evidence: evidence_from_view(input),
+        }
+    }
+
+    fn assess_pressure(&self, input: &BehaviorPressureInput) -> BehaviorPressureAssessment {
+        pressure_from_view(input)
+    }
+
+    fn assess_text(&self, text: &str) -> BehaviorTextAssessment {
+        BehaviorTextAssessment {
+            substantive_interleaved_prose: is_substantive_interleaved_prose(text),
+            pathological_meta_response: is_pathological_meta_response(text),
+        }
+    }
+
+    fn message(&self, kind: BehaviorMessageKind) -> String {
+        match kind {
+            BehaviorMessageKind::FirstTurn(BehavioralTier::Constrained) => {
+                "[System: Read the relevant file or answer the user. Do not use broad orientation tools.]".into()
+            }
+            BehaviorMessageKind::FirstTurn(BehavioralTier::Standard) => {
+                "[System: Focus on the user's request. Read the most relevant file, then answer them in chat.]".into()
+            }
+            BehaviorMessageKind::ExecutionPressure(BehavioralTier::Constrained) => {
+                "[System: You have enough context. Answer the user now.]".into()
+            }
+            BehaviorMessageKind::ExecutionPressure(BehavioralTier::Standard) => {
+                "[System: You have enough context. Answer the user, or explain what's blocking you. Do not invent file-writing work the user didn't ask for.]".into()
+            }
+            BehaviorMessageKind::Continuation { tier, behavior } => {
+                continuation_pressure_message(tier, behavior)
+            }
+            BehaviorMessageKind::Evidence(behavior) => evidence_sufficiency_message(behavior),
+            BehaviorMessageKind::LocalFirst(behavior) => om_local_first_message(behavior),
+            BehaviorMessageKind::MetaRetry => meta_recovery_retry_message(),
+        }
     }
 }
 
@@ -1484,5 +1905,495 @@ mod tests {
         assert!(!is_pathological_meta_response(
             "Blocked: ssh requires an operator-provided key."
         ));
+    }
+
+    #[test]
+    fn bp01_service_preserves_unpinned_prompt_inference() {
+        let service = DefaultBehaviorPolicy;
+        for (prompt, expected) in [
+            ("explain the loop", TaskMode::Research),
+            ("fix the loop", TaskMode::Implementation),
+        ] {
+            assert_eq!(service.infer_unpinned_task_mode(prompt), expected);
+            assert_eq!(
+                service.infer_unpinned_task_mode(prompt),
+                infer_task_mode_from_prompt(prompt)
+            );
+        }
+    }
+
+    #[test]
+    fn bp02_through_bp08_service_matches_direct_turn_policy() {
+        let tool = |name: &str, capabilities: &[ToolCapability], outcome| BehaviorToolView {
+            name: name.into(),
+            target: None,
+            outcome,
+            targeted_validation: false,
+            capabilities: capabilities.iter().copied().collect(),
+        };
+        let input = |tools| BehaviorTurnInput {
+            turn: 1,
+            constraints_before: 0,
+            constraints_after: 0,
+            intent: BehaviorIntentView {
+                task_mode: TaskMode::Implementation,
+                files_read: Vec::new(),
+                has_modified_files: false,
+                low_novelty_revisit_streak: 0,
+            },
+            tools,
+            observations: BehaviorObservationView::default(),
+        };
+        let service = DefaultBehaviorPolicy;
+        assert_eq!(service.assess_turn(&input(Vec::new())).dominant_phase, None);
+        assert_eq!(
+            service
+                .assess_turn(&input(vec![tool(
+                    "orientation",
+                    &[ToolCapability::Orientation],
+                    BehaviorToolOutcome::Missing,
+                )]))
+                .dominant_phase,
+            Some(OodaPhase::Observe)
+        );
+        assert_eq!(
+            service
+                .assess_turn(&input(vec![
+                    tool(
+                        "orientation",
+                        &[ToolCapability::Orientation],
+                        BehaviorToolOutcome::Missing,
+                    ),
+                    tool(
+                        "inspection",
+                        &[ToolCapability::RepoInspection],
+                        BehaviorToolOutcome::Missing,
+                    ),
+                ]))
+                .dominant_phase,
+            Some(OodaPhase::Orient)
+        );
+        for outcome in [
+            BehaviorToolOutcome::Succeeded,
+            BehaviorToolOutcome::Failed,
+            BehaviorToolOutcome::Missing,
+        ] {
+            assert_eq!(
+                service
+                    .assess_turn(&input(vec![tool(
+                        "dynamic-mutation",
+                        &[ToolCapability::Mutation],
+                        outcome,
+                    )]))
+                    .dominant_phase,
+                Some(OodaPhase::Act)
+            );
+        }
+
+        let definition = omegon_traits::ToolDefinition {
+            name: "codebase_search".into(),
+            label: String::new(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+            capabilities: vec![
+                ToolCapability::RepoInspection,
+                ToolCapability::BroadRepoInspection,
+            ],
+        };
+        let catalog = ToolCapabilityCatalog::from_tool_defs(&[definition]);
+        let call = ToolCall {
+            id: "bp-turn".into(),
+            name: "codebase_search".into(),
+            arguments: serde_json::json!({"query": "loop"}),
+        };
+        let mut conversation = ConversationState::new();
+        conversation.intent.files_read.insert("src/loop.rs".into());
+        let calls = vec![call];
+        let observations =
+            crate::observation::ObservationNormalizer::new(&catalog).normalize(&calls, &[]);
+        let input = BehaviorTurnInput::from_host(
+            4,
+            0,
+            0,
+            &conversation,
+            &catalog,
+            &calls,
+            &[],
+            &observations,
+        );
+        let assessment = service.assess_turn(&input);
+
+        assert_eq!(
+            assessment.dominant_phase,
+            classify_turn_phase(&catalog, &calls, &[])
+        );
+        assert_eq!(
+            assessment.drift_kind,
+            classify_drift_kind(&catalog, 4, &conversation, &calls, &[])
+        );
+        assert_eq!(
+            assessment.progress_signal,
+            classify_progress_signal(0, 0, &catalog, &calls, &[])
+        );
+        assert_eq!(
+            assessment.evidence,
+            assess_evidence(&conversation, &catalog, &calls, &[])
+        );
+
+        let controller = ControllerState {
+            consecutive_tool_continuations: 12,
+            ..Default::default()
+        };
+        let config = crate::r#loop::LoopConfig::default();
+        let pressure = service.assess_pressure(&BehaviorPressureInput::from_host(
+            4,
+            &config,
+            &conversation,
+            &catalog,
+            &calls,
+            &[],
+            assessment.dominant_phase,
+            &controller,
+        ));
+        assert_eq!(
+            pressure.continuation_tier,
+            continuation_pressure_tier(
+                &config,
+                &controller,
+                &conversation,
+                &calls,
+                assessment.dominant_phase,
+                behavioral_tier(&config),
+            )
+        );
+        assert_eq!(
+            pressure.execution_pressure,
+            should_inject_execution_pressure(
+                4,
+                &config,
+                &conversation,
+                &catalog,
+                &calls,
+                behavioral_tier(&config),
+            )
+        );
+    }
+
+    #[test]
+    fn bp03_through_bp08_literal_policy_matrix() {
+        let service = DefaultBehaviorPolicy;
+        let tool = |name: &str,
+                    capabilities: &[ToolCapability],
+                    outcome: BehaviorToolOutcome,
+                    target: Option<&str>,
+                    targeted_validation: bool| BehaviorToolView {
+            name: name.into(),
+            target: target.map(PathBuf::from),
+            outcome,
+            targeted_validation,
+            capabilities: capabilities.iter().copied().collect(),
+        };
+        let intent = |task_mode, read: &[&str], modified| BehaviorIntentView {
+            task_mode,
+            files_read: read.iter().map(|path| PathBuf::from(*path)).collect(),
+            has_modified_files: modified,
+            low_novelty_revisit_streak: 0,
+        };
+        let turn = |turn, intent, tools, observations| BehaviorTurnInput {
+            turn,
+            constraints_before: 0,
+            constraints_after: 0,
+            intent,
+            tools,
+            observations,
+        };
+
+        let broad_inspection = || {
+            tool(
+                "search",
+                &[
+                    ToolCapability::RepoInspection,
+                    ToolCapability::BroadRepoInspection,
+                ],
+                BehaviorToolOutcome::Succeeded,
+                None,
+                false,
+            )
+        };
+        let orientation = service.assess_turn(&turn(
+            4,
+            intent(TaskMode::Implementation, &["src/lib.rs"], false),
+            vec![broad_inspection()],
+            BehaviorObservationView::default(),
+        ));
+        assert_eq!(orientation.drift_kind, Some(DriftKind::OrientationChurn));
+
+        let failed_mutation = || {
+            tool(
+                "edit",
+                &[ToolCapability::Mutation],
+                BehaviorToolOutcome::Failed,
+                Some("src/lib.rs"),
+                false,
+            )
+        };
+        assert_eq!(
+            service
+                .assess_turn(&turn(
+                    2,
+                    intent(TaskMode::Implementation, &[], false),
+                    vec![failed_mutation(), failed_mutation()],
+                    BehaviorObservationView::default(),
+                ))
+                .drift_kind,
+            Some(DriftKind::RepeatedActionFailure)
+        );
+        let broad_validation = || {
+            tool(
+                "validate",
+                &[ToolCapability::Validation],
+                BehaviorToolOutcome::Missing,
+                None,
+                false,
+            )
+        };
+        assert_eq!(
+            service
+                .assess_turn(&turn(
+                    2,
+                    intent(TaskMode::Implementation, &[], false),
+                    vec![broad_validation(), broad_validation()],
+                    BehaviorObservationView::default(),
+                ))
+                .drift_kind,
+            Some(DriftKind::ValidationThrash)
+        );
+        assert_eq!(
+            service
+                .assess_turn(&turn(
+                    2,
+                    intent(TaskMode::Implementation, &["src/lib.rs"], true),
+                    vec![broad_inspection()],
+                    BehaviorObservationView::default(),
+                ))
+                .drift_kind,
+            Some(DriftKind::ClosureStall)
+        );
+
+        for (observations, expected) in [
+            (
+                BehaviorObservationView {
+                    progress_boundary: true,
+                    ..Default::default()
+                },
+                ProgressSignal::Commit,
+            ),
+            (
+                BehaviorObservationView {
+                    file_mutated: true,
+                    ..Default::default()
+                },
+                ProgressSignal::Mutation,
+            ),
+            (
+                BehaviorObservationView {
+                    validation_run: true,
+                    ..Default::default()
+                },
+                ProgressSignal::TargetedValidation,
+            ),
+        ] {
+            assert_eq!(
+                service
+                    .assess_turn(&turn(
+                        1,
+                        intent(TaskMode::Implementation, &[], false),
+                        Vec::new(),
+                        observations,
+                    ))
+                    .progress_signal,
+                expected
+            );
+        }
+        let mut constraint_input = turn(
+            1,
+            intent(TaskMode::Implementation, &[], false),
+            vec![broad_inspection()],
+            BehaviorObservationView::default(),
+        );
+        constraint_input.constraints_after = 1;
+        assert_eq!(
+            service.assess_turn(&constraint_input).progress_signal,
+            ProgressSignal::ConstraintDiscovery
+        );
+
+        assert_eq!(
+            service
+                .assess_turn(&turn(
+                    1,
+                    intent(TaskMode::Implementation, &[], false),
+                    Vec::new(),
+                    BehaviorObservationView::default(),
+                ))
+                .evidence,
+            EvidenceAssessment::default()
+        );
+        assert_eq!(
+            service
+                .assess_turn(&turn(
+                    1,
+                    intent(TaskMode::Implementation, &["src/lib.rs"], true),
+                    Vec::new(),
+                    BehaviorObservationView::default(),
+                ))
+                .evidence,
+            EvidenceAssessment {
+                local: EvidenceSufficiency::Actionable,
+                global: EvidenceSufficiency::Actionable,
+            }
+        );
+
+        let pressure_input = |turn, controller| BehaviorPressureInput {
+            turn,
+            config: BehaviorConfigView {
+                enforce_first_turn_execution_bias: true,
+                slim_execution_bias: false,
+                tier: BehavioralTier::Standard,
+            },
+            intent: intent(TaskMode::Implementation, &["src/lib.rs"], false),
+            tools: vec![broad_inspection()],
+            dominant_phase: Some(OodaPhase::Observe),
+            controller,
+        };
+        let first = service.assess_pressure(&BehaviorPressureInput {
+            intent: intent(TaskMode::Implementation, &[], false),
+            tools: vec![tool(
+                "orientation",
+                &[ToolCapability::Orientation],
+                BehaviorToolOutcome::Missing,
+                None,
+                false,
+            )],
+            ..pressure_input(1, BehaviorControllerView::from(&ControllerState::default()))
+        });
+        assert!(first.first_turn_orientation_churn);
+        assert!(
+            service
+                .assess_pressure(&pressure_input(
+                    5,
+                    BehaviorControllerView::from(&ControllerState::default())
+                ))
+                .execution_pressure
+        );
+        let pressured = service.assess_pressure(&pressure_input(
+            2,
+            BehaviorControllerView::from(&ControllerState {
+                repeated_action_failure_streak: 2,
+                ..Default::default()
+            }),
+        ));
+        assert_eq!(pressured.continuation_tier, Some(2));
+
+        assert!(
+            !service
+                .assess_text(&"x".repeat(SUBSTANTIVE_PROSE_MIN_CHARS - 1))
+                .substantive_interleaved_prose
+        );
+        assert!(
+            service
+                .assess_text(&"x".repeat(SUBSTANTIVE_PROSE_MIN_CHARS))
+                .substantive_interleaved_prose
+        );
+        assert!(
+            service
+                .assess_text("I'm wasting time and should stop exploring.")
+                .pathological_meta_response
+        );
+    }
+
+    #[test]
+    fn bp09_service_messages_preserve_exact_first_execution_and_meta_bytes() {
+        let service = DefaultBehaviorPolicy;
+        assert_eq!(
+            service.message(BehaviorMessageKind::FirstTurn(BehavioralTier::Constrained)),
+            "[System: Read the relevant file or answer the user. Do not use broad orientation tools.]"
+        );
+        assert_eq!(
+            service.message(BehaviorMessageKind::FirstTurn(BehavioralTier::Standard)),
+            "[System: Focus on the user's request. Read the most relevant file, then answer them in chat.]"
+        );
+        assert_eq!(
+            service.message(BehaviorMessageKind::ExecutionPressure(
+                BehavioralTier::Constrained
+            )),
+            "[System: You have enough context. Answer the user now.]"
+        );
+        assert_eq!(
+            service.message(BehaviorMessageKind::ExecutionPressure(
+                BehavioralTier::Standard
+            )),
+            "[System: You have enough context. Answer the user, or explain what's blocking you. Do not invent file-writing work the user didn't ask for.]"
+        );
+        assert_eq!(
+            service.message(BehaviorMessageKind::MetaRetry),
+            "[System: Your previous response was meta-commentary rather than task progress. Retry now with no apology, self-critique, profanity mirroring, or process narration. Take the next concrete action, answer the user's request, or state the precise blocker.]"
+        );
+        for (tier, behavior, expected) in [
+            (
+                1,
+                BehavioralTier::Constrained,
+                "[System: You have been exploring. Produce output now — answer the user, or state what's blocking you. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+            (
+                2,
+                BehavioralTier::Constrained,
+                "[System: Produce output now. Answer the user, or (only if they explicitly asked you to change a file) write/edit one. Otherwise state the blocker. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+            (
+                3,
+                BehavioralTier::Constrained,
+                "[System: You must produce output on this turn. Answer the user, or explain why you cannot. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+            (
+                1,
+                BehavioralTier::Standard,
+                "[System: You have spent several turns exploring without producing output. You likely have enough context. Take the next concrete step toward completing the user's request — answer them directly. If — and only if — they explicitly asked you to modify a file, do that instead. Otherwise reply in chat. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+            (
+                2,
+                BehavioralTier::Standard,
+                "[System: You are still exploring. Produce a concrete result now: answer the user's question, or (only if they explicitly asked) write/edit a file. Do not invent file-writing tasks the user did not request. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+            (
+                3,
+                BehavioralTier::Standard,
+                "[System: You have been exploring for many turns without producing output. On this turn, you must do one of: (1) answer the user directly in chat, (2) write or edit a file ONLY if the user explicitly asked for that, or (3) tell the user exactly what is preventing you from completing the task. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+        ] {
+            assert_eq!(
+                service.message(BehaviorMessageKind::Continuation { tier, behavior }),
+                expected
+            );
+        }
+        for (kind, expected) in [
+            (
+                BehaviorMessageKind::Evidence(BehavioralTier::Constrained),
+                "[System: You have enough context. Produce output now — answer the user. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+            (
+                BehaviorMessageKind::Evidence(BehavioralTier::Standard),
+                "[System: You have gathered enough context to act. Produce a concrete result — answer the user's question. If they explicitly asked you to modify a file, do that. Otherwise reply in chat; do not invent file-writing work. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+            (
+                BehaviorMessageKind::LocalFirst(BehavioralTier::Constrained),
+                "[System: Produce output now. Do not search again. Answer the user. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+            (
+                BehaviorMessageKind::LocalFirst(BehavioralTier::Standard),
+                "[System: You have enough context. Produce the requested output — answer the user. If they explicitly asked you to modify a file, do that; otherwise reply in chat. Do not apologize, self-criticize, mirror operator frustration, or explain your process.]",
+            ),
+        ] {
+            assert_eq!(service.message(kind), expected);
+        }
     }
 }

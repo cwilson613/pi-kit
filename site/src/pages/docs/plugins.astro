@@ -82,12 +82,18 @@ import Docs from "../../layouts/Docs.astro";
   </p>
 
   <h2>Plugin and MCP lifecycle</h2>
+  <p>
+    Plugin and MCP discovery joins the same metadata-only candidate inventory as native
+    extensions. Discovery captures stable identity and source digest without evaluating Pkl,
+    starting scripts or containers, connecting HTTP or MCP, resolving secrets, or publishing
+    registrations. Trust admission must succeed before the existing transport adapter probes.
+  </p>
   <ul>
     <li>MCP uses one per-server deadline for connection, required tool discovery, and optional resource, template, and prompt discovery.</li>
     <li>Slice 2 does not automatically restart MCP services; MCP and remote-service cleanup is reported as best effort.</li>
     <li>Armory context, script, and OCI processes are bounded, and owned process groups are killed and reaped on timeout or cancellation.</li>
     <li>HTTP plugin failures degrade locally rather than claiming strict cleanup.</li>
-    <li>A failed candidate cannot replace the prior accepted graph. <code>/status</code> reports the active composition, contribution health, cleanup assurance, coded diagnostics, and compatibility parity.</li>
+    <li>A failed candidate cannot replace the prior accepted graph. One generation owner performs rollback and shutdown for native, MCP, and manifest adapters. <code>/status</code> reports the active composition, contribution health, cleanup assurance, coded diagnostics, and compatibility parity.</li>
   </ul>
   <p>
     Quarantine prevents ordinary activation or silent respawn; it does not mean the code ran in a sandbox.

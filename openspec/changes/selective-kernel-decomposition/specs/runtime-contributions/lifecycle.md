@@ -160,6 +160,53 @@ Then the consumer receives typed unavailable or degraded service state
 And unrelated admitted capabilities remain callable
 And diagnostics do not fabricate an active service
 
+### Requirement: Dynamic transports share one contribution lifecycle
+
+Native extensions, MCP process and HTTP servers, and executable manifest contributions must enter one transport-neutral discovered-candidate inventory. Discovery must capture stable identity, source kind, source digest, protocol range, requested trust and confinement, and probe requirements without evaluating a manifest, spawning a process or container, connecting to a service, resolving secrets, or publishing registrations. After trust admission, the transport adapter may probe within its existing confinement boundary. The shared lifecycle must bound readiness, freeze declarations, stage the graph, publish atomically, retain restart and quarantine evidence, and own rollback, replacement, stale-generation denial, and resource cleanup. Transport adapters retain protocol framing, HostAction checks, MCP resources and prompts, widgets, secret delivery, process-tree ownership, and remote cleanup limitations.
+
+#### Scenario: Discovery inventories every supported transport without execution
+Given native extension, MCP process, MCP HTTP, manifest script, manifest HTTP, and supported manifest OCI configuration is present
+When dynamic contribution discovery builds the candidate inventory
+Then every candidate has stable identity, source kind, and source digest evidence
+And no candidate process, container, connection, manifest evaluator, secret lookup, or registration has started
+
+#### Scenario: Trust admission rejects a discovered candidate
+Given a discovered dynamic candidate is absent from trusted-code policy and has no verified confinement admission
+When the shared lifecycle evaluates trust admission
+Then the candidate is rejected before its transport adapter probes
+And unrelated admitted and optional-absence candidates continue through the lifecycle
+
+#### Scenario: A dynamic probe times out
+Given an admitted candidate has started a transport-specific probe
+When the shared readiness deadline expires before declarations freeze
+Then none of its tools, resources, prompts, widgets, or other registrations are published
+And its complete generation-owned resource tree is settled or retained with degraded or unverified cleanup evidence
+
+#### Scenario: Graph publication rejects a prepared generation
+Given an admitted candidate froze declarations and created generation-owned resources
+When graph staging or publication rejects the candidate generation
+Then the prior published generation remains callable
+And the shared lifecycle rolls back only candidate resources without transport-specific manual cleanup authority
+
+#### Scenario: Dynamic generation becomes stale
+Given a dynamic contribution generation was replaced or removed
+When a handle or restart attempt from that generation reaches its transport adapter
+Then the shared lifecycle denies it as draining, degraded, quarantined, or retired
+And it cannot publish registrations or transfer resources into the current generation
+
+#### Scenario: Dynamic generation shuts down
+Given one published generation owns native, MCP, or executable manifest resources
+When normal shutdown closes dynamic contribution admission
+Then cleanup runs once through the shared generation owner
+And process-backed resources are terminated and joined within their transport boundary
+And remote HTTP cleanup remains honestly unverified when the host cannot prove peer settlement
+
+#### Scenario: Optional dynamic contribution is absent
+Given no candidate exists for an optional native, MCP, or manifest contribution
+When the dynamic lifecycle publishes the runtime composition
+Then unrelated contributions remain callable
+And no lifecycle owner, registration, transport connection, or generation identity is fabricated for the absent contribution
+
 #### Scenario: Service generation changes
 Given an active session captured a typed service handle at an admitted boundary
 When a replacement service generation is promoted

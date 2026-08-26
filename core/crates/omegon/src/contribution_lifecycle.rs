@@ -13,6 +13,300 @@ use omegon_traits::{
     RuntimeOwnedResourceKind, RuntimeOwnedResourceRecord,
 };
 
+/// Static, transport-neutral evidence captured before contribution code runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiscoveredContributionCandidate {
+    pub(crate) preflight: omegon_traits::RuntimeDynamicContributionPreflight,
+}
+
+impl DiscoveredContributionCandidate {
+    pub(crate) fn new(
+        preflight: omegon_traits::RuntimeDynamicContributionPreflight,
+    ) -> Result<Self> {
+        preflight.validate().map_err(|error| anyhow!(error))?;
+        Ok(Self { preflight })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiscoveredContributionState {
+    Discovered,
+    Absent,
+    Admitted,
+    Ready,
+    Rejected,
+    Quarantined,
+    Staged,
+    Published,
+    Retired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiscoveredContributionEvidence {
+    pub(crate) candidate: DiscoveredContributionCandidate,
+    pub(crate) state: DiscoveredContributionState,
+    pub(crate) reason: Option<String>,
+}
+
+/// Shared metadata-only inventory. Adapters register static candidates here and
+/// may execute only after `admit` returns a digest-bound permit.
+#[derive(Clone, Default)]
+pub(crate) struct DynamicContributionInventory {
+    entries: std::sync::Arc<
+        std::sync::Mutex<BTreeMap<RuntimeContributionId, DiscoveredContributionEvidence>>,
+    >,
+}
+
+impl DynamicContributionInventory {
+    pub(crate) fn discover(
+        &self,
+        preflight: omegon_traits::RuntimeDynamicContributionPreflight,
+    ) -> Result<DiscoveredContributionCandidate> {
+        let candidate = DiscoveredContributionCandidate::new(preflight)?;
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("dynamic inventory lock poisoned");
+        if let Some(existing) = entries.get(&candidate.preflight.id)
+            && existing.candidate.preflight.source_digest != candidate.preflight.source_digest
+        {
+            return Err(anyhow!(
+                "dynamic contribution '{}' has conflicting discovered source digests",
+                candidate.preflight.id.as_str()
+            ));
+        }
+        entries.insert(
+            candidate.preflight.id.clone(),
+            DiscoveredContributionEvidence {
+                candidate: candidate.clone(),
+                state: DiscoveredContributionState::Discovered,
+                reason: None,
+            },
+        );
+        Ok(candidate)
+    }
+
+    pub(crate) fn admit(
+        &self,
+        candidate: &DiscoveredContributionCandidate,
+        policy: &crate::dynamic_admission::DynamicAdmissionPolicy,
+    ) -> Result<crate::dynamic_admission::DynamicAdmissionPermit> {
+        let result = policy.admit(candidate.preflight.clone());
+        match &result {
+            Ok(_) => self.transition(
+                &candidate.preflight.id,
+                DiscoveredContributionState::Admitted,
+                None,
+            ),
+            Err(error) => self.transition(
+                &candidate.preflight.id,
+                DiscoveredContributionState::Rejected,
+                Some(error.to_string()),
+            ),
+        }
+        result
+    }
+
+    pub(crate) fn ready(&self, id: &RuntimeContributionId) {
+        self.transition(id, DiscoveredContributionState::Ready, None);
+    }
+
+    pub(crate) fn absent(&self, id: &RuntimeContributionId) {
+        self.transition(id, DiscoveredContributionState::Absent, None);
+    }
+
+    pub(crate) fn quarantine(&self, id: &RuntimeContributionId, reason: impl AsRef<str>) {
+        self.transition(
+            id,
+            DiscoveredContributionState::Quarantined,
+            Some(reason.as_ref().to_string()),
+        );
+    }
+
+    pub(crate) fn stage_ready(&self) {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("dynamic inventory lock poisoned");
+        for evidence in entries.values_mut() {
+            if evidence.state == DiscoveredContributionState::Ready {
+                evidence.state = DiscoveredContributionState::Staged;
+            }
+        }
+    }
+
+    pub(crate) fn publish_staged(&self) {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("dynamic inventory lock poisoned");
+        for evidence in entries.values_mut() {
+            if evidence.state == DiscoveredContributionState::Staged {
+                evidence.state = DiscoveredContributionState::Published;
+            }
+        }
+    }
+
+    pub(crate) fn reject_staged(&self, reason: impl AsRef<str>) {
+        let reason = bounded_reason(reason.as_ref());
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("dynamic inventory lock poisoned");
+        for evidence in entries.values_mut() {
+            if evidence.state == DiscoveredContributionState::Staged {
+                evidence.state = DiscoveredContributionState::Quarantined;
+                evidence.reason = Some(reason.clone());
+            }
+        }
+    }
+
+    pub(crate) fn evidence(&self) -> Vec<DiscoveredContributionEvidence> {
+        self.entries
+            .lock()
+            .expect("dynamic inventory lock poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn ensure_callable(
+        &self,
+        id: &RuntimeContributionId,
+        source_digest: &str,
+    ) -> Result<()> {
+        let entries = self
+            .entries
+            .lock()
+            .expect("dynamic inventory lock poisoned");
+        let evidence = entries
+            .get(id)
+            .ok_or_else(|| anyhow!("dynamic contribution generation is absent"))?;
+        if evidence.candidate.preflight.source_digest != source_digest
+            || evidence.state != DiscoveredContributionState::Published
+        {
+            return Err(anyhow!(
+                "dynamic contribution '{}' generation is stale or not published",
+                id.as_str()
+            ));
+        }
+        Ok(())
+    }
+
+    fn transition(
+        &self,
+        id: &RuntimeContributionId,
+        state: DiscoveredContributionState,
+        reason: Option<String>,
+    ) {
+        if let Some(evidence) = self
+            .entries
+            .lock()
+            .expect("dynamic inventory lock poisoned")
+            .get_mut(id)
+        {
+            evidence.state = state;
+            evidence.reason = reason.map(|reason| bounded_reason(&reason));
+        }
+    }
+}
+
+/// One generation owner for native-extension and MCP transport resources.
+/// Protocol adapters still perform their own bounded transport shutdown.
+#[derive(Default)]
+pub(crate) struct DynamicContributionGenerationOwner {
+    inventory: DynamicContributionInventory,
+    extensions: Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
+    mcp: Vec<crate::plugins::mcp::McpSupervisor>,
+    published: bool,
+    settled: bool,
+}
+
+impl DynamicContributionGenerationOwner {
+    pub(crate) fn new(inventory: DynamicContributionInventory) -> Self {
+        Self {
+            inventory,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn inventory(&self) -> DynamicContributionInventory {
+        self.inventory.clone()
+    }
+
+    pub(crate) fn own_extension(
+        &mut self,
+        supervisor: std::sync::Arc<crate::extensions::ExtensionSupervisor>,
+    ) {
+        self.extensions.push(supervisor);
+    }
+
+    pub(crate) fn own_mcp(&mut self, supervisor: crate::plugins::mcp::McpSupervisor) {
+        self.mcp.push(supervisor);
+    }
+
+    pub(crate) fn stage(&self) {
+        self.inventory.stage_ready();
+    }
+
+    pub(crate) fn publish(&mut self) {
+        self.inventory.publish_staged();
+        self.published = true;
+    }
+
+    pub(crate) fn absorb_published(&mut self, mut candidate: Self) {
+        debug_assert!(candidate.published && !candidate.settled);
+        self.extensions.append(&mut candidate.extensions);
+        self.mcp.append(&mut candidate.mcp);
+        candidate.settled = true;
+    }
+
+    pub(crate) async fn reject(&mut self, reason: impl AsRef<str>) -> Vec<String> {
+        self.inventory.reject_staged(reason);
+        self.shutdown_resources().await
+    }
+
+    pub(crate) async fn shutdown(&mut self) -> Vec<String> {
+        let failures = self.shutdown_resources().await;
+        let mut entries = self
+            .inventory
+            .entries
+            .lock()
+            .expect("dynamic inventory lock poisoned");
+        for evidence in entries.values_mut() {
+            if evidence.state == DiscoveredContributionState::Published {
+                evidence.state = if failures.is_empty() {
+                    DiscoveredContributionState::Retired
+                } else {
+                    DiscoveredContributionState::Quarantined
+                };
+                evidence.reason =
+                    (!failures.is_empty()).then(|| bounded_reason(&failures.join("; ")));
+            }
+        }
+        failures
+    }
+
+    pub(crate) fn is_published(&self) -> bool {
+        self.published
+    }
+
+    async fn shutdown_resources(&mut self) -> Vec<String> {
+        if self.settled {
+            return Vec::new();
+        }
+        self.settled = true;
+        let mut failures =
+            crate::extensions::shutdown_supervisors(&self.extensions, Duration::from_millis(500))
+                .await;
+        self.extensions.clear();
+        for supervisor in self.mcp.drain(..) {
+            failures.extend(supervisor.shutdown(Duration::from_millis(500)).await);
+        }
+        failures
+    }
+}
+
 #[async_trait]
 pub(crate) trait CandidateResource: Send {
     async fn settle(&mut self) -> RuntimeCleanupState;
@@ -451,11 +745,36 @@ mod tests {
 
     use super::*;
     use omegon_traits::{
-        RuntimeActivationBoundary, RuntimeCompositionTransitionPolicy,
-        RuntimeContributionGenerationId, RuntimeFailureDisposition, RuntimeLifecyclePolicy,
-        RuntimeLifecycleRequirement, RuntimeOwnerTier, RuntimePlatformRequirements,
+        RuntimeActivationBoundary, RuntimeCompositionTransitionPolicy, RuntimeConfinementRequest,
+        RuntimeContributionGenerationId, RuntimeDynamicSourceKind, RuntimeFailureDisposition,
+        RuntimeLifecyclePolicy, RuntimeLifecycleRequirement, RuntimeOwnerTier,
+        RuntimePlatformRequirements, RuntimeProbeOperation, RuntimeProbeRequirements,
         RuntimeProtocolRange, RuntimeTrustRequest,
     };
+
+    fn dynamic_preflight(
+        id: &str,
+        source_kind: RuntimeDynamicSourceKind,
+    ) -> omegon_traits::RuntimeDynamicContributionPreflight {
+        omegon_traits::RuntimeDynamicContributionPreflight {
+            schema_version: omegon_traits::RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+            id: RuntimeContributionId::new(id).unwrap(),
+            source_digest: crate::dynamic_admission::digest_bytes(id.as_bytes()),
+            source_kind,
+            protocol: RuntimeProtocolRange::new(1, 1).unwrap(),
+            minimum_dependencies: Vec::new(),
+            requested_trust: RuntimeTrustRequest::OperatorManaged,
+            requested_confinement: match source_kind {
+                RuntimeDynamicSourceKind::OciExtension => RuntimeConfinementRequest::Oci,
+                _ => RuntimeConfinementRequest::HostProcess,
+            },
+            probe: RuntimeProbeRequirements {
+                operations: vec![RuntimeProbeOperation::DiscoverCapabilities],
+                timeout_ms: 50,
+                requested_effects: Vec::new(),
+            },
+        }
+    }
 
     struct FakeResource {
         name: &'static str,
@@ -759,5 +1078,117 @@ mod tests {
             RestartController::new(3, Duration::from_millis(10), Duration::from_millis(25));
         assert_eq!(replacement.attempts(), 0);
         assert!(!replacement.is_quarantined());
+    }
+
+    #[test]
+    fn dynamic_transport_matrix_is_metadata_only_until_admission() {
+        let inventory = DynamicContributionInventory::default();
+        let matrix = [
+            (
+                "extension:native",
+                RuntimeDynamicSourceKind::NativeExtension,
+            ),
+            ("mcp:process", RuntimeDynamicSourceKind::McpProcess),
+            ("mcp:http", RuntimeDynamicSourceKind::McpHttp),
+            ("plugin:script", RuntimeDynamicSourceKind::PluginScript),
+            ("plugin:http", RuntimeDynamicSourceKind::PluginHttp),
+            ("plugin:oci", RuntimeDynamicSourceKind::OciExtension),
+        ];
+
+        for (id, kind) in matrix {
+            inventory.discover(dynamic_preflight(id, kind)).unwrap();
+        }
+
+        let evidence = inventory.evidence();
+        assert_eq!(evidence.len(), matrix.len());
+        assert!(evidence.iter().all(|entry| {
+            entry.state == DiscoveredContributionState::Discovered
+                && entry
+                    .candidate
+                    .preflight
+                    .source_digest
+                    .starts_with("sha256:")
+        }));
+    }
+
+    #[test]
+    fn dynamic_transport_matrix_rejects_before_probe_without_trust() {
+        let inventory = DynamicContributionInventory::default();
+        for (id, kind) in [
+            (
+                "extension:native",
+                RuntimeDynamicSourceKind::NativeExtension,
+            ),
+            ("mcp:process", RuntimeDynamicSourceKind::McpProcess),
+            ("mcp:http", RuntimeDynamicSourceKind::McpHttp),
+            ("plugin:script", RuntimeDynamicSourceKind::PluginScript),
+            ("plugin:http", RuntimeDynamicSourceKind::PluginHttp),
+            ("plugin:oci", RuntimeDynamicSourceKind::OciExtension),
+        ] {
+            let candidate = inventory.discover(dynamic_preflight(id, kind)).unwrap();
+            assert!(
+                inventory
+                    .admit(
+                        &candidate,
+                        &crate::dynamic_admission::DynamicAdmissionPolicy::default()
+                    )
+                    .is_err()
+            );
+        }
+        assert!(
+            inventory
+                .evidence()
+                .iter()
+                .all(|entry| entry.state == DiscoveredContributionState::Rejected)
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_rejection_stale_generation_and_optional_absence_are_local() {
+        let inventory = DynamicContributionInventory::default();
+        let preflight = dynamic_preflight("mcp:http", RuntimeDynamicSourceKind::McpHttp);
+        let digest = preflight.source_digest.clone();
+        let id = preflight.id.clone();
+        inventory.discover(preflight).unwrap();
+        inventory.ready(&id);
+        let mut owner = DynamicContributionGenerationOwner::new(inventory.clone());
+        owner.stage();
+        assert!(owner.reject("graph rejected").await.is_empty());
+        assert!(inventory.ensure_callable(&id, &digest).is_err());
+
+        let absent = RuntimeContributionId::new("plugin:optional-absent").unwrap();
+        assert!(inventory.ensure_callable(&absent, "sha256:absent").is_err());
+        assert_eq!(inventory.evidence().len(), 1);
+    }
+
+    #[test]
+    fn production_dynamic_discovery_has_one_lifecycle_owner() {
+        let setup = include_str!("setup.rs");
+        let plugins = include_str!("plugins/mod.rs");
+        let acp = include_str!("acp_worker.rs");
+        let main = include_str!("main.rs");
+        for (name, source) in [
+            ("setup", setup),
+            ("plugins", plugins),
+            ("acp", acp),
+            ("main", main),
+        ] {
+            assert!(
+                !source.contains("ExtensionSupervisorSet") && !source.contains("McpSupervisorSet"),
+                "{name} retains duplicate supervisor-set lifecycle authority"
+            );
+        }
+        assert!(setup.contains("DynamicContributionGenerationOwner::new"));
+        assert!(plugins.contains("inventory.discover(preflight)"));
+        assert!(
+            plugins.find("inventory.admit(&candidate").unwrap()
+                < plugins.find("load_plugin_manifest(").unwrap()
+        );
+        assert!(
+            setup.find("inventory.admit(&candidate").unwrap()
+                < setup.find("spawn_from_admitted_snapshot(").unwrap()
+        );
+        assert!(acp.contains("candidate_owner.reject"));
+        assert!(main.contains("candidate_owner.shutdown().await"));
     }
 }

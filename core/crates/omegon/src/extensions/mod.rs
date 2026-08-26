@@ -28,8 +28,6 @@ pub(crate) mod host_actions;
 pub mod manifest;
 pub mod mind;
 pub(crate) mod sdk_compat;
-mod supervisor_set;
-pub use supervisor_set::ExtensionSupervisorSet;
 pub mod state;
 mod tool_result;
 pub mod voice_bridge;

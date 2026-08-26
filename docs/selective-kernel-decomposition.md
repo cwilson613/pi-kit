@@ -1376,8 +1376,13 @@ and cursors without depending on missed broadcasts.
   operation projection. Source guards reject concrete imports and ambient probes
   in production surfaces, while parity/golden tests preserve action roles,
   operation fields, settings/profile values, and existing serialized shapes.
-- Unify native extension, MCP, and manifest discovery under the contribution
-  graph while retaining transport-specific adapters.
+- Slice 6.3 unifies native extension, MCP process/HTTP, and executable manifest
+  discovery under one metadata-only candidate inventory and generation owner.
+  Trust admission precedes adapter probe, EventBus graph finalization remains the
+  publication boundary, and one owner records rollback, quarantine/restart,
+  stale-generation, and cleanup evidence. JSON-RPC, HostAction, MCP
+  resource/prompt, widget, secret-delivery, process-tree, OCI, and remote HTTP
+  semantics remain transport-adapter responsibilities.
 - Move shipped skills, prompts, personas, tones, workflows, and catalog data into
   independently versioned content packs.
 

@@ -58,7 +58,9 @@ Manifest trust or confinement requests cannot grant either property. A profile t
 
 ## Readiness and publication
 
-Candidates are quarantined from ordinary dispatch while they negotiate declarations. EventBus publishes a new composition generation only after the complete graph passes validation, readiness, and compatibility-cache parity. A failed candidate is cleaned up and cannot replace the previously accepted graph.
+Native extensions, MCP process and HTTP servers, and executable manifest HTTP, script, and OCI adapters enter one metadata-only candidate inventory. Discovery captures stable identity, source kind, source digest, trust and confinement requests, and probe requirements. It does not evaluate Pkl, spawn a process or container, connect to a service, resolve secrets, or publish registrations.
+
+After trust admission, candidates are quarantined from ordinary dispatch while their transport adapters negotiate declarations. EventBus publishes a new composition generation only after the complete graph passes validation, readiness, and compatibility-cache parity. One generation owner performs rollback and shutdown for every adapter. A failed candidate is cleaned up and cannot replace the previously accepted graph. Process adapters retain process-tree cleanup. HTTP adapters do not claim that the remote peer settled.
 
 | Adapter | Readiness and failure policy | Cleanup assurance |
 |---|---|---|

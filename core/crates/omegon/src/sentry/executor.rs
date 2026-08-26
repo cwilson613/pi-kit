@@ -995,11 +995,7 @@ async fn run_agent_task(
         Ok(bridge) => bridge,
         Err(error) => return crate::setup::finalize_agent_error(&mut agent, error).await,
     };
-    let mut mcp_supervisors =
-        crate::plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors));
-    let mut extension_supervisors = crate::extensions::ExtensionSupervisorSet::new(std::mem::take(
-        &mut agent.extension_supervisors,
-    ));
+    let mut dynamic_contributions = std::mem::take(&mut agent.dynamic_contributions);
     let (events_tx, mut events_rx) = crate::bootstrap::wire_event_channel(&agent, 256);
 
     let total_in = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1064,8 +1060,9 @@ async fn run_agent_task(
     timeout_handle.abort();
     global_handle.abort();
     let cleanup_result = agent.bus.shutdown_managed_services_strict().await;
-    mcp_supervisors.shutdown().await;
-    extension_supervisors.shutdown().await;
+    for failure in dynamic_contributions.shutdown().await {
+        tracing::warn!(%failure, "Sentry dynamic contribution cleanup degraded");
+    }
     bridge.shutdown().await;
     drop(events_tx);
     let mut event_task = event_task;

@@ -112,10 +112,9 @@ pub struct AgentSetup {
     pub(crate) resume_meta: Option<crate::session::SessionMeta>,
     /// Startup-local workspace ownership metadata.
     pub workspace_state: WorkspaceStartupState,
-    /// Canonical owners for deterministic extension process shutdown.
-    pub extension_supervisors: Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
-    /// Canonical owners for deterministic MCP service shutdown.
-    pub mcp_supervisors: Vec<crate::plugins::mcp::McpSupervisor>,
+    /// One generation owner for native extension, MCP, and manifest resources.
+    pub(crate) dynamic_contributions:
+        crate::contribution_lifecycle::DynamicContributionGenerationOwner,
     /// Extension widgets discovered during setup — passed to TUI for rendering.
     pub extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
     /// Extension deployment metadata discovered during startup.
@@ -147,19 +146,12 @@ pub(crate) async fn finalize_agent_error<T>(
     error: anyhow::Error,
 ) -> anyhow::Result<T> {
     let report = agent.bus.shutdown_managed_services().await;
-    crate::plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors))
-        .shutdown()
-        .await;
-    crate::extensions::ExtensionSupervisorSet::new(std::mem::take(
-        &mut agent.extension_supervisors,
-    ))
-    .shutdown()
-    .await;
-    if report.all_resources_settled() {
+    let dynamic_failures = agent.dynamic_contributions.shutdown().await;
+    if report.all_resources_settled() && dynamic_failures.is_empty() {
         Err(error)
     } else {
         Err(error.context(format!(
-            "managed services did not settle while finalizing error: {report:?}"
+            "runtime resources did not settle while finalizing error: managed={report:?}; dynamic={dynamic_failures:?}"
         )))
     }
 }
@@ -1048,6 +1040,8 @@ impl AgentSetup {
 
         // ─── Operator-installed extensions (RPC + OCI) ────────────────
         // All extensions, including bundled ones (scribe-rpc), are discovered here
+        let dynamic_inventory =
+            crate::contribution_lifecycle::DynamicContributionInventory::default();
         let DiscoveredExtensions {
             extension_supervisors,
             extension_widgets,
@@ -1058,8 +1052,13 @@ impl AgentSetup {
             extension_metadata,
             extension_rpc_handles,
             admission: extension_admission,
-        } = match discover_and_register_extensions(&cwd, &mut bus, std::sync::Arc::clone(&secrets))
-            .await
+        } = match discover_and_register_extensions(
+            &cwd,
+            &mut bus,
+            std::sync::Arc::clone(&secrets),
+            dynamic_inventory.clone(),
+        )
+        .await
         {
             Ok(discovered) => discovered,
             Err(e) => {
@@ -1091,9 +1090,13 @@ impl AgentSetup {
             enabled_extensions: crate::parse_csv_env("OMEGON_CHILD_ENABLED_EXTENSIONS"),
             disabled_extensions: crate::parse_csv_env("OMEGON_CHILD_DISABLED_EXTENSIONS"),
         };
-        let plugins =
-            crate::plugins::discover_plugins_filtered(&cwd, Some(secrets.as_ref()), &plugin_filter)
-                .await;
+        let plugins = crate::plugins::discover_plugins_filtered_with_inventory(
+            &cwd,
+            Some(secrets.as_ref()),
+            &plugin_filter,
+            dynamic_inventory.clone(),
+        )
+        .await;
         match crate::codescan_service::start_candidate(project_root.clone()).await {
             Ok(candidate) => bus.stage_managed_generation("codescan", candidate)?,
             Err(error) => tracing::warn!(
@@ -1162,35 +1165,31 @@ impl AgentSetup {
                 // admission locks remain held.
                 bus.try_finalize_managed()
             });
+        let mut dynamic_contributions =
+            crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(
+                dynamic_inventory,
+            );
+        for supervisor in extension_supervisors {
+            dynamic_contributions.own_extension(supervisor);
+        }
+        for supervisor in mcp_supervisors {
+            dynamic_contributions.own_mcp(supervisor);
+        }
+        dynamic_contributions.stage();
         let publication_result = publication.await;
         if let Err(error) = publication_result {
-            let cleanup_failures = crate::extensions::shutdown_supervisors(
-                &extension_supervisors,
-                std::time::Duration::from_millis(500),
-            )
-            .await;
-            let mut mcp_cleanup_failures = Vec::new();
-            for supervisor in &mcp_supervisors {
-                mcp_cleanup_failures.extend(
-                    supervisor
-                        .shutdown(std::time::Duration::from_millis(500))
-                        .await,
-                );
-            }
+            let cleanup_failures = dynamic_contributions.reject(error.to_string()).await;
             drop(plugin_admissions);
             drop(extension_admission);
-            if cleanup_failures.is_empty() && mcp_cleanup_failures.is_empty() {
+            if cleanup_failures.is_empty() {
                 return Err(error);
             }
             return Err(error.context(format!(
                 "candidate cleanup degraded: {}",
-                cleanup_failures
-                    .into_iter()
-                    .chain(mcp_cleanup_failures)
-                    .collect::<Vec<_>>()
-                    .join("; ")
+                cleanup_failures.join("; ")
             )));
         }
+        dynamic_contributions.publish();
         if let Err(error) = codescan_binding.capture(&bus) {
             return Err(managed_setup_error(&mut bus, error).await);
         }
@@ -1733,29 +1732,13 @@ impl AgentSetup {
                 Ok(ownership) => ownership,
                 Err(error) => {
                     let managed_error = managed_setup_error(&mut bus, error).await;
-                    let cleanup_failures = crate::extensions::shutdown_supervisors(
-                        &extension_supervisors,
-                        std::time::Duration::from_millis(500),
-                    )
-                    .await;
-                    let mut mcp_cleanup_failures = Vec::new();
-                    for supervisor in &mcp_supervisors {
-                        mcp_cleanup_failures.extend(
-                            supervisor
-                                .shutdown(std::time::Duration::from_millis(500))
-                                .await,
-                        );
-                    }
-                    if cleanup_failures.is_empty() && mcp_cleanup_failures.is_empty() {
+                    let cleanup_failures = dynamic_contributions.shutdown().await;
+                    if cleanup_failures.is_empty() {
                         return Err(managed_error);
                     }
                     return Err(managed_error.context(format!(
                         "published startup candidate cleanup degraded: {}",
-                        cleanup_failures
-                            .into_iter()
-                            .chain(mcp_cleanup_failures)
-                            .collect::<Vec<_>>()
-                            .join("; ")
+                        cleanup_failures.join("; ")
                     )));
                 }
             };
@@ -1804,8 +1787,7 @@ impl AgentSetup {
             workspace_state,
             startup_snapshot,
             initial_harness_status: initial_harness_status.clone(),
-            extension_supervisors,
-            mcp_supervisors,
+            dynamic_contributions,
             extension_widgets,
             extension_metadata,
             extension_rpc_handles,
@@ -2209,6 +2191,7 @@ async fn discover_and_register_extensions(
     cwd: &Path,
     bus: &mut crate::bus::EventBus,
     secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
 ) -> anyhow::Result<DiscoveredExtensions> {
     let home = crate::paths::omegon_home()?;
     let ext_dir = home.join("extensions");
@@ -2288,7 +2271,14 @@ async fn discover_and_register_extensions(
                 continue;
             }
         };
-        let trust_admission = match dynamic_admission.admit(preflight) {
+        let candidate = match inventory.discover(preflight) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                tracing::warn!(extension = ext_name, %error, "extension static inventory rejected candidate");
+                continue;
+            }
+        };
+        let trust_admission = match inventory.admit(&candidate, &dynamic_admission) {
             Ok(admission) => admission,
             Err(error) => {
                 tracing::warn!(extension = ext_name, %error, "extension trust admission denied before execution");
@@ -2301,10 +2291,11 @@ async fn discover_and_register_extensions(
             snapshot,
             manifest,
             trust_admission,
+            candidate.preflight.id,
         ));
     }
 
-    for (ext_name, state_dir, snapshot, manifest, trust_admission) in candidates {
+    for (ext_name, state_dir, snapshot, manifest, trust_admission, candidate_id) in candidates {
         // Spawning an enabled extension is its explicit operation boundary:
         // resolve declared credentials on demand here, then deliver them only
         // through bootstrap_secrets RPC. Discovery/status paths remain
@@ -2321,6 +2312,7 @@ async fn discover_and_register_extensions(
         .await
         {
             Ok(spawned) => {
+                inventory.ready(&candidate_id);
                 let tool_count = spawned.feature.tools().len();
                 let widget_count = spawned.widgets.len();
                 tracing::info!(
@@ -2356,6 +2348,7 @@ async fn discover_and_register_extensions(
                 count += 1;
             }
             Err(e) => {
+                inventory.quarantine(&candidate_id, e.to_string());
                 tracing::warn!(
                     name = %ext_name,
                     path = %state_dir.display(),
@@ -2827,9 +2820,14 @@ required = ["OMADA_TEST_SECRET"]
             std::sync::Arc::new(omegon_secrets::SecretsManager::new(home_path.path()).unwrap());
         let mut bus = crate::bus::EventBus::new();
 
-        let discovered = discover_and_register_extensions(project.path(), &mut bus, secrets)
-            .await
-            .unwrap();
+        let discovered = discover_and_register_extensions(
+            project.path(),
+            &mut bus,
+            secrets,
+            crate::contribution_lifecycle::DynamicContributionInventory::default(),
+        )
+        .await
+        .unwrap();
         assert!(discovered.extension_metadata.is_empty());
         let lock_name = format!("contribution-{authority}.lock");
         assert!(
@@ -2888,9 +2886,14 @@ required = ["OMADA_TEST_SECRET"]
         let mut bus = crate::bus::EventBus::new();
 
         assert!(
-            discover_and_register_extensions(project.path(), &mut bus, secrets)
-                .await
-                .is_err()
+            discover_and_register_extensions(
+                project.path(),
+                &mut bus,
+                secrets,
+                crate::contribution_lifecycle::DynamicContributionInventory::default(),
+            )
+            .await
+            .is_err()
         );
     }
 

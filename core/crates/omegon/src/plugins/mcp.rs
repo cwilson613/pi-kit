@@ -314,24 +314,6 @@ impl McpSupervisor {
     }
 }
 
-pub(crate) struct McpSupervisorSet {
-    supervisors: Vec<McpSupervisor>,
-}
-
-impl McpSupervisorSet {
-    pub(crate) fn new(supervisors: Vec<McpSupervisor>) -> Self {
-        Self { supervisors }
-    }
-
-    pub(crate) async fn shutdown(&mut self) {
-        for supervisor in self.supervisors.drain(..) {
-            for failure in supervisor.shutdown(Duration::from_millis(500)).await {
-                tracing::warn!(%failure, "MCP cleanup degraded");
-            }
-        }
-    }
-}
-
 pub(crate) fn dynamic_preflight(
     id: &str,
     content: &str,

@@ -256,6 +256,14 @@ remain valid opaque legacy generation identifiers. Slice 2 does not add live
 session migration; that requires a separately specified durable quiescent
 migration event.
 
+### Slice 6.3 dynamic contribution cutover
+
+Slice 6.3 introduces one `DiscoveredContributionCandidate` inventory for native extensions, MCP process and HTTP servers, and executable manifest script, HTTP, and OCI contributions. A candidate contains only static identity, source digest, source kind, trust and confinement requests, probe requirements, and a transport adapter. Constructing the inventory cannot evaluate Pkl, spawn a process or container, connect to HTTP, resolve secrets, or register a feature.
+
+One lifecycle pipeline admits each candidate against the captured digest, starts its transport adapter under one readiness deadline, freezes the adapter's declarations and compatibility payload, and stages all accepted features for the existing candidate graph. The EventBus graph publication remains the registration linearization point. Publication failure leaves no candidate registration visible and sends every probed resource to the same generation rollback owner. Successful publication transfers those resources to one dynamic generation owner, which also records restart/quarantine state, rejects stale generations, and performs normal shutdown once.
+
+Transport adapters remain responsible for JSON-RPC and MCP framing, MCP resources and prompts, extension widgets and RPC handles, HostAction narrowing, secret delivery, process-group or container confinement, and HTTP remote-boundary semantics. Process-backed adapters must terminate and join their complete owned tree. HTTP adapters cannot claim remote peer settlement. Separate extension and MCP supervisor collections cease to be lifecycle authorities after cutover. Content packs remain Slice 6.4 and release composition remains Slice 7.
+
 ### Slice 2 implementation boundary
 
 Slice 2 owns composition discovery, pure graph validation, activation

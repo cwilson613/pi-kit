@@ -2900,10 +2900,7 @@ async fn run_embedded_command(
     }
 
     let router = Arc::new(session_router::SessionRouter::new());
-    let mut extension_supervisors =
-        extensions::ExtensionSupervisorSet::new(std::mem::take(&mut agent.extension_supervisors));
-    let mut mcp_supervisors =
-        plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors));
+    let mut dynamic_contributions = std::mem::take(&mut agent.dynamic_contributions);
     let agent_cwd = agent.cwd.clone();
     let agent_session_id = agent.session_id.clone();
     let agent_secrets = agent.secrets.clone();
@@ -3716,8 +3713,9 @@ async fn run_embedded_command(
             ))
         }
     };
-    mcp_supervisors.shutdown().await;
-    extension_supervisors.shutdown().await;
+    for failure in dynamic_contributions.shutdown().await {
+        tracing::warn!(%failure, "dynamic contribution cleanup degraded");
+    }
     managed_cleanup
 }
 
@@ -4966,12 +4964,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         s.provider_connected = startup_decision.provider_connected;
     }
     let (events_tx, events_rx) = bootstrap::wire_event_channel(&agent, 256);
-    let mut extension_supervisors = extensions::ExtensionSupervisorSet::new(
-        std::mem::take(&mut agent.extension_supervisors),
-    );
-    let mut mcp_supervisors = plugins::mcp::McpSupervisorSet::new(std::mem::take(
-        &mut agent.mcp_supervisors,
-    ));
+    let mut dynamic_contributions = std::mem::take(&mut agent.dynamic_contributions);
     let startup_model_intent = settings::Profile::load(&agent.cwd)
         .model_intent
         .and_then(|intent| intent.to_route_intent())
@@ -7141,8 +7134,9 @@ fn build_tui_secret_readiness_snapshot(
                                                 "managed interactive shutdown could not recover retained state"
                                             )),
                                         };
-                                        mcp_supervisors.shutdown().await;
-                                        extension_supervisors.shutdown().await;
+                                        for failure in dynamic_contributions.shutdown().await {
+                                            tracing::warn!(%failure, "dynamic contribution cleanup degraded");
+                                        }
                                         bridge.read().await.shutdown().await;
                                         managed_cleanup?;
                                         runtime.submit_loop_terminal_intent(
@@ -7500,8 +7494,9 @@ fn build_tui_secret_readiness_snapshot(
 
     let managed_cleanup = runtime_state.bus.shutdown_managed_services_strict().await;
     bridge.read().await.shutdown().await;
-    mcp_supervisors.shutdown().await;
-    extension_supervisors.shutdown().await;
+    for failure in dynamic_contributions.shutdown().await {
+        tracing::warn!(%failure, "dynamic contribution cleanup degraded");
+    }
     managed_cleanup?;
 
     if let Some((binary, args)) = restart_request {
@@ -7996,10 +7991,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
         Ok(bridge) => bridge,
         Err(error) => return setup::finalize_agent_error(&mut agent, error).await,
     };
-    let mut mcp_supervisors =
-        plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors));
-    let mut extension_supervisors =
-        extensions::ExtensionSupervisorSet::new(std::mem::take(&mut agent.extension_supervisors));
+    let mut dynamic_contributions = std::mem::take(&mut agent.dynamic_contributions);
 
     let (events_tx, mut events_rx) = bootstrap::wire_event_channel(&agent, 256);
 
@@ -8166,8 +8158,9 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     }
 
     let managed_cleanup = agent.bus.shutdown_managed_services_strict().await;
-    mcp_supervisors.shutdown().await;
-    extension_supervisors.shutdown().await;
+    for failure in dynamic_contributions.shutdown().await {
+        tracing::warn!(%failure, "dynamic contribution cleanup degraded");
+    }
 
     // Graceful bridge shutdown.
     //
@@ -8382,14 +8375,25 @@ async fn call_tdd_savepoint_extension(
     let manifest = crate::extensions::ExtensionManifest::from_extension_dir(snapshot.path())?;
     let preflight = crate::extensions::dynamic_preflight(&manifest, snapshot.path())?;
     let profile = crate::settings::Profile::load(&std::env::current_dir()?);
-    let trust_admission = crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile)
-        .admit(preflight)?;
+    let inventory = crate::contribution_lifecycle::DynamicContributionInventory::default();
+    let candidate = inventory.discover(preflight)?;
+    let candidate_id = candidate.preflight.id.clone();
+    let trust_admission = inventory.admit(
+        &candidate,
+        &crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile),
+    )?;
     let ext_dir = home.join("extensions/omegon-tdd-savepoint");
     let spawned =
         crate::extensions::spawn_from_admitted_snapshot(snapshot, &ext_dir, trust_admission, &[])
             .await?;
+    inventory.ready(&candidate_id);
+    let mut candidate_owner =
+        crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(inventory);
+    candidate_owner.own_extension(spawned.supervisor.clone());
+    candidate_owner.stage();
+    candidate_owner.publish();
     drop(admission);
-    let result = spawned
+    let execution = spawned
         .feature
         .execute(
             tool_name,
@@ -8397,7 +8401,11 @@ async fn call_tdd_savepoint_extension(
             args,
             tokio_util::sync::CancellationToken::new(),
         )
-        .await?;
+        .await;
+    for failure in candidate_owner.shutdown().await {
+        tracing::warn!(%failure, "TDD extension cleanup degraded");
+    }
+    let result = execution?;
     if result
         .details
         .get("is_error")
@@ -10010,10 +10018,7 @@ async fn run_bounded_task(
                 return setup::finalize_agent_error(&mut agent, error).await;
             }
         };
-    let mut mcp_supervisors =
-        plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors));
-    let mut extension_supervisors =
-        extensions::ExtensionSupervisorSet::new(std::mem::take(&mut agent.extension_supervisors));
+    let mut dynamic_contributions = std::mem::take(&mut agent.dynamic_contributions);
     let (events_tx, mut events_rx) = bootstrap::wire_event_channel(&agent, 256);
 
     // Token tracking
@@ -10084,8 +10089,9 @@ async fn run_bounded_task(
         )
     {
         bridge.shutdown().await;
-        mcp_supervisors.shutdown().await;
-        extension_supervisors.shutdown().await;
+        for failure in dynamic_contributions.shutdown().await {
+            tracing::warn!(%failure, "dynamic contribution cleanup degraded");
+        }
         return setup::finalize_agent_error(&mut agent, error.into()).await;
     }
     let terminal_intent = if timed_out {
@@ -10098,8 +10104,9 @@ async fn run_bounded_task(
         terminal.into_intent(active_identity)
     };
     let managed_cleanup = agent.bus.shutdown_managed_services_strict().await;
-    mcp_supervisors.shutdown().await;
-    extension_supervisors.shutdown().await;
+    for failure in dynamic_contributions.shutdown().await {
+        tracing::warn!(%failure, "dynamic contribution cleanup degraded");
+    }
     bridge.shutdown().await;
     drop(events_tx);
     let mut event_task = event_task;
@@ -10572,8 +10579,7 @@ mod tests {
                 lease: workspace_lease,
                 admission: crate::workspace::types::AdmissionOutcome::GrantedMutable,
             },
-            extension_supervisors: vec![],
-            mcp_supervisors: vec![],
+            dynamic_contributions: Default::default(),
             extension_widgets: vec![],
             extension_metadata: Default::default(),
             extension_rpc_handles: Default::default(),
@@ -11181,16 +11187,16 @@ mod tests {
             .nth(1)
             .and_then(|tail| tail.split("turn_result = &mut turn_task").next())
             .expect("terminal-loss fallback source");
-        let extension_shutdown = fallback
-            .find("extension_supervisors.shutdown().await")
-            .expect("extension shutdown remains reachable");
+        let dynamic_shutdown = fallback
+            .find("dynamic_contributions.shutdown().await")
+            .expect("dynamic contribution shutdown remains reachable");
         let bridge_shutdown = fallback
             .find("bridge.read().await.shutdown().await")
             .expect("bridge shutdown remains reachable");
         let return_position = fallback
             .find("return Ok(())")
             .expect("bounded fallback return");
-        assert!(extension_shutdown < return_position);
+        assert!(dynamic_shutdown < return_position);
         assert!(bridge_shutdown < return_position);
     }
 

@@ -42,7 +42,10 @@ import { snippet } from "../../lib/snippets";
 
   <h2>Readiness and lifecycle</h2>
   <p>
-    A candidate extension remains unavailable while one absolute manifest deadline covers
+    Native extensions, MCP servers, and executable manifests first enter one metadata-only
+    inventory. Static discovery captures identity and a source digest without evaluating Pkl,
+    spawning or connecting, resolving secrets, or publishing tools. After trust admission, a
+    candidate remains unavailable while one absolute manifest deadline covers
     initialization, tool discovery, configuration, and secret delivery. Omegon publishes a new
     composition generation only after the complete graph passes readiness and parity checks;
     failure preserves the previously accepted graph.
@@ -51,7 +54,8 @@ import { snippet } from "../../lib/snippets";
     Transport failures consume a fixed generation-local restart budget with capped backoff.
     Exhaustion places the extension in terminal quarantine instead of spawning indefinitely.
     Host-owned Unix native process groups can report strict cleanup; OCI and other unowned
-    boundaries report best-effort cleanup. Use <code>/status</code> to inspect composition,
+    boundaries report best-effort cleanup. One generation owner performs rollback and shutdown
+    across extension, MCP, and manifest adapters. Use <code>/status</code> to inspect composition,
     health, quarantine diagnostics, cleanup assurance, and compatibility-dispatch parity.
   </p>
 

@@ -261,6 +261,21 @@ pub async fn discover_plugins_filtered(
     secrets: Option<&omegon_secrets::SecretsManager>,
     filter: &PluginSelectionFilter,
 ) -> AdmittedPlugins {
+    discover_plugins_filtered_with_inventory(
+        cwd,
+        secrets,
+        filter,
+        crate::contribution_lifecycle::DynamicContributionInventory::default(),
+    )
+    .await
+}
+
+pub(crate) async fn discover_plugins_filtered_with_inventory(
+    cwd: &Path,
+    secrets: Option<&omegon_secrets::SecretsManager>,
+    filter: &PluginSelectionFilter,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
+) -> AdmittedPlugins {
     let mut features: Vec<Box<dyn omegon_traits::Feature>> = Vec::new();
     let mut admissions = Vec::new();
     let mut mcp_supervisors = Vec::new();
@@ -272,8 +287,15 @@ pub async fn discover_plugins_filtered(
         Ok(home) => {
             for scope in open_guarded_plugin_scopes(cwd, &home) {
                 let scope_name = scope.scope;
-                match discover_guarded_plugins(scope, cwd, secrets, filter, &dynamic_admission)
-                    .await
+                match discover_guarded_plugins(
+                    scope,
+                    cwd,
+                    secrets,
+                    filter,
+                    &dynamic_admission,
+                    &inventory,
+                )
+                .await
                 {
                     Ok(Some((mut loaded, admission))) => {
                         features.append(&mut loaded.features);
@@ -294,7 +316,7 @@ pub async fn discover_plugins_filtered(
 
     // Also discover MCP servers from project-level config
     let (project_mcp, mut project_mcp_supervisors) =
-        discover_project_mcp_servers(cwd, secrets, &dynamic_admission).await;
+        discover_project_mcp_servers(cwd, secrets, &dynamic_admission, &inventory).await;
     features.extend(project_mcp);
     mcp_supervisors.append(&mut project_mcp_supervisors);
 
@@ -312,6 +334,7 @@ async fn discover_guarded_plugins(
     secrets: Option<&omegon_secrets::SecretsManager>,
     filter: &PluginSelectionFilter,
     dynamic_admission: &crate::dynamic_admission::DynamicAdmissionPolicy,
+    inventory: &crate::contribution_lifecycle::DynamicContributionInventory,
 ) -> anyhow::Result<Option<(LoadedPlugin, GuardedContributionDirectory)>> {
     use std::os::unix::ffi::OsStrExt;
 
@@ -406,7 +429,15 @@ async fn discover_guarded_plugins(
                     continue;
                 }
             };
-        let trust_admission = match dynamic_admission.admit(preflight) {
+        let candidate = match inventory.discover(preflight) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                tracing::warn!(plugin = plugin_name, %error, "plugin static inventory rejected candidate");
+                continue;
+            }
+        };
+        let candidate_id = candidate.preflight.id.clone();
+        let trust_admission = match inventory.admit(&candidate, dynamic_admission) {
             Ok(admission) => admission,
             Err(error) => {
                 tracing::warn!(plugin = plugin_name, %error, "plugin trust admission denied before execution");
@@ -424,10 +455,16 @@ async fn discover_guarded_plugins(
         .await
         {
             Ok(mut loaded) => {
+                if loaded.features.is_empty() && loaded.mcp_supervisors.is_empty() {
+                    inventory.absent(&candidate_id);
+                    continue;
+                }
+                inventory.ready(&candidate_id);
                 features.append(&mut loaded.features);
                 mcp_supervisors.append(&mut loaded.mcp_supervisors);
             }
             Err(error) => {
+                inventory.quarantine(&candidate_id, error.to_string());
                 tracing::warn!(path = %manifest_path.display(), error = %error, "failed to load plugin");
             }
         }
@@ -449,6 +486,7 @@ async fn discover_guarded_plugins(
     _secrets: Option<&omegon_secrets::SecretsManager>,
     _filter: &PluginSelectionFilter,
     _dynamic_admission: &crate::dynamic_admission::DynamicAdmissionPolicy,
+    _inventory: &crate::contribution_lifecycle::DynamicContributionInventory,
 ) -> anyhow::Result<Option<(LoadedPlugin, GuardedContributionDirectory)>> {
     anyhow::bail!("guarded plugin discovery requires Unix")
 }
@@ -643,6 +681,7 @@ async fn discover_project_mcp_servers(
     cwd: &Path,
     secrets: Option<&omegon_secrets::SecretsManager>,
     dynamic_admission: &crate::dynamic_admission::DynamicAdmissionPolicy,
+    inventory: &crate::contribution_lifecycle::DynamicContributionInventory,
 ) -> (
     Vec<Box<dyn omegon_traits::Feature>>,
     Vec<mcp::McpSupervisor>,
@@ -658,13 +697,22 @@ async fn discover_project_mcp_servers(
             toml::from_str::<std::collections::HashMap<String, mcp::McpServerConfig>>(&content)
     {
         let preflight = mcp::dynamic_preflight("mcp:project", &content, &servers);
-        let trust_admission = preflight.and_then(|preflight| dynamic_admission.admit(preflight));
+        let candidate = preflight.and_then(|preflight| inventory.discover(preflight));
+        let candidate_id = candidate
+            .as_ref()
+            .ok()
+            .map(|candidate| candidate.preflight.id.clone());
+        let trust_admission =
+            candidate.and_then(|candidate| inventory.admit(&candidate, dynamic_admission));
         let Ok(trust_admission) = trust_admission else {
             tracing::warn!("project MCP trust admission denied before connection");
             return (features, mcp_supervisors);
         };
         match mcp::McpFeature::connect("project-mcp", &servers, secrets, trust_admission).await {
             Ok(feature) if !feature.tools().is_empty() => {
+                if let Some(candidate_id) = &candidate_id {
+                    inventory.ready(candidate_id);
+                }
                 mcp_supervisors.push(feature.supervisor());
                 tracing::info!(
                     servers = servers.len(),
@@ -675,6 +723,9 @@ async fn discover_project_mcp_servers(
             }
             Ok(_) => {}
             Err(e) => {
+                if let Some(candidate_id) = &candidate_id {
+                    inventory.quarantine(candidate_id, e.to_string());
+                }
                 tracing::warn!(error = %e, "failed to connect project MCP servers");
             }
         }

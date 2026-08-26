@@ -554,12 +554,7 @@ async fn worker_loop(
     let secrets = agent_setup.secrets;
     let extension_metadata = agent_setup.extension_metadata.clone();
     let extension_rpc_handles = agent_setup.extension_rpc_handles.clone();
-    let mut extension_supervisors = crate::extensions::ExtensionSupervisorSet::new(std::mem::take(
-        &mut agent_setup.extension_supervisors,
-    ));
-    let mut mcp_supervisors = crate::plugins::mcp::McpSupervisorSet::new(std::mem::take(
-        &mut agent_setup.mcp_supervisors,
-    ));
+    let mut dynamic_contributions = std::mem::take(&mut agent_setup.dynamic_contributions);
     let mut resume_id: Option<String> = None;
     let mut resume_info = agent_setup.resume_info;
 
@@ -1321,9 +1316,19 @@ async fn worker_loop(
                         &server_map,
                     );
                     let profile = crate::settings::Profile::load(&cwd);
-                    let trust_admission = preflight.and_then(|preflight| {
-                        crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile)
-                            .admit(preflight)
+                    let inventory = dynamic_contributions.inventory();
+                    let candidate = preflight.and_then(|preflight| inventory.discover(preflight));
+                    let candidate_id = candidate
+                        .as_ref()
+                        .ok()
+                        .map(|candidate| candidate.preflight.id.clone());
+                    let trust_admission = candidate.and_then(|candidate| {
+                        inventory.admit(
+                            &candidate,
+                            &crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(
+                                &profile,
+                            ),
+                        )
                     });
                     let Ok(trust_admission) = trust_admission else {
                         let _ = event_tx.send(WorkerEvent::StatusUpdate(
@@ -1343,10 +1348,21 @@ async fn worker_loop(
                         Ok(mcp_feature) => {
                             let tool_count = mcp_feature.tools().len();
                             let mcp_supervisor = mcp_feature.supervisor();
+                            let mut candidate_owner =
+                                crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(
+                                    inventory.clone(),
+                                );
+                            candidate_owner.own_mcp(mcp_supervisor);
+                            if let Some(candidate_id) = &candidate_id {
+                                inventory.ready(candidate_id);
+                            }
+                            candidate_owner.stage();
                             if tool_count > 0 {
                                 bus.register(Box::new(mcp_feature));
                                 match bus.try_finalize() {
                                     Ok(()) => {
+                                        candidate_owner.publish();
+                                        dynamic_contributions.absorb_published(candidate_owner);
                                         tracing::info!(
                                             tools = tool_count,
                                             "ACP client MCP servers connected"
@@ -1356,9 +1372,8 @@ async fn worker_loop(
                                         )));
                                     }
                                     Err(error) => {
-                                        let cleanup_failures = mcp_supervisor
-                                            .shutdown(std::time::Duration::from_millis(500))
-                                            .await;
+                                        let cleanup_failures =
+                                            candidate_owner.reject(error.to_string()).await;
                                         tracing::warn!(%error, "ACP client MCP candidate rejected");
                                         if !cleanup_failures.is_empty() {
                                             tracing::warn!(failures = ?cleanup_failures, "ACP client MCP candidate cleanup degraded");
@@ -1369,8 +1384,8 @@ async fn worker_loop(
                                     }
                                 }
                             } else {
-                                let cleanup_failures = mcp_supervisor
-                                    .shutdown(std::time::Duration::from_millis(500))
+                                let cleanup_failures = candidate_owner
+                                    .reject("MCP candidate declared no callable tools")
                                     .await;
                                 if !cleanup_failures.is_empty() {
                                     tracing::warn!(failures = ?cleanup_failures, "empty ACP MCP candidate cleanup degraded");
@@ -1378,6 +1393,9 @@ async fn worker_loop(
                             }
                         }
                         Err(e) => {
+                            if let Some(candidate_id) = &candidate_id {
+                                inventory.quarantine(candidate_id, e.to_string());
+                            }
                             tracing::warn!(error = %e, "Failed to connect client MCP servers");
                             let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
                                 "MCP server connection failed: {e}"
@@ -1392,8 +1410,9 @@ async fn worker_loop(
     }
 
     let managed_cleanup = bus.shutdown_managed_services_strict().await;
-    mcp_supervisors.shutdown().await;
-    extension_supervisors.shutdown().await;
+    for failure in dynamic_contributions.shutdown().await {
+        tracing::warn!(%failure, "ACP dynamic contribution cleanup degraded");
+    }
     if let Err(error) = managed_cleanup {
         tracing::error!(%error, "ACP worker managed cleanup failed");
         let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(

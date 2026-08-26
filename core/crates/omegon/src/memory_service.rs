@@ -355,6 +355,14 @@ pub(crate) enum MemoryRequestV1 {
         mind: String,
         cancellation: CancellationToken,
     },
+    #[cfg(test)]
+    #[serde(skip)]
+    TestVectorSearch {
+        started: std::sync::mpsc::SyncSender<()>,
+        mind: String,
+        vector: Vec<f32>,
+        cancellation: CancellationToken,
+    },
 }
 
 impl MemoryRequestV1 {
@@ -384,7 +392,8 @@ impl MemoryRequestV1 {
             | Self::TestRecord { cancellation, .. }
             | Self::TestPanic { cancellation }
             | Self::TestAtomicMutation { cancellation, .. }
-            | Self::TestVaultSessionStart { cancellation, .. } => cancellation,
+            | Self::TestVaultSessionStart { cancellation, .. }
+            | Self::TestVectorSearch { cancellation, .. } => cancellation,
         }
     }
 }
@@ -1404,20 +1413,56 @@ fn execute_request(
         ),
         #[cfg(test)]
         MemoryRequestV1::TestVaultSessionStart { started, mind, .. } => {
-            let _ = started.send(());
-            while !cancelled() {
-                std::thread::yield_now();
-            }
+            let signalled = AtomicBool::new(false);
+            let operation_cancelled = || {
+                if !signalled.swap(true, Ordering::AcqRel) {
+                    let _ = started.send(());
+                }
+                while !cancelled() {
+                    std::thread::yield_now();
+                }
+                true
+            };
             Some(
                 vault_session_start(
                     runtime,
                     project,
                     config.vault.as_ref(),
-                    config.startup_sync_enabled,
+                    true,
                     mind,
-                    cancelled,
+                    &operation_cancelled,
                 )
                 .map(MemoryPayloadV1::Vault),
+            )
+        }
+        #[cfg(test)]
+        MemoryRequestV1::TestVectorSearch {
+            started,
+            mind,
+            vector,
+            ..
+        } => {
+            let signalled = AtomicBool::new(false);
+            let operation_cancelled = || {
+                if !signalled.swap(true, Ordering::AcqRel) {
+                    let _ = started.send(());
+                }
+                while !cancelled() {
+                    std::thread::yield_now();
+                }
+                true
+            };
+            Some(
+                runtime
+                    .block_on(backend.vector_search_cancellable(
+                        mind,
+                        vector,
+                        10,
+                        0.0,
+                        &operation_cancelled,
+                    ))
+                    .map(MemoryPayloadV1::ScoredFacts)
+                    .map_err(MemoryServiceErrorV1::from_memory),
             )
         }
         _ => None,
@@ -1606,7 +1651,8 @@ fn execute_request(
                 | MemoryRequestV1::VaultSessionStart { .. }
                 | MemoryRequestV1::VaultSessionEnd { .. } => unreachable!("handled above"),
                 #[cfg(test)]
-                MemoryRequestV1::TestVaultSessionStart { .. } => unreachable!("handled above"),
+                MemoryRequestV1::TestVaultSessionStart { .. }
+                | MemoryRequestV1::TestVectorSearch { .. } => unreachable!("handled above"),
                 #[cfg(test)]
                 MemoryRequestV1::TestBlock {
                     started, release, ..
@@ -1827,8 +1873,82 @@ fn request_scope(request: &MemoryRequestV1) -> MemoryScopeV1 {
         | MemoryRequestV1::TestRecord { .. }
         | MemoryRequestV1::TestPanic { .. }
         | MemoryRequestV1::TestAtomicMutation { .. }
-        | MemoryRequestV1::TestVaultSessionStart { .. } => MemoryScopeV1::Project,
+        | MemoryRequestV1::TestVaultSessionStart { .. }
+        | MemoryRequestV1::TestVectorSearch { .. } => MemoryScopeV1::Project,
     }
+}
+
+#[cfg(test)]
+pub(crate) async fn campaign_exact_transfer_candidates(
+    config: MemoryWorkerConfig,
+) -> (ManagedGenerationCandidate, ManagedGenerationCandidate) {
+    let (commands, receiver) = mpsc::channel(QUEUE_CAPACITY);
+    let state = Arc::new(WorkerState {
+        stopping: AtomicBool::new(false),
+        stores_closed: AtomicBool::new(false),
+        worker_joined: AtomicBool::new(false),
+        worker_failed: AtomicBool::new(false),
+        changed: Notify::new(),
+        join: Mutex::new(None),
+    });
+    let (startup, started) = std::sync::mpsc::sync_channel(1);
+    let worker_state = Arc::clone(&state);
+    let join = std::thread::spawn(move || run_worker(config, receiver, worker_state, startup));
+    *state.join.lock().expect("memory campaign join lock") = Some(join);
+    tokio::task::spawn_blocking(move || started.recv())
+        .await
+        .expect("memory campaign readiness task")
+        .expect("memory campaign readiness channel")
+        .expect("memory campaign worker readiness");
+    let service = Arc::new(MemoryService {
+        commands: commands.clone(),
+    });
+    let worker = Arc::new(WorkerController {
+        state: Arc::clone(&state),
+        commands: commands.clone(),
+    });
+    let writer = Arc::new(WriterController { state, commands });
+    let candidate = || {
+        let writer_id =
+            RuntimeContributionResourceId::new(WRITER_RESOURCE).expect("static writer resource id");
+        let resources = vec![
+            ManagedResourceRegistration::new(
+                writer_id.clone(),
+                RuntimeOwnedResourceKind::DurableWriter,
+                RuntimeCleanupAssurance::Strict,
+                Vec::new(),
+                writer.clone(),
+            ),
+            ManagedResourceRegistration::new(
+                RuntimeContributionResourceId::new(WORKER_RESOURCE)
+                    .expect("static worker resource id"),
+                RuntimeOwnedResourceKind::Task,
+                RuntimeCleanupAssurance::Strict,
+                vec![writer_id],
+                worker.clone(),
+            ),
+        ];
+        let mut candidate = ManagedGenerationCandidate::new(
+            RuntimeCompositionGenerationId::new("composition:memory-campaign-transfer")
+                .expect("static composition id"),
+            omegon_traits::RuntimeContributionId::new("feature:memory")
+                .expect("static contribution id"),
+            RuntimeContributionGenerationId::new(MEMORY_GENERATION).expect("static generation id"),
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+            resources,
+        )
+        .expect("memory campaign candidate");
+        candidate
+            .add_service(
+                memory_capability_id(),
+                memory_interface_id(),
+                service.clone(),
+            )
+            .expect("memory campaign service");
+        candidate
+    };
+    (candidate(), candidate())
 }
 
 #[cfg(test)]

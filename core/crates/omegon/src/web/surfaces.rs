@@ -123,6 +123,15 @@ pub struct WebMemoryStatusSurface {
     pub total_facts: usize,
 }
 
+pub(crate) fn project_memory_status(
+    harness: Option<&crate::status::HarnessStatus>,
+) -> WebMemoryStatusSurface {
+    WebMemoryStatusSurface {
+        active_facts: harness.map(|h| h.memory.active_facts).unwrap_or(0),
+        total_facts: harness.map(|h| h.memory.total_facts).unwrap_or(0),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct WebPlanSurface {
     pub active: Option<WebPlanLane>,
@@ -279,10 +288,7 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                 busy: session.as_ref().is_some_and(|s| s.busy),
             },
             instruments: project_instruments(state),
-            memory_status: WebMemoryStatusSurface {
-                active_facts: harness.as_ref().map(|h| h.memory.active_facts).unwrap_or(0),
-                total_facts: harness.as_ref().map(|h| h.memory.total_facts).unwrap_or(0),
-            },
+            memory_status: project_memory_status(harness.as_ref()),
             operations: project_operations(state),
             plan: project_plan(state),
             runtime: project_runtime(harness.as_ref()),

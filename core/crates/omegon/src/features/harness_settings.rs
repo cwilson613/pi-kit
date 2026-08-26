@@ -102,6 +102,11 @@ impl HarnessSettings {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn campaign_memory_stats_overview(&self) -> String {
+        self.memory_stats_overview()
+    }
+
     fn sessions_overview(&self) -> String {
         let cwd = std::env::current_dir().unwrap_or_default();
         let sessions_dir = cwd.join("ai").join("sessions");

@@ -144,6 +144,8 @@ mod loop_permission;
 mod loop_session;
 mod managed_agent_supervisor;
 mod managed_service_bus;
+#[cfg(test)]
+mod memory_campaign;
 mod memory_service;
 mod model_catalog;
 mod model_preferences;

@@ -26,7 +26,7 @@ The independently runnable executable, recovery workflows, offline release
 verification, and release-distribution integration are implemented in the
 workspace. Normative behavior is owned by the OpenSpec maintenance
 requirements. Remaining implementation is tracked by
-`openspec/changes/selective-kernel-decomposition/tasks.md`.
+`openspec/archive/2026-08-26-selective-kernel-decomposition/tasks.md`.
 
 Package `omegon-maintenance-contracts` implements canonical v1 records/results,
 domain-separated key and digest derivation, descriptor-relative Unix advisory
@@ -475,6 +475,14 @@ Both carry matching release identity, are signed where applicable, and are
 independently launch-tested through source, linked development, direct install,
 platform archive, Homebrew, Nix, and OCI paths supported by the repository. Each
 path tests missing/incompatible-companion failure.
+
+For linked development, `omegon-maintain --version` includes the same embedded
+commit reported by `identity`. The shared launcher compares that commit with the
+selected checkout, so a current pair reports `stale: no` for both executables.
+The deterministic Slice-7 campaign is defined by
+`fixtures/release-closeout-evidence-v1.json` and
+`scripts/check_release_closeout.py`. Its release-signing claim is limited to the
+checked-in signed fixture and verifier tests.
 
 Public operator guidance is owned by the installation and Maintenance & Recovery
 site pages. Their generated command examples come from canonical install,

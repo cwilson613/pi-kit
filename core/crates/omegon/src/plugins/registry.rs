@@ -1416,7 +1416,14 @@ mod tests {
 
         let registry = load_guarded_registry(project.path(), home.path());
         let prompt = registry.build_system_prompt();
-        assert_eq!(registry.skill_count(), 1);
+        assert_eq!(
+            registry
+                .loaded_skill_snapshots
+                .iter()
+                .filter(|skill| skill.source != "bundled")
+                .count(),
+            1
+        );
         assert!(prompt.contains("VALID_SKILL_MARKER"));
         assert!(!prompt.contains("OPAQUE_SKILL_MARKER"));
     }

@@ -28,7 +28,7 @@ Current install surfaces:
 - Homebrew: `brew tap styrene-lab/tap && brew install omegon`
 - direct GitHub release artifacts from `styrene-lab/omegon`
 
-Source checkouts use `just build` and `just link`. `just link` builds both executables, installs stable development launchers into `~/.local/bin/omegon`, `~/.local/bin/om`, and `~/.local/bin/omegon-maintain`, registers the checkout in `~/.omegon/channels/default`, and keeps fallback copies in `~/.omegon/bin/`. It does not use shell-profile aliases as the primary resolution mechanism; run `omegon --which` and `omegon-maintain --which` to inspect the resolved targets.
+Source checkouts use `just link`, which performs its own release build for both executables. It installs stable development launchers into `~/.local/bin/omegon`, `~/.local/bin/om`, and `~/.local/bin/omegon-maintain`, registers the checkout in `~/.omegon/channels/default`, and keeps fallback copies in `~/.omegon/bin/`. It does not use shell-profile aliases as the primary resolution mechanism. Run `omegon --which` and `omegon-maintain --which` to inspect the resolved targets; both must report the current checkout commit and `stale: no`.
 
 ## Linux runtime requirements
 
@@ -117,7 +117,7 @@ Script-managed installs use the `versioned-current-v1` layout. Each immutable `~
 - Linux artifacts must state their glibc baseline clearly.
 - Homebrew-managed installs should update through Homebrew.
 - Script-managed installs should update by rerunning the install script or using `/update`.
-- Source checkout development should use `just build` and `just link`.
+- Source checkout development should use `just link`; do not run a redundant release build first.
 - Missing or mismatched companions fail package and update validation; never repair a pair by copying one executable from another release.
 - Script-managed release activation changes only `~/.omegon/current`; never repoint the public executable or receipt links independently to select a version.
 

@@ -238,6 +238,27 @@ fn identity_starts_without_normal_runtime_inputs() {
     }
 }
 
+#[test]
+fn version_and_identity_report_the_same_embedded_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let version = Command::new(binary()).arg("--version").output().unwrap();
+    assert!(
+        version.status.success(),
+        "version failed ({:?}): stdout={} stderr={}",
+        version.status,
+        String::from_utf8_lossy(&version.stdout),
+        String::from_utf8_lossy(&version.stderr),
+    );
+    let version = String::from_utf8(version.stdout).unwrap();
+    let (code, identity, stderr) = run_json(["--json", "identity"], root.path());
+    assert_eq!(code, 0, "{stderr}");
+    let commit = identity["artifact"]["commit"].as_str().unwrap();
+    assert!(
+        version.contains(commit),
+        "version={version:?}, commit={commit:?}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn contribution_list_is_inert_and_does_not_follow_symlinks() {

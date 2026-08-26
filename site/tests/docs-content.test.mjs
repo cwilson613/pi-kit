@@ -179,6 +179,28 @@ test('release verification snippets do not trust arbitrary certificate identitie
   assert.match(verification, /omegon-maintain --json release verify/);
 });
 
+test('package, migration, and release evidence guidance matches the companion contract', () => {
+  const install = readDoc('install.astro');
+  const migration = readDoc('migration.astro');
+  const security = readDoc('security.astro');
+  const fixtureReadme = readFileSync(
+    resolve(here, '../../core/crates/omegon-maintain/tests/fixtures/README.md'),
+    'utf8',
+  );
+
+  assert.match(install, /matching <code>omegon<\/code> and <code>omegon-maintain<\/code>/);
+  assert.match(install, /resident composition locks for both executables/i);
+  assert.match(install, /does not extract or execute optional contributions/);
+  assert.match(install, /disabled_tools/);
+  assert.match(install, /both <code>--which<\/code> results/);
+  assert.match(install, /<code>stale: no<\/code>/);
+  assert.match(migration, /Schema-v1 session pairs remain readable as a compatibility\s+import source/);
+  assert.match(migration, /There is no rollback-to-old-writer mode/);
+  assert.match(security, /Sigstore bundle v0\.3/);
+  assert.match(fixtureReadme, /exact archive, canonical package\s+manifest, and Sigstore bundle/);
+  assert.doesNotMatch(fixtureReadme, /current release is signed|latest release is signed/i);
+});
+
 test('public docs contain no destructive root deletion example', () => {
   for (const page of readdirSync(docsDir).filter(f => f.endsWith('.astro'))) {
     assert.doesNotMatch(readDoc(page), /rm -rf \/ --no-preserve-root/);

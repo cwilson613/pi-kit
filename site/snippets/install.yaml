@@ -35,5 +35,7 @@ verify_companions:
   cmd: |
     omegon --version
     omegon-maintain --version
+    omegon --which
+    omegon-maintain --which
     omegon-maintain --json identity
-  desc: "Verify the release-coupled executable pair"
+  desc: "Verify the release-coupled executable pair and launcher freshness"

@@ -144,8 +144,8 @@
     "desc": "Update Homebrew install"
   },
   "install.verify_companions": {
-    "cmd": "omegon --version\nomegon-maintain --version\nomegon-maintain --json identity",
-    "desc": "Verify the release-coupled executable pair"
+    "cmd": "omegon --version\nomegon-maintain --version\nomegon --which\nomegon-maintain --which\nomegon-maintain --json identity",
+    "desc": "Verify the release-coupled executable pair and launcher freshness"
   },
   "maintenance.identity": {
     "cmd": "omegon-maintain --json identity",

@@ -66,6 +66,7 @@ test-dev-scripts:
     python3 -m unittest tests/test_release_manifest.py tests/test_validate_companion.py tests/test_verify_homebrew_formula.py
     python3 -m unittest tests/test_content_pack_packaging.py
     python3 -m unittest tests/test_composition_release_gates.py
+    python3 -m unittest tests/test_release_closeout.py
     python3 scripts/check_no_embedded_content.py
     python3 scripts/check_optional_domain_isolation.py
     python3 scripts/tests/test_omegon_launcher.py
@@ -169,6 +170,10 @@ check-release-composition binary_dir archive target:
     python3 scripts/check_composition_matrix.py --path release --archive "{{archive}}" --target "{{target}}"
     python3 scripts/check_composition_budgets.py --binary-dir "{{binary_dir}}" --archive "{{archive}}" --target "{{target}}"
     python3 scripts/check_composition_authority.py
+
+# Validate deterministic closeout evidence and exercise the real maintenance artifact.
+check-release-closeout maintain="target/release/omegon-maintain":
+    python3 scripts/check_release_closeout.py --maintain "{{maintain}}" --run-maintenance-tests
 
 # Assert the UI InterfaceBoundary contract remains renderer-neutral and backend-internal-free.
 check-interface-boundary:

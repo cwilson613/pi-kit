@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
 use omegon_maintenance_contracts::{
     ArtifactIdentityV1, AuthorityKey, CleanupCapability, CompositionIdentityV1, ContributionKind,
     ContributionSelector, DeadlineEvidenceV1, DiagnosticV1, ErrorV1, FileIdentityV1,
@@ -49,8 +49,17 @@ const EXCLUSIONS: &[&str] = &[
     "tui",
 ];
 
+const fn build_version() -> &'static str {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (",
+        env!("OMEGON_MAINTAIN_GIT_SHA"),
+        ")",
+    )
+}
+
 #[derive(Parser)]
-#[command(name = "omegon-maintain", version, about)]
+#[command(name = "omegon-maintain", version = build_version(), about)]
 struct Cli {
     #[arg(long, global = true)]
     json: bool,
@@ -206,6 +215,13 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) => {
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) {
+                let _ = error.print();
+                return 0;
+            }
             if !requested_json {
                 let _ = error.print();
                 return 1;

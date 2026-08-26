@@ -75,6 +75,10 @@ import { snippet } from "../../lib/snippets";
     Do not copy a companion from another release; reinstall through the owning channel.
   </p>
   <p>
+    For a linked source checkout, both <code>--which</code> results must identify the same current checkout
+    and report <code>stale: no</code>. Re-run <code>just link</code> if either launcher reports stale metadata.
+  </p>
+  <p>
     Upgrades require no configuration rename: existing <code>disabled_tools</code> inputs remain
     accepted and are translated to capability admission policy. Older archives are not retrofitted
     with resident locks; install the complete pair from one current release rather than mixing files.

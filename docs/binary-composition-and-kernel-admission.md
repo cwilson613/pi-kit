@@ -12,7 +12,7 @@ Measured on branch `refactor/minimal-default-binary` on 2026-08-14.
 
 The TUI feature accounts for 158 additional unique dependency-tree lines. This is a useful compatibility boundary, but it is not yet a product boundary: the headless artifact still admits the provider stack, control plane, lifecycle engines, web server, plugin/skill management, archive/signature support, and other optional operational domains.
 
-Compile-time content embedded directly in the main binary is approximately 332 KiB of source material:
+The original assessment found approximately 332 KiB of compile-time source content:
 
 | Content family | Source size |
 |---|---:|
@@ -22,7 +22,7 @@ Compile-time content embedded directly in the main binary is approximately 332 K
 | `pkl/` | 48 KiB |
 | `prompts/` | 16 KiB |
 
-This content is small relative to native code, but embedding it is architecturally significant: it makes contribution packs part of the kernel release cadence and prevents replacement without rebuilding the binary.
+Slice 6.4 removes shipped skill, prompt, persona, tone, workflow, and catalog bodies and inventory from kernel Rust. These families now ship as `omegon-shipped` content pack v1. Other rows in the historical measurement, such as required configuration and dashboard data, are not reclassified by Slice 6.4.
 
 ## Kernel admission criteria
 
@@ -58,19 +58,23 @@ A component failing any criterion defaults to an external contribution pack, opt
 - lifecycle methodologies, language conventions, personas, prompts, and catalog agents
 - demo projects and onboarding content
 
-## First extraction slice
+## Shipped content-pack boundary
 
-Extract bundled skills from the binary into an installed **contribution pack directory** while preserving the existing `~/.omegon/skills` discovery contract.
+The shipped pack root contains `content-pack.toml` plus manifest-inventoried assets. Source runs use the repository root. Installed distributions use `share/omegon/content-packs/omegon-shipped` relative to the executable.
 
 Why this slice first:
 
 - the interface already exists and is filesystem-based;
 - `just link` already installs bundled skills/catalog content;
 - no runtime protocol redesign is required;
-- removing `include_str!` makes content independently replaceable and versionable;
+- removing content `include_str!` calls makes content independently replaceable and versionable;
 - failure is bounded: missing packs degrade inventory/install commands, not the agent kernel.
 
-The default binary will discover shipped skills from a compile-time path supplied by packaging, then user and project roots. It will not embed skill markdown. Packaging remains responsible for installing the shipped pack.
+The runtime validates identity, semantic version, provenance, protocol compatibility, requested content capabilities, every file digest, and one canonical aggregate digest. It admits one immutable boot generation. A compatible replacement takes effect on the next process boot without a kernel rebuild. Absence or invalidity disables only shipped content.
+
+Residency is not authority. Pack metadata cannot admit a prompt body, activate a skill or persona, call a tool, execute an asset, grant an effect, or persist a trusted path. Existing content-specific and kernel admission gates remain authoritative. Project and user content retain precedence over extension and shipped content.
+
+The sole production Markdown embedding in this boundary is `data/lex-imperialis.md`. It contains exactly the six non-overridable host axioms already classified as constitutional authority: anti-sycophancy, evidence-based epistemology, ship-before-perfection, systems-engineering identity, cognitive honesty, and operator agency. It contains no tool inventory, extension guidance, workflow, or provider instructions. The former capability section, tool recommendations, extension contexts, and session-compaction instruction are replaceable `prompt` assets in `omegon-shipped`. Without a valid pack, the six kernel axioms remain active, optional prompt augmentation is omitted, and compaction returns a local unavailable error before provider dispatch.
 
 ## External-agent interoperability
 
@@ -125,9 +129,9 @@ Before external-agent import is implemented, specify a provider-neutral `SkillIm
 
 - no `include_str!(...skills/*/SKILL.md)` remains in non-test Omegon code;
 - `omegon skills list/install` reads a deterministic shipped-pack manifest/directory;
-- missing shipped content returns an actionable error and does not panic;
-- project/user skill discovery and override precedence remain unchanged;
-- `just link` and package workflows install the contribution pack;
+- missing, corrupt, and incompatible shipped content return actionable local diagnostics and do not panic;
+- project/user content discovery and override precedence remain unchanged;
+- source, `just link`, direct install, release archive, Homebrew, Nix/OCI, and npm packaging carry the same pack;
 - default and headless compile matrices remain green.
 
 ---

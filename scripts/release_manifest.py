@@ -26,7 +26,9 @@ TARGETS = (
 )
 
 FORMULA_TARGET_ORDER = TARGETS[:4]
-PACKAGE_MEMBERS = ("omegon", "omegon-maintain")
+PACKAGE_EXECUTABLES = ("omegon", "omegon-maintain")
+CONTENT_PREFIX = "share/omegon/content-packs/omegon-shipped/"
+CONTENT_MANIFEST = f"{CONTENT_PREFIX}content-pack.toml"
 DOMAIN_PREFIX = b"omegon-maint-v1\0"
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_BYTES = 1024 * 1024 * 1024
@@ -151,10 +153,12 @@ def build_package_manifest(
     aggregate_size = 0
     with tarfile.open(archive, mode="r:gz") as package:
         for member in package:
-            if not member.isfile() or member.name not in PACKAGE_MEMBERS or member.name in seen:
+            allowed = member.name in PACKAGE_EXECUTABLES or member.name.startswith(CONTENT_PREFIX)
+            if not member.isfile() or not allowed or member.name in seen:
                 raise ValueError(f"Invalid package archive member: {member.name}")
-            if member.mode != 0o755:
-                raise ValueError(f"Package member {member.name} must have mode 0755")
+            expected_mode = 0o755 if member.name in PACKAGE_EXECUTABLES else 0o644
+            if member.mode != expected_mode:
+                raise ValueError(f"Package member {member.name} must have mode {expected_mode:04o}")
             aggregate_size += member.size
             if member.size > MAX_MEMBER_BYTES or aggregate_size > MAX_AGGREGATE_BYTES:
                 raise ValueError("Package member exceeds the uncompressed-byte limit")
@@ -180,8 +184,8 @@ def build_package_manifest(
                 }
             )
             seen.add(member.name)
-    if seen != set(PACKAGE_MEMBERS):
-        raise ValueError("Package archive must contain both root executables")
+    if not set(PACKAGE_EXECUTABLES).issubset(seen) or CONTENT_MANIFEST not in seen:
+        raise ValueError("Package archive must contain both root executables and the content-pack manifest")
     members.sort(key=lambda member: member["path"])
 
     archive_digest = sha256_file(archive)

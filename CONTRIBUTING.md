@@ -387,6 +387,18 @@ If it reports untracked lifecycle artifacts, either:
 
 ## Rust Workspace
 
+### Shipped content packs
+
+Shipped skills, prompts, personas, tones, workflows, and catalog data are content-pack assets, not kernel Rust. Edit the source asset under `skills/`, `prompts/`, `personas/`, `tones/`, `workflows/`, or `catalog/`, then regenerate and check the canonical manifest:
+
+```bash
+python3 scripts/content_pack_manifest.py
+python3 scripts/content_pack_manifest.py --check
+python3 scripts/check_no_embedded_content.py
+```
+
+Content metadata can request content capabilities or external paths. It cannot grant tools, host effects, executable trust, trusted paths, or persistent permissions. Changes that add executable assets belong in the dynamic contribution admission path, not the shipped content pack.
+
 | Crate | Purpose |
 |---|---|
 | `omegon` | Main binary: TUI, agent loop, providers, tools, ACP, daemon/control plane |

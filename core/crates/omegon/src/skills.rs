@@ -69,78 +69,32 @@ use omegon_skills::{
 #[cfg(any(feature = "tui", test))]
 pub use omegon_skills::skill_builder_prompt;
 
-const SHIPPED_SKILL_MANIFEST: &str = include_str!("../../../../skills/manifest.txt");
-
-fn shipped_skill_names() -> impl Iterator<Item = &'static str> {
-    SHIPPED_SKILL_MANIFEST
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-}
-
 #[derive(Debug, Clone)]
 struct ShippedSkill {
     name: String,
     content: String,
 }
 
-fn contribution_pack_root() -> anyhow::Result<std::path::PathBuf> {
-    if let Some(root) = std::env::var_os("OMEGON_CONTRIBUTION_PACK") {
-        let root = std::path::PathBuf::from(root);
-        if root.is_dir() {
-            return Ok(root);
-        }
-        anyhow::bail!(
-            "OMEGON_CONTRIBUTION_PACK does not name an installed contribution pack: {}",
-            root.display()
-        );
-    }
-
-    let executable = std::env::current_exe()?;
-    let executable_dir = executable
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine executable directory"))?;
-    let candidates = [
-        executable_dir.join("share/omegon"),
-        executable_dir.join("../share/omegon"),
-        executable_dir.join("../Resources/omegon"),
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
-    ];
-    candidates
-        .into_iter()
-        .find(|root| root.join("skills").is_dir())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "shipped skill contribution pack is missing; reinstall Omegon or set OMEGON_CONTRIBUTION_PACK"
-            )
-        })
-}
-
 fn shipped_skills() -> anyhow::Result<Vec<ShippedSkill>> {
-    let root = contribution_pack_root()?.canonicalize()?;
-    let skills_root = root.join("skills").canonicalize()?;
-    if !skills_root.starts_with(&root) {
-        anyhow::bail!("shipped skills directory escapes contribution pack root");
-    }
-    let mut expected_names = shipped_skill_names().collect::<Vec<_>>();
-    expected_names.sort_unstable();
-    let mut skills = Vec::with_capacity(expected_names.len());
-    for name in expected_names {
-        let path = skills_root.join(name).join("SKILL.md");
-        let canonical = path.canonicalize().map_err(|error| {
-            anyhow::anyhow!(
-                "shipped skill '{name}' is missing at {}: {error}",
-                path.display()
-            )
-        })?;
-        if !canonical.starts_with(&skills_root) || !canonical.is_file() {
-            anyhow::bail!("shipped skill '{name}' escapes the contribution pack root");
+    let pack = crate::content_pack::boot_pack()
+        .ok_or_else(|| anyhow::anyhow!("shipped content pack is unavailable"))?;
+    let mut skills = Vec::new();
+    for asset in pack.assets("skill") {
+        let path = std::path::Path::new(&asset.manifest.path);
+        if path.file_name().and_then(|name| name.to_str()) != Some("SKILL.md") {
+            continue;
         }
+        let name = path
+            .parent()
+            .and_then(std::path::Path::file_name)
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("shipped skill has no valid name"))?;
         skills.push(ShippedSkill {
-            name: (*name).to_string(),
-            content: std::fs::read_to_string(canonical)?,
+            name: name.to_string(),
+            content: std::str::from_utf8(&asset.bytes)?.to_string(),
         });
     }
+    skills.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(skills)
 }
 
@@ -154,7 +108,7 @@ pub fn list_summary() -> anyhow::Result<String> {
 
     let mut lines = vec![format!("Bundled skills ({})\n", shipped_skills()?.len())];
 
-    for shipped in shipped_skills().expect("shipped skills") {
+    for shipped in shipped_skills()? {
         let name = shipped.name;
         let content = shipped.content;
         // Extract description from frontmatter if present
@@ -625,7 +579,7 @@ pub fn install_bundled_skills() -> anyhow::Result<SkillInstallSummary> {
 
     let removed_legacy = remove_legacy_bundled_vault_skill(&skills_dir)?;
 
-    for shipped in shipped_skills().expect("shipped skills") {
+    for shipped in shipped_skills()? {
         let name = shipped.name;
         let content = shipped.content;
         let skill_dir = skills_dir.join(&name);
@@ -667,7 +621,7 @@ pub fn cmd_install() -> anyhow::Result<()> {
     if summary.removed_legacy {
         println!("  - vault  (removed; renamed to flynt)");
     }
-    for shipped in shipped_skills().expect("shipped skills") {
+    for shipped in shipped_skills()? {
         let name = shipped.name;
         println!("  ✓ {name}");
     }
@@ -811,7 +765,7 @@ pub fn list_structured() -> anyhow::Result<Vec<SkillEntry>> {
     let mut seen = std::collections::HashSet::new();
 
     // Bundled skills — always present, may or may not be installed
-    for shipped in shipped_skills().expect("shipped skills") {
+    for shipped in shipped_skills()? {
         let name = shipped.name;
         let content = shipped.content;
         let (manifest, _body) = parse_skill_file(&content);
@@ -1130,7 +1084,7 @@ pub fn get_skill(name: &str) -> anyhow::Result<(SkillManifest, String, std::path
     }
 
     // Check if it's a known bundled skill (not yet installed)
-    for shipped in shipped_skills().expect("shipped skills") {
+    for shipped in shipped_skills()? {
         let bname = shipped.name;
         let content = shipped.content;
         if bname == name {
@@ -1283,8 +1237,10 @@ mod tests {
             .collect::<Vec<_>>();
         directory_names.sort();
 
-        let mut bundled_names = shipped_skill_names()
-            .map(str::to_string)
+        let mut bundled_names = shipped_skills()
+            .unwrap()
+            .into_iter()
+            .map(|skill| skill.name)
             .collect::<Vec<_>>();
         bundled_names.sort();
 

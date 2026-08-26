@@ -63,6 +63,21 @@ import Docs from "../../layouts/Docs.astro";
     activation markers, extension selection, and trusted directories do not grant
     this authority.
   </p>
+
+  <h2>Shipped content packs</h2>
+  <p>
+    Shipped personas, tones, prompts, skills, workflows, and catalog data use the independently
+    versioned <code>omegon-shipped</code> content pack. Omegon validates its identity, version,
+    digest, provenance, compatibility, and content-only capability requests before inventory.
+    The current standalone persona, tone, and workflow categories can be empty.
+  </p>
+  <p>
+    The process pins one content generation at boot. Replacing the pack changes new processes
+    without rebuilding Omegon and cannot alter active sessions. Pack residency never activates
+    a persona or tone and never grants prompt, tool, effect, executable, or path authority.
+    If the pack is unavailable, Omegon retains its six constitutional host axioms, omits optional
+    extension and tool guidance, and disables model-driven session compaction locally.
+  </p>
   <pre><code>{`{
   "permissions": {
     "trustedContributionCode": [

@@ -233,10 +233,7 @@ impl AugmentRegistry {
         }
     }
 
-    /// Load skills from the two canonical locations:
-    ///   1. `~/.omegon/skills/<name>/SKILL.md`  — bundled / user-installed
-    ///   2. `<cwd>/.omegon/skills/<name>/SKILL.md` — project-local (appended last,
-    ///      so project-local content follows bundled in the prompt)
+    /// Load skills from the boot content generation, user root, then project root.
     ///
     /// Call once at session start. Silently skips missing directories.
     pub fn load_skills(&mut self, cwd: &std::path::Path) {
@@ -319,6 +316,41 @@ impl AugmentRegistry {
 
         let mut skills = std::collections::BTreeMap::<String, PromptSkillCandidate>::new();
         let mut order = 0usize;
+        if let Some(pack) = crate::content_pack::boot_pack() {
+            for asset in pack.assets("skill") {
+                let path = std::path::Path::new(&asset.manifest.path);
+                if path.file_name().and_then(|name| name.to_str()) != Some("SKILL.md") {
+                    continue;
+                }
+                let Some(skill_name) = path
+                    .parent()
+                    .and_then(std::path::Path::file_name)
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                if !allowed.is_empty() && !allowed.iter().any(|name| name == &skill_name) {
+                    continue;
+                }
+                let Ok(content) = std::str::from_utf8(&asset.bytes).map(str::to_owned) else {
+                    continue;
+                };
+                let (manifest, _body) = omegon_skills::parse_skill_file(&content);
+                skills.insert(
+                    skill_name.clone(),
+                    PromptSkillCandidate {
+                        name: skill_name,
+                        source: "bundled".into(),
+                        path: pack.root.join(path),
+                        content,
+                        order,
+                        manifest,
+                    },
+                );
+                order += 1;
+            }
+        }
         for (scope, display_root, directory) in &scopes {
             let mut scoped = std::collections::BTreeMap::new();
             let starting_order = order;
@@ -1344,7 +1376,14 @@ mod tests {
                 result
             },
         );
-        assert_eq!(result.skills.len(), 2);
+        assert!(result.snapshots.iter().any(|skill| skill.name == "user"));
+        assert!(result.snapshots.iter().any(|skill| skill.name == "project"));
+        assert!(
+            result
+                .snapshots
+                .iter()
+                .any(|skill| skill.source == "bundled")
+        );
         for authority in [user_authority, project_authority] {
             let lock_name = format!("contribution-{authority}.lock");
             assert!(

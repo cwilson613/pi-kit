@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that a Homebrew formula references canonical dual-binary archives."""
+"""Verify that a Homebrew formula references canonical Omegon package archives."""
 
 from __future__ import annotations
 
@@ -58,6 +58,8 @@ def parse_formula(path: Path) -> tuple[str, dict[str, tuple[str, str]]]:
     for required in ('bin.install "omegon"', 'bin.install "omegon-maintain"'):
         if required not in content:
             raise ValueError(f"Homebrew formula is missing {required}")
+    if 'share.install "share/omegon"' not in content:
+        raise ValueError('Homebrew formula is missing share.install "share/omegon"')
     return version, assets
 
 
@@ -104,7 +106,7 @@ def main() -> int:
     except (OSError, ValueError) as error:
         print(f"Homebrew formula verification failed: {error}", file=sys.stderr)
         return 1
-    print("Homebrew formula archives contain the verified Omegon companion pair.")
+    print("Homebrew formula archives contain the verified Omegon companions and content pack.")
     return 0
 
 

@@ -59,18 +59,27 @@ echo "Downloading release assets..."
 for platform in "${PLATFORMS[@]}"; do
   target="${TARGET_MAP[$platform]}"
   asset="omegon-${VERSION_NUM}-${target}.tar.gz"
+  platform_dir="$SCRIPT_DIR/platform/$platform"
+  rm -f "$platform_dir/omegon"
+  rm -rf "$platform_dir/share"
   echo "  ↓ ${asset}"
   gh release download "$TAG" -R "$REPO" -p "$asset" -D "$TMP" 2>/dev/null || {
     echo "  ✗ Failed to download ${asset} — skipping platform"
     continue
   }
 
-  # Extract binary into platform package dir
-  platform_dir="$SCRIPT_DIR/platform/$platform"
-  tar -xzf "$TMP/$asset" -C "$TMP"
-  cp "$TMP/omegon" "$platform_dir/omegon"
+  # Extract the binary and its matching shipped content pack into the platform package.
+  extract_dir="$TMP/$platform"
+  mkdir -p "$extract_dir"
+  tar -xzf "$TMP/$asset" -C "$extract_dir"
+  [ -f "$extract_dir/share/omegon/content-packs/omegon-shipped/content-pack.toml" ] || {
+    echo "  ✗ ${asset} has no shipped content pack — skipping platform"
+    continue
+  }
+  cp "$extract_dir/omegon" "$platform_dir/omegon"
   chmod +x "$platform_dir/omegon"
-  rm -f "$TMP/omegon"
+  rm -rf "$platform_dir/share"
+  cp -R "$extract_dir/share" "$platform_dir/share"
   echo "  ✓ ${platform}"
   DOWNLOADED=$((DOWNLOADED + 1))
 done

@@ -38,6 +38,7 @@ class Omegon < Formula
     bin.install "omegon"
     bin.install "omegon-maintain"
     bin.install_symlink "omegon" => "om"
+    share.install "share/omegon"
   end
 
   def caveats
@@ -62,6 +63,7 @@ class Omegon < Formula
     assert_match "omegon", shell_output("#{bin}/omegon --version")
     assert_match "omegon-maintain", shell_output("#{bin}/omegon-maintain --version")
     assert_match '"status":"success"', shell_output("#{bin}/omegon-maintain --json identity")
+    assert_predicate share/"omegon/content-packs/omegon-shipped/content-pack.toml", :exist?
   end
 
   private

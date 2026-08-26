@@ -16,14 +16,26 @@ TARGETS = (
 )
 
 
-def write_archive(path: Path, *, include_maintenance: bool = True) -> str:
+def write_archive(
+    path: Path,
+    *,
+    include_maintenance: bool = True,
+    include_content_pack: bool = True,
+) -> str:
     with tarfile.open(path, "w:gz") as package:
         members = [("omegon", b"agent")]
         if include_maintenance:
             members.append(("omegon-maintain", b"maintain"))
+        if include_content_pack:
+            members.append(
+                (
+                    "share/omegon/content-packs/omegon-shipped/content-pack.toml",
+                    b'id = "omegon-shipped"\n',
+                )
+            )
         for name, payload in members:
             member = tarfile.TarInfo(name)
-            member.mode = 0o755
+            member.mode = 0o755 if "/" not in name else 0o644
             member.size = len(payload)
             package.addfile(member, io.BytesIO(payload))
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -42,6 +54,7 @@ def write_formula(path: Path, checksums: dict[str, str]) -> None:
         "  def install\n"
         '    bin.install "omegon"\n'
         '    bin.install "omegon-maintain"\n'
+        '    share.install "share/omegon"\n'
         "  end\n"
         "end\n"
     )
@@ -57,7 +70,7 @@ class VerifyHomebrewFormulaTests(unittest.TestCase):
             text=True,
         )
 
-    def test_accepts_exact_dual_binary_archives(self) -> None:
+    def test_accepts_companion_and_content_pack_archives(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             checksums = {
@@ -83,6 +96,35 @@ class VerifyHomebrewFormulaTests(unittest.TestCase):
             result = self.run_script(formula, tmp)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("both root executables", result.stderr)
+
+    def test_rejects_archive_without_content_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            checksums = {}
+            for target in TARGETS:
+                checksums[target] = write_archive(
+                    tmp / f"omegon-1.2.3-{target}.tar.gz",
+                    include_content_pack=target != TARGETS[0],
+                )
+            formula = tmp / "omegon.rb"
+            write_formula(formula, checksums)
+            result = self.run_script(formula, tmp)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("content-pack manifest", result.stderr)
+
+    def test_rejects_formula_that_does_not_install_content_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            checksums = {
+                target: write_archive(tmp / f"omegon-1.2.3-{target}.tar.gz")
+                for target in TARGETS
+            }
+            formula = tmp / "omegon.rb"
+            write_formula(formula, checksums)
+            formula.write_text(formula.read_text().replace('    share.install "share/omegon"\n', ""))
+            result = self.run_script(formula, tmp)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('share.install "share/omegon"', result.stderr)
 
     def test_rejects_noncanonical_formula_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

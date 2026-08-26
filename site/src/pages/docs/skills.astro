@@ -11,33 +11,22 @@ import Docs from "../../layouts/Docs.astro";
   </p>
 
   <h2>Available Skills</h2>
-  <table>
-    <thead><tr><th>Skill</th><th>Domain</th><th>When Loaded</th></tr></thead>
-    <tbody>
-      <tr><td><strong>cleave</strong></td><td>Task decomposition &amp; assessment</td><td>Using <code>/cleave</code>, <code>/assess</code>, or <code>cleave_assess</code></td></tr>
-      <tr><td><strong>git</strong></td><td>Git conventions</td><td>Committing, branching, tagging, releases</td></tr>
-      <tr><td><strong>oci</strong></td><td>Container &amp; OCI artifacts</td><td>Containerfile authoring, registry work, multi-arch builds</td></tr>
-      <tr><td><strong>openspec</strong></td><td>Spec-driven development</td><td>Using <code>openspec_manage</code></td></tr>
-      <tr><td><strong>extensions</strong></td><td>Extension API</td><td>Creating or modifying Omegon extensions</td></tr>
-      <tr><td><strong>tui</strong></td><td>TUI component patterns</td><td>Building extension UIs</td></tr>
-      <tr><td><strong>python</strong></td><td>Python development</td><td>Working with Python projects (pyproject.toml, pytest, ruff)</td></tr>
-      <tr><td><strong>rust</strong></td><td>Rust development</td><td>Working with Rust projects (Cargo, clippy, Zellij plugins)</td></tr>
-      <tr><td><strong>security</strong></td><td>Security checklist</td><td>User-facing code, template rendering, process spawning</td></tr>
-      <tr><td><strong>style</strong></td><td>Visual style guide</td><td>Creating visual output (diagrams, themes, images)</td></tr>
-      <tr><td><strong>typescript</strong></td><td>TypeScript conventions</td><td>Working with TypeScript (strict typing, node:test)</td></tr>
-      <tr><td><strong>flynt</strong></td><td>Flynt markdown workspace</td><td>Generating interlinked documentation</td></tr>
-    </tbody>
-  </table>
+  <p>
+    Use <code>/skills</code> or <code>omegon skills list</code> for the effective inventory.
+    Omegon assembles it from the admitted shipped content pack, extensions, user skills, and
+    project skills. Documentation does not maintain a second fixed skill list.
+  </p>
 
   <h2>How Skills Work</h2>
   <ol>
-    <li>The agent detects that a task matches a skill's domain</li>
-    <li>It reads the skill's <code>SKILL.md</code> file using the <code>read</code> tool</li>
-    <li>The skill's instructions are incorporated into the agent's reasoning</li>
-    <li>The agent follows the skill's conventions for the duration of the task</li>
+    <li>Omegon inventories skill metadata from resident content sources.</li>
+    <li>Project content overrides user content, which overrides extensions and the shipped pack.</li>
+    <li>Activation metadata and workspace or operator evidence decide whether a body is admitted.</li>
+    <li>An admitted body is incorporated into the process-pinned content generation.</li>
   </ol>
   <p>
-    Skills are loaded lazily — they only consume context when actually needed. The agent
-    manages skill loading autonomously; operators don't need to specify which skills to use.
+    Residency does not grant tool access, host effects, executable trust, or trusted paths.
+    A skill's external path declaration is a request that still needs operator admission.
+    A missing or invalid shipped pack does not block Omegon; user and project skills remain local sources.
   </p>
 </Docs>

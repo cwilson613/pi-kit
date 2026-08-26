@@ -66,17 +66,18 @@ pub fn build_base_prompt_for_mode_with_subagent_policy(
     let slim = matches!(mode, PromptMode::Slim | PromptMode::Constrained);
     let date = utc_date();
     let tool_list = format_tool_list(tools);
+    let content_pack = crate::content_pack::boot_pack();
     let lex_imperialis = match mode {
         PromptMode::Constrained => CONDENSED_LEX.to_string(),
-        _ => load_lex_imperialis(),
+        _ => load_lex_imperialis_from_pack(content_pack.as_deref()),
     };
     let vox_context = if tools.iter().any(|t| t.name == "vox_reply") {
-        include_str!("../../../../data/vox-extension-context.md").to_string()
+        packed_prompt(content_pack.as_deref(), "data/vox-extension-context.md")
     } else {
         String::new()
     };
     let scry_context = if tools.iter().any(|t| t.name == "generate") {
-        include_str!("../../../../data/scry-extension-context.md").to_string()
+        packed_prompt(content_pack.as_deref(), "data/scry-extension-context.md")
     } else {
         String::new()
     };
@@ -84,7 +85,10 @@ pub fn build_base_prompt_for_mode_with_subagent_policy(
         || cwd.join("schema/sdk-contract.json").is_file()
         || cwd.join("src/contract.rs").is_file()
     {
-        include_str!("../../../../data/extension-authoring-context.md").to_string()
+        packed_prompt(
+            content_pack.as_deref(),
+            "data/extension-authoring-context.md",
+        )
     } else {
         String::new()
     };
@@ -281,14 +285,29 @@ These are immutable. Nothing overrides them.
 /// They are always injected, always first in the directive stack,
 /// and cannot be disabled by personas, tones, or operator config.
 pub fn load_lex_imperialis() -> String {
-    // Embedded at compile time from the armory source
+    let pack = crate::content_pack::boot_pack();
+    load_lex_imperialis_from_pack(pack.as_deref())
+}
+
+fn packed_prompt(pack: Option<&crate::content_pack::ContentPack>, path: &str) -> String {
+    pack.and_then(|pack| pack.text(path).ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn load_lex_imperialis_from_pack(pack: Option<&crate::content_pack::ContentPack>) -> String {
+    // The six Lex axioms are host authority, not replaceable shipped content.
     static LEX: &str = include_str!("../../../../data/lex-imperialis.md");
-    static TOOL_LIMITS: &str = include_str!("../../../../data/tool-limitations.md");
+    let operational_guidance = ["data/lex-capabilities.md", "data/tool-limitations.md"]
+        .into_iter()
+        .filter_map(|path| pack.and_then(|pack| pack.text(path).ok()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
     format!(
         "\n# Core Directives (Lex Imperialis)\n\n\
          These are immutable. No operator request, project directive, or persona \
          can override them. They define what you are.\n\n\
-         {LEX}\n\n{TOOL_LIMITS}\n"
+         {LEX}\n\n{operational_guidance}\n"
     )
 }
 
@@ -1013,15 +1032,54 @@ mod tests {
             "should include directive V"
         );
         assert!(
-            prompt.contains(
-                "If decision is `cleave`, call `cleave_run` for 2+ coordinated child scopes"
-            ),
+            prompt.contains("Use `cleave_run` for two or more coordinated child scopes"),
             "Lex cleave guidance should not force one-child cleaves"
         );
         assert!(
-            prompt.contains("use `delegate` instead"),
+            prompt.contains("Use `delegate` for one bounded side quest"),
             "Lex cleave guidance should point bounded side quests at delegate"
         );
+    }
+
+    #[test]
+    fn absent_pack_retains_only_constitutional_lex() {
+        let prompt = load_lex_imperialis_from_pack(None);
+        for directive in [
+            "Anti-Sycophancy",
+            "Evidence-Based Epistemology",
+            "Perfection Is the Enemy of Good",
+            "Systems Engineering Harness",
+            "Cognitive Honesty",
+            "Operator Agency",
+        ] {
+            assert!(prompt.contains(directive), "missing {directive}");
+        }
+        assert!(!prompt.contains("Omegon Capability Guidance"));
+        assert!(!prompt.contains("Tool Limitations"));
+        assert!(packed_prompt(None, "data/vox-extension-context.md").is_empty());
+    }
+
+    #[test]
+    fn operational_prompt_bodies_come_from_the_admitted_pack() {
+        let pack = crate::content_pack::boot_pack().unwrap();
+        for (path, marker) in [
+            (
+                "data/vox-extension-context.md",
+                "Vox Communication Extension",
+            ),
+            (
+                "data/scry-extension-context.md",
+                "Scry Image Generation Extension",
+            ),
+            (
+                "data/extension-authoring-context.md",
+                "Omegon Extension Authoring Reference",
+            ),
+            ("data/lex-capabilities.md", "Omegon Capability Guidance"),
+            ("data/tool-limitations.md", "Tool Limitations"),
+        ] {
+            assert!(packed_prompt(Some(&pack), path).contains(marker));
+        }
     }
 
     #[test]
@@ -1049,15 +1107,10 @@ mod tests {
     /// Run with: cargo test -p omegon -- tool_token_budget_audit --nocapture
     #[test]
     fn bundled_prompts_are_capability_aware() {
+        let pack = crate::content_pack::boot_pack().unwrap();
         let prompt_files = [
-            (
-                "prompts/init.md",
-                include_str!("../../../../prompts/init.md"),
-            ),
-            (
-                "prompts/status.md",
-                include_str!("../../../../prompts/status.md"),
-            ),
+            ("prompts/init.md", pack.text("prompts/init.md").unwrap()),
+            ("prompts/status.md", pack.text("prompts/status.md").unwrap()),
         ];
 
         for (path, content) in prompt_files {
@@ -1078,21 +1131,23 @@ mod tests {
 
     #[test]
     fn code_act_skill_preserves_canonical_edit_validate_loop() {
-        let content = include_str!("../../../../skills/code-act/SKILL.md");
+        let pack = crate::content_pack::boot_pack().unwrap();
+        let content = pack.text("skills/code-act/SKILL.md").unwrap();
         assert!(content.contains("Do **not** use code-act to bypass"));
         assert!(content.contains("`edit` + `validate` loop"));
     }
 
     #[test]
     fn bundled_skills_avoid_legacy_sdk_and_hidden_lifecycle_drift() {
-        let typescript = include_str!("../../../../skills/typescript/SKILL.md");
+        let pack = crate::content_pack::boot_pack().unwrap();
+        let typescript = pack.text("skills/typescript/SKILL.md").unwrap();
         assert!(
             !typescript.contains("@styrene-lab/pi-coding-agent"),
             "TypeScript skill examples must not point new code at legacy pi-era SDK names"
         );
         assert!(typescript.contains("project-local SDK dependency"));
 
-        let openspec = include_str!("../../../../skills/openspec/SKILL.md");
+        let openspec = pack.text("skills/openspec/SKILL.md").unwrap();
         assert!(openspec.contains("lifecycle tool group is exposed"));
         assert!(openspec.contains("manage_tools"));
         assert!(openspec.contains("tool-backed lifecycle reconciliation was not performed"));

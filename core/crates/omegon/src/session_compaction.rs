@@ -12,9 +12,26 @@ use crate::session_authority::{
     compaction_input_manifest_id,
 };
 
-const PROMPT_OWNER: &str = "kernel:session-compaction";
-const PROMPT_GENERATION: &str = "session-compaction-v1";
-pub(crate) const SUMMARY_PROMPT: &str = "You are a conversation summarizer. Produce a concise summary preserving: what was done, what failed, constraints discovered, and current approach. Output only the summary, no preamble.";
+const SUMMARY_PROMPT_PATH: &str = "prompts/session-compaction.md";
+
+pub(crate) fn summary_prompt() -> anyhow::Result<(String, String, String)> {
+    let pack = crate::content_pack::boot_pack();
+    summary_prompt_from_pack(pack.as_deref())
+}
+
+fn summary_prompt_from_pack(
+    pack: Option<&crate::content_pack::ContentPack>,
+) -> anyhow::Result<(String, String, String)> {
+    let pack = pack.ok_or_else(|| anyhow::anyhow!("shipped compaction prompt is unavailable"))?;
+    let body = pack
+        .text(SUMMARY_PROMPT_PATH)
+        .map_err(|error| anyhow::anyhow!("shipped compaction prompt is unavailable: {error}"))?;
+    Ok((
+        format!("content-pack:{}", pack.manifest.id),
+        pack.generation.clone(),
+        body.to_string(),
+    ))
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionCompaction {
@@ -26,6 +43,9 @@ pub(crate) struct SessionCompaction {
     target_context_revision: u64,
     retained_items: Vec<CompactionContextItem>,
     provider_payload: String,
+    prompt_owner: String,
+    prompt_generation: String,
+    summary_prompt: String,
     response_attempt_ordinal: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
@@ -90,6 +110,8 @@ impl SessionCompaction {
         if evict_count == 0 || conversation_items.len() <= evict_count {
             return Ok(None);
         }
+        let (prompt_owner, prompt_generation, summary_prompt) =
+            summary_prompt().map_err(|error| AuthorityError::Invalid(error.to_string()))?;
         let make_item = |ordinal: usize,
                          item: &crate::session_authority::ModelContextItem|
          -> Result<CompactionContextItem, AuthorityError> {
@@ -157,6 +179,9 @@ impl SessionCompaction {
             target_context_revision,
             retained_items,
             provider_payload,
+            prompt_owner,
+            prompt_generation,
+            summary_prompt,
             response_attempt_ordinal: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }))
     }
@@ -175,7 +200,7 @@ impl SessionCompaction {
 
     pub(crate) fn prepare(&self, route: CompactionRoute) -> Result<(), AuthorityError> {
         let prompt_ref = self.authority.write_content(
-            SUMMARY_PROMPT.as_bytes(),
+            self.summary_prompt.as_bytes(),
             "text/plain",
             ProjectionClass::Default,
         )?;
@@ -188,8 +213,8 @@ impl SessionCompaction {
                 request_ordinal: 0,
                 replaces_compaction_request_id: None,
                 prompt_template: CompactionPromptTemplate {
-                    owner_id: PROMPT_OWNER.into(),
-                    owner_generation_id: PROMPT_GENERATION.into(),
+                    owner_id: self.prompt_owner.clone(),
+                    owner_generation_id: self.prompt_generation.clone(),
                     content_ref: prompt_ref,
                 },
                 route,
@@ -405,5 +430,25 @@ impl crate::loop_driver::LoopCompactionAuthority for SessionCompaction {
 
     fn fail(&self, outcome: CompactionRequestOutcome, reason: &str) -> anyhow::Result<()> {
         self.fail(outcome, reason).map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn summary_prompt_carries_admitted_content_generation() {
+        let (owner, generation, body) = super::summary_prompt().unwrap();
+        assert_eq!(owner, "content-pack:omegon-shipped");
+        assert!(generation.starts_with("content:omegon-shipped@1.0.0:"));
+        assert!(body.contains("conversation summarizer"));
+    }
+
+    #[test]
+    fn absent_pack_disables_compaction_prompt_locally() {
+        let error = super::summary_prompt_from_pack(None).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "shipped compaction prompt is unavailable"
+        );
     }
 }

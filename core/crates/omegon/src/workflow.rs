@@ -91,7 +91,7 @@ pub fn with_discovered_workflow<R>(
 
 struct AdmittedWorkflow {
     template: WorkflowTemplate,
-    _admission: GuardedContributionDirectory,
+    _admission: Option<GuardedContributionDirectory>,
 }
 
 impl AdmittedWorkflow {
@@ -140,7 +140,7 @@ fn discover_workflow_with_home(
                 );
                 return Ok(Some(AdmittedWorkflow {
                     template: t,
-                    _admission: admission,
+                    _admission: Some(admission),
                 }));
             }
             Err(e) => {
@@ -152,7 +152,7 @@ fn discover_workflow_with_home(
             }
         }
     }
-    Ok(None)
+    Ok(discover_packed_workflow())
 }
 
 #[cfg(not(unix))]
@@ -160,7 +160,25 @@ fn discover_workflow_with_home(
     _cwd: &Path,
     _home_path: &Path,
 ) -> anyhow::Result<Option<AdmittedWorkflow>> {
-    anyhow::bail!("guarded workflow discovery requires Unix")
+    Ok(discover_packed_workflow())
+}
+
+fn discover_packed_workflow() -> Option<AdmittedWorkflow> {
+    let pack = crate::content_pack::boot_pack()?;
+    for asset in pack.assets("workflow") {
+        match WorkflowTemplate::parse(&asset.bytes) {
+            Ok(template) => {
+                return Some(AdmittedWorkflow {
+                    template,
+                    _admission: None,
+                });
+            }
+            Err(error) => {
+                tracing::warn!(path = %asset.manifest.path, error = %error, "skipping invalid packed workflow template")
+            }
+        }
+    }
+    None
 }
 
 #[cfg(unix)]
@@ -399,7 +417,7 @@ model = "ollama:llama3"
         let admitted = discover_workflow_with_home(project.path(), home_path.path())
             .unwrap()
             .unwrap();
-        let authority = admitted._admission.scope_key();
+        let authority = admitted._admission.as_ref().unwrap().scope_key();
         let home = omegon_maintenance_contracts::open_secure_root(home_path.path()).unwrap();
         let state = MaintenanceStateV1::bootstrap(
             &home,

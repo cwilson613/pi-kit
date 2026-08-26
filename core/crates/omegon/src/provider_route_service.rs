@@ -800,7 +800,7 @@ pub(crate) async fn compact_loop_route(
     request: LoopCompactionRequest<'_>,
 ) -> anyhow::Result<String> {
     const MAX_COMPACTION_CHARS: usize = 100_000;
-    let system = crate::session_compaction::SUMMARY_PROMPT;
+    let (_, _, system) = crate::session_compaction::summary_prompt()?;
     let authority_payload = request
         .authority
         .map(|authority| authority.provider_payload(request.payload))
@@ -886,7 +886,10 @@ pub(crate) async fn compact_loop_route(
             bridge.credential_source_class_hint(),
         )?;
     }
-    let mut rx = match bridge.stream(system, &messages, &[], request.options).await {
+    let mut rx = match bridge
+        .stream(&system, &messages, &[], request.options)
+        .await
+    {
         Ok(receiver) => receiver,
         Err(error) => {
             if let Some(authority) = request.authority {

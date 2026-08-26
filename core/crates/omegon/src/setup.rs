@@ -943,31 +943,10 @@ impl AgentSetup {
             persona_registry.load_skills_subset(&cwd, &child_skills);
         }
 
-        // ─── Auto-trust paths declared in skills ─────────────────────────
-        // Skills can declare `trusted_paths` in their frontmatter for directories
-        // they need to read/write outside the workspace. Auto-add to settings
-        // so the user isn't prompted on every run and delegates inherit them.
+        // Skill path declarations are admission requests, never persistent grants.
         let skill_trusted_paths = crate::skills::collect_trusted_paths(persona_registry.skills());
-        if !skill_trusted_paths.is_empty()
-            && let Some(ref s) = settings
-            && let Ok(mut settings_guard) = s.lock()
-        {
-            let mut added = Vec::new();
-            for path in &skill_trusted_paths {
-                if !settings_guard.trusted_directories.contains(path) {
-                    settings_guard.trusted_directories.push(path.clone());
-                    added.push(path.clone());
-                }
-            }
-            if !added.is_empty() {
-                tracing::info!(
-                    paths = ?added,
-                    "auto-trusted paths from skill frontmatter"
-                );
-                let mut profile = crate::settings::Profile::load(&cwd);
-                profile.capture_from(&settings_guard);
-                let _ = profile.save(&cwd);
-            }
+        if !skill_trusted_paths.is_empty() {
+            tracing::info!(paths = ?skill_trusted_paths, "skills requested external paths; operator admission is required");
         }
 
         // ─── Extract skill phase info for completion tracking ──────────

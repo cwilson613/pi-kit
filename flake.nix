@@ -77,6 +77,7 @@
             pkg-config
             perl       # required by openssl-sys build script
             cmake      # for libgit2-sys
+            python3    # deterministic shipped content-pack installation
           ];
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
         };
@@ -90,6 +91,11 @@
           # network access, home directories, and git repos that many
           # tests require.
           doCheck = false;
+          postInstall = ''
+            python3 scripts/content_pack_manifest.py --check
+            python3 scripts/content_pack_manifest.py \
+              --install-root $out/share/omegon/content-packs/omegon-shipped
+          '';
         });
 
         # Toolset profiles for container images

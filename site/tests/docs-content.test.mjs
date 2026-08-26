@@ -44,6 +44,20 @@ test('install docs use canonical snippets for all channels', () => {
   assert.doesNotMatch(content, /omegon login(?! )/);
 });
 
+test('public docs explain content-pack packaging, trust, and boot generation', () => {
+  const install = readDoc('install.astro');
+  const skills = readDoc('skills.astro');
+  const plugins = readDoc('plugins.astro');
+  assert.match(install, /share\/omegon\/content-packs/);
+  assert.match(install, /next process boot/);
+  assert.match(skills, /Residency does not grant tool access/);
+  assert.match(skills, /Project content overrides user content/);
+  assert.match(plugins, /pins one content generation at boot/);
+  assert.match(plugins, /never grants prompt, tool, effect, executable, or path authority/);
+  assert.match(plugins, /retains its six constitutional host axioms/);
+  assert.match(plugins, /disables model-driven session compaction locally/);
+});
+
 test('recovery docs consume canonical maintenance snippets', () => {
   const content = readDoc('recovery.astro');
   const required = [

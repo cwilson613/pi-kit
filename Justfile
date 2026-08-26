@@ -64,6 +64,8 @@ test-profile *args:
 test-dev-scripts:
     python3 -m unittest scripts/test_affected_crates.py scripts/test_test_profile.py scripts/test_dirty_report.py scripts/test_dirty_report_git.py
     python3 -m unittest tests/test_release_manifest.py tests/test_validate_companion.py tests/test_verify_homebrew_formula.py
+    python3 -m unittest tests/test_content_pack_packaging.py
+    python3 scripts/check_no_embedded_content.py
     python3 scripts/tests/test_omegon_launcher.py
 
 # Check provider-published model context docs against the local registry.
@@ -316,21 +318,10 @@ link channel="default":
     install -m 0755 "$BINARY" "$HOME/.omegon/bin/omegon"
     install -m 0755 "$MAINTAIN_BINARY" "$HOME/.omegon/bin/omegon-maintain"
 
-    # Install the shipped contribution pack beside the stable fallback binary.
-    # Runtime discovery resolves ~/.omegon/share/omegon from ~/.omegon/bin/omegon.
-    PACK_ROOT="$HOME/.omegon/share/omegon"
-    rm -rf "$PACK_ROOT/skills"
-    mkdir -p "$PACK_ROOT/skills"
-    install -m 0644 skills/manifest.txt "$PACK_ROOT/skills/manifest.txt"
-    while IFS= read -r skill; do
-        case "$skill" in ''|'#'*) continue ;; esac
-        if [ ! -f "skills/$skill/SKILL.md" ]; then
-            echo "shipped skill manifest references missing skills/$skill/SKILL.md" >&2
-            exit 1
-        fi
-        mkdir -p "$PACK_ROOT/skills/$skill"
-        cp -R "skills/$skill/." "$PACK_ROOT/skills/$skill/"
-    done < skills/manifest.txt
+    # Install one validated, independently replaceable shipped content pack.
+    PACK_ROOT="$HOME/.omegon/share/omegon/content-packs/omegon-shipped"
+    python3 scripts/content_pack_manifest.py --check
+    python3 scripts/content_pack_manifest.py --install-root "$PACK_ROOT"
 
     # Leave a compatibility snippet, but the PATH launcher is now canonical.
     ALIAS_FILE="$HOME/.omegon/dev-alias.sh"
@@ -1123,7 +1114,7 @@ package:
             [ -x "$BINARY_DIR/$binary" ] || { echo "missing release companion: $BINARY_DIR/$binary" >&2; exit 1; }
             strip "$BINARY_DIR/$binary" 2>/dev/null || llvm-strip "$BINARY_DIR/$binary" 2>/dev/null || true
         done
-        tar czf "${DIST}/${ARCHIVE}" -C "$BINARY_DIR" omegon omegon-maintain
+        python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "${DIST}/${ARCHIVE}"
         shasum -a 256 "${DIST}/${ARCHIVE}" >> "${DIST}/checksums.sha256"
         echo "  ${ARCHIVE} ($(du -h "${DIST}/${ARCHIVE}" | cut -f1))"
     }

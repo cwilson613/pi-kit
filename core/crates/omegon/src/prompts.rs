@@ -1,7 +1,7 @@
 //! Reusable prompt definition storage and CRUD helpers.
 //!
 //! Prompt definitions are markdown files with optional TOML/YAML-style frontmatter.
-//! Bundled prompts live in the repository `prompts/` directory and user/project
+//! Shipped prompts come from the boot-admitted content pack. User/project
 //! overrides live under `~/.omegon/prompts` and `<cwd>/.omegon/prompts`.
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -50,16 +50,6 @@ pub struct PromptEntry {
     pub project_local: bool,
     pub path: String,
 }
-
-pub static BUNDLED: &[(&str, &str)] = &[
-    ("init", include_str!("../../../../prompts/init.md")),
-    ("new-repo", include_str!("../../../../prompts/new-repo.md")),
-    (
-        "oci-login",
-        include_str!("../../../../prompts/oci-login.md"),
-    ),
-    ("status", include_str!("../../../../prompts/status.md")),
-];
 
 pub fn safety_verdict(content: &str) -> PromptSafetyVerdict {
     let lower = content.to_lowercase();
@@ -235,18 +225,32 @@ fn admitted_prompts(
     std::collections::BTreeMap<String, PromptSnapshot>,
 ) {
     let mut prompts = std::collections::BTreeMap::new();
-    for (name, content) in BUNDLED {
-        let (manifest, body) = parse_prompt_file(content);
-        prompts.insert(
-            (*name).to_string(),
-            PromptSnapshot {
-                manifest,
-                body,
-                path: std::path::PathBuf::from(format!("bundled:{name}")),
-                bundled: true,
-                project_local: false,
-            },
-        );
+    if let Some(pack) = crate::content_pack::boot_pack() {
+        for asset in pack.assets("prompt") {
+            let path = std::path::Path::new(&asset.manifest.path);
+            let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if validate_name(name).is_err()
+                || path.extension().and_then(|ext| ext.to_str()) != Some("md")
+            {
+                continue;
+            }
+            let Ok(content) = std::str::from_utf8(&asset.bytes) else {
+                continue;
+            };
+            let (manifest, body) = parse_prompt_file(content);
+            prompts.insert(
+                name.to_string(),
+                PromptSnapshot {
+                    manifest,
+                    body,
+                    path: std::path::PathBuf::from(format!("pack:{}:{name}", pack.generation)),
+                    bundled: true,
+                    project_local: false,
+                },
+            );
+        }
     }
     let scopes = open_prompt_scopes(project_cwd);
     for scope in &scopes {
@@ -514,7 +518,10 @@ mod tests {
         std::fs::remove_file(home.path().join("prompts/status.md")).unwrap();
         with_prompt_for_project(&nested, "status", |_manifest, body, path| {
             assert_ne!(body, "USER");
-            assert_eq!(path, std::path::Path::new("bundled:status"));
+            assert!(
+                path.to_string_lossy()
+                    .starts_with("pack:content:omegon-shipped@")
+            );
         })
         .unwrap();
     }

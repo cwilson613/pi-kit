@@ -76,9 +76,74 @@ pub fn with_available<R>(
         }
     }
 
+    if let Some(pack) = crate::content_pack::boot_pack() {
+        match load_pack_plugins(&pack) {
+            Ok((pack_personas, pack_tones)) => {
+                let existing = personas
+                    .iter()
+                    .chain(tones.iter())
+                    .map(|plugin| plugin.id.clone())
+                    .collect::<std::collections::HashSet<_>>();
+                personas.extend(
+                    pack_personas
+                        .into_iter()
+                        .filter(|plugin| !existing.contains(&plugin.id)),
+                );
+                tones.extend(
+                    pack_tones
+                        .into_iter()
+                        .filter(|plugin| !existing.contains(&plugin.id)),
+                );
+            }
+            Err(error) => tracing::warn!(error = %error, "persona/tone pack content unavailable"),
+        }
+    }
+
     remove_duplicate_ids(&mut personas, &mut tones);
 
     publish(&personas, &tones)
+}
+
+fn load_pack_plugins(
+    pack: &crate::content_pack::ContentPack,
+) -> anyhow::Result<(Vec<AvailablePlugin>, Vec<AvailablePlugin>)> {
+    let mut personas = Vec::new();
+    let mut tones = Vec::new();
+    for (kind, subtree, output) in [
+        ("persona", "personas", &mut personas),
+        ("tone", "tones", &mut tones),
+    ] {
+        let snapshot = pack.materialize_kind(kind)?;
+        let root = snapshot.path().join(subtree);
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let directory = File::open(entry.path())?;
+            let Some(manifest) = crate::contribution_loading::read_file_at(
+                &directory,
+                b"plugin.toml",
+                MAX_MANIFEST_BYTES,
+            )?
+            else {
+                continue;
+            };
+            let manifest = ArmoryManifest::parse(&String::from_utf8(manifest)?)?;
+            if let Some(plugin) = load_available_plugin(
+                &directory,
+                manifest,
+                pack.root.join(subtree).join(entry.file_name()),
+            )? {
+                output.push(plugin);
+            }
+        }
+    }
+    Ok((personas, tones))
 }
 
 fn remove_duplicate_ids(personas: &mut Vec<AvailablePlugin>, tones: &mut Vec<AvailablePlugin>) {

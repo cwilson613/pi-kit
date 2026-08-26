@@ -123,6 +123,7 @@ mod catalog;
 mod checkpoint;
 mod child_agent;
 mod codescan_service;
+mod content_pack;
 mod context_compaction_service;
 mod contribution_loading;
 mod conversation;
@@ -939,7 +940,7 @@ enum CatalogAction {
     List,
     /// Install agents — fetches from upstream armory, falls back to bundled.
     Install {
-        /// Skip upstream fetch and install the bundled (binary-embedded) copies only.
+        /// Skip upstream fetch and install the shipped content-pack copies only.
         /// Use this on airgapped systems or when you don't want network access.
         #[arg(long)]
         offline: bool,

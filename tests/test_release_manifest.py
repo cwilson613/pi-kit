@@ -112,6 +112,11 @@ class ReleaseManifestTests(unittest.TestCase):
                     member.mode = 0o755
                     member.size = len(payload)
                     package.addfile(member, io.BytesIO(payload))
+                payload = b"schema_version = 1\n"
+                member = tarfile.TarInfo("share/omegon/content-packs/omegon-shipped/content-pack.toml")
+                member.mode = 0o644
+                member.size = len(payload)
+                package.addfile(member, io.BytesIO(payload))
             output = tmp / "package-manifest.json"
 
             result = self.run_script(
@@ -134,7 +139,10 @@ class ReleaseManifestTests(unittest.TestCase):
             raw = output.read_bytes()
             manifest = json.loads(raw)
             self.assertEqual(raw, json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode() + b"\n")
-            self.assertEqual([member["path"] for member in manifest["members"]], ["omegon", "omegon-maintain"])
+            self.assertEqual(
+                [member["path"] for member in manifest["members"]],
+                ["omegon", "omegon-maintain", "share/omegon/content-packs/omegon-shipped/content-pack.toml"],
+            )
             self.assertEqual(manifest["members"][0]["digest"], hashlib.sha256(b"agent").hexdigest())
             self.assertEqual(manifest["archive_filename"], archive.name)
             self.assertEqual(manifest["git_ref"], "refs/tags/v1.2.3")

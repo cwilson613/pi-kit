@@ -347,6 +347,10 @@ for REQUIRED_BINARY in "$BINARY" "$MAINTAIN_BINARY"; do
     die "binary '${REQUIRED_BINARY}' not found in archive — release companion pair is incomplete"
   fi
 done
+PACK_RELATIVE="share/omegon/content-packs/omegon-shipped"
+if [ ! -f "${TMP}/${PACK_RELATIVE}/content-pack.toml" ]; then
+  die "shipped content pack not found in archive — optional content installation is incomplete"
+fi
 
 # ── Validate binary ───────────────────────────────────────────
 
@@ -412,6 +416,8 @@ rm -rf "$STAGING_DIR"
 mkdir "$STAGING_DIR" || die "could not create release staging directory"
 mv "${TMP}/${BINARY}" "${STAGING_DIR}/${BINARY}"
 mv "${TMP}/${MAINTAIN_BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}"
+mkdir -p "${STAGING_DIR}/share/omegon/content-packs"
+mv "${TMP}/${PACK_RELATIVE}" "${STAGING_DIR}/${PACK_RELATIVE}"
 chmod +x "${STAGING_DIR}/${BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}" || \
   die "could not make release pair executable"
 
@@ -438,6 +444,7 @@ sync
 if [ -e "$VERSION_DIR" ] || [ -L "$VERSION_DIR" ]; then
   [ -x "${VERSION_DIR}/${BINARY}" ] && \
     [ -x "${VERSION_DIR}/${MAINTAIN_BINARY}" ] && \
+    [ -f "${VERSION_DIR}/${PACK_RELATIVE}/content-pack.toml" ] && \
     [ -f "${VERSION_DIR}/install-receipt.json" ] || \
     die "existing release generation is incomplete: ${VERSION_DIR}"
   rm -rf "$STAGING_DIR"

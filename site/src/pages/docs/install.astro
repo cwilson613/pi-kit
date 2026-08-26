@@ -9,8 +9,9 @@ import { snippet } from "../../lib/snippets";
   <h2>Quick Install (Recommended)</h2>
   <pre><code>{snippet("install.quick_install")}</code></pre>
   <p>
-    Downloads the latest signed release pair for your platform (macOS arm64/x86_64, Linux x86_64/aarch64),
-    verifies the SHA-256 checksum, and installs to <code>/usr/local/bin</code> by default.
+    Downloads the latest signed release pair and shipped content pack for your platform
+    (macOS arm64/x86_64, Linux x86_64/aarch64), verifies the SHA-256 checksum, and installs
+    to <code>/usr/local/bin</code> by default.
   </p>
 
   <h3>Options</h3>
@@ -47,6 +48,7 @@ import { snippet } from "../../lib/snippets";
   </p>
   <ul>
     <li>Pre-built <code>omegon</code> and <code>omegon-maintain</code> companions for macOS and Linux</li>
+    <li>The versioned <code>omegon-shipped</code> content pack under <code>share/omegon/content-packs/</code></li>
     <li>SHA-256 checksums</li>
     <li><a href="https://www.sigstore.dev/">Sigstore cosign</a> signatures (keyless)</li>
     <li>CycloneDX SBOM</li>
@@ -65,7 +67,9 @@ import { snippet } from "../../lib/snippets";
   <pre><code>{snippet("install.verify_companions")}</code></pre>
   <p>
     Supported packages install matching <code>omegon</code> and <code>omegon-maintain</code>
-    versions. A missing, incompatible, or non-launching companion is an incomplete installation.
+    versions. Supported packages also install the shipped content pack beside the pair. A missing,
+    incompatible, or non-launching companion is an incomplete installation. Missing optional content
+    does not block kernel or maintenance startup, but shipped skills, prompts, and catalog data are unavailable.
     Do not copy a companion from another release; reinstall through the owning channel.
   </p>
 
@@ -137,7 +141,8 @@ import { snippet } from "../../lib/snippets";
   <p>
     Source checkouts should run <code>just link</code>. Every update path replaces and validates
     the pair together. See <a href="/docs/recovery">Maintenance &amp; Recovery</a> when normal
-    startup is unavailable.
+    startup is unavailable. A compatible content-pack replacement can be installed independently;
+    Omegon admits it on the next process boot and does not migrate active sessions.
   </p>
   <p>
     Script-managed installs stage each matching executable pair and its receipt in an immutable

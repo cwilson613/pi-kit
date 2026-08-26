@@ -79,8 +79,8 @@ jobs:
           printf '#!/bin/sh\necho omegon fixture\n' > "$FIXTURE_DIR/omegon"
           printf '#!/bin/sh\necho omegon-maintain fixture\n' > "$FIXTURE_DIR/omegon-maintain"
           chmod 0755 "$FIXTURE_DIR/omegon" "$FIXTURE_DIR/omegon-maintain"
-          tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime='@0' \
-            -cf - -C "$FIXTURE_DIR" omegon omegon-maintain | gzip -n > "$ARCHIVE"
+          python3 scripts/content_pack_manifest.py --check
+          python3 scripts/package_release.py --binary-dir "$FIXTURE_DIR" --output "$ARCHIVE"
           python3 scripts/release_manifest.py generate-package \
             --archive "$ARCHIVE" \
             --tag "$RELEASE_TAG" \
@@ -271,7 +271,8 @@ jobs:
           ARCHIVE="omegon-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
           BINARY_DIR="target/${{ matrix.target }}/release"
           chmod 0755 "$BINARY_DIR/omegon" "$BINARY_DIR/omegon-maintain"
-          COPYFILE_DISABLE=1 tar --format=ustar -czf "$ARCHIVE" -C "$BINARY_DIR" omegon omegon-maintain
+          python3 scripts/content_pack_manifest.py --check
+          python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "$ARCHIVE"
           EXT_ARCHIVE="omegon-browser-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
           EXT_BINARY="extensions/omegon-browser/target/${{ matrix.target }}/release/omegon-browser"
           EXT_PACKAGE="$RUNNER_TEMP/omegon-browser-package"
@@ -357,7 +358,8 @@ jobs:
           ARCHIVE="omegon-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
           BINARY_DIR="target/aarch64-unknown-linux-gnu/release"
           chmod 0755 "$BINARY_DIR/omegon" "$BINARY_DIR/omegon-maintain"
-          tar --format=ustar -czf "$ARCHIVE" -C "$BINARY_DIR" omegon omegon-maintain
+          python3 scripts/content_pack_manifest.py --check
+          python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "$ARCHIVE"
           EXT_ARCHIVE="omegon-browser-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
           EXT_BINARY="extensions/omegon-browser/target/aarch64-unknown-linux-gnu/release/omegon-browser"
           EXT_PACKAGE="$RUNNER_TEMP/omegon-browser-package"

@@ -8,7 +8,7 @@
 //!
 //! `cmd_install(offline)` fetches the upstream armory registry and downloads
 //! each agent's files. When `offline = true` (or the network is unreachable),
-//! it falls back to the copies embedded in the binary at compile time.
+//! it falls back to the boot-admitted shipped content pack.
 
 use std::{
     collections::HashMap,
@@ -92,76 +92,34 @@ struct ArmoryEntry {
     files: Vec<String>,
 }
 
-/// A catalog agent bundle with all files embedded at compile time.
+/// Metadata needed to list one catalog bundle from the shipped content pack.
 struct BundledAgent {
-    id: &'static str,
-    /// TOML manifest — always present; used as fallback when pkl binary unavailable.
-    agent_toml: &'static str,
-    /// Pkl manifest — present for agents that have an agent.pkl.
-    /// Enables `amends "omegon://catalog/<id>/agent.pkl"` inheritance for user overlays.
-    agent_pkl: Option<&'static str>,
-    persona_md: &'static str,
-    mind_facts: Option<&'static str>,
+    id: String,
+    agent_toml: String,
 }
 
-const BUNDLED: &[BundledAgent] = &[
-    BundledAgent {
-        id: "styrene.bd-agent",
-        agent_toml: include_str!("../../../../catalog/styrene.bd-agent/agent.toml"),
-        agent_pkl: Some(include_str!(
-            "../../../../catalog/styrene.bd-agent/agent.pkl"
-        )),
-        persona_md: include_str!("../../../../catalog/styrene.bd-agent/PERSONA.md"),
-        mind_facts: Some(include_str!(
-            "../../../../catalog/styrene.bd-agent/mind/facts.jsonl"
-        )),
-    },
-    BundledAgent {
-        id: "styrene.coding-agent",
-        agent_toml: include_str!("../../../../catalog/styrene.coding-agent/agent.toml"),
-        agent_pkl: None,
-        persona_md: include_str!("../../../../catalog/styrene.coding-agent/PERSONA.md"),
-        mind_facts: Some(include_str!(
-            "../../../../catalog/styrene.coding-agent/mind/facts.jsonl"
-        )),
-    },
-    BundledAgent {
-        id: "styrene.community-agent",
-        agent_toml: include_str!("../../../../catalog/styrene.community-agent/agent.toml"),
-        agent_pkl: None,
-        persona_md: include_str!("../../../../catalog/styrene.community-agent/PERSONA.md"),
-        mind_facts: Some(include_str!(
-            "../../../../catalog/styrene.community-agent/mind/facts.jsonl"
-        )),
-    },
-    BundledAgent {
-        id: "styrene.discord-agent",
-        agent_toml: include_str!("../../../../catalog/styrene.discord-agent/agent.toml"),
-        agent_pkl: Some(include_str!(
-            "../../../../catalog/styrene.discord-agent/agent.pkl"
-        )),
-        persona_md: include_str!("../../../../catalog/styrene.discord-agent/PERSONA.md"),
-        mind_facts: None,
-    },
-    BundledAgent {
-        id: "styrene.infra-engineer",
-        agent_toml: include_str!("../../../../catalog/styrene.infra-engineer/agent.toml"),
-        agent_pkl: None,
-        persona_md: include_str!("../../../../catalog/styrene.infra-engineer/PERSONA.md"),
-        mind_facts: Some(include_str!(
-            "../../../../catalog/styrene.infra-engineer/mind/facts.jsonl"
-        )),
-    },
-    BundledAgent {
-        id: "styrene.slack-agent",
-        agent_toml: include_str!("../../../../catalog/styrene.slack-agent/agent.toml"),
-        agent_pkl: Some(include_str!(
-            "../../../../catalog/styrene.slack-agent/agent.pkl"
-        )),
-        persona_md: include_str!("../../../../catalog/styrene.slack-agent/PERSONA.md"),
-        mind_facts: None,
-    },
-];
+fn bundled_agents() -> anyhow::Result<Vec<BundledAgent>> {
+    let pack = crate::content_pack::boot_pack()
+        .ok_or_else(|| anyhow::anyhow!("shipped catalog content pack is unavailable"))?;
+    let mut bundled = Vec::new();
+    for asset in pack.assets("catalog") {
+        let path = Path::new(&asset.manifest.path);
+        if path.file_name().and_then(|name| name.to_str()) != Some("agent.toml") {
+            continue;
+        }
+        let id = path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("catalog pack entry has no bundle ID"))?;
+        bundled.push(BundledAgent {
+            id: id.to_string(),
+            agent_toml: std::str::from_utf8(&asset.bytes)?.to_string(),
+        });
+    }
+    bundled.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(bundled)
+}
 
 pub fn remove(omegon_home: &Path, selector: &str) -> anyhow::Result<()> {
     omegon_maintenance_contracts::validate_child_name(selector.as_bytes())?;
@@ -209,11 +167,12 @@ pub fn cmd_list() -> anyhow::Result<()> {
     let home = crate::paths::omegon_home()?;
     let cat_dir = home.join("catalog");
     let installed_catalog = list(&home)?;
-    println!("Bundled agents ({})\n", BUNDLED.len());
-    for bundle in BUNDLED {
+    let bundled = bundled_agents()?;
+    println!("Bundled agents ({})\n", bundled.len());
+    for bundle in &bundled {
         let installed = installed_catalog.iter().any(|entry| entry.id == bundle.id);
         let marker = if installed { "✓" } else { "○" };
-        let (name, domain) = extract_agent_meta(bundle.agent_toml);
+        let (name, domain) = extract_agent_meta(&bundle.agent_toml);
         println!("  {marker} {id:<30}  {name}  [{domain}]", id = bundle.id);
     }
     println!("\nInstall path: {}", cat_dir.display());
@@ -329,29 +288,40 @@ async fn install_from_upstream(omegon_home: &Path) -> anyhow::Result<()> {
     publish_catalog_candidates(omegon_home, &candidates)
 }
 
-/// Write the compile-time bundled agents to disk.
+/// Write the boot-admitted catalog pack to the operator catalog directory.
 fn install_from_bundled(omegon_home: &Path) -> anyhow::Result<()> {
+    let pack = crate::content_pack::boot_pack()
+        .ok_or_else(|| anyhow::anyhow!("shipped catalog content pack is unavailable"))?;
     let prepared = PreparedCatalogDirectory::new()?;
-    let mut candidates = Vec::new();
-    for bundle in BUNDLED {
-        omegon_maintenance_contracts::validate_child_name(bundle.id.as_bytes())?;
-        let bundle_dir = prepared.0.join(bundle.id);
-        std::fs::create_dir_all(&bundle_dir)?;
-
-        let toml_path = bundle_dir.join("agent.toml");
-        std::fs::write(&toml_path, bundle.agent_toml)?;
-        if let Some(pkl) = bundle.agent_pkl {
-            std::fs::write(bundle_dir.join("agent.pkl"), pkl)?;
+    let mut candidate_paths = std::collections::BTreeMap::<String, PathBuf>::new();
+    for asset in pack.assets("catalog") {
+        let path = Path::new(&asset.manifest.path);
+        let mut components = path.components();
+        if components
+            .next()
+            .and_then(|value| value.as_os_str().to_str())
+            != Some("catalog")
+        {
+            anyhow::bail!("catalog asset is outside the catalog subtree");
         }
-        std::fs::write(bundle_dir.join("PERSONA.md"), bundle.persona_md)?;
-        if let Some(facts) = bundle.mind_facts {
-            let mind_dir = bundle_dir.join("mind");
-            std::fs::create_dir_all(&mind_dir)?;
-            std::fs::write(mind_dir.join("facts.jsonl"), facts)?;
+        let id = components
+            .next()
+            .and_then(|value| value.as_os_str().to_str())
+            .ok_or_else(|| anyhow::anyhow!("catalog asset has no bundle ID"))?;
+        omegon_maintenance_contracts::validate_child_name(id.as_bytes())?;
+        let relative = components.collect::<PathBuf>();
+        if relative.as_os_str().is_empty() {
+            anyhow::bail!("catalog asset has no bundle-relative path");
         }
-
-        candidates.push((bundle.id.to_string(), bundle_dir));
+        let bundle_dir = prepared.0.join(id);
+        let destination = bundle_dir.join(relative);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(destination, &asset.bytes)?;
+        candidate_paths.insert(id.to_string(), bundle_dir);
     }
+    let candidates = candidate_paths.into_iter().collect::<Vec<_>>();
     publish_catalog_candidates(omegon_home, &candidates)
 }
 

@@ -95,6 +95,9 @@
             python3 scripts/content_pack_manifest.py --check
             python3 scripts/content_pack_manifest.py \
               --install-root $out/share/omegon/content-packs/omegon-shipped
+            python3 scripts/package_release.py --binary-dir $out/bin \
+              --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget} \
+              --lock-dir $out/share/omegon/composition
           '';
         });
 

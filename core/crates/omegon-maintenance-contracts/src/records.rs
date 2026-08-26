@@ -515,6 +515,8 @@ pub struct PackageManifestV1 {
     pub archive_filename: String,
     pub archive_digest: AuthorityKey,
     pub members: Vec<PackageMemberV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composition_locks: Vec<ArtifactCompositionLockV1>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,6 +526,55 @@ pub struct PackageMemberV1 {
     pub mode: u32,
     pub size: u64,
     pub digest: AuthorityKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactCompositionLockV1 {
+    pub identity: String,
+    pub artifact_path: String,
+    pub artifact_digest: AuthorityKey,
+    pub protocol_minimum: u32,
+    pub protocol_maximum: u32,
+    pub targets: Vec<String>,
+    pub required: bool,
+    pub fallback: String,
+    pub resident_lock_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResidentCompositionLockV1 {
+    pub schema_version: u32,
+    pub executable_identity: String,
+    pub executable_digest: AuthorityKey,
+    pub target: String,
+    pub protocol_minimum: u32,
+    pub protocol_maximum: u32,
+    pub contributions: Vec<ResidentContributionLockV1>,
+    pub signing_identity: SigningIdentityV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResidentContributionLockV1 {
+    pub identity: String,
+    pub artifact_path: String,
+    pub artifact_digest: AuthorityKey,
+    pub protocol_minimum: u32,
+    pub protocol_maximum: u32,
+    pub targets: Vec<String>,
+    pub required: bool,
+    pub fallback: String,
+    pub state: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningIdentityV1 {
+    pub issuer: String,
+    pub workflow_identity: String,
+    pub verification: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1407,6 +1458,36 @@ impl_record!(
         {
             return Err(ContractError::InvalidValue(
                 "package manifest must contain both executables".into(),
+            ));
+        }
+        for lock in &value.composition_locks {
+            if lock.identity.trim().is_empty()
+                || lock.artifact_path.trim().is_empty()
+                || lock.protocol_minimum == 0
+                || lock.protocol_minimum > lock.protocol_maximum
+                || lock.targets.is_empty()
+                || lock.fallback.trim().is_empty()
+            {
+                return Err(ContractError::InvalidValue(
+                    "package composition lock is incomplete or inconsistent".into(),
+                ));
+            }
+        }
+        let identities = value
+            .composition_locks
+            .iter()
+            .map(|lock| lock.identity.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let paths = value
+            .composition_locks
+            .iter()
+            .map(|lock| lock.artifact_path.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if identities.len() != value.composition_locks.len()
+            || paths.len() != value.composition_locks.len()
+        {
+            return Err(ContractError::InvalidValue(
+                "package composition lock identities and artifact paths must be unique".into(),
             ));
         }
         Ok(())

@@ -36,8 +36,7 @@ quarantine, stale ownership pruning, durable audit workflows, and offline releas
 verification. Normal Omegon now enforces session-deny authority across startup,
 headless, live interactive, and ACP resume paths, and normal contribution startup
 enforces maintenance deny/exclusion authority. Runtime ownership writers and
-release packaging/launch paths are integrated. Public install/recovery
-co-delivery remains tracked by task 0.10.
+release packaging/launch paths are integrated with public install/recovery guidance.
 
 ## Purpose
 
@@ -68,10 +67,39 @@ The package:
   package `omegon-maintenance-contracts`;
 - has its own dependency and binary-size budgets;
 - carries its own version, commit, target, and artifact identity;
+- refreshes commit and tracked dirty-state identity with the normal executable;
 - is packaged beside `omegon` and signed where applicable in every supported
   release package;
 - is independently launchable from source, linked development, direct install,
   Homebrew, Nix/OCI where supported, and release archives.
+
+Every release archive contains `omegon.composition-lock.json` and
+`omegon-maintain.composition-lock.json`. The signed package manifest binds each
+lock and executable digest. Each resident entry records its identity, artifact
+path and digest, protocol range, supported target, required or optional state,
+and fallback. The lock also records the expected Sigstore workflow identity.
+`release verify` validates the package-manifest Sigstore bundle before archive
+composition, then validates every required lock as one fail-closed set. It does
+not extract or execute optional contributions. Its evidence reports the verified
+signing identity and result.
+
+The maintenance lock contains no optional normal-runtime residents. Normal
+optional domains use `typed_unavailable` fallback; absence is inventory, not a
+claim that a domain was loaded.
+
+## Slice 7 migration
+
+Operators do not need to rename configuration fields or commands.
+`disabled_tools`, persona manifests, child-runtime JSON, and existing
+maintenance protocol v1 output remain compatibility contracts; normal startup
+translates those names into capability IDs before admission. Existing archives
+without resident locks are not upgraded in place and are not valid new release
+packages. The only compatibility exception is the immutable signed legacy
+verifier fixture identified by its exact tag, archive digest, record ID, and
+two-member inventory in the release verifier. Any mutation to that tuple fails
+closed. Reinstall the complete companion pair from one release. The canonical
+`verify.release_verify` snippet is unchanged because the package manifest and
+Sigstore bundle operands now carry the additional lock evidence.
 
 The first crate should use only minimal CLI, serialization, filesystem,
 cryptographic verification, locking, and deadline primitives. It does

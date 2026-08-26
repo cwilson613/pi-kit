@@ -58,6 +58,12 @@ def parse_formula(path: Path) -> tuple[str, dict[str, tuple[str, str]]]:
     for required in ('bin.install "omegon"', 'bin.install "omegon-maintain"'):
         if required not in content:
             raise ValueError(f"Homebrew formula is missing {required}")
+    lock_install = (
+        '(share/"omegon/composition").install "omegon.composition-lock.json", '
+        '"omegon-maintain.composition-lock.json"'
+    )
+    if lock_install not in content:
+        raise ValueError(f"Homebrew formula is missing {lock_install}")
     if 'share.install "share/omegon"' not in content:
         raise ValueError('Homebrew formula is missing share.install "share/omegon"')
     return version, assets
@@ -106,7 +112,10 @@ def main() -> int:
     except (OSError, ValueError) as error:
         print(f"Homebrew formula verification failed: {error}", file=sys.stderr)
         return 1
-    print("Homebrew formula archives contain the verified Omegon companions and content pack.")
+    print(
+        "Homebrew formula archives contain and install the verified Omegon "
+        "companions, resident locks, and content pack."
+    )
     return 0
 
 

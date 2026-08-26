@@ -60,7 +60,7 @@ for platform in "${PLATFORMS[@]}"; do
   target="${TARGET_MAP[$platform]}"
   asset="omegon-${VERSION_NUM}-${target}.tar.gz"
   platform_dir="$SCRIPT_DIR/platform/$platform"
-  rm -f "$platform_dir/omegon"
+  rm -f "$platform_dir/omegon" "$platform_dir/omegon-maintain" "$platform_dir/"*.composition-lock.json
   rm -rf "$platform_dir/share"
   echo "  ↓ ${asset}"
   gh release download "$TAG" -R "$REPO" -p "$asset" -D "$TMP" 2>/dev/null || {
@@ -68,7 +68,7 @@ for platform in "${PLATFORMS[@]}"; do
     continue
   }
 
-  # Extract the binary and its matching shipped content pack into the platform package.
+  # Extract the companion pair, resident locks, and matching content pack.
   extract_dir="$TMP/$platform"
   mkdir -p "$extract_dir"
   tar -xzf "$TMP/$asset" -C "$extract_dir"
@@ -77,7 +77,10 @@ for platform in "${PLATFORMS[@]}"; do
     continue
   }
   cp "$extract_dir/omegon" "$platform_dir/omegon"
-  chmod +x "$platform_dir/omegon"
+  cp "$extract_dir/omegon-maintain" "$platform_dir/omegon-maintain"
+  cp "$extract_dir/omegon.composition-lock.json" "$platform_dir/omegon.composition-lock.json"
+  cp "$extract_dir/omegon-maintain.composition-lock.json" "$platform_dir/omegon-maintain.composition-lock.json"
+  chmod +x "$platform_dir/omegon" "$platform_dir/omegon-maintain"
   rm -rf "$platform_dir/share"
   cp -R "$extract_dir/share" "$platform_dir/share"
   echo "  ✓ ${platform}"

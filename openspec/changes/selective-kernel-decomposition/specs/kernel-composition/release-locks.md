@@ -4,7 +4,7 @@
 
 ### Requirement: Release artifacts declare their required composition
 
-Every supported release package must carry a signed, verifiable package composition lock listing required companion artifacts. Each executable artifact must also carry its resident required/optional module and contribution identity, artifact digest, protocol range, target support, and fallback behavior. Signature identity and verification result are part of release evidence.
+Every supported release package must carry a signed, verifiable package composition lock listing required companion artifacts. Each executable artifact must also carry a resident lock that records required and optional module or contribution identity, containing artifact path and digest, protocol range, target support, state, fallback behavior, and expected signing identity. The package-signature identity and verification result are part of release evidence.
 
 #### Scenario: Required module is missing from a package
 Given a release package's lock requires the companion maintenance executable
@@ -13,8 +13,8 @@ Then the package fails release verification
 And the interactive executable's resident-module lock does not falsely claim that the companion maintenance executable or its workflows are resident
 
 #### Scenario: Composition lock signature is invalid
-Given a package or executable composition lock has an unknown or invalid signature
-When release or startup verification evaluates the lock
+Given a package signature is invalid or a resident lock names an unexpected signing identity
+When release verification evaluates the package and its bound resident locks
 Then verification fails closed for required composition
 And diagnostics identify the failed signing identity without executing optional contributions
 

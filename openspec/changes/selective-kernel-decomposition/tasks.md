@@ -151,10 +151,10 @@ Definition of done for every group: classify documentation impact before impleme
 ## 7. Release composition, budgets, and deletion
 <!-- specs: kernel-composition/documentation, kernel-composition/maintenance, kernel-composition/release-locks, runtime-contributions/lifecycle -->
 
-- [ ] 7.1 Produce signed contribution locks containing identity, artifact digest, protocol range, target support, required/optional status, and fallback behavior.
-- [ ] 7.2 Gate maintenance, interactive, headless, daemon, and full composition matrices across supported packaging paths.
-- [ ] 7.3 Enforce dependency, binary-size, startup-task, schema-token, resident-capability, and default-callable budgets.
-- [ ] 7.4 Remove legacy disabled-name sets, collision-by-order, duplicate supervisor/command authorities, and surface-specific capability allowlists.
+- [x] 7.1 Extend the Sigstore-signed package manifest into the package lock and package canonical digest-bound resident locks for both executables. Offline maintenance verification validates required identity, digest, protocol, target, fallback, signing identity/result, and member evidence before optional inventory without extraction or execution.
+- [x] 7.2 Gate maintenance, interactive, headless, daemon, and full profiles through the versioned source/linked/release matrix, direct probes, exact archive inventory, and honest optional-absence declarations.
+- [x] 7.3 Measure and enforce maintenance/normal dependency closure, release bytes, production startup-task sites, model-schema tokens, resident capabilities, and default-callable capabilities against approved baselines/deltas with source-owner diagnostics.
+- [x] 7.4 Replace the shared disabled-name set with capability-ID admission policy while retaining compatibility inputs; retain order-independent collision rejection, one dynamic supervisor, and one command registry; guard removed authorities in production source.
 - [ ] 7.5 Run broad Rust gates, package/link verification, real maintenance diagnosis, denial/quarantine, stale-record-pruning, audit, and offline-verification exercises, and normal harness exercises.
 - [ ] 7.6 Reconcile OpenSpec, design, Workbench, changelog, and release evidence before archive.
 - [ ] 7.7 Validate the complete public docs site, canonical snippets, packaging/install guidance, migration notes, and cross-surface terminology against released artifacts.

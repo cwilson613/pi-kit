@@ -397,7 +397,7 @@ pub struct EventBus {
     /// Cached command definitions.
     command_defs: Vec<(usize, CommandDefinition)>,
     /// Handle to the disabled tools set from ManageTools.
-    disabled_tools: Option<crate::features::manage_tools::DisabledTools>,
+    tool_admission: Option<crate::features::manage_tools::SharedToolAdmissionPolicy>,
     /// Handle to the registered tool inventory from ManageTools.
     tool_inventory: Option<crate::features::manage_tools::ToolInventory>,
     /// Per-tool execution timeouts. Tools not listed use DEFAULT_TOOL_TIMEOUT.
@@ -439,7 +439,7 @@ impl EventBus {
             pending_requests: Vec::new(),
             tool_defs: Vec::new(),
             command_defs: Vec::new(),
-            disabled_tools: None,
+            tool_admission: None,
             internal_tool_owners: HashMap::new(),
             acp_invocation_owners: HashMap::new(),
             in_process_services: BTreeMap::new(),
@@ -567,6 +567,10 @@ impl EventBus {
         self.managed_services.published_metadata()
     }
 
+    pub(crate) fn active_startup_resource_owners(&self) -> BTreeMap<String, usize> {
+        self.managed_services.active_resource_owners()
+    }
+
     pub(crate) async fn shutdown_managed_services(
         &mut self,
     ) -> crate::managed_service_bus::ManagedServiceShutdownReport {
@@ -637,7 +641,7 @@ impl EventBus {
         posture_enabled: &[String],
     ) {
         use crate::tool_registry as reg;
-        let Some(handle) = self.disabled_tools.as_ref() else {
+        let Some(handle) = self.tool_admission.as_ref() else {
             return;
         };
         let mut disabled = handle.lock().unwrap();
@@ -709,8 +713,11 @@ impl EventBus {
     }
 
     /// Set the disabled tools handle (called from setup after ManageTools is registered).
-    pub fn set_disabled_tools(&mut self, handle: crate::features::manage_tools::DisabledTools) {
-        self.disabled_tools = Some(handle);
+    pub fn set_tool_admission_policy(
+        &mut self,
+        handle: crate::features::manage_tools::SharedToolAdmissionPolicy,
+    ) {
+        self.tool_admission = Some(handle);
     }
 
     /// Set the ManageTools inventory handle so finalize can keep its list in
@@ -2169,6 +2176,25 @@ impl EventBus {
         self.tool_definitions_mode(false)
     }
 
+    pub(crate) fn callable_tool_definitions_by_owner(&self) -> Vec<(String, ToolDefinition)> {
+        let disabled = self
+            .tool_admission
+            .as_ref()
+            .and_then(|policy| policy.lock().ok());
+        self.tool_defs
+            .iter()
+            .filter(|(_, definition)| {
+                disabled
+                    .as_ref()
+                    .is_none_or(|policy| !policy.contains(&definition.name))
+            })
+            .filter(|(_, definition)| !is_model_hidden_tool(&definition.name))
+            .map(|(index, definition)| {
+                (self.features[*index].name().to_string(), definition.clone())
+            })
+            .collect()
+    }
+
     pub fn has_tool(&self, tool_name: &str) -> bool {
         self.tool_defs.iter().any(|(_, def)| def.name == tool_name)
             || self.internal_tool_owners.contains_key(tool_name)
@@ -2297,7 +2323,7 @@ impl EventBus {
         Ok(())
     }
 
-    /// Authoritative producer for the feature that won tool-name arbitration.
+    /// Authoritative producer from the validated invocation-owner graph.
     pub fn tool_provenance(&self, tool_name: &str) -> omegon_traits::ToolProvenance {
         let owner = self
             .tool_defs
@@ -2313,7 +2339,7 @@ impl EventBus {
 
     /// Tool definitions with optional schema compaction for token efficiency.
     pub fn tool_definitions_mode(&self, compact: bool) -> Vec<ToolDefinition> {
-        let disabled = self.disabled_tools.as_ref().and_then(|d| d.lock().ok());
+        let disabled = self.tool_admission.as_ref().and_then(|d| d.lock().ok());
         self.tool_defs
             .iter()
             .filter(|(_, d)| disabled.as_ref().is_none_or(|set| !set.contains(&d.name)))
@@ -2368,7 +2394,7 @@ impl EventBus {
             return self.tool_definitions_mode(compact);
         }
 
-        let disabled = self.disabled_tools.as_ref().and_then(|d| d.lock().ok());
+        let disabled = self.tool_admission.as_ref().and_then(|d| d.lock().ok());
         self.tool_defs
             .iter()
             .filter(|(_, d)| disabled.as_ref().is_none_or(|set| !set.contains(&d.name)))
@@ -5420,8 +5446,10 @@ mod tests {
         bus.register(Box::new(CounterFeature { event_count: 0 }));
         bus.finalize();
 
-        let disabled = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-        bus.set_disabled_tools(disabled.clone());
+        let disabled = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::features::manage_tools::ToolAdmissionPolicy::default(),
+        ));
+        bus.set_tool_admission_policy(disabled.clone());
         let inventory = std::sync::Arc::new(std::sync::Mutex::new(
             crate::features::manage_tools::ToolInventorySnapshot::default(),
         ));
@@ -5445,11 +5473,12 @@ mod tests {
         assert_eq!(bus.all_tool_definitions().len(), 1);
 
         // Disable the tool
-        let disabled =
-            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::from([
-                "count".to_string(),
-            ])));
-        bus.set_disabled_tools(disabled);
+        let disabled = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::features::manage_tools::ToolAdmissionPolicy::from_tool_names([
+                "count".to_string()
+            ]),
+        ));
+        bus.set_tool_admission_policy(disabled);
 
         // After disabling: filtered from tool_definitions but still in all_tool_definitions
         assert_eq!(
@@ -5472,11 +5501,12 @@ mod tests {
             bus.register(Box::new(CounterFeature { event_count: 0 }));
             bus.finalize();
 
-            let disabled =
-                std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::from([
-                    "count".to_string(),
-                ])));
-            bus.set_disabled_tools(disabled);
+            let disabled = std::sync::Arc::new(std::sync::Mutex::new(
+                crate::features::manage_tools::ToolAdmissionPolicy::from_tool_names([
+                    "count".to_string()
+                ]),
+            ));
+            bus.set_tool_admission_policy(disabled);
 
             // Tool is filtered from definitions...
             assert_eq!(bus.tool_definitions().len(), 0);
@@ -5639,11 +5669,13 @@ mod tests {
                 capabilities: vec![],
             })
             .collect();
-        let disabled = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let disabled = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::features::manage_tools::ToolAdmissionPolicy::default(),
+        ));
         let mut bus = EventBus::new();
         bus.register(Box::new(MultiToolFeature { tools }));
         bus.finalize();
-        bus.set_disabled_tools(disabled);
+        bus.set_tool_admission_policy(disabled);
         bus
     }
 

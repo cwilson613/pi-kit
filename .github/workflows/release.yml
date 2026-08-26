@@ -116,6 +116,49 @@ jobs:
             ${{ env.FIXTURE_ARCHIVE }}.manifest.json
             ${{ env.FIXTURE_ARCHIVE }}.manifest.sigstore.json
 
+  composition-development-paths:
+    name: Gate source and linked compositions
+    needs: verify-trunk-version
+    if: ${{ !contains(github.ref_name, '-fixture.') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and exercise source profiles
+        run: python3 scripts/check_composition_matrix.py --path source --cargo-profile release
+
+      - name: Install isolated linked-development channel
+        run: |
+          set -euo pipefail
+          LINK_HOME="$RUNNER_TEMP/omegon-linked-home"
+          TARGET="$(rustc -vV | awk '/^host:/ {print $2}')"
+          mkdir -p "$LINK_HOME/.local/bin" "$LINK_HOME/.omegon/channels" "$LINK_HOME/.omegon/bin"
+          install -m 0755 scripts/omegon-launcher.sh "$LINK_HOME/.local/bin/omegon"
+          install -m 0755 scripts/omegon-launcher.sh "$LINK_HOME/.local/bin/om"
+          install -m 0755 scripts/omegon-launcher.sh "$LINK_HOME/.local/bin/omegon-maintain"
+          printf '%s\n' "$GITHUB_WORKSPACE" > "$LINK_HOME/.omegon/channels/composition-ci"
+          install -m 0755 target/release/omegon "$LINK_HOME/.omegon/bin/omegon"
+          install -m 0755 target/release/omegon-maintain "$LINK_HOME/.omegon/bin/omegon-maintain"
+          python3 scripts/package_release.py --binary-dir target/release \
+            --target "$TARGET" --lock-dir "$LINK_HOME/.omegon/share/omegon/composition"
+          python3 scripts/content_pack_manifest.py \
+            --install-root "$LINK_HOME/.omegon/share/omegon/content-packs/omegon-shipped"
+          echo "LINK_HOME=$LINK_HOME" >> "$GITHUB_ENV"
+          echo "LINK_TARGET=$TARGET" >> "$GITHUB_ENV"
+
+      - name: Exercise installed linked launchers, locks, and assets
+        run: |
+          python3 scripts/check_composition_matrix.py --path linked \
+            --binary-dir target/release \
+            --linked-home "$LINK_HOME" \
+            --target "$LINK_TARGET"
+          python3 scripts/check_composition_authority.py
+
   # ── Primary builds (macOS + Linux x86_64) ──────────────────────
   # These finish in ~10 minutes and unblock the release.
   build:
@@ -285,6 +328,17 @@ jobs:
           echo "EXT_ARCHIVE=$EXT_ARCHIVE" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
+      - name: Gate release composition and budgets
+        run: |
+          python3 scripts/check_composition_matrix.py --path release \
+            --archive "$ARCHIVE" \
+            --target "${{ matrix.target }}"
+          python3 scripts/check_composition_budgets.py \
+            --binary-dir "target/${{ matrix.target }}/release" \
+            --archive "$ARCHIVE" \
+            --target "${{ matrix.target }}"
+          python3 scripts/check_composition_authority.py
+
       - name: Generate SHA256 checksum
         run: |
           if command -v sha256sum >/dev/null 2>&1; then
@@ -371,6 +425,17 @@ jobs:
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
           echo "EXT_ARCHIVE=$EXT_ARCHIVE" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Gate release composition and budgets
+        run: |
+          python3 scripts/check_composition_matrix.py --path release \
+            --archive "$ARCHIVE" \
+            --target aarch64-unknown-linux-gnu
+          python3 scripts/check_composition_budgets.py \
+            --binary-dir target/aarch64-unknown-linux-gnu/release \
+            --archive "$ARCHIVE" \
+            --target aarch64-unknown-linux-gnu
+          python3 scripts/check_composition_authority.py
 
       - name: Generate SHA256 checksum
         run: |
@@ -487,7 +552,7 @@ jobs:
   # ── Release (publishes as soon as primary builds pass) ─────────
   release:
     name: Create release
-    needs: [build, build-extended, linux-abi-validation]
+    needs: [build, build-extended, composition-development-paths, linux-abi-validation]
     if: ${{ !contains(github.ref_name, '-fixture.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20

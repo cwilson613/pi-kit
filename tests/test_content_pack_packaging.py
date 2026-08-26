@@ -81,6 +81,10 @@ class ContentPackPackagingTests(unittest.TestCase):
                 pack_manifest = "share/omegon/content-packs/omegon-shipped/content-pack.toml"
                 inventory = tomllib.loads((ROOT / "content-pack.toml").read_text())["assets"]
                 expected_names = {"omegon", "omegon-maintain", pack_manifest}
+                expected_names.update({
+                    "omegon.composition-lock.json",
+                    "omegon-maintain.composition-lock.json",
+                })
                 expected_names.update(
                     f"share/omegon/content-packs/omegon-shipped/{asset['path']}"
                     for asset in inventory
@@ -92,6 +96,18 @@ class ContentPackPackagingTests(unittest.TestCase):
                 self.assertIn("share/omegon/content-packs/omegon-shipped/data/lex-capabilities.md", names)
                 self.assertIn("share/omegon/content-packs/omegon-shipped/skills/rust/SKILL.md", names)
                 self.assertIn("share/omegon/content-packs/omegon-shipped/catalog/styrene.coding-agent/agent.toml", names)
+                resident = json.load(package.extractfile("omegon.composition-lock.json"))
+                self.assertEqual(resident["target"], "x86_64-unknown-linux-gnu")
+                self.assertEqual(resident["signing_identity"]["verification"], "required")
+                identities = {entry["identity"] for entry in resident["contributions"]}
+                self.assertNotIn("feature:shipped-content", identities)
+                self.assertTrue(
+                    all(entry["artifact_path"] == "omegon" for entry in resident["contributions"])
+                )
+                self.assertEqual(
+                    resident["signing_identity"]["workflow_identity"],
+                    "https://github.com/styrene-lab/omegon/.github/workflows/release.yml@refs/tags/v1.2.3",
+                )
             release_manifest = load_release_manifest()
             manifest = release_manifest.build_package_manifest(
                 archive=archive,
@@ -138,6 +154,10 @@ class ContentPackPackagingTests(unittest.TestCase):
         for package in (ROOT / "core/npm/platform").glob("*/package.json"):
             data = json.loads(package.read_text())
             self.assertIn("share/omegon/content-packs/omegon-shipped", data["files"])
+            self.assertIn("omegon-maintain", data["files"])
+            self.assertIn("omegon.composition-lock.json", data["files"])
+            self.assertIn("omegon-maintain.composition-lock.json", data["files"])
         publish_script = (ROOT / "core/npm/publish.sh").read_text()
         self.assertIn('cp -R "$extract_dir/share" "$platform_dir/share"', publish_script)
         self.assertIn("content-packs/omegon-shipped/content-pack.toml", publish_script)
+        self.assertIn("omegon-maintain.composition-lock.json", publish_script)

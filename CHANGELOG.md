@@ -18,6 +18,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
+- Added Sigstore-signed package and executable-resident composition locks. Offline maintenance verification validates required identity, digest, protocol, target, fallback, member, and signing evidence fail-closed without extracting or executing optional contributions. Source/linked/release profile matrices and measured composition budgets now gate releases with owner-attributed diagnostics. Both companion build scripts refresh commit and dirty-state identity so linked validation cannot pair a current runtime with stale maintenance metadata.
+
+- Replaced the runtime's shared disabled-tool-name set with capability-ID `ToolAdmissionPolicy` while preserving `disabled_tools` configuration and wire compatibility as boundary inputs. Source guards retain order-independent collision rejection, one dynamic contribution supervisor authority, one command registry, and no surface-specific capability authority.
+
 - Added an executable nine-domain isolation matrix for plans/work, behavior policy, codescan, lifecycle/OpenSpec, memory, context/compaction, Git, dynamic contributions, and shipped content. Its source guard binds each lane to absence/degradation tests, architecture and public-documentation evidence, maintenance dependency exclusions, and constitutional-authority import boundaries.
 
 - Moved shipped skills, prompts, catalog agents, and the currently empty standalone persona, tone, and workflow categories into independently versioned content pack `omegon-shipped` v1. The runtime validates identity, version, canonical and per-file digests, provenance, protocol compatibility, confinement, and content-only capability requests before admitting one immutable boot generation. Missing, corrupt, or incompatible packs disable only shipped content; user and project precedence remains intact. Source/link, direct-install, release archive, Homebrew, Nix/OCI, and npm package metadata now carry the same pack, and compatible replacements take effect on the next process boot without rebuilding Omegon.

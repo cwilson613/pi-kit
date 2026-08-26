@@ -65,6 +65,7 @@ test-dev-scripts:
     python3 -m unittest scripts/test_affected_crates.py scripts/test_test_profile.py scripts/test_dirty_report.py scripts/test_dirty_report_git.py
     python3 -m unittest tests/test_release_manifest.py tests/test_validate_companion.py tests/test_verify_homebrew_formula.py
     python3 -m unittest tests/test_content_pack_packaging.py
+    python3 -m unittest tests/test_composition_release_gates.py
     python3 scripts/check_no_embedded_content.py
     python3 scripts/check_optional_domain_isolation.py
     python3 scripts/tests/test_omegon_launcher.py
@@ -152,6 +153,22 @@ check-maintenance-deps:
 check-optional-domain-isolation:
     python3 scripts/check_optional_domain_isolation.py
     python3 scripts/check_maintenance_dependency_boundary.py
+
+# Build and exercise the source composition through Cargo.
+check-source-composition cargo_profile="release":
+    python3 scripts/check_composition_matrix.py --path source --cargo-profile "{{cargo_profile}}"
+    python3 scripts/check_composition_authority.py
+
+# Exercise a previously installed linked-development channel and its assets.
+check-linked-composition binary_dir linked_home target:
+    python3 scripts/check_composition_matrix.py --path linked --binary-dir "{{binary_dir}}" --linked-home "{{linked_home}}" --target "{{target}}"
+    python3 scripts/check_composition_authority.py
+
+# Exercise an archive and enforce target-aware runtime/build budgets.
+check-release-composition binary_dir archive target:
+    python3 scripts/check_composition_matrix.py --path release --archive "{{archive}}" --target "{{target}}"
+    python3 scripts/check_composition_budgets.py --binary-dir "{{binary_dir}}" --archive "{{archive}}" --target "{{target}}"
+    python3 scripts/check_composition_authority.py
 
 # Assert the UI InterfaceBoundary contract remains renderer-neutral and backend-internal-free.
 check-interface-boundary:
@@ -323,6 +340,9 @@ link channel="default":
     # Keep a stable fallback copy for invocations outside any checkout/channel.
     install -m 0755 "$BINARY" "$HOME/.omegon/bin/omegon"
     install -m 0755 "$MAINTAIN_BINARY" "$HOME/.omegon/bin/omegon-maintain"
+    TARGET_TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
+    python3 scripts/package_release.py --binary-dir "$(pwd)/target/release" \
+        --target "$TARGET_TRIPLE" --lock-dir "$HOME/.omegon/share/omegon/composition"
 
     # Install one validated, independently replaceable shipped content pack.
     PACK_ROOT="$HOME/.omegon/share/omegon/content-packs/omegon-shipped"

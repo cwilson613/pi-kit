@@ -19,6 +19,8 @@ create_generation() {
     mkdir -p "$directory"
     printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$version" > "${directory}/omegon"
     printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$version" > "${directory}/omegon-maintain"
+    printf '{"version":"%s"}\n' "$version" > "${directory}/omegon.composition-lock.json"
+    printf '{"version":"%s"}\n' "$version" > "${directory}/omegon-maintain.composition-lock.json"
     printf '{"version":"%s","layout":"versioned-current-v1"}\n' "$version" \
         > "${directory}/install-receipt.json"
     chmod +x "${directory}/omegon" "${directory}/omegon-maintain"
@@ -41,6 +43,8 @@ assert_generation() {
     [ "$("${BIN}/omegon")" = "$expected" ]
     [ "$("${BIN}/om")" = "$expected" ]
     [ "$("${BIN}/omegon-maintain")" = "$expected" ]
+    [ -f "${CURRENT}/omegon.composition-lock.json" ]
+    [ -f "${CURRENT}/omegon-maintain.composition-lock.json" ]
     grep -q "\"version\":\"${expected}\"" "$RECEIPT"
 }
 
@@ -69,6 +73,8 @@ mkdir "${VERSIONS}/incomplete"
 printf 'broken\n' > "${VERSIONS}/incomplete/omegon"
 if [ -x "${VERSIONS}/incomplete/omegon" ] && \
    [ -x "${VERSIONS}/incomplete/omegon-maintain" ] && \
+   [ -f "${VERSIONS}/incomplete/omegon.composition-lock.json" ] && \
+   [ -f "${VERSIONS}/incomplete/omegon-maintain.composition-lock.json" ] && \
    [ -f "${VERSIONS}/incomplete/install-receipt.json" ]; then
     echo "not ok - incomplete generation accepted"
     exit 1

@@ -112,6 +112,11 @@ class ReleaseManifestTests(unittest.TestCase):
                     member.mode = 0o755
                     member.size = len(payload)
                     package.addfile(member, io.BytesIO(payload))
+                    lock_payload = b"{}\n"
+                    lock = tarfile.TarInfo(f"{name}.composition-lock.json")
+                    lock.mode = 0o644
+                    lock.size = len(lock_payload)
+                    package.addfile(lock, io.BytesIO(lock_payload))
                 payload = b"schema_version = 1\n"
                 member = tarfile.TarInfo("share/omegon/content-packs/omegon-shipped/content-pack.toml")
                 member.mode = 0o644
@@ -141,12 +146,21 @@ class ReleaseManifestTests(unittest.TestCase):
             self.assertEqual(raw, json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode() + b"\n")
             self.assertEqual(
                 [member["path"] for member in manifest["members"]],
-                ["omegon", "omegon-maintain", "share/omegon/content-packs/omegon-shipped/content-pack.toml"],
+                [
+                    "omegon",
+                    "omegon-maintain",
+                    "omegon-maintain.composition-lock.json",
+                    "omegon.composition-lock.json",
+                    "share/omegon/content-packs/omegon-shipped/content-pack.toml",
+                ],
             )
             self.assertEqual(manifest["members"][0]["digest"], hashlib.sha256(b"agent").hexdigest())
             self.assertEqual(manifest["archive_filename"], archive.name)
             self.assertEqual(manifest["git_ref"], "refs/tags/v1.2.3")
             self.assertEqual(len(manifest["record_id"]), 64)
+            self.assertEqual(len(manifest["composition_locks"]), 3)
+            self.assertEqual(manifest["composition_locks"][2]["identity"], "content-pack:omegon-shipped")
+            self.assertIsNone(manifest["composition_locks"][2]["resident_lock_path"])
 
     def test_package_manifest_rejects_archive_confusion(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -347,6 +347,9 @@ for REQUIRED_BINARY in "$BINARY" "$MAINTAIN_BINARY"; do
     die "binary '${REQUIRED_BINARY}' not found in archive — release companion pair is incomplete"
   fi
 done
+for REQUIRED_LOCK in "${BINARY}.composition-lock.json" "${MAINTAIN_BINARY}.composition-lock.json"; do
+  [ -f "${TMP}/${REQUIRED_LOCK}" ] || die "resident lock '${REQUIRED_LOCK}' not found in archive"
+done
 PACK_RELATIVE="share/omegon/content-packs/omegon-shipped"
 if [ ! -f "${TMP}/${PACK_RELATIVE}/content-pack.toml" ]; then
   die "shipped content pack not found in archive — optional content installation is incomplete"
@@ -416,6 +419,8 @@ rm -rf "$STAGING_DIR"
 mkdir "$STAGING_DIR" || die "could not create release staging directory"
 mv "${TMP}/${BINARY}" "${STAGING_DIR}/${BINARY}"
 mv "${TMP}/${MAINTAIN_BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}"
+mv "${TMP}/${BINARY}.composition-lock.json" "${STAGING_DIR}/${BINARY}.composition-lock.json"
+mv "${TMP}/${MAINTAIN_BINARY}.composition-lock.json" "${STAGING_DIR}/${MAINTAIN_BINARY}.composition-lock.json"
 mkdir -p "${STAGING_DIR}/share/omegon/content-packs"
 mv "${TMP}/${PACK_RELATIVE}" "${STAGING_DIR}/${PACK_RELATIVE}"
 chmod +x "${STAGING_DIR}/${BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}" || \
@@ -444,6 +449,8 @@ sync
 if [ -e "$VERSION_DIR" ] || [ -L "$VERSION_DIR" ]; then
   [ -x "${VERSION_DIR}/${BINARY}" ] && \
     [ -x "${VERSION_DIR}/${MAINTAIN_BINARY}" ] && \
+    [ -f "${VERSION_DIR}/${BINARY}.composition-lock.json" ] && \
+    [ -f "${VERSION_DIR}/${MAINTAIN_BINARY}.composition-lock.json" ] && \
     [ -f "${VERSION_DIR}/${PACK_RELATIVE}/content-pack.toml" ] && \
     [ -f "${VERSION_DIR}/install-receipt.json" ] || \
     die "existing release generation is incomplete: ${VERSION_DIR}"

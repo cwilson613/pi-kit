@@ -48,6 +48,7 @@ import { snippet } from "../../lib/snippets";
   </p>
   <ul>
     <li>Pre-built <code>omegon</code> and <code>omegon-maintain</code> companions for macOS and Linux</li>
+    <li>Resident composition locks for both executables, bound by the signed package manifest</li>
     <li>The versioned <code>omegon-shipped</code> content pack under <code>share/omegon/content-packs/</code></li>
     <li>SHA-256 checksums</li>
     <li><a href="https://www.sigstore.dev/">Sigstore cosign</a> signatures (keyless)</li>
@@ -59,8 +60,9 @@ import { snippet } from "../../lib/snippets";
   <h3>Verify a Download</h3>
   <pre><code>{snippet("verify.release_verify")}</code></pre>
   <p>
-    This offline check binds the archive, release identity, provenance, and both executables to
-    compiled repository/workflow trust policy. It does not extract or execute the archive.
+    This offline check binds release identity, provenance, executable digests, protocol ranges,
+    target support, required/optional state, fallback, and both resident locks to compiled trust
+    policy. Required lock failure is fail-closed. It does not extract or execute optional contributions.
   </p>
 
   <h2>Verify the Installed Pair</h2>
@@ -71,6 +73,11 @@ import { snippet } from "../../lib/snippets";
     incompatible, or non-launching companion is an incomplete installation. Missing optional content
     does not block kernel or maintenance startup, but shipped skills, prompts, and catalog data are unavailable.
     Do not copy a companion from another release; reinstall through the owning channel.
+  </p>
+  <p>
+    Upgrades require no configuration rename: existing <code>disabled_tools</code> inputs remain
+    accepted and are translated to capability admission policy. Older archives are not retrofitted
+    with resident locks; install the complete pair from one current release rather than mixing files.
   </p>
 
   <h2>Provider Setup</h2>

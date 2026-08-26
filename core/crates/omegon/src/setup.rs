@@ -919,7 +919,7 @@ impl AgentSetup {
 
         // ─── Tool management ─────────────────────────────────────────────
         let manage_tools = features::manage_tools::ManageTools::new();
-        let disabled_handle = manage_tools.disabled_handle();
+        let tool_admission = manage_tools.admission_handle();
         let tool_inventory = manage_tools.inventory_handle();
         bus.register(Box::new(manage_tools));
 
@@ -1297,7 +1297,7 @@ impl AgentSetup {
 
         // Wire ManageTools state so runtime filtering and list output reflect
         // the bus's finalized model-visible tool cache.
-        bus.set_disabled_tools(disabled_handle.clone());
+        bus.set_tool_admission_policy(tool_admission.clone());
         bus.set_tool_inventory(tool_inventory.clone());
 
         // ─── Default tool profile — disable rarely-used tools ───────────
@@ -1326,7 +1326,7 @@ impl AgentSetup {
                 posture_disabled.push(crate::tool_registry::core::TERMINAL.into());
             }
             bus.apply_operator_tool_profile(slim_mode, &posture_disabled, &posture_enabled);
-            let mut disabled = disabled_handle.lock().unwrap();
+            let mut disabled = tool_admission.lock().unwrap();
             tracing::info!(
                 disabled = disabled.len(),
                 slim = slim_mode,
@@ -1334,8 +1334,8 @@ impl AgentSetup {
             );
             let child_enabled_tools = crate::parse_csv_env("OMEGON_CHILD_ENABLED_TOOLS");
             let child_disabled_tools = crate::parse_csv_env("OMEGON_CHILD_DISABLED_TOOLS");
-            if !child_enabled_tools.is_empty() {
-                disabled.retain(|tool| !child_enabled_tools.iter().any(|enabled| enabled == tool));
+            for tool in child_enabled_tools {
+                disabled.remove(&tool);
             }
             for tool in child_disabled_tools {
                 disabled.insert(tool);

@@ -27,6 +27,7 @@ TARGETS = (
 
 FORMULA_TARGET_ORDER = TARGETS[:4]
 PACKAGE_EXECUTABLES = ("omegon", "omegon-maintain")
+RESIDENT_LOCKS = tuple(f"{name}.composition-lock.json" for name in PACKAGE_EXECUTABLES)
 CONTENT_PREFIX = "share/omegon/content-packs/omegon-shipped/"
 CONTENT_MANIFEST = f"{CONTENT_PREFIX}content-pack.toml"
 DOMAIN_PREFIX = b"omegon-maint-v1\0"
@@ -153,7 +154,7 @@ def build_package_manifest(
     aggregate_size = 0
     with tarfile.open(archive, mode="r:gz") as package:
         for member in package:
-            allowed = member.name in PACKAGE_EXECUTABLES or member.name.startswith(CONTENT_PREFIX)
+            allowed = member.name in PACKAGE_EXECUTABLES or member.name in RESIDENT_LOCKS or member.name.startswith(CONTENT_PREFIX)
             if not member.isfile() or not allowed or member.name in seen:
                 raise ValueError(f"Invalid package archive member: {member.name}")
             expected_mode = 0o755 if member.name in PACKAGE_EXECUTABLES else 0o644
@@ -184,16 +185,45 @@ def build_package_manifest(
                 }
             )
             seen.add(member.name)
-    if not set(PACKAGE_EXECUTABLES).issubset(seen) or CONTENT_MANIFEST not in seen:
-        raise ValueError("Package archive must contain both root executables and the content-pack manifest")
+    if not set(PACKAGE_EXECUTABLES + RESIDENT_LOCKS).issubset(seen) or CONTENT_MANIFEST not in seen:
+        raise ValueError("Package archive must contain both root executables, resident locks, and the content-pack manifest")
     members.sort(key=lambda member: member["path"])
 
     archive_digest = sha256_file(archive)
     git_ref = f"refs/tags/{tag}"
+    member_by_path = {member["path"]: member for member in members}
+    composition_locks = [
+        {
+            "artifact_digest": member_by_path[executable]["digest"],
+            "artifact_path": executable,
+            "fallback": "fail_closed",
+            "identity": f"executable:{executable}",
+            "protocol_maximum": 1,
+            "protocol_minimum": 1,
+            "required": True,
+            "resident_lock_path": lock_path,
+            "targets": [target],
+        }
+        for executable, lock_path in zip(PACKAGE_EXECUTABLES, RESIDENT_LOCKS, strict=True)
+    ]
+    composition_locks.append(
+        {
+            "artifact_digest": member_by_path[CONTENT_MANIFEST]["digest"],
+            "artifact_path": CONTENT_MANIFEST,
+            "fallback": "typed_unavailable",
+            "identity": "content-pack:omegon-shipped",
+            "protocol_maximum": 1,
+            "protocol_minimum": 1,
+            "required": False,
+            "resident_lock_path": None,
+            "targets": [target],
+        }
+    )
     return {
         "archive_digest": archive_digest,
         "archive_filename": archive.name,
         "commit": commit,
+        "composition_locks": composition_locks,
         "git_ref": git_ref,
         "issuer": "https://token.actions.githubusercontent.com",
         "members": members,

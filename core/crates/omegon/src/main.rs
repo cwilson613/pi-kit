@@ -555,6 +555,13 @@ enum Commands {
     /// Run interactive TUI session — ratatui-based terminal interface.
     Interactive,
 
+    /// Inspect the bounded runtime composition used by release gates.
+    #[command(hide = true)]
+    CompositionInspect {
+        #[arg(long, value_parser = ["interactive", "headless", "daemon", "full"])]
+        profile: String,
+    },
+
     /// Run a persistent local daemon/control-plane for long-lived agents and supervisors.
     Serve {
         /// Preferred localhost control port.
@@ -1346,6 +1353,35 @@ pub fn startup_elapsed_ms() -> u64 {
         .unwrap_or(0)
 }
 
+async fn run_composition_inspection(cli: &Cli, profile: &str) -> anyhow::Result<()> {
+    let settings = settings::shared(&cli.model);
+    let runtime_mode = match profile {
+        "interactive" => "tui",
+        "headless" => "headless",
+        "daemon" => "daemon",
+        "full" => "full",
+        _ => anyhow::bail!("unknown composition profile: {profile}"),
+    };
+    let mut agent = setup::AgentSetup::new_with_safety_and_mode(
+        &cli.cwd,
+        None,
+        Some(settings),
+        false,
+        runtime_mode,
+    )
+    .await?;
+    let inspection = runtime_composition::inspect_runtime_composition(profile, &agent.bus)?;
+    let dynamic_failures = agent.dynamic_contributions.shutdown().await;
+    let managed_report = agent.bus.shutdown_managed_services().await;
+    if !dynamic_failures.is_empty() || !managed_report.all_resources_settled() {
+        anyhow::bail!(
+            "composition inspection cleanup failed: dynamic={dynamic_failures:?}; managed={managed_report:?}"
+        );
+    }
+    println!("{}", serde_json::to_string(&inspection)?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = STARTUP_INSTANT.set(std::time::Instant::now());
@@ -1466,6 +1502,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
+        Some(Commands::CompositionInspect { ref profile }) => {
+            run_composition_inspection(&cli, profile).await
+        }
         Some(Commands::Plugin { ref action }) => {
             match action {
                 PluginAction::Install { uri } => {

@@ -9,7 +9,8 @@ use std::{
 
 use flate2::bufread::GzDecoder;
 use omegon_maintenance_contracts::{
-    AuthorityKey, MaintenanceResultV1, PackageManifestV1, PackageMemberV1, parse_record,
+    AuthorityKey, MaintenanceResultV1, PackageManifestV1, PackageMemberV1,
+    ResidentCompositionLockV1, canonical_json, parse_record,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -31,6 +32,16 @@ const EXPECTED_ISSUER: &str = "https://token.actions.githubusercontent.com";
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 const OFFICIAL_BUNDLE_V03: &str = "application/vnd.dev.sigstore.bundle.v0.3+json";
 const ALLOWED_METADATA: &[&str] = &["THIRD_PARTY_NOTICES", "sbom.cdx.json"];
+const RESIDENT_LOCKS: &[&str] = &[
+    "omegon.composition-lock.json",
+    "omegon-maintain.composition-lock.json",
+];
+const CONTENT_MANIFEST: &str = "share/omegon/content-packs/omegon-shipped/content-pack.toml";
+const LEGACY_FIXTURE_TAG: &str = "v0.29.0-dev-fixture.1";
+const LEGACY_FIXTURE_ARCHIVE_DIGEST: &str =
+    "77b590261b59f46d00abdb9f617e5bd460b0900a08263aefc69af94b4c9f4528";
+const LEGACY_FIXTURE_RECORD_ID: &str =
+    "8e726e838978fdecb6eafe35e9708fb7b8a8616823896bdb1192c4692858f7ab";
 
 #[derive(Debug)]
 struct VerificationError {
@@ -153,6 +164,14 @@ fn verify_release_inner(
         started,
         deadline,
     )?;
+    verify_resident_locks(
+        archive_file
+            .try_clone()
+            .map_err(|error| VerificationError::new("release_archive_invalid", error))?,
+        &manifest,
+        started,
+        deadline,
+    )?;
     archive_file
         .seek(SeekFrom::Start(0))
         .map_err(|error| VerificationError::new("release_archive_invalid", error))?;
@@ -177,6 +196,9 @@ fn verify_release_inner(
         "archive_digest": archive_digest,
         "integrated_time": integrated_time,
         "members_verified": manifest.members.len(),
+        "composition_locks_verified": manifest.composition_locks.len(),
+        "signing_identity": manifest.workflow_identity,
+        "signature_verification": "verified",
         "trust_root": "sigstore-production-embedded",
     }))
 }
@@ -226,7 +248,10 @@ fn verify_compiled_policy(
     for member in &manifest.members {
         match member.path.as_str() {
             "omegon" | "omegon-maintain" if member.mode == 0o755 => {}
+            path if RESIDENT_LOCKS.contains(&path) && member.mode == 0o644 => {}
             path if ALLOWED_METADATA.contains(&path) && member.mode == 0o644 => {}
+            path if path.starts_with("share/omegon/content-packs/omegon-shipped/")
+                && member.mode == 0o644 => {}
             _ => {
                 return Err(VerificationError::new(
                     "release_policy_mismatch",
@@ -234,6 +259,298 @@ fn verify_compiled_policy(
                 ));
             }
         }
+    }
+    if manifest.composition_locks.is_empty() {
+        if !is_pinned_legacy_fixture(manifest) {
+            return Err(VerificationError::new(
+                "release_composition_lock_invalid",
+                "signed package manifest lacks required composition locks",
+            ));
+        }
+    } else {
+        validate_exact_package_lock_set(manifest)?;
+        let members = manifest
+            .members
+            .iter()
+            .map(|member| (member.path.as_str(), member))
+            .collect::<BTreeMap<_, _>>();
+        for lock in manifest
+            .composition_locks
+            .iter()
+            .filter(|lock| lock.required)
+        {
+            validate_package_composition_lock(lock, &members, manifest)?;
+        }
+        for lock in manifest
+            .composition_locks
+            .iter()
+            .filter(|lock| !lock.required)
+        {
+            validate_package_composition_lock(lock, &members, manifest)?;
+        }
+    }
+    Ok(())
+}
+
+fn is_pinned_legacy_fixture(manifest: &PackageManifestV1) -> bool {
+    manifest.tag == LEGACY_FIXTURE_TAG
+        && manifest.archive_digest.to_hex() == LEGACY_FIXTURE_ARCHIVE_DIGEST
+        && manifest.record_id.to_hex() == LEGACY_FIXTURE_RECORD_ID
+        && manifest.members.len() == 2
+}
+
+fn validate_exact_package_lock_set(manifest: &PackageManifestV1) -> Result<(), VerificationError> {
+    let expected = BTreeMap::from([
+        (
+            "executable:omegon",
+            (
+                "omegon",
+                true,
+                "fail_closed",
+                Some("omegon.composition-lock.json"),
+            ),
+        ),
+        (
+            "executable:omegon-maintain",
+            (
+                "omegon-maintain",
+                true,
+                "fail_closed",
+                Some("omegon-maintain.composition-lock.json"),
+            ),
+        ),
+        (
+            "content-pack:omegon-shipped",
+            (CONTENT_MANIFEST, false, "typed_unavailable", None),
+        ),
+    ]);
+    if manifest.composition_locks.len() != expected.len() {
+        return Err(VerificationError::new(
+            "release_composition_lock_invalid",
+            "signed package manifest does not contain the exact required composition lock set",
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for lock in &manifest.composition_locks {
+        let Some((path, required, fallback, resident_path)) = expected.get(lock.identity.as_str())
+        else {
+            return Err(VerificationError::new(
+                "release_composition_lock_invalid",
+                format!(
+                    "unknown package composition lock identity: {}",
+                    lock.identity
+                ),
+            ));
+        };
+        if !seen.insert(lock.identity.as_str())
+            || lock.artifact_path != *path
+            || lock.required != *required
+            || lock.fallback != *fallback
+            || lock.resident_lock_path.as_deref() != *resident_path
+            || lock.targets != [manifest.target.as_str()]
+        {
+            return Err(VerificationError::new(
+                "release_composition_lock_invalid",
+                format!(
+                    "package composition lock does not match its exact contract: {}",
+                    lock.identity
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_package_composition_lock(
+    lock: &omegon_maintenance_contracts::ArtifactCompositionLockV1,
+    members: &BTreeMap<&str, &PackageMemberV1>,
+    manifest: &PackageManifestV1,
+) -> Result<(), VerificationError> {
+    let member = members.get(lock.artifact_path.as_str()).ok_or_else(|| {
+        VerificationError::new(
+            "release_composition_lock_invalid",
+            format!("locked artifact is absent: {}", lock.artifact_path),
+        )
+    })?;
+    if member.digest != lock.artifact_digest
+        || lock.targets != [manifest.target.as_str()]
+        || lock.protocol_minimum == 0
+        || lock.protocol_minimum > lock.protocol_maximum
+        || (lock.required && lock.fallback != "fail_closed")
+        || (!lock.required && lock.fallback != "typed_unavailable")
+    {
+        return Err(VerificationError::new(
+            "release_composition_lock_invalid",
+            format!("required artifact lock is invalid: {}", lock.identity),
+        ));
+    }
+    if let Some(path) = &lock.resident_lock_path
+        && !members.contains_key(path.as_str())
+    {
+        return Err(VerificationError::new(
+            "release_composition_lock_invalid",
+            format!("resident lock is absent for {}", lock.identity),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_resident_locks(
+    file: File,
+    manifest: &PackageManifestV1,
+    started: Instant,
+    deadline: Duration,
+) -> Result<(), VerificationError> {
+    if manifest.composition_locks.is_empty() {
+        return Ok(());
+    }
+    let expected = manifest
+        .composition_locks
+        .iter()
+        .filter_map(|lock| lock.resident_lock_path.as_deref().map(|path| (path, lock)))
+        .collect::<BTreeMap<_, _>>();
+    let decoder = GzDecoder::new(BufReader::new(file));
+    let mut archive = tar::Archive::new(decoder);
+    let mut verified = BTreeSet::new();
+    for entry in archive
+        .entries()
+        .map_err(|error| VerificationError::new("release_archive_invalid", error))?
+    {
+        check_deadline(started, deadline)?;
+        let mut entry =
+            entry.map_err(|error| VerificationError::new("release_archive_invalid", error))?;
+        let path = entry
+            .path()
+            .map_err(|error| VerificationError::new("release_archive_invalid", error))?
+            .into_owned();
+        let Some(path) = path.to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(package_lock) = expected.get(path.as_str()) else {
+            continue;
+        };
+        if entry.size() > MAX_MANIFEST_BYTES {
+            return Err(VerificationError::new(
+                "release_composition_lock_invalid",
+                "resident composition lock exceeds its byte limit",
+            ));
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        entry
+            .read_to_end(&mut bytes)
+            .map_err(|error| VerificationError::new("release_composition_lock_invalid", error))?;
+        let lock: ResidentCompositionLockV1 = serde_json::from_slice(&bytes)
+            .map_err(|error| VerificationError::new("release_composition_lock_invalid", error))?;
+        let canonical = canonical_json(&lock)
+            .map_err(|error| VerificationError::new("release_composition_lock_invalid", error))?;
+        if canonical != bytes
+            || lock.schema_version != 1
+            || lock.executable_identity != package_lock.artifact_path
+            || lock.executable_digest != package_lock.artifact_digest
+            || lock.target != manifest.target
+            || lock.protocol_minimum == 0
+            || lock.protocol_minimum > lock.protocol_maximum
+            || lock.signing_identity.issuer != manifest.issuer
+            || lock.signing_identity.workflow_identity != manifest.workflow_identity
+            || lock.signing_identity.verification != "required"
+        {
+            return Err(VerificationError::new(
+                "release_composition_lock_invalid",
+                format!("resident composition lock is invalid: {path}"),
+            ));
+        }
+        // Required entries are validated as one fail-closed set before any
+        // optional entry is inspected. Verification never executes a member.
+        validate_exact_resident_set(&lock)?;
+        for contribution in lock.contributions.iter().filter(|entry| entry.required) {
+            validate_resident_contribution(contribution, &lock, true)?;
+        }
+        for contribution in lock.contributions.iter().filter(|entry| !entry.required) {
+            validate_resident_contribution(contribution, &lock, false)?;
+        }
+        verified.insert(path);
+    }
+    if verified.len() != expected.len() {
+        return Err(VerificationError::new(
+            "release_composition_lock_invalid",
+            "one or more signed resident composition locks were not verified",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exact_resident_set(lock: &ResidentCompositionLockV1) -> Result<(), VerificationError> {
+    let expected: BTreeSet<&str> = match lock.executable_identity.as_str() {
+        "omegon" => [
+            "system:constitutional-kernel",
+            "system:default-loop",
+            "system:host-effects",
+            "feature:codescan",
+            "feature:context-compaction",
+            "feature:git",
+            "feature:lifecycle",
+            "feature:memory",
+        ]
+        .into_iter()
+        .collect(),
+        "omegon-maintain" => ["system:maintenance-kernel"].into_iter().collect(),
+        _ => {
+            return Err(VerificationError::new(
+                "release_composition_lock_invalid",
+                "resident lock has an unknown executable identity",
+            ));
+        }
+    };
+    let actual = lock
+        .contributions
+        .iter()
+        .map(|entry| entry.identity.as_str())
+        .collect::<BTreeSet<_>>();
+    if actual != expected || actual.len() != lock.contributions.len() {
+        return Err(VerificationError::new(
+            "release_composition_lock_invalid",
+            format!(
+                "resident lock for {} does not contain its exact unique contribution set",
+                lock.executable_identity
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_resident_contribution(
+    contribution: &omegon_maintenance_contracts::ResidentContributionLockV1,
+    lock: &ResidentCompositionLockV1,
+    required: bool,
+) -> Result<(), VerificationError> {
+    let expected_fallback = if required {
+        "fail_closed"
+    } else {
+        "typed_unavailable"
+    };
+    if contribution.identity.trim().is_empty()
+        || contribution.artifact_path != lock.executable_identity
+        || contribution.artifact_digest != lock.executable_digest
+        || contribution.protocol_minimum < lock.protocol_minimum
+        || contribution.protocol_maximum > lock.protocol_maximum
+        || contribution.protocol_minimum > contribution.protocol_maximum
+        || contribution.targets != [lock.target.as_str()]
+        || contribution.fallback != expected_fallback
+        || contribution.required != required
+        || contribution.state
+            != if required {
+                "resident"
+            } else {
+                "resident_optional"
+            }
+    {
+        return Err(VerificationError::new(
+            "release_composition_lock_invalid",
+            format!(
+                "resident contribution lock is invalid: {}",
+                contribution.identity
+            ),
+        ));
     }
     Ok(())
 }
@@ -914,6 +1231,176 @@ mod tests {
         .unwrap();
         let path = Path::new("/tmp/omegon-0.29.0-dev-x86_64-unknown-linux-gnu.tar.gz");
         assert!(verify_compiled_policy(&manifest, path).is_err());
+    }
+
+    #[test]
+    fn legacy_fixture_composition_exception_is_immutable() {
+        let (_directory, _archive, manifest_path, _bundle) = production_fixture();
+        let manifest: PackageManifestV1 =
+            parse_record(&std::fs::read(manifest_path).unwrap()).unwrap();
+        assert!(is_pinned_legacy_fixture(&manifest));
+
+        let mut changed = manifest.clone();
+        changed.tag = "v0.29.0-dev-fixture.2".into();
+        assert!(!is_pinned_legacy_fixture(&changed));
+        let mut changed = manifest.clone();
+        changed.archive_digest = AuthorityKey::from_bytes([9; 32]);
+        assert!(!is_pinned_legacy_fixture(&changed));
+        let mut changed = manifest;
+        changed.members.push(package_member("unexpected", b"value"));
+        assert!(!is_pinned_legacy_fixture(&changed));
+    }
+
+    #[test]
+    fn package_composition_lock_set_rejects_unknown_and_duplicate_identity() {
+        let (_directory, _archive, manifest_path, _bundle) = production_fixture();
+        let mut manifest: PackageManifestV1 =
+            parse_record(&std::fs::read(manifest_path).unwrap()).unwrap();
+        let target = manifest.target.clone();
+        let digest = AuthorityKey::from_bytes([7; 32]);
+        let lock = |identity: &str,
+                    artifact_path: &str,
+                    required: bool,
+                    resident_lock_path: Option<&str>| {
+            omegon_maintenance_contracts::ArtifactCompositionLockV1 {
+                identity: identity.into(),
+                artifact_path: artifact_path.into(),
+                artifact_digest: digest,
+                protocol_minimum: 1,
+                protocol_maximum: 1,
+                targets: vec![target.clone()],
+                required,
+                fallback: if required {
+                    "fail_closed".into()
+                } else {
+                    "typed_unavailable".into()
+                },
+                resident_lock_path: resident_lock_path.map(str::to_string),
+            }
+        };
+        manifest.composition_locks = vec![
+            lock(
+                "executable:omegon",
+                "omegon",
+                true,
+                Some("omegon.composition-lock.json"),
+            ),
+            lock(
+                "executable:omegon-maintain",
+                "omegon-maintain",
+                true,
+                Some("omegon-maintain.composition-lock.json"),
+            ),
+            lock("content-pack:omegon-shipped", CONTENT_MANIFEST, false, None),
+        ];
+        validate_exact_package_lock_set(&manifest).unwrap();
+
+        let mut malformed = manifest.clone();
+        malformed.composition_locks[2].identity = "executable:omegon".into();
+        assert!(validate_exact_package_lock_set(&malformed).is_err());
+        let mut malformed = manifest;
+        malformed.composition_locks[0].resident_lock_path = Some("arbitrary.json".into());
+        assert!(validate_exact_package_lock_set(&malformed).is_err());
+    }
+
+    #[test]
+    fn resident_composition_lock_set_rejects_duplicates_and_unknowns() {
+        let contribution = omegon_maintenance_contracts::ResidentContributionLockV1 {
+            identity: "system:maintenance-kernel".into(),
+            artifact_path: "omegon-maintain".into(),
+            artifact_digest: AuthorityKey::from_bytes([3; 32]),
+            protocol_minimum: 1,
+            protocol_maximum: 1,
+            targets: vec!["x86_64-unknown-linux-gnu".into()],
+            required: true,
+            fallback: "fail_closed".into(),
+            state: "resident".into(),
+        };
+        let mut lock = ResidentCompositionLockV1 {
+            schema_version: 1,
+            executable_identity: "omegon-maintain".into(),
+            executable_digest: contribution.artifact_digest,
+            target: "x86_64-unknown-linux-gnu".into(),
+            protocol_minimum: 1,
+            protocol_maximum: 1,
+            contributions: vec![contribution.clone()],
+            signing_identity: omegon_maintenance_contracts::SigningIdentityV1 {
+                issuer: EXPECTED_ISSUER.into(),
+                workflow_identity: "test".into(),
+                verification: "required".into(),
+            },
+        };
+        validate_exact_resident_set(&lock).unwrap();
+        lock.contributions.push(contribution);
+        assert!(validate_exact_resident_set(&lock).is_err());
+        lock.contributions.truncate(1);
+        lock.contributions[0].identity = "system:unknown".into();
+        assert!(validate_exact_resident_set(&lock).is_err());
+    }
+
+    #[test]
+    fn required_resident_lock_failure_is_fail_closed_before_optional_inventory() {
+        let required = omegon_maintenance_contracts::ResidentContributionLockV1 {
+            identity: "system:kernel".into(),
+            artifact_path: "omegon".into(),
+            artifact_digest: AuthorityKey::from_bytes([1; 32]),
+            protocol_minimum: 2,
+            protocol_maximum: 1,
+            targets: vec!["x86_64-unknown-linux-gnu".into()],
+            required: true,
+            fallback: "fail_closed".into(),
+            state: "resident".into(),
+        };
+        let lock = ResidentCompositionLockV1 {
+            schema_version: 1,
+            executable_identity: "omegon".into(),
+            executable_digest: AuthorityKey::from_bytes([1; 32]),
+            target: "x86_64-unknown-linux-gnu".into(),
+            protocol_minimum: 1,
+            protocol_maximum: 1,
+            contributions: vec![required.clone()],
+            signing_identity: omegon_maintenance_contracts::SigningIdentityV1 {
+                issuer: EXPECTED_ISSUER.into(),
+                workflow_identity: "test".into(),
+                verification: "required".into(),
+            },
+        };
+        assert_eq!(
+            validate_resident_contribution(&required, &lock, true)
+                .unwrap_err()
+                .code,
+            "release_composition_lock_invalid"
+        );
+    }
+
+    #[test]
+    fn optional_resident_lock_requires_typed_unavailable_fallback() {
+        let optional = omegon_maintenance_contracts::ResidentContributionLockV1 {
+            identity: "feature:memory".into(),
+            artifact_path: "omegon".into(),
+            artifact_digest: AuthorityKey::from_bytes([2; 32]),
+            protocol_minimum: 1,
+            protocol_maximum: 1,
+            targets: vec!["x86_64-unknown-linux-gnu".into()],
+            required: false,
+            fallback: "typed_unavailable".into(),
+            state: "resident_optional".into(),
+        };
+        let lock = ResidentCompositionLockV1 {
+            schema_version: 1,
+            executable_identity: "omegon".into(),
+            executable_digest: AuthorityKey::from_bytes([2; 32]),
+            target: "x86_64-unknown-linux-gnu".into(),
+            protocol_minimum: 1,
+            protocol_maximum: 1,
+            contributions: vec![optional.clone()],
+            signing_identity: omegon_maintenance_contracts::SigningIdentityV1 {
+                issuer: EXPECTED_ISSUER.into(),
+                workflow_identity: "test".into(),
+                verification: "required".into(),
+            },
+        };
+        validate_resident_contribution(&optional, &lock, false).unwrap();
     }
 
     #[test]

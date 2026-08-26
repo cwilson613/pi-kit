@@ -512,13 +512,37 @@ Default transition policies:
 
 **Exit gate:** minimal headless/kernel and default interactive matrices compile and pass contract tests; optional domains can be absent without kernel startup failure.
 
-### Slice 6 — budgets and deletion
+### Slice 6 — budgets and deletion (implemented by release Slice 7)
 
 - Remove legacy disabled-name sets, hard-coded tool groups, first-registration-wins arbitration, per-surface capability allowlists, and duplicate loaded/active flags.
 - Establish dependency, artifact-size, schema-token, default-callable-count, and startup-task budgets.
 - Report budget deltas in CI and require explicit approval for regressions.
 
 **Exit gate:** one admission engine and snapshot remain as the authority; legacy compatibility adapters are read-only or removed.
+
+The shipped implementation translates compatibility `disabled_tools` inputs at
+the profile/session boundary into capability IDs held by
+`ToolAdmissionPolicy`; there is no shared disabled-name-set authority. Registry
+publication rejects duplicate capability/invocation owners independent of
+registration order. Dynamic transports share one contribution generation owner,
+and command surfaces project the canonical `CommandDefinition` registry.
+`scripts/check_composition_authority.py` guards these deletions.
+
+`fixtures/release-composition-matrix-v1.json` is the executable profile/path
+matrix. `fixtures/composition-budgets-v1.json` records measured maintenance and
+normal baselines plus approved deltas. The source path invokes each profile with
+`cargo run` in an isolated workspace. The linked path invokes the installed
+channel launchers from outside the checkout and verifies their `--which` target,
+resident locks, and content assets. The release path validates exact archive
+inventory and invokes the extracted executables.
+
+The normal executable's inspection command constructs the requested production
+runtime mode. It reports post-admission callable capability IDs, schema tokens
+from the model-request estimator, and active managed startup resources grouped
+by owner. The budget collector combines that runtime evidence with target-aware
+Cargo dependency closure, release executable bytes, and resident-lock entries.
+Budget failures retain owner diagnostics instead of falling back to source-text
+counts.
 
 ## Enforcement gates
 

@@ -37,6 +37,7 @@ class Omegon < Formula
     check_linux_glibc_requirement!
     bin.install "omegon"
     bin.install "omegon-maintain"
+    (share/"omegon/composition").install "omegon.composition-lock.json", "omegon-maintain.composition-lock.json"
     bin.install_symlink "omegon" => "om"
     share.install "share/omegon"
   end
@@ -64,6 +65,8 @@ class Omegon < Formula
     assert_match "omegon-maintain", shell_output("#{bin}/omegon-maintain --version")
     assert_match '"status":"success"', shell_output("#{bin}/omegon-maintain --json identity")
     assert_predicate share/"omegon/content-packs/omegon-shipped/content-pack.toml", :exist?
+    assert_predicate share/"omegon/composition/omegon.composition-lock.json", :exist?
+    assert_predicate share/"omegon/composition/omegon-maintain.composition-lock.json", :exist?
   end
 
   private

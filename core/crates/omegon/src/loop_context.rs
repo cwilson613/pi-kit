@@ -290,7 +290,7 @@ pub(crate) fn default_context_composition(
     }
 }
 
-fn estimate_tool_schema_tokens(tools: &[omegon_traits::ToolDefinition]) -> usize {
+pub(crate) fn estimate_tool_schema_tokens(tools: &[omegon_traits::ToolDefinition]) -> usize {
     tools
         .iter()
         .map(|tool| {

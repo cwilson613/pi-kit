@@ -20,6 +20,33 @@ This change remains `proposed` overall. Slices 0 through 5 are complete; optiona
 
 Slice 6.1.9 is complete. Memory persistence, filesystem synchronization, and production consumers now use one managed durable service with strict settlement and typed absence. Its portable campaign and direct-owner/write source guard pass on macOS, Ubuntu, and Windows in GitHub Actions run `32936194406` at `a4b14499`.
 
+Slices 7.1-7.4 reuse the existing Sigstore release trust boundary. The canonical
+`PackageManifestV1` is the signed package lock and binds two canonical resident
+locks plus both executable digests. Each resident entry binds its containing
+executable path and digest, protocol range, target, state, fallback, and expected
+signing identity. Offline maintenance validates the package bundle and exact
+required lock set before optional entries and never extracts or executes archive
+members. The one legacy verifier exception is pinned to an immutable tag,
+archive digest, record ID, and two-member inventory; all non-fixture releases
+without the exact composition locks fail closed.
+
+Both executable build scripts watch the active Git ref and workspace manifest.
+They also record the same tracked dirty-state suffix. Linked companion
+validation therefore rejects stale maintenance metadata after the branch moves.
+
+The executable profile matrix and measured budgets are versioned fixtures, not
+prose inventories. Source probes execute through Cargo, linked probes execute
+installed channel launchers from outside the checkout, and release probes
+execute binaries extracted after exact archive-inventory validation. Runtime
+inspection constructs each requested production mode and reports post-admission
+callable capabilities, model-request schema estimates, and active managed
+startup resources with owner attribution. Target-aware dependency closure,
+release bytes, and resident locks complete the budget evidence. Compatibility
+`disabled_tools` fields remain accepted but are translated into capability IDs
+at the owner boundary; they are no longer a shared name-set authority. Existing
+graph collision rejection, unified dynamic generation ownership, and canonical
+command metadata are deletion guards.
+
 Slice 6.1.10 completes context/compaction as a managed deterministic-planning lane. The service receives immutable host-normalized conversation entries and owns only eligibility, keep-window selection, evicted-entry counts, reasons, and provider-payload formatting. Session-owned `ContextManager` state, canonical conversation mutation, semantic compaction authority, supervisor admission, provider routing, metrics, and frontend events remain outside the service. This boundary is optional, boot-captured, exact-generation, cancellation-aware, and backed by one strict task worker; absence never triggers ambient lookup or direct planner fallback.
 
 Slice 6.1.11 freezes Git as the final task-6.1 managed lane. `feature:git` publishes optional boot-only `service:git` / `interface:omegon-git-v1` under contribution generation `contribution:git-managed-v1`. One serial worker owns the repository model, libgit2 repository/index/worktree mutation, and every Git or JJ subprocess launched by `omegon-git`. Consumers receive only a boot-captured exact-generation handle or immutable boot observation; requests name repository-relative paths or host-approved workspace paths contained by the captured repository/workspace boundary and return owned DTOs.

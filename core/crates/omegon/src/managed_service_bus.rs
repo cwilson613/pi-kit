@@ -942,6 +942,19 @@ impl ManagedServiceBus {
             .collect()
     }
 
+    pub(crate) fn active_resource_owners(&self) -> BTreeMap<String, usize> {
+        let active_generations = self.active.values().collect::<BTreeSet<_>>();
+        let mut owners = BTreeMap::new();
+        for key in active_generations {
+            let Some(generation) = self.generations.get(key) else {
+                continue;
+            };
+            *owners.entry(key.owner.as_str().to_string()).or_default() +=
+                generation.resource_signature.len();
+        }
+        owners
+    }
+
     pub(crate) fn graph_managed_metadata(&self) -> Vec<ManagedPublishedServiceMetadata> {
         self.active
             .iter()

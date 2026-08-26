@@ -134,12 +134,28 @@ pub use jj_lib_queries::*;
 /// "Commits" the current working copy and starts a new mutable change.
 /// No dirty tree concept — the working copy becomes immutable.
 pub fn new_change(repo_path: &Path, description: &str) -> Result<()> {
-    run_jj(repo_path, &["new", "-m", description])
+    new_change_with_cancel(repo_path, description, &|| false)
+}
+
+pub fn new_change_with_cancel(
+    repo_path: &Path,
+    description: &str,
+    cancelled: &impl Fn() -> bool,
+) -> Result<()> {
+    run_jj_with_cancel(repo_path, &["new", "-m", description], cancelled)
 }
 
 /// Describe the current working copy change.
 pub fn describe(repo_path: &Path, description: &str) -> Result<()> {
-    run_jj(repo_path, &["describe", "-m", description])
+    describe_with_cancel(repo_path, description, &|| false)
+}
+
+pub fn describe_with_cancel(
+    repo_path: &Path,
+    description: &str,
+    cancelled: &impl Fn() -> bool,
+) -> Result<()> {
+    run_jj_with_cancel(repo_path, &["describe", "-m", description], cancelled)
 }
 
 /// Squash the current change into its parent.
@@ -161,10 +177,7 @@ pub fn diff_summary(repo_path: &Path) -> Result<Vec<String>> {
         return Ok(vec![]);
     }
 
-    let output = std::process::Command::new("jj")
-        .args(["diff", "--summary", "-r", "@"])
-        .current_dir(repo_path)
-        .output()
+    let output = crate::process::run("jj", ["diff", "--summary", "-r", "@"], repo_path, &|| false)
         .context("jj diff failed")?;
 
     if output.status.success() {
@@ -182,52 +195,83 @@ pub fn diff_summary(repo_path: &Path) -> Result<Vec<String>> {
     }
 }
 
+/// Return the short change ID of the committed parent of the working copy.
+pub fn working_copy_parent_change_id(repo_path: &Path) -> Result<Option<String>> {
+    working_copy_parent_change_id_with_cancel(repo_path, &|| false)
+}
+
+pub fn working_copy_parent_change_id_with_cancel(
+    repo_path: &Path,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Option<String>> {
+    if !is_jj_repo(repo_path) {
+        return Ok(None);
+    }
+    let output = crate::process::run(
+        "jj",
+        ["log", "-r", "@-", "--no-graph", "-T", "change_id.short()"],
+        repo_path,
+        cancelled,
+    )
+    .context("jj parent change-id query failed")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!value.is_empty()).then_some(value))
+}
+
 /// Export jj state into git, fast-forward `main` when jj is strictly ahead,
 /// and reattach HEAD to `main` if it is currently detached.
 ///
 /// This keeps git branch semantics aligned with jj-backed commits so trunk work
 /// does not remain on a detached HEAD until release time.
 pub fn sync_to_git_main(repo_path: &Path) -> Result<()> {
+    sync_to_git_main_with_cancel(repo_path, &|| false)
+}
+
+pub fn sync_to_git_main_with_cancel(repo_path: &Path, cancelled: &impl Fn() -> bool) -> Result<()> {
     if !is_jj_repo(repo_path) {
         return Ok(());
     }
 
-    let _ = std::process::Command::new("jj")
-        .args(["git", "export"])
-        .current_dir(repo_path)
-        .output();
+    let _ = crate::process::run("jj", ["git", "export"], repo_path, cancelled);
 
-    let jj_parent = std::process::Command::new("jj")
-        .args(["log", "--no-graph", "-r", "@-", "--template", "commit_id"])
-        .current_dir(repo_path)
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
+    let jj_parent = crate::process::run(
+        "jj",
+        ["log", "--no-graph", "-r", "@-", "--template", "commit_id"],
+        repo_path,
+        cancelled,
+    )
+    .ok()
+    .and_then(|o| {
+        if o.status.success() {
+            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+        } else {
+            None
+        }
+    })
+    .unwrap_or_default();
 
     // Git CLI operations for jj sync coordination. These intentionally use
     // the git CLI (not libgit2) because they must match the ref layout that
     // `jj git export` produces. Coupling to libgit2 here risks diverging
     // from jj's expectations as the project evolves.
-    let main_sha = std::process::Command::new("git")
-        .args(["rev-parse", "refs/heads/main"])
-        .current_dir(repo_path)
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
+    let main_sha = crate::process::run(
+        "git",
+        ["rev-parse", "refs/heads/main"],
+        repo_path,
+        cancelled,
+    )
+    .ok()
+    .and_then(|o| {
+        if o.status.success() {
+            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+        } else {
+            None
+        }
+    })
+    .unwrap_or_default();
 
     match classify_sync_action(
         if jj_parent.is_empty() {
@@ -241,17 +285,19 @@ pub fn sync_to_git_main(repo_path: &Path) -> Result<()> {
             Some(main_sha.as_str())
         },
         |ancestor, descendant| {
-            std::process::Command::new("git")
-                .args(["merge-base", "--is-ancestor", ancestor, descendant])
-                .current_dir(repo_path)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
+            crate::process::run(
+                "git",
+                ["merge-base", "--is-ancestor", ancestor, descendant],
+                repo_path,
+                cancelled,
+            )
+            .map(|output| output.status.success())
+            .unwrap_or(false)
         },
     ) {
         GitSyncAction::Noop => {}
         GitSyncAction::FastForwardMain => {
-            run_git(repo_path, &["branch", "-f", "main", &jj_parent])?;
+            run_git_with_cancel(repo_path, &["branch", "-f", "main", &jj_parent], cancelled)?;
         }
         GitSyncAction::Diverged => {
             anyhow::bail!(
@@ -261,18 +307,12 @@ pub fn sync_to_git_main(repo_path: &Path) -> Result<()> {
         }
     }
 
-    let branch = std::process::Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(repo_path)
-        .output()
+    let branch = crate::process::run("git", ["branch", "--show-current"], repo_path, cancelled)
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     if branch.is_empty() {
-        let _ = std::process::Command::new("git")
-            .args(["checkout", "main"])
-            .current_dir(repo_path)
-            .output();
+        let _ = crate::process::run("git", ["checkout", "main"], repo_path, cancelled);
     }
 
     Ok(())
@@ -300,11 +340,12 @@ where
     }
 }
 
-fn run_git(repo_path: &Path, args: &[&str]) -> Result<()> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(repo_path)
-        .output()
+fn run_git_with_cancel(
+    repo_path: &Path,
+    args: &[&str],
+    cancelled: &impl Fn() -> bool,
+) -> Result<()> {
+    let output = crate::process::run("git", args, repo_path, cancelled)
         .with_context(|| format!("git {} failed to execute", args.join(" ")))?;
 
     if !output.status.success() {
@@ -317,16 +358,20 @@ fn run_git(repo_path: &Path, args: &[&str]) -> Result<()> {
 // ── Internal helper ─────────────────────────────────────────────────────
 
 fn run_jj(repo_path: &Path, args: &[&str]) -> Result<()> {
-    let output = std::process::Command::new("jj")
-        .args(args)
-        .current_dir(repo_path)
-        .output()
-        .with_context(|| {
-            format!(
-                "jj {} failed to execute — is jj installed? (https://martinvonz.github.io/jj/)",
-                args.join(" ")
-            )
-        })?;
+    run_jj_with_cancel(repo_path, args, &|| false)
+}
+
+fn run_jj_with_cancel(
+    repo_path: &Path,
+    args: &[&str],
+    cancelled: &impl Fn() -> bool,
+) -> Result<()> {
+    let output = crate::process::run("jj", args, repo_path, cancelled).with_context(|| {
+        format!(
+            "jj {} failed to execute — is jj installed? (https://martinvonz.github.io/jj/)",
+            args.join(" ")
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

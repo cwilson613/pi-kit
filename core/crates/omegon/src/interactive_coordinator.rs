@@ -177,6 +177,7 @@ pub(crate) struct InteractiveAgentHost {
     pub(crate) resume_info: Option<setup::ResumeInfo>,
     pub(crate) workspace_state: setup::WorkspaceStartupState,
     pub(crate) runtime_generation: u64,
+    pub(crate) git_binding: crate::git_service::GitBinding,
 }
 
 pub(crate) struct CliRuntimeView<'a> {
@@ -209,6 +210,7 @@ fn split_interactive_agent(
         resume_info: agent.resume_info,
         workspace_state: agent.workspace_state,
         runtime_generation: 1,
+        git_binding: agent.git_binding,
     };
     let state = InteractiveAgentState {
         bus: agent.bus,

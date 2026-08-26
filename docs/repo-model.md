@@ -22,7 +22,23 @@ parent = "git-harness-integration"
 
 ## Overview
 
-Shared struct initialized at agent startup. Tracks current branch, dirty files (working set), submodule map, and pending lifecycle changes. Updated by edit/write/change tools on every file mutation. Queried by cleave preflight, commit tool, and session-close handler. Replaces all ad-hoc git status calls with a coherent model.
+`RepoModel` is private state of the optional boot-only managed Git service. One
+serial worker discovers and owns the model, tracks edits and lifecycle changes,
+and executes repository operations. Production consumers use a boot-captured
+`service:git` / `interface:omegon-git-v1` handle or an immutable startup
+snapshot. They do not retain `RepoModel` or discover a replacement repository.
+
+The service accepts repository-relative paths and explicit host-approved
+workspace paths. It returns owned status, commit, merge, worktree, submodule,
+and snapshot DTOs. The host continues to own invocation admission, workspace
+registration and leases, cleave scheduling, branch and message policy, and
+shutdown sequencing.
+
+The worker serializes libgit2 access and owns every Git or JJ subprocess that
+`omegon-git` starts for the captured repository and its approved workspaces.
+The strict process-set resource settles before the strict repository writer,
+and the strict worker settles after both. Cancellation and shutdown terminate
+and join complete process trees before the generation can retire.
 
 ## Research
 
@@ -205,7 +221,18 @@ The omegon repo uses `core` as a submodule. This is not optional — it's where 
 
 ## Implementation Notes
 
-### File Scope
+### Current Ownership
+
+- `core/crates/omegon/src/git_service.rs` owns managed publication, typed
+  requests and responses, workspace containment, and lifecycle resources.
+- `core/crates/omegon-git/src/process.rs` owns cancellable Git and JJ process
+  trees through Unix process groups and Windows Job Objects.
+- `core/crates/omegon-git/src/repo.rs` defines the worker-owned repository model.
+- Core tools, cleave, and workspace control use the captured managed binding.
+- Package and extension clones, updater and release probes, toolchain checks,
+  TDD evidence reads, and test fixtures remain outside this service boundary.
+
+### Historical File Scope
 
 - `core/crates/omegon-git/Cargo.toml` (new) — New crate: git2 dep, re-exports RepoModel and git operations
 - `core/crates/omegon-git/src/lib.rs` (new) — Crate root — re-exports repo, status, commit, submodule, worktree modules

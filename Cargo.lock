@@ -5159,9 +5159,11 @@ dependencies = [
  "futures-util",
  "git2",
  "jj-lib",
+ "libc",
  "tempfile",
  "tokio",
  "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -899,6 +899,7 @@ pub struct CleaveFeature {
     settings: Option<crate::settings::SharedSettings>,
     sandbox: bool,
     dangerously_bypass_permissions: bool,
+    git: crate::git_service::GitBinding,
 }
 
 impl CleaveFeature {
@@ -935,6 +936,7 @@ impl CleaveFeature {
             settings: None,
             sandbox,
             dangerously_bypass_permissions,
+            git: Default::default(),
         };
         feature.load_pending_approvals();
         feature.refresh_progress_from_workspace_state();
@@ -956,6 +958,11 @@ impl CleaveFeature {
 
     pub fn with_secrets(mut self, secrets: Arc<omegon_secrets::SecretsManager>) -> Self {
         self.secrets = Some(secrets);
+        self
+    }
+
+    pub(crate) fn with_git(mut self, git: crate::git_service::GitBinding) -> Self {
+        self.git = git;
         self
     }
 
@@ -2008,6 +2015,7 @@ Directive: {}{}",
                 workflow,
                 sandbox: self.sandbox,
                 dangerously_bypass_permissions: self.dangerously_bypass_permissions,
+                git: self.git.clone(),
             }
         });
 

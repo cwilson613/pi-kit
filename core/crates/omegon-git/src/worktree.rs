@@ -30,19 +30,26 @@ pub fn create_jj_workspace(
     workspace_path: &Path,
     name: &str,
 ) -> Result<WorktreeInfo> {
+    create_jj_workspace_with_cancel(repo_path, workspace_path, name, &|| false)
+}
+
+pub fn create_jj_workspace_with_cancel(
+    repo_path: &Path,
+    workspace_path: &Path,
+    name: &str,
+    cancelled: &impl Fn() -> bool,
+) -> Result<WorktreeInfo> {
     // Remove stale workspace dir
     if workspace_path.exists() {
         let _ = std::fs::remove_dir_all(workspace_path);
     }
 
     // Forget stale workspace registration
-    let _ = std::process::Command::new("jj")
-        .args(["workspace", "forget", name])
-        .current_dir(repo_path)
-        .output();
+    let _ = crate::process::run("jj", ["workspace", "forget", name], repo_path, cancelled);
 
-    let output = std::process::Command::new("jj")
-        .args([
+    let output = crate::process::run(
+        "jj",
+        [
             "workspace",
             "add",
             &workspace_path.to_string_lossy(),
@@ -50,10 +57,11 @@ pub fn create_jj_workspace(
             name,
             "-r",
             "@-", // Parent of current working copy — same base as other children
-        ])
-        .current_dir(repo_path)
-        .output()
-        .context("jj workspace add failed")?;
+        ],
+        repo_path,
+        cancelled,
+    )
+    .context("jj workspace add failed")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -71,10 +79,16 @@ pub fn create_jj_workspace(
 
 /// Remove a jj workspace.
 pub fn remove_jj_workspace(repo_path: &Path, name: &str, workspace_path: &Path) -> Result<()> {
-    let _ = std::process::Command::new("jj")
-        .args(["workspace", "forget", name])
-        .current_dir(repo_path)
-        .output();
+    remove_jj_workspace_with_cancel(repo_path, name, workspace_path, &|| false)
+}
+
+pub fn remove_jj_workspace_with_cancel(
+    repo_path: &Path,
+    name: &str,
+    workspace_path: &Path,
+    cancelled: &impl Fn() -> bool,
+) -> Result<()> {
+    let _ = crate::process::run("jj", ["workspace", "forget", name], repo_path, cancelled);
 
     // Remove the directory
     if workspace_path.exists() {
@@ -86,10 +100,7 @@ pub fn remove_jj_workspace(repo_path: &Path, name: &str, workspace_path: &Path) 
 
 /// List jj workspaces.
 pub fn list_jj_workspaces(repo_path: &Path) -> Result<Vec<String>> {
-    let output = std::process::Command::new("jj")
-        .args(["workspace", "list"])
-        .current_dir(repo_path)
-        .output()
+    let output = crate::process::run("jj", ["workspace", "list"], repo_path, &|| false)
         .context("jj workspace list failed")?;
 
     if output.status.success() {
@@ -116,17 +127,36 @@ pub fn create_smart(
     name: &str,
     _branch: &str,
 ) -> Result<WorktreeInfo> {
+    create_smart_with_cancel(repo_path, workspace_path, name, _branch, &|| false)
+}
+
+pub fn create_smart_with_cancel(
+    repo_path: &Path,
+    workspace_path: &Path,
+    name: &str,
+    branch: &str,
+    cancelled: &impl Fn() -> bool,
+) -> Result<WorktreeInfo> {
     if crate::jj::is_jj_repo(repo_path) {
-        create_jj_workspace(repo_path, workspace_path, name)
+        create_jj_workspace_with_cancel(repo_path, workspace_path, name, cancelled)
     } else {
-        create(repo_path, workspace_path, _branch)
+        create(repo_path, workspace_path, branch)
     }
 }
 
 /// Remove a worktree/workspace — auto-selects jj or git.
 pub fn remove_smart(repo_path: &Path, name: &str, workspace_path: &Path) -> Result<()> {
+    remove_smart_with_cancel(repo_path, name, workspace_path, &|| false)
+}
+
+pub fn remove_smart_with_cancel(
+    repo_path: &Path,
+    name: &str,
+    workspace_path: &Path,
+    cancelled: &impl Fn() -> bool,
+) -> Result<()> {
     if crate::jj::is_jj_repo(repo_path) {
-        remove_jj_workspace(repo_path, name, workspace_path)
+        remove_jj_workspace_with_cancel(repo_path, name, workspace_path, cancelled)
     } else {
         remove(repo_path, workspace_path)
     }

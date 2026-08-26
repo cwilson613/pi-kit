@@ -73,6 +73,8 @@ pub struct CleaveConfig {
     pub sandbox: bool,
     /// Propagate parent --dangerously-bypass-permissions into child Omegon processes.
     pub dangerously_bypass_permissions: bool,
+    /// Boot-captured repository owner; host policy remains in this orchestrator.
+    pub git: crate::git_service::GitBinding,
 }
 
 /// Result of a cleave run.
@@ -204,9 +206,25 @@ pub async fn run_cleave(
                 .as_ref()
                 .filter(|p| std::path::Path::new(p).exists());
             let wt_result = if let Some(wt) = existing_wt {
+                config
+                    .git
+                    .invoke(crate::git_service::GitRequest::AuthorizeWorkspace {
+                        path: PathBuf::from(wt),
+                        cancellation: cancel.clone(),
+                    })
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error:?}"))?;
                 Ok(PathBuf::from(wt))
             } else {
-                worktree::create_worktree(repo_path, workspace_path, child_idx, &label, &branch)
+                worktree::create_worktree(
+                    &config.git,
+                    workspace_path,
+                    child_idx,
+                    &label,
+                    &branch,
+                    cancel.clone(),
+                )
+                .await
             };
             match wt_result {
                 Ok(wt_path) => {
@@ -215,9 +233,13 @@ pub async fn run_cleave(
 
                     // Initialize submodules in the worktree so children
                     // can access files inside them
-                    if let Err(e) = worktree::submodule_init(&wt_path) {
+                    if let Err(e) =
+                        worktree::submodule_init(&config.git, &wt_path, cancel.clone()).await
+                    {
                         tracing::warn!(child = %label, "submodule init failed: {e}");
                     }
+                    let detected_submodules =
+                        worktree::detect_submodules(&config.git, &wt_path, cancel.clone()).await;
 
                     // Verify scope files are accessible after submodule init
                     let scope = &state.children[child_idx].scope;
@@ -249,6 +271,10 @@ pub async fn run_cleave(
                             &state.children,
                             &guardrail_section,
                             repo_path,
+                            detected_submodules
+                                .iter()
+                                .map(|(name, _)| name.clone())
+                                .collect(),
                         );
                         std::fs::write(&task_path, &content)?;
                         content
@@ -256,7 +282,9 @@ pub async fn run_cleave(
 
                     // Inject submodule context into task file if scope crosses
                     // a submodule boundary
-                    if let Some(submod_note) = worktree::build_submodule_context(&wt_path, scope) {
+                    if let Some(submod_note) =
+                        worktree::build_submodule_context_from_list(&detected_submodules, scope)
+                    {
                         // Insert before the first ## heading after the frontmatter,
                         // or append if no good insertion point
                         if let Some(pos) = task_content.find("\n## ") {
@@ -451,8 +479,13 @@ pub async fn run_cleave(
                     );
 
                     // Salvage any uncommitted work (submodules + parent).
-                    let auto_committed =
-                        salvage_worktree_changes(&state.children[child_idx], false);
+                    let auto_committed = salvage_worktree_changes(
+                        &config.git,
+                        &state.children[child_idx],
+                        false,
+                        cancel.clone(),
+                    )
+                    .await;
                     if auto_committed > 0 {
                         config.progress_sink.emit(&ProgressEvent::AutoCommit {
                             child: label.clone(),
@@ -583,9 +616,12 @@ pub async fn run_cleave(
                                             "child completed via fallback"
                                         );
                                         let ac = salvage_worktree_changes(
+                                            &config.git,
                                             &state.children[child_idx],
                                             false,
-                                        );
+                                            cancel.clone(),
+                                        )
+                                        .await;
                                         if ac > 0 {
                                             config.progress_sink.emit(&ProgressEvent::AutoCommit {
                                                 child: label.clone(),
@@ -633,8 +669,13 @@ pub async fn run_cleave(
                             state.children[child_idx].error = Some(msg.clone());
                             tracing::error!(child = %label, "child failed: {msg}");
 
-                            let salvaged =
-                                salvage_worktree_changes(&state.children[child_idx], true);
+                            let salvaged = salvage_worktree_changes(
+                                &config.git,
+                                &state.children[child_idx],
+                                true,
+                                cancel.clone(),
+                            )
+                            .await;
                             if salvaged > 0 {
                                 tracing::info!(child = %label, files = salvaged, "salvaged changes from failed child");
                             }
@@ -680,7 +721,7 @@ pub async fn run_cleave(
         // Clear the path after removal so the final cleanup loop does not
         // attempt a second removal and emit backend warnings.
         if let Some(wt) = child.worktree_path.take() {
-            let _ = worktree::remove_worktree(repo_path, Path::new(&wt));
+            let _ = worktree::remove_worktree(&config.git, Path::new(&wt), cancel.clone()).await;
         }
 
         let is_salvage = child.status == ChildStatus::Failed;
@@ -691,7 +732,7 @@ pub async fn run_cleave(
         );
         // Squash-merge: compress all child diary commits into one clean commit.
         // The intermediate edit/fix/re-edit history has no bisect value for cleave children.
-        match worktree::squash_merge_branch(repo_path, branch, &merge_msg) {
+        match worktree::squash_merge_branch(&config.git, branch, &merge_msg, cancel.clone()).await {
             Ok(worktree::MergeResult::Success) => {
                 if is_salvage {
                     tracing::info!(child = %child.label, "merged salvaged work from failed child");
@@ -706,7 +747,7 @@ pub async fn run_cleave(
                 } else {
                     tracing::info!(child = %child.label, "merged successfully");
                 }
-                let _ = worktree::delete_branch(repo_path, branch);
+                let _ = worktree::delete_branch(&config.git, branch, cancel.clone()).await;
                 merge_results.push((child.label.clone(), MergeOutcome::Success));
                 config.progress_sink.emit(&ProgressEvent::MergeResult {
                     child: child.label.clone(),
@@ -717,7 +758,7 @@ pub async fn run_cleave(
             Ok(worktree::MergeResult::NoChanges) => {
                 if is_salvage {
                     tracing::info!(child = %child.label, "failed child had no salvaged repo changes");
-                    let _ = worktree::delete_branch(repo_path, branch);
+                    let _ = worktree::delete_branch(&config.git, branch, cancel.clone()).await;
                     merge_results.push((
                         child.label.clone(),
                         MergeOutcome::Skipped("failed child produced no salvaged changes".into()),
@@ -729,7 +770,7 @@ pub async fn run_cleave(
                     });
                 } else {
                     tracing::info!(child = %child.label, "child completed without repo changes");
-                    let _ = worktree::delete_branch(repo_path, branch);
+                    let _ = worktree::delete_branch(&config.git, branch, cancel.clone()).await;
                     merge_results.push((child.label.clone(), MergeOutcome::NoChanges));
                     config.progress_sink.emit(&ProgressEvent::MergeResult {
                         child: child.label.clone(),
@@ -751,7 +792,7 @@ pub async fn run_cleave(
                 tracing::error!(child = %child.label, detail = %detail, "merge failed — demoting child to failed");
                 child.status = ChildStatus::Failed;
                 child.error = Some(detail.clone());
-                let _ = worktree::delete_branch(repo_path, branch);
+                let _ = worktree::delete_branch(&config.git, branch, cancel.clone()).await;
                 merge_results.push((child.label.clone(), MergeOutcome::Failed(detail.clone())));
                 config.progress_sink.emit(&ProgressEvent::MergeResult {
                     child: child.label.clone(),
@@ -775,7 +816,7 @@ pub async fn run_cleave(
     // Clean up remaining worktrees
     for child in &state.children {
         if let Some(wt) = &child.worktree_path {
-            let _ = worktree::remove_worktree(repo_path, Path::new(wt));
+            let _ = worktree::remove_worktree(&config.git, Path::new(wt), cancel.clone()).await;
         }
     }
 
@@ -1034,7 +1075,12 @@ async fn monitor_child_process(
 /// `auto_commit_worktree` (for remaining parent-level changes).
 /// Called on BOTH success and failure paths so that work from timed-out
 /// or errored children is preserved.
-fn salvage_worktree_changes(child: &state::ChildState, is_failure: bool) -> usize {
+async fn salvage_worktree_changes(
+    git: &crate::git_service::GitBinding,
+    child: &state::ChildState,
+    is_failure: bool,
+    cancellation: CancellationToken,
+) -> usize {
     let wt_path = match child.worktree_path.as_deref() {
         Some(wt) => Path::new(wt),
         None => return 0,
@@ -1055,7 +1101,7 @@ fn salvage_worktree_changes(child: &state::ChildState, is_failure: bool) -> usiz
 
     // 1. Commit dirty submodules first — children often write inside
     // submodules but only the parent git sees the pointer change.
-    match worktree::commit_dirty_submodules(wt_path, label) {
+    match worktree::commit_dirty_submodules(git, wt_path, label, cancellation.clone()).await {
         Ok(n) if n > 0 => {
             tracing::info!(child = %label, submodules = n, "auto-committed dirty submodules");
         }
@@ -1066,36 +1112,34 @@ fn salvage_worktree_changes(child: &state::ChildState, is_failure: bool) -> usiz
     }
 
     // 2. Commit any remaining uncommitted changes in the parent worktree.
-    auto_commit_worktree(wt_path, label, scope)
+    auto_commit_worktree(git, wt_path, label, scope, cancellation).await
 }
 
-fn auto_commit_worktree(wt_path: &Path, label: &str, scope: &[String]) -> usize {
+async fn auto_commit_worktree(
+    git: &crate::git_service::GitBinding,
+    wt_path: &Path,
+    label: &str,
+    scope: &[String],
+    cancellation: CancellationToken,
+) -> usize {
     if !wt_path.exists() {
         return 0;
     }
 
-    // Check for uncommitted changes (excluding .cleave-prompt.md which is always present)
-    let status = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(wt_path)
-        .output();
-
-    let changed_files: Vec<String> = match &status {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout
-                .lines()
-                .filter_map(|line| {
-                    let file = line.get(3..)?.trim();
-                    if file.is_empty() || file.starts_with(".cleave-prompt") {
-                        None
-                    } else {
-                        Some(file.to_string())
-                    }
-                })
-                .collect()
-        }
-        Err(_) => return 0,
+    let changed_files: Vec<String> = match git
+        .invoke(crate::git_service::GitRequest::Status {
+            path: wt_path.to_path_buf(),
+            cancellation: cancellation.clone(),
+        })
+        .await
+    {
+        Ok(crate::git_service::GitResponse::Status(status)) => status
+            .entries
+            .into_iter()
+            .map(|entry| entry.path)
+            .filter(|path| !path.starts_with(".cleave-prompt"))
+            .collect(),
+        _ => return 0,
     };
 
     if changed_files.is_empty() {
@@ -1131,34 +1175,23 @@ fn auto_commit_worktree(wt_path: &Path, label: &str, scope: &[String]) -> usize 
     let file_count = in_scope.len();
     tracing::info!(child = %label, files = file_count, "auto-committing uncommitted changes in worktree");
 
-    // Stage only in-scope files
-    let mut add_args = vec!["add", "--"];
-    let in_scope_strs: Vec<&str> = in_scope.iter().map(|s| s.as_str()).collect();
-    add_args.extend(in_scope_strs);
-    let _ = std::process::Command::new("git")
-        .args(&add_args)
-        .current_dir(wt_path)
-        .output();
-
-    // Commit
     let commit_msg = format!("chore(cleave): auto-commit work from child '{label}'");
-    let result = std::process::Command::new("git")
-        .args(["commit", "-m", &commit_msg, "--no-verify"])
-        .current_dir(wt_path)
-        .output();
-
-    match result {
-        Ok(out) if out.status.success() => {
+    let paths = in_scope.into_iter().cloned().collect();
+    match git
+        .invoke(crate::git_service::GitRequest::Commit {
+            path: wt_path.to_path_buf(),
+            message: commit_msg,
+            paths,
+            cancellation,
+        })
+        .await
+    {
+        Ok(crate::git_service::GitResponse::Commit { .. }) => {
             tracing::info!(child = %label, "auto-commit succeeded");
             file_count
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            tracing::warn!(child = %label, "auto-commit failed: {}", stderr.trim());
-            0
-        }
-        Err(e) => {
-            tracing::warn!(child = %label, "auto-commit error: {e}");
+        result => {
+            tracing::warn!(child = %label, ?result, "managed auto-commit failed");
             0
         }
     }
@@ -1186,6 +1219,7 @@ fn build_task_file(
     siblings: &[super::state::ChildState],
     guardrail_section: &str,
     repo_path: &Path,
+    submodules: Vec<String>,
 ) -> String {
     let scope_list = scope
         .iter()
@@ -1235,7 +1269,7 @@ fn build_task_file(
     };
 
     // Discover project context for this child's scope
-    let ctx = super::context::discover_child_context(repo_path, scope);
+    let ctx = super::context::discover_child_context(repo_path, scope, submodules);
     let context_sections = super::context::format_context_sections(&ctx);
 
     // Testing section — includes convention and any directives from task content
@@ -1359,6 +1393,7 @@ mod tests {
             workflow: None,
             sandbox: false,
             dangerously_bypass_permissions: false,
+            git: Default::default(),
         };
         assert_eq!(config.idle_timeout_secs, 300);
         assert_eq!(config.timeout_secs, 900);
@@ -1443,6 +1478,7 @@ mod tests {
             &siblings,
             "",
             Path::new("/tmp/nonexistent"),
+            vec![],
         );
 
         assert!(task.contains("siblings: [0:alpha]"));
@@ -1617,6 +1653,7 @@ fn build_task_file_includes_all_sections() {
         &siblings,
         guardrails,
         Path::new("/tmp/nonexistent"),
+        vec![],
     );
 
     // Frontmatter
@@ -1685,6 +1722,7 @@ fn build_task_file_rust_scope_gets_rust_test_convention() {
         &siblings,
         "",
         Path::new("/tmp/nonexistent"),
+        vec![],
     );
     assert!(
         task.contains("#[test]"),
@@ -1776,11 +1814,24 @@ fn one_child_plan() -> crate::cleave::plan::CleavePlan {
     }
 }
 
-fn test_config(
+async fn test_config(
+    repo: &Path,
     fake_child: PathBuf,
     events: std::sync::Arc<std::sync::Mutex<Vec<crate::cleave::progress::ProgressEvent>>>,
-) -> CleaveConfig {
-    CleaveConfig {
+) -> (CleaveConfig, crate::bus::EventBus) {
+    let git = crate::git_service::GitBinding::default();
+    let mut bus = crate::bus::EventBus::new();
+    bus.register(Box::new(crate::git_service::GitFeature));
+    bus.stage_managed_generation(
+        "git",
+        crate::git_service::start_candidate(repo.to_path_buf())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    bus.try_finalize_managed().await.unwrap();
+    git.capture(&bus).unwrap();
+    let config = CleaveConfig {
         agent_binary: fake_child,
         bridge_path: PathBuf::new(),
         node: String::new(),
@@ -1800,7 +1851,9 @@ fn test_config(
         workflow: None,
         sandbox: false,
         dangerously_bypass_permissions: false,
-    }
+        git,
+    };
+    (config, bus)
 }
 
 fn progress_from_events(
@@ -1826,7 +1879,8 @@ async fn run_cleave_executes_injected_child_successfully() {
         "#!/bin/sh\necho cleave-child-ok\n",
     );
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let config = test_config(fake_child, std::sync::Arc::clone(&events));
+    let (config, mut git_bus) =
+        test_config(repo.path(), fake_child, std::sync::Arc::clone(&events)).await;
 
     let result = run_cleave(
         &one_child_plan(),
@@ -1857,12 +1911,20 @@ async fn run_cleave_executes_injected_child_successfully() {
     );
     assert!(workspace.path().join("state.json").exists());
     assert!(workspace.path().join("0-task.md").exists());
-    let events = events.lock().unwrap();
-    assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildSpawned { child, .. } if child == "alpha")));
-    assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildStatus { child, status: crate::cleave::progress::ChildProgressStatus::Completed, .. } if child == "alpha")));
+    {
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildSpawned { child, .. } if child == "alpha")));
+        assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildStatus { child, status: crate::cleave::progress::ChildProgressStatus::Completed, .. } if child == "alpha")));
+    }
     assert!(result.merge_results.iter().any(|(label, outcome)| {
         label == "alpha" && matches!(outcome, MergeOutcome::NoChanges | MergeOutcome::Success)
     }));
+    assert!(
+        git_bus
+            .shutdown_managed_services()
+            .await
+            .all_resources_settled()
+    );
 }
 
 #[tokio::test]
@@ -1876,7 +1938,8 @@ async fn run_cleave_times_out_and_kills_silent_child() {
         "#!/bin/sh\nexec sleep 10\n",
     );
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut config = test_config(fake_child, std::sync::Arc::clone(&events));
+    let (mut config, mut git_bus) =
+        test_config(repo.path(), fake_child, std::sync::Arc::clone(&events)).await;
     config.timeout_secs = 1;
     config.idle_timeout_secs = 30;
 
@@ -1904,19 +1967,27 @@ async fn run_cleave_times_out_and_kills_silent_child() {
         "unexpected child error: {:?}",
         child.error
     );
-    let events = events.lock().unwrap();
-    assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildStatus { child, status: crate::cleave::progress::ChildProgressStatus::Failed, error: Some(error), .. } if child == "alpha" && error.contains("Wall-clock timeout"))));
-    let progress = progress_from_events(&events);
-    assert!(!progress.active, "timeout should clear active progress");
-    assert_eq!(progress.failed, 1);
-    let child_progress = progress
-        .children
-        .iter()
-        .find(|c| c.label == "alpha")
-        .unwrap();
-    assert_eq!(child_progress.status, "failed");
-    assert_eq!(child_progress.pid, None);
-    assert_eq!(child_progress.supervision_mode, None);
+    {
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildStatus { child, status: crate::cleave::progress::ChildProgressStatus::Failed, error: Some(error), .. } if child == "alpha" && error.contains("Wall-clock timeout"))));
+        let progress = progress_from_events(&events);
+        assert!(!progress.active, "timeout should clear active progress");
+        assert_eq!(progress.failed, 1);
+        let child_progress = progress
+            .children
+            .iter()
+            .find(|c| c.label == "alpha")
+            .unwrap();
+        assert_eq!(child_progress.status, "failed");
+        assert_eq!(child_progress.pid, None);
+        assert_eq!(child_progress.supervision_mode, None);
+    }
+    assert!(
+        git_bus
+            .shutdown_managed_services()
+            .await
+            .all_resources_settled()
+    );
 }
 
 #[tokio::test]
@@ -1930,7 +2001,8 @@ async fn run_cleave_cancellation_kills_running_child() {
         "#!/bin/sh\nexec sleep 10\n",
     );
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let config = test_config(fake_child, std::sync::Arc::clone(&events));
+    let (config, mut git_bus) =
+        test_config(repo.path(), fake_child, std::sync::Arc::clone(&events)).await;
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
@@ -1962,22 +2034,30 @@ async fn run_cleave_cancellation_kills_running_child() {
         "unexpected child error: {:?}",
         child.error
     );
-    let events = events.lock().unwrap();
-    assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildStatus { child, status: crate::cleave::progress::ChildProgressStatus::Failed, error: Some(error), .. } if child == "alpha" && error.contains("Cancelled"))));
-    let progress = progress_from_events(&events);
+    {
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildStatus { child, status: crate::cleave::progress::ChildProgressStatus::Failed, error: Some(error), .. } if child == "alpha" && error.contains("Cancelled"))));
+        let progress = progress_from_events(&events);
+        assert!(
+            !progress.active,
+            "cancellation should clear active progress"
+        );
+        assert_eq!(progress.failed, 1);
+        let child_progress = progress
+            .children
+            .iter()
+            .find(|c| c.label == "alpha")
+            .unwrap();
+        assert_eq!(child_progress.status, "failed");
+        assert_eq!(child_progress.pid, None);
+        assert_eq!(child_progress.supervision_mode, None);
+    }
     assert!(
-        !progress.active,
-        "cancellation should clear active progress"
+        git_bus
+            .shutdown_managed_services()
+            .await
+            .all_resources_settled()
     );
-    assert_eq!(progress.failed, 1);
-    let child_progress = progress
-        .children
-        .iter()
-        .find(|c| c.label == "alpha")
-        .unwrap();
-    assert_eq!(child_progress.status, "failed");
-    assert_eq!(child_progress.pid, None);
-    assert_eq!(child_progress.supervision_mode, None);
 }
 
 #[tokio::test]
@@ -1991,7 +2071,8 @@ async fn run_cleave_records_injected_child_failure() {
         "#!/bin/sh\necho cleave child failed >&2\nexit 9\n",
     );
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let config = test_config(fake_child, std::sync::Arc::clone(&events));
+    let (config, mut git_bus) =
+        test_config(repo.path(), fake_child, std::sync::Arc::clone(&events)).await;
 
     let result = run_cleave(
         &one_child_plan(),
@@ -2015,9 +2096,11 @@ async fn run_cleave_records_injected_child_failure() {
             .unwrap_or_default()
             .contains("cleave child failed")
     );
-    let events = events.lock().unwrap();
-    assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildSpawned { child, .. } if child == "alpha")));
-    assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildStatus { child, status: crate::cleave::progress::ChildProgressStatus::Failed, .. } if child == "alpha")));
+    {
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildSpawned { child, .. } if child == "alpha")));
+        assert!(events.iter().any(|event| matches!(event, crate::cleave::progress::ProgressEvent::ChildStatus { child, status: crate::cleave::progress::ChildProgressStatus::Failed, .. } if child == "alpha")));
+    }
     assert!(
         result.merge_results.is_empty()
             || result
@@ -2027,5 +2110,11 @@ async fn run_cleave_records_injected_child_failure() {
                     && matches!(outcome, MergeOutcome::Skipped(_))),
         "failed children should not be merged: {:?}",
         result.merge_results
+    );
+    assert!(
+        git_bus
+            .shutdown_managed_services()
+            .await
+            .all_resources_settled()
     );
 }

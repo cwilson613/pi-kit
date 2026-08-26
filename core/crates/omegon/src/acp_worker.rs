@@ -548,6 +548,7 @@ async fn worker_loop(
     let work_snapshot = agent_setup.work_snapshot;
     let lifecycle_binding = agent_setup.lifecycle_binding.clone();
     let behavior_policy = agent_setup.behavior_policy;
+    let git_binding = agent_setup.git_binding.clone();
     let mut context_manager = agent_setup.context_manager;
     let mut conversation = agent_setup.conversation;
     let secrets = agent_setup.secrets;
@@ -1145,7 +1146,7 @@ async fn worker_loop(
                     &conversation,
                     &shared_settings,
                     &secrets,
-                    workspace_ctx(&cwd, &session_id, &instance_id),
+                    workspace_ctx(&cwd, &session_id, &instance_id).with_git(&git_binding),
                     &mut bus,
                     dangerously_bypass_permissions,
                 )
@@ -1841,7 +1842,7 @@ async fn handle_control_request(
                 workspace_response_text(crate::workspace::control::workspace_new_response(
                     &workspace_ctx,
                     args,
-                ))
+                ).await)
             }
         }
         "workspace_destroy" => {
@@ -1851,7 +1852,7 @@ async fn handle_control_request(
                 workspace_response_text(crate::workspace::control::workspace_destroy_response(
                     &workspace_ctx,
                     args,
-                ))
+                ).await)
             }
         }
         "workspace_adopt" => workspace_response_text(

@@ -468,6 +468,57 @@ Then each request contains only its host-normalized immutable conversation snaps
 And each session retains independent context, conversation, provider, and semantic authority
 And the service retains no session state between requests
 
+### Requirement: Git repository and workspace operations share one managed owner
+
+The optional release-coupled Git contribution must publish `service:git` / `interface:omegon-git-v1` as a boot-captured managed service owned by `feature:git`. One serial generation-owned worker must own the discovered repository model, libgit2 repository/index/worktree access, and every Git or JJ subprocess used by `omegon-git` for repository reads, commits, merges, worktrees, submodules, and JJ operations. Consumers must retain only the managed handle or immutable owned observations and must not perform ambient repository discovery or direct production fallback. Host invocation admission, workspace registry and lease authority, cleave scheduling, branch/message policy, and frontend presentation remain outside the service.
+
+#### Scenario: Repository consumers share one exact generation
+Given an accepted Git generation was captured at boot
+When core commit tracking, repository status, cleave, and workspace controls perform Git operations
+Then every operation uses the same generation-tagged handle or immutable observation from that handle
+And repository-relative and workspace paths are checked against the captured boundary
+And no consumer constructs `RepoModel`, opens a project repository, or calls `omegon_git` directly
+
+#### Scenario: A Git or JJ process is cancelled
+Given an admitted Git request owns a subprocess with descendants
+When caller cancellation or the active-call deadline fires
+Then the generation terminates the complete owned process tree
+And it joins the process and descendants before settling the call
+And strict cleanup cannot release repository writer ownership while a descendant remains live
+
+#### Scenario: Host authority remains outside Git execution
+Given a tool, cleave operation, or workspace command requests a Git mutation
+When the host has not completed its applicable invocation, RBAC, approval, or workspace checks
+Then the Git service is not invoked
+And the service cannot widen paths, choose a branch or message, mutate workspace lease state, or publish host completion
+
+#### Scenario: Candidate publication fails
+Given a callable accepted Git generation and a prepared candidate
+When candidate readiness, resource parity, or publication validation fails
+Then the prior handle, worker, repository model, and admission state remain callable
+And every candidate process and repository resource is settled or retained as degraded rollback evidence
+
+#### Scenario: Git handle becomes stale
+Given a consumer retained a Git handle from an admitted generation
+When that generation becomes draining, degraded, or retired
+Then the handle returns the corresponding typed managed-service error
+And the consumer neither discovers another repository nor invokes a direct fallback
+
+#### Scenario: Git service is absent
+Given the optional Git service is unavailable at boot
+When a Git-backed core, cleave, or workspace operation is requested
+Then it returns typed unavailable evidence
+And unrelated tools, sessions, frontends, and local-directory workspace operations remain callable
+And no repository owner, generation, Git/JJ process, or fallback implementation is fabricated
+
+#### Scenario: Git resources shut down
+Given the Git worker owns strict process-set and repository-writer resources
+When managed shutdown closes admission
+Then admitted calls settle or are cancelled within the active-call deadline
+And the worker stops and joins before process-set settlement
+And complete process trees settle before repository writer ownership is released
+And no repository handle, index lock, worktree mutation, child process, or descendant survives retirement
+
 ### Requirement: Behavior policy is a stateless optional service
 
 The release-coupled behavior-policy implementation must publish `service:behavior-policy` / `interface:omegon-behavior-policy-v1` as an optional synchronous in-process service with strict no-resource teardown. Its object-safe contract may consume immutable host-normalized per-turn policy views and return only advisory unpinned task-mode inference, phase, drift, progress/evidence, pressure, pressure/meta-message, substantive-prose, and pathological-meta-response decisions. It must not retain conversation, tool, controller, frontend, or durable-session state. Session and host owners retain explicit operator mode parsing and correction recovery, declared tool capabilities, authoritative observation normalization, `IntentDocument`, persisted task mode, controller streaks, stuck/dead-mouse/meta counters, tool execution, event emission, and nudge insertion. Dynamic tool declarations and normalized observations are caller input rather than boot-cached service state.

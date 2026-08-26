@@ -53,6 +53,13 @@ impl RepoModel {
     /// Walks up from `cwd` to find the repo root, reads branch/HEAD/submodules.
     /// Returns `None` if not inside a git repo.
     pub fn discover(cwd: &Path) -> Result<Option<Arc<Self>>> {
+        Self::discover_with_cancel(cwd, &|| false)
+    }
+
+    pub fn discover_with_cancel(
+        cwd: &Path,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<Arc<Self>>> {
         let repo = match Repository::discover(cwd) {
             Ok(r) => r,
             Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
@@ -68,19 +75,21 @@ impl RepoModel {
 
         // Read jj change ID if co-located
         let jj_change_id = if jj_colocated {
-            std::process::Command::new("jj")
-                .args(["log", "-r", "@", "--no-graph", "-T", "change_id"])
-                .current_dir(&repo_path)
-                .output()
-                .ok()
-                .and_then(|o| {
-                    if o.status.success() {
-                        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                        if s.is_empty() { None } else { Some(s) }
-                    } else {
-                        None
-                    }
-                })
+            crate::process::run(
+                "jj",
+                ["log", "-r", "@", "--no-graph", "-T", "change_id"],
+                &repo_path,
+                cancelled,
+            )
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() { None } else { Some(s) }
+                } else {
+                    None
+                }
+            })
         } else {
             None
         };
@@ -267,25 +276,31 @@ impl RepoModel {
 
     /// Refresh branch, HEAD, and jj state from the repo.
     pub fn refresh(&self) -> Result<()> {
+        self.refresh_with_cancel(&|| false)
+    }
+
+    pub fn refresh_with_cancel(&self, cancelled: &impl Fn() -> bool) -> Result<()> {
         let repo = Repository::open(&self.repo_path)?;
         *self.branch.write().unwrap_or_else(|e| e.into_inner()) = Self::read_branch(&repo);
         *self.head_sha.write().unwrap_or_else(|e| e.into_inner()) = Self::read_head_sha(&repo);
 
         // Refresh jj change ID if co-located
         if self.jj_colocated {
-            let id = std::process::Command::new("jj")
-                .args(["log", "-r", "@", "--no-graph", "-T", "change_id"])
-                .current_dir(&self.repo_path)
-                .output()
-                .ok()
-                .and_then(|o| {
-                    if o.status.success() {
-                        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                        if s.is_empty() { None } else { Some(s) }
-                    } else {
-                        None
-                    }
-                });
+            let id = crate::process::run(
+                "jj",
+                ["log", "-r", "@", "--no-graph", "-T", "change_id"],
+                &self.repo_path,
+                cancelled,
+            )
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() { None } else { Some(s) }
+                } else {
+                    None
+                }
+            });
             *self.jj_change_id.write().unwrap_or_else(|e| e.into_inner()) = id;
         }
 

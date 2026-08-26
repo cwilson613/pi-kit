@@ -706,9 +706,8 @@ fn expand_tilde(path_str: &str) -> PathBuf {
 /// Core tool provider — registers the primitive tools.
 pub struct CoreTools {
     cwd: PathBuf,
-    /// Repository model — tracks branch, dirty files, submodules.
-    /// None if not inside a git repo.
-    repo_model: Option<std::sync::Arc<omegon_git::RepoModel>>,
+    /// Boot-captured managed repository owner.
+    git: crate::git_service::GitBinding,
     /// Workspace boundary enforcer — shared with other tool providers.
     boundary: WorkspaceBoundary,
     terminal_tool_enabled: bool,
@@ -722,7 +721,7 @@ impl CoreTools {
         let boundary = WorkspaceBoundary::new(cwd.clone());
         Self {
             cwd,
-            repo_model: None,
+            git: Default::default(),
             boundary,
             terminal_tool_enabled: true,
             secrets: None,
@@ -730,15 +729,12 @@ impl CoreTools {
         }
     }
 
-    /// Create with a RepoModel for git-aware operations.
-    pub fn with_repo_model(
-        cwd: PathBuf,
-        repo_model: std::sync::Arc<omegon_git::RepoModel>,
-    ) -> Self {
+    /// Create with the boot-captured managed Git binding.
+    pub fn with_git(cwd: PathBuf, git: crate::git_service::GitBinding) -> Self {
         let boundary = WorkspaceBoundary::new(cwd.clone());
         Self {
             cwd,
-            repo_model: Some(repo_model),
+            git,
             boundary,
             terminal_tool_enabled: true,
             secrets: None,
@@ -1378,7 +1374,7 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'command' argument"))?;
                 let timeout = parse_bash_timeout_secs(&args)?;
 
-                warn_git_mutation_via_bash(self.repo_model.is_some(), command);
+                warn_git_mutation_via_bash(self.git.handle().is_some(), command);
 
                 bash::execute_with_boundary(
                     command,
@@ -1407,10 +1403,14 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'content' argument"))?;
                 let path = self.resolve_path(path_str)?;
                 let result = write::execute(&path, content).await;
-                if result.is_ok()
-                    && let Some(ref model) = self.repo_model
-                {
-                    model.record_edit(path_str);
+                if result.is_ok() {
+                    let _ = self
+                        .git
+                        .invoke(crate::git_service::GitRequest::RecordEdits {
+                            paths: vec![path_str.to_string()],
+                            cancellation: cancel.clone(),
+                        })
+                        .await;
                 }
                 result
             }
@@ -1426,10 +1426,14 @@ impl ToolProvider for CoreTools {
                     .ok_or_else(|| anyhow::anyhow!("missing 'newText' argument"))?;
                 let path = self.resolve_path(path_str)?;
                 let result = edit::execute(&path, old_text, new_text).await;
-                if result.is_ok()
-                    && let Some(ref model) = self.repo_model
-                {
-                    model.record_edit(path_str);
+                if result.is_ok() {
+                    let _ = self
+                        .git
+                        .invoke(crate::git_service::GitRequest::RecordEdits {
+                            paths: vec![path_str.to_string()],
+                            cancellation: cancel.clone(),
+                        })
+                        .await;
                 }
                 result
             }
@@ -1451,12 +1455,14 @@ impl ToolProvider for CoreTools {
                 })
                 .await;
                 // Track all edited files in the working set
-                if result.is_ok()
-                    && let Some(ref model) = self.repo_model
-                {
-                    for edit in &edits {
-                        model.record_edit(&edit.file);
-                    }
+                if result.is_ok() {
+                    let _ = self
+                        .git
+                        .invoke(crate::git_service::GitRequest::RecordEdits {
+                            paths: edits.iter().map(|edit| edit.file.clone()).collect(),
+                            cancellation: cancel.clone(),
+                        })
+                        .await;
                 }
                 result
             }
@@ -1483,57 +1489,6 @@ impl ToolProvider for CoreTools {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("missing 'message' argument"))?;
 
-                // ── jj path: describe + new ─────────────────────────────
-                // In jj, the working copy is already a mutable change.
-                // "Committing" means: describe it, then create a new empty
-                // change on top (`jj new`). No staging, no index, no dance.
-                if self.repo_model.as_ref().is_some_and(|m| m.is_jj()) {
-                    omegon_git::jj::describe(&self.cwd, message)?;
-                    omegon_git::jj::new_change(&self.cwd, "")?;
-                    omegon_git::jj::sync_to_git_main(&self.cwd)?;
-
-                    // Get the change ID of the just-committed change (parent of @)
-                    let committed_id = std::process::Command::new("jj")
-                        .args(["log", "-r", "@-", "--no-graph", "-T", "change_id.short()"])
-                        .current_dir(&self.cwd)
-                        .output()
-                        .ok()
-                        .and_then(|o| {
-                            if o.status.success() {
-                                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_default();
-
-                    // Refresh model state
-                    if let Some(ref model) = self.repo_model {
-                        model.clear_working_set();
-                        let _ = model.refresh();
-                    }
-
-                    let summary = format!("Committed (jj): {committed_id}\n{message}");
-                    let branch = git2::Repository::discover(&self.cwd)
-                        .ok()
-                        .and_then(|r| {
-                            r.head()
-                                .ok()
-                                .and_then(|h| h.shorthand().map(|s| s.to_string()))
-                        })
-                        .unwrap_or_default();
-                    return Ok(ToolResult {
-                        content: vec![omegon_traits::ContentBlock::Text { text: summary }],
-                        details: json!({
-                            "jj_change_id": committed_id,
-                            "message": message,
-                            "backend": "jj",
-                            "git_branch": if branch.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(branch) },
-                        }),
-                    });
-                }
-
-                // ── git path: stage + commit ────────────────────────────
                 let paths: Vec<String> = args
                     .get("paths")
                     .and_then(|v| v.as_array())
@@ -1544,78 +1499,43 @@ impl ToolProvider for CoreTools {
                     })
                     .unwrap_or_default();
 
-                let lifecycle_paths: Vec<String> = self
-                    .repo_model
-                    .as_ref()
-                    .map(|m| m.pending_lifecycle_files().into_iter().collect())
-                    .unwrap_or_default();
-
-                let sub_paths = self
-                    .repo_model
-                    .as_ref()
-                    .map(|m| {
-                        m.submodules()
-                            .into_iter()
-                            .map(|s| s.path)
-                            .collect::<Vec<_>>()
+                let result = self
+                    .git
+                    .invoke(crate::git_service::GitRequest::Commit {
+                        path: self.cwd.clone(),
+                        message: message.to_string(),
+                        paths,
+                        cancellation: cancel,
                     })
-                    .unwrap_or_else(|| {
-                        omegon_git::submodule::list_submodule_paths(&self.cwd).unwrap_or_default()
-                    });
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+                let crate::git_service::GitResponse::Commit {
+                    revision,
+                    files_staged,
+                    submodule_commits,
+                    backend,
+                    branch,
+                } = result
+                else {
+                    anyhow::bail!("managed Git service returned an invalid commit response");
+                };
 
-                let mut submodule_commits = 0;
-                for sub_path in &sub_paths {
-                    let sub_prefix = format!("{}/", sub_path);
-                    let touches_sub =
-                        paths.is_empty() || paths.iter().any(|p| p.starts_with(&sub_prefix));
-                    if touches_sub
-                        && let Ok(n) =
-                            omegon_git::commit::commit_in_submodule(&self.cwd, sub_path, message)
-                    {
-                        submodule_commits += n;
-                    }
-                }
-
-                let include_lifecycle = !lifecycle_paths.is_empty();
-                let result = omegon_git::commit::create_commit(
-                    &self.cwd,
-                    &omegon_git::commit::CommitOptions {
-                        message,
-                        paths: &paths,
-                        include_lifecycle,
-                        lifecycle_paths: &lifecycle_paths,
-                    },
-                )?;
-
-                if let Some(ref model) = self.repo_model {
-                    model.clear_working_set();
-                    if let Err(e) = model.refresh() {
-                        tracing::warn!("failed to refresh repo model after commit: {e}");
-                    }
-                }
-
-                let mut summary =
-                    format!("Committed {} file(s): {}", result.files_staged, result.sha);
+                let mut summary = format!("Committed {} file(s): {}", files_staged, revision);
                 if submodule_commits > 0 {
                     summary.push_str(&format!(
                         "\n({} file(s) committed inside submodule(s) first)",
                         submodule_commits
                     ));
                 }
-                if include_lifecycle {
-                    summary.push_str(&format!(
-                        "\n({} lifecycle file(s) included)",
-                        lifecycle_paths.len()
-                    ));
-                }
 
                 Ok(ToolResult {
                     content: vec![omegon_traits::ContentBlock::Text { text: summary }],
                     details: json!({
-                        "sha": result.sha,
-                        "files_staged": result.files_staged,
+                        "sha": revision,
+                        "files_staged": files_staged,
                         "submodule_commits": submodule_commits,
-                        "lifecycle_files": lifecycle_paths.len(),
+                        "backend": backend,
+                        "git_branch": branch,
                     }),
                 })
             }
@@ -1799,7 +1719,7 @@ impl ToolProvider for CoreTools {
                 .ok_or_else(|| anyhow::anyhow!("missing 'command' argument"))?;
             let timeout = parse_bash_timeout_secs(&args)?;
 
-            warn_git_mutation_via_bash(self.repo_model.is_some(), command);
+            warn_git_mutation_via_bash(self.git.handle().is_some(), command);
 
             return bash::execute_streaming(
                 command,

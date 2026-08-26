@@ -130,6 +130,7 @@ mod eval;
 mod evidence;
 mod extension_cli;
 mod extension_registry;
+mod git_service;
 mod github_copilot;
 mod lifecycle;
 #[cfg(test)]
@@ -3746,8 +3747,20 @@ For unrestricted automation, use ANTHROPIC_API_KEY instead. Reference: https://w
     )
 }
 
-fn ensure_clean_cleave_repo(repo_path: &Path) -> anyhow::Result<()> {
-    let status = omegon_git::status::query_status(repo_path)?;
+async fn ensure_clean_cleave_repo(
+    git: &crate::git_service::GitBinding,
+    repo_path: &Path,
+) -> anyhow::Result<()> {
+    let response = git
+        .invoke(crate::git_service::GitRequest::Status {
+            path: repo_path.to_path_buf(),
+            cancellation: CancellationToken::new(),
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    let crate::git_service::GitResponse::Status(status) = response else {
+        anyhow::bail!("managed Git service returned an invalid status response");
+    };
     if status.is_clean {
         return Ok(());
     }
@@ -3844,7 +3857,6 @@ async fn run_cleave_command(
     max_turns: u32,
 ) -> anyhow::Result<()> {
     let repo_path = std::fs::canonicalize(&cli.cwd)?;
-    ensure_clean_cleave_repo(&repo_path)?;
     let plan_json = std::fs::read_to_string(plan_path)?;
     let plan = cleave::CleavePlan::from_json(&plan_json)?;
 
@@ -3865,6 +3877,7 @@ async fn run_cleave_command(
         "cleave",
     )
     .await?;
+    ensure_clean_cleave_repo(&agent_setup.git_binding, &repo_path).await?;
 
     let config = workflow::with_discovered_workflow(&repo_path, |workflow| {
         cleave::orchestrator::CleaveConfig {
@@ -3885,6 +3898,7 @@ async fn run_cleave_command(
             workflow,
             sandbox: false, // CLI cleave — no settings context, sandbox opt-in via TUI only
             dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
+            git: agent_setup.git_binding.clone(),
         }
     });
 
@@ -10518,6 +10532,7 @@ mod tests {
             lifecycle_binding: crate::lifecycle_service::LifecycleBinding::default(),
             memory_binding: crate::memory_service::MemoryBinding::default(),
             context_compaction: Default::default(),
+            git_binding: Default::default(),
             session_id: "test-session".into(),
             session_view_binding: crate::session_consumers::SessionViewBinding::new(
                 cwd.join("test-session.json"),
@@ -13739,8 +13754,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn cleave_preflight_allows_clean_repo() {
+    #[tokio::test]
+    async fn cleave_preflight_allows_clean_repo() {
         let dir = tempfile::tempdir().unwrap();
         std::process::Command::new("git")
             .args(["init", "-q"])
@@ -13769,10 +13784,18 @@ mod tests {
             .status()
             .unwrap();
 
-        let result = ensure_clean_cleave_repo(dir.path());
+        let (mut bus, git) = crate::git_service::bounded_binding(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        let result = ensure_clean_cleave_repo(&git, dir.path()).await;
         assert!(
             result.is_ok(),
             "clean repo should pass preflight: {result:?}"
+        );
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
         );
     }
 
@@ -13797,8 +13820,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cleave_preflight_blocks_dirty_repo_and_lists_paths() {
+    #[tokio::test]
+    async fn cleave_preflight_blocks_dirty_repo_and_lists_paths() {
         let dir = tempfile::tempdir().unwrap();
         std::process::Command::new("git")
             .args(["init", "-q"])
@@ -13829,7 +13852,11 @@ mod tests {
 
         std::fs::write(dir.path().join("dirty.txt"), "nope\n").unwrap();
 
-        let err = ensure_clean_cleave_repo(dir.path())
+        let (mut bus, git) = crate::git_service::bounded_binding(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        let err = ensure_clean_cleave_repo(&git, dir.path())
+            .await
             .unwrap_err()
             .to_string();
         assert!(
@@ -13839,6 +13866,11 @@ mod tests {
         assert!(
             err.contains("dirty.txt"),
             "missing dirty path in error: {err}"
+        );
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
         );
     }
 }

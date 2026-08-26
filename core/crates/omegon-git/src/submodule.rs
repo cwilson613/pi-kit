@@ -10,6 +10,13 @@ use std::path::Path;
 /// Uses git2 for init and CLI fallback for recursive update
 /// (git2's submodule update is limited).
 pub fn init_submodules(repo_path: &Path) -> Result<usize> {
+    init_submodules_with_cancel(repo_path, &|| false)
+}
+
+pub fn init_submodules_with_cancel(
+    repo_path: &Path,
+    cancelled: &impl Fn() -> bool,
+) -> Result<usize> {
     let repo = Repository::open(repo_path).context("failed to open repo")?;
     let submodules = repo.submodules().context("failed to list submodules")?;
 
@@ -19,11 +26,13 @@ pub fn init_submodules(repo_path: &Path) -> Result<usize> {
 
     // git2's submodule update is incomplete for recursive init.
     // Fall back to CLI which handles nested submodules reliably.
-    let output = std::process::Command::new("git")
-        .args(["submodule", "update", "--init", "--recursive"])
-        .current_dir(repo_path)
-        .output()
-        .context("git submodule update --init --recursive failed")?;
+    let output = crate::process::run(
+        "git",
+        ["submodule", "update", "--init", "--recursive"],
+        repo_path,
+        cancelled,
+    )
+    .context("git submodule update --init --recursive failed")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -863,6 +863,30 @@ production direct planner calls and ambient context/compaction service lookup.
 The service changes no command syntax, configuration schema, durable session
 schema, frontend wire shape, public site contract, or canonical snippet.
 
+Slice 6.1.11 publishes Git as the final task-6.1 managed lane. The optional
+boot-only `service:git` / `interface:omegon-git-v1` service owns one discovered
+`RepoModel`, serialized libgit2 access, and Git or JJ subprocesses started by
+`omegon-git` for the captured repository. Core edit tracking and commit,
+cleave preflight and worktree operations, workspace create and destroy, and
+repository status use one boot-captured exact-generation handle or an immutable
+startup observation. Typed absence does not trigger ambient discovery or a
+direct production fallback.
+
+Requests carry cancellation and return owned DTOs. Repository operations accept
+repository-contained paths. Worktree operations explicitly authorize additional
+host-approved workspace roots. The service does not own invocation admission,
+RBAC or approval, command rendering, workspace registry or lease state, cleave
+scheduling or merge policy, branch or message selection, or shutdown order.
+Package and extension clones, updater and release probes, toolchain checks, TDD
+evidence reads, and test fixtures remain outside this service boundary.
+
+The generation owns a strict worker, process set, and repository writer. Cleanup
+stops and joins the worker and complete Unix process groups or Windows Job
+Objects before process-set and writer settlement. Candidate rollback preserves
+the published generation. Exact-generation transfer preserves the same service
+and resource owners, while stale handles fail closed. Source guards reserve
+production repository ownership and Git/JJ process creation for this lane.
+
 ## Selective decomposition map
 
 | Current subsystem | Target tier | First boundary to establish |

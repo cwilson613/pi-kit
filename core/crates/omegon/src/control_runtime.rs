@@ -829,11 +829,11 @@ pub async fn execute_control(
         }
         ControlRequest::WorkspaceNew { label } => {
             let workspace_ctx = workspace_control_context(ctx.agent);
-            crate::workspace::control::workspace_new_response(&workspace_ctx, &label)
+            crate::workspace::control::workspace_new_response(&workspace_ctx, &label).await
         }
         ControlRequest::WorkspaceDestroy { target } => {
             let workspace_ctx = workspace_control_context(ctx.agent);
-            crate::workspace::control::workspace_destroy_response(&workspace_ctx, &target)
+            crate::workspace::control::workspace_destroy_response(&workspace_ctx, &target).await
         }
         ControlRequest::WorkspaceAdopt => {
             let workspace_ctx = workspace_control_context(ctx.agent);
@@ -2040,6 +2040,7 @@ fn workspace_control_context(
         &agent.session_id,
         &agent.instance_id,
     )
+    .with_git(&agent.git_binding)
 }
 
 pub async fn workspace_status_view_response(agent: &InteractiveAgentHost) -> SlashCommandResponse {
@@ -2057,7 +2058,7 @@ pub async fn workspace_new_response(
     label: &str,
 ) -> SlashCommandResponse {
     let ctx = workspace_control_context(agent);
-    crate::workspace::control::workspace_new_response(&ctx, label)
+    crate::workspace::control::workspace_new_response(&ctx, label).await
 }
 
 pub async fn workspace_destroy_response(
@@ -2065,7 +2066,7 @@ pub async fn workspace_destroy_response(
     target: &str,
 ) -> SlashCommandResponse {
     let ctx = workspace_control_context(agent);
-    crate::workspace::control::workspace_destroy_response(&ctx, target)
+    crate::workspace::control::workspace_destroy_response(&ctx, target).await
 }
 
 pub async fn workspace_adopt_response(agent: &InteractiveAgentHost) -> SlashCommandResponse {
@@ -6389,6 +6390,7 @@ mod context_compaction_tests {
                 admission: crate::workspace::types::AdmissionOutcome::GrantedMutable,
             },
             runtime_generation: 1,
+            git_binding: Default::default(),
         }
     }
 

@@ -65,6 +65,8 @@ pub struct AgentSetup {
     pub(crate) memory_binding: crate::memory_service::MemoryBinding,
     /// Boot-captured exact-generation context/compaction planning binding.
     pub(crate) context_compaction: crate::context_compaction_service::ContextCompactionBinding,
+    /// Boot-captured exact-generation repository Git/JJ binding.
+    pub(crate) git_binding: crate::git_service::GitBinding,
     /// Stable session id for the current live conversation. Fresh sessions
     /// get a generated id at startup; resumed sessions reuse their saved id.
     pub session_id: String,
@@ -565,36 +567,6 @@ impl AgentSetup {
         bus.set_project_root(project_root.clone());
         let deferred_session_view = crate::session_consumers::DeferredSessionViewBinding::default();
 
-        // ─── Repo model (git state tracking) ────────────────────────────
-        let repo_model = if project_root.join(".git").exists() || project_root.join(".jj").exists()
-        {
-            match omegon_git::RepoModel::discover(&project_root) {
-                Ok(Some(model)) => {
-                    tracing::info!(
-                        repo = %model.repo_path().display(),
-                        branch = model.branch().as_deref().unwrap_or("(detached)"),
-                        submodules = model.submodules().len(),
-                        "RepoModel active"
-                    );
-                    Some(model)
-                }
-                Ok(None) => {
-                    tracing::debug!("not inside a git repo — RepoModel disabled");
-                    None
-                }
-                Err(e) => {
-                    tracing::warn!("git repo discovery failed: {e} — RepoModel disabled");
-                    None
-                }
-            }
-        } else {
-            tracing::debug!(
-                project = %project_root.display(),
-                "selected project root is not a VCS root — RepoModel disabled"
-            );
-            None
-        };
-
         let boundary = if let Some(ref s) = settings {
             tools::WorkspaceBoundary::new(cwd.clone()).with_settings(s.clone())
         } else {
@@ -806,6 +778,8 @@ impl AgentSetup {
         bus.register(Box::new(
             crate::context_compaction_service::ContextCompactionFeature,
         ));
+        let git_binding = crate::git_service::GitBinding::default();
+        bus.register(Box::new(crate::git_service::GitFeature));
 
         // ─── Sandbox setting (read once, shared by cleave + delegate) ──
         let sandbox = settings
@@ -842,7 +816,8 @@ impl AgentSetup {
         );
         cleave_feature = cleave_feature
             .with_inference_runtime(inference_runtime.clone())
-            .with_secrets(secrets.clone());
+            .with_secrets(secrets.clone())
+            .with_git(git_binding.clone());
         if let Some(settings) = settings.as_ref() {
             cleave_feature = cleave_feature.with_settings(settings.clone());
         }
@@ -1094,11 +1069,7 @@ impl AgentSetup {
         };
 
         // ─── Core tools (bash, read, write, edit, commit; hidden internal change) ──
-        let core_tools = if let Some(ref model) = repo_model {
-            tools::CoreTools::with_repo_model(cwd.clone(), model.clone())
-        } else {
-            tools::CoreTools::new(cwd.clone())
-        };
+        let core_tools = tools::CoreTools::with_git(cwd.clone(), git_binding.clone());
         let core_tools = if let Some(ref s) = settings {
             core_tools.with_settings(s.clone())
         } else {
@@ -1143,6 +1114,15 @@ impl AgentSetup {
                 %error,
                 "context/compaction startup failed; compaction planning is unavailable"
             ),
+        }
+        if project_root.join(".git").exists() || project_root.join(".jj").exists() {
+            match crate::git_service::start_candidate(project_root.clone()).await {
+                Ok(candidate) => bus.stage_managed_generation("git", candidate)?,
+                Err(error) => tracing::warn!(
+                    %error,
+                    "managed Git startup failed; Git-backed operations are unavailable"
+                ),
+            }
         }
         if let Some(project_path) = db_path.clone() {
             let global_path = Some(crate::paths::user_config_dir().join("global-memory.db"))
@@ -1223,6 +1203,22 @@ impl AgentSetup {
         if let Err(error) = context_compaction.capture(&bus) {
             return Err(managed_setup_error(&mut bus, error).await);
         }
+        if let Err(error) = git_binding.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        let git_snapshot = match git_binding
+            .invoke(crate::git_service::GitRequest::Snapshot {
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await
+        {
+            Ok(crate::git_service::GitResponse::Snapshot(snapshot)) => Some(snapshot),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::debug!(?error, "managed Git observation is unavailable");
+                None
+            }
+        };
         if memory_binding.available() {
             match memory_binding
                 .invoke(crate::memory_service::MemoryRequestV1::ManagedStatus {
@@ -1621,14 +1617,18 @@ impl AgentSetup {
                 .unwrap_or_else(|| "primary".into()),
             path: cwd.display().to_string(),
             backend_kind: crate::workspace::types::WorkspaceBackendKind::LocalDir,
-            vcs_ref: repo_model
-                .as_ref()
-                .map(|model| crate::workspace::types::WorkspaceVcsRef {
-                    vcs: "git".into(),
-                    branch: model.branch(),
+            vcs_ref: git_snapshot.as_ref().map(|snapshot| {
+                crate::workspace::types::WorkspaceVcsRef {
+                    vcs: if snapshot.is_jj {
+                        "jj".into()
+                    } else {
+                        "git".into()
+                    },
+                    branch: snapshot.branch.clone(),
                     revision: None,
                     remote: Some("origin".into()),
-                }),
+                }
+            }),
             bindings: existing_workspace_lease
                 .as_ref()
                 .map(|lease| lease.bindings.clone())
@@ -1636,7 +1636,11 @@ impl AgentSetup {
             branch: existing_workspace_lease
                 .as_ref()
                 .map(|lease| lease.branch.clone())
-                .or_else(|| repo_model.as_ref().and_then(|model| model.branch()))
+                .or_else(|| {
+                    git_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.branch.clone())
+                })
                 .unwrap_or_else(|| "(unknown)".into()),
             role: crate::workspace::types::WorkspaceRole::Primary,
             workspace_kind,
@@ -1779,6 +1783,7 @@ impl AgentSetup {
             lifecycle_binding: lifecycle_binding.clone(),
             memory_binding: memory_binding.clone(),
             context_compaction: context_compaction.clone(),
+            git_binding: git_binding.clone(),
             session_id,
             session_view_binding,
             instance_id,

@@ -88,6 +88,7 @@ pub fn rrf_merge(
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.fact.id.cmp(&b.fact.id))
     });
     merged.truncate(limit);
     merged
@@ -238,5 +239,19 @@ mod tests {
         let fts = vec![scored("a", 0.9), scored("b", 0.8), scored("c", 0.7)];
         let result = rrf_merge(&fts, &[], 60.0, 2);
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn rrf_merge_orders_equal_scores_by_fact_id() {
+        let fts = vec![scored("z", 0.9)];
+        let vec = vec![scored("a", 0.9)];
+        let result = rrf_merge(&fts, &vec, 60.0, 10);
+        assert_eq!(
+            result
+                .iter()
+                .map(|item| item.fact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "z"]
+        );
     }
 }

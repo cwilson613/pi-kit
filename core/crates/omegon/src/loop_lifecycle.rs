@@ -34,7 +34,15 @@ pub(crate) async fn process_turn_requests(
             }
             omegon_traits::BusRequest::RefreshHarnessStatus => {
                 tracing::debug!("Bus: harness status refresh requested");
-                let status = crate::status::HarnessStatus::assemble();
+                if let Some(binding) = invocations.memory_binding() {
+                    crate::status::refresh_managed_memory_status(
+                        binding,
+                        invocations.runtime_ref().project_root(),
+                    )
+                    .await;
+                }
+                let status =
+                    crate::status::HarnessStatus::assemble(invocations.runtime().project_root());
                 if let Ok(status_json) = serde_json::to_value(&status) {
                     let _ = request
                         .events
@@ -46,7 +54,11 @@ pub(crate) async fn process_turn_requests(
                 content,
                 source,
             } => {
-                let args = serde_json::json!({ "content": content, "section": section });
+                let args = serde_json::json!({
+                    "content": content,
+                    "section": section,
+                    "source": source,
+                });
                 let call_id = format!("turn-auto-ingest:{}", uuid::Uuid::new_v4());
                 if let Err(error) = invocations
                     .dispatch_internal(LoopInternalInvocationRequest {
@@ -253,7 +265,11 @@ async fn drain_late_requests(
                 content,
                 source,
             } => {
-                let args = serde_json::json!({ "content": content, "section": section });
+                let args = serde_json::json!({
+                    "content": content,
+                    "section": section,
+                    "source": source,
+                });
                 let call_id = format!("post-loop-auto-ingest:{}", uuid::Uuid::new_v4());
                 match tokio::time::timeout(
                     post_loop_store_timeout(),

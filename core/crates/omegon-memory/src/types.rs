@@ -225,6 +225,16 @@ pub struct FactFilter {
     pub status: Option<FactStatus>,
 }
 
+/// One bounded keyset page over facts present at the first page's Lamport
+/// watermark. Facts inserted after that watermark are intentionally deferred
+/// to a later scan; status changes may remove facts but cannot duplicate them.
+#[derive(Debug, Clone)]
+pub struct FactPage {
+    pub facts: Vec<Fact>,
+    pub next_cursor: Option<String>,
+    pub total: usize,
+}
+
 /// Request for context injection rendering.
 #[derive(Debug, Clone)]
 pub struct ContextRequest {
@@ -333,6 +343,7 @@ pub enum MemoryMutation {
         embedding: Vec<f32>,
     },
     CreateEdge {
+        mind: String,
         request: CreateEdge,
     },
     StoreEpisode {

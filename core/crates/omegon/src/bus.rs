@@ -388,6 +388,7 @@ pub(crate) struct InProcessServiceHandle<T: ?Sized> {
 
 /// The event bus — owns all features and dispatches events to them.
 pub struct EventBus {
+    project_root: std::path::PathBuf,
     features: Vec<Box<dyn Feature>>,
     /// Accumulated requests from the most recent event delivery.
     pending_requests: Vec<BusRequest>,
@@ -433,6 +434,7 @@ pub struct EventBus {
 impl EventBus {
     pub fn new() -> Self {
         Self {
+            project_root: std::env::current_dir().unwrap_or_default(),
             features: Vec::new(),
             pending_requests: Vec::new(),
             tool_defs: Vec::new(),
@@ -458,6 +460,14 @@ impl EventBus {
                 ("web_fetch".into(), Duration::from_secs(60)),
             ]),
         }
+    }
+
+    pub(crate) fn set_project_root(&mut self, root: std::path::PathBuf) {
+        self.project_root = root;
+    }
+
+    pub(crate) fn project_root(&self) -> &std::path::Path {
+        &self.project_root
     }
 
     pub(crate) fn in_process_service<T>(
@@ -560,7 +570,16 @@ impl EventBus {
     pub(crate) async fn shutdown_managed_services(
         &mut self,
     ) -> crate::managed_service_bus::ManagedServiceShutdownReport {
-        let report = self.managed_services.shutdown().await;
+        let mut feature_failures = Vec::new();
+        for feature in &mut self.features {
+            if let Err(error) = feature.prepare_managed_shutdown().await {
+                let failure = format!("{}: {error:#}", feature.name());
+                tracing::warn!(feature = feature.name(), %error, "feature pre-shutdown failed");
+                feature_failures.push(failure);
+            }
+        }
+        let mut report = self.managed_services.shutdown().await;
+        report.feature_failures = feature_failures;
         for generation in &report.generations {
             match &generation.result {
                 Ok(cleanup) if cleanup.resources.all_resources_settled() => {}
@@ -593,6 +612,15 @@ impl EventBus {
             );
         }
         report
+    }
+
+    pub(crate) async fn shutdown_managed_services_strict(&mut self) -> anyhow::Result<()> {
+        let report = self.shutdown_managed_services().await;
+        if report.all_resources_settled() {
+            Ok(())
+        } else {
+            anyhow::bail!("managed-service cleanup did not settle: {report:?}")
+        }
     }
 
     pub(crate) fn bind_runtime_ownership_retention(
@@ -3017,6 +3045,34 @@ mod tests {
         ToolDefinition, ToolResult,
     };
     use serde_json::json;
+
+    struct FailingShutdownFeature;
+
+    #[async_trait]
+    impl Feature for FailingShutdownFeature {
+        fn name(&self) -> &str {
+            "failing-shutdown"
+        }
+
+        async fn prepare_managed_shutdown(&mut self) -> anyhow::Result<()> {
+            anyhow::bail!("owned task failed")
+        }
+    }
+
+    #[tokio::test]
+    async fn feature_task_failure_makes_strict_managed_shutdown_fail() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(FailingShutdownFeature));
+        let report = bus.shutdown_managed_services().await;
+        assert!(!report.all_resources_settled());
+        assert_eq!(
+            report.feature_failures,
+            vec!["failing-shutdown: owned task failed"]
+        );
+        let mut bus = EventBus::new();
+        bus.register(Box::new(FailingShutdownFeature));
+        assert!(bus.shutdown_managed_services_strict().await.is_err());
+    }
 
     /// Test feature that counts events and provides a tool.
     struct CounterFeature {

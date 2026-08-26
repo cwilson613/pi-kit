@@ -25,6 +25,7 @@ pub(crate) struct LoopCompatibilityBindings {
     pub(crate) drain_late_requests: bool,
     pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
     pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
+    pub(crate) memory_binding: crate::memory_service::MemoryBinding,
 }
 
 impl Default for LoopCompatibilityBindings {
@@ -40,6 +41,7 @@ impl Default for LoopCompatibilityBindings {
             drain_late_requests: true,
             work_snapshot: None,
             behavior_policy: None,
+            memory_binding: Default::default(),
         }
     }
 }
@@ -630,6 +632,9 @@ pub(crate) trait LoopInvocationContract: Send + Sync {
     ) -> LoopInvocationBatchOutcome;
     fn runtime(&mut self) -> &mut crate::bus::EventBus;
     fn runtime_ref(&self) -> &crate::bus::EventBus;
+    fn memory_binding(&self) -> Option<&crate::memory_service::MemoryBinding> {
+        None
+    }
     fn tool_declaration(&self, name: &str) -> Option<LoopInvocationDeclaration>;
     fn admit_tool(
         &self,
@@ -1039,6 +1044,7 @@ pub(crate) struct LoopInvocationPort<'a> {
     permission_role: Option<styrene_rbac::Role>,
     invocation_scope: crate::invocation_service::InvocationScope,
     drain_late_requests: bool,
+    memory_binding: crate::memory_service::MemoryBinding,
 }
 
 impl<'a> LoopInvocationPort<'a> {
@@ -1053,6 +1059,7 @@ impl<'a> LoopInvocationPort<'a> {
             permission_role: None,
             invocation_scope: crate::invocation_service::InvocationScope::default(),
             drain_late_requests: true,
+            memory_binding: Default::default(),
         }
     }
 
@@ -1072,6 +1079,7 @@ impl<'a> LoopInvocationPort<'a> {
             permission_role: config.compatibility.permission_role,
             invocation_scope: config.compatibility.invocation_scope.clone(),
             drain_late_requests: config.compatibility.drain_late_requests,
+            memory_binding: config.compatibility.memory_binding.clone(),
         }
     }
 }
@@ -1286,6 +1294,10 @@ impl LoopInvocationContract for LoopInvocationPort<'_> {
 
     fn runtime_ref(&self) -> &crate::bus::EventBus {
         self.runtime
+    }
+
+    fn memory_binding(&self) -> Option<&crate::memory_service::MemoryBinding> {
+        Some(&self.memory_binding)
     }
 
     fn tool_declaration(&self, name: &str) -> Option<LoopInvocationDeclaration> {

@@ -7,7 +7,6 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use omegon_memory::EmbeddingService as _; // bring trait methods into scope
-use omegon_memory::MemoryBackend as _;
 
 use crate::bus::EventBus;
 use crate::context::ContextManager;
@@ -139,6 +138,42 @@ pub struct AgentSetup {
     pub voice_polling_handles: Vec<crate::extensions::ExtensionPollingHandle>,
 }
 
+pub(crate) async fn finalize_agent_error<T>(
+    agent: &mut AgentSetup,
+    error: anyhow::Error,
+) -> anyhow::Result<T> {
+    let report = agent.bus.shutdown_managed_services().await;
+    crate::plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors))
+        .shutdown()
+        .await;
+    crate::extensions::ExtensionSupervisorSet::new(std::mem::take(
+        &mut agent.extension_supervisors,
+    ))
+    .shutdown()
+    .await;
+    if report.all_resources_settled() {
+        Err(error)
+    } else {
+        Err(error.context(format!(
+            "managed services did not settle while finalizing error: {report:?}"
+        )))
+    }
+}
+
+pub(crate) async fn finalize_managed_error<T>(
+    bus: &mut EventBus,
+    error: anyhow::Error,
+) -> anyhow::Result<T> {
+    let report = bus.shutdown_managed_services().await;
+    if report.all_resources_settled() {
+        Err(error)
+    } else {
+        Err(error.context(format!(
+            "managed services did not settle while finalizing error: {report:?}"
+        )))
+    }
+}
+
 /// Runtime-substrate inventory captured at startup or before a future substrate refresh.
 ///
 /// This is intentionally small and copyable: it lets operator-facing surfaces
@@ -180,6 +215,19 @@ pub struct RuntimeSubstrateRefreshCandidate {
     pub skipped_by_policy: usize,
     pub disabled_extensions: usize,
     pub invalid_manifests: Vec<String>,
+}
+
+fn apply_initial_memory_status(
+    harness_status: &mut crate::status::HarnessStatus,
+    status: crate::status::MemoryStatus,
+    binding_available: bool,
+    warning: Option<String>,
+) {
+    harness_status.update_memory(status);
+    if !binding_available || warning.is_some() {
+        harness_status.memory_available = false;
+        harness_status.memory_warning = warning;
+    }
 }
 
 /// Build a runtime substrate refresh candidate inventory without mutating live runtime state.
@@ -510,10 +558,10 @@ impl AgentSetup {
         );
         tracing::debug!(diagnostics = ?session_secret_diag, "startup secret diagnostics");
 
-        let mut bus = EventBus::new();
-        let deferred_session_view = crate::session_consumers::DeferredSessionViewBinding::default();
-
         let project_root = find_project_root(&cwd);
+        let mut bus = EventBus::new();
+        bus.set_project_root(project_root.clone());
+        let deferred_session_view = crate::session_consumers::DeferredSessionViewBinding::default();
 
         // ─── Repo model (git state tracking) ────────────────────────────
         let repo_model = if project_root.join(".git").exists() || project_root.join(".jj").exists()
@@ -641,14 +689,7 @@ impl AgentSetup {
             }
             _ => None,
         };
-        let mut memory_feature_registered = false;
-
-        let mut context_memory_backend: Option<std::sync::Arc<dyn omegon_memory::MemoryBackend>> =
-            None;
-        let mut context_memory_mind: Option<String> = None;
-        let mut context_embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> =
-            None;
-
+        let mut embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> = None;
         if let Some(db_path) = db_path.as_ref() {
             if !is_child && let Some(migration) = ensure_project_memory_store_ready(db_path)? {
                 tracing::warn!(
@@ -660,103 +701,49 @@ impl AgentSetup {
                     "migrated legacy project memory store before startup"
                 );
             }
-            match omegon_memory::SqliteBackend::open(db_path) {
-                Ok(backend) => {
-                    tracing::info!(mind = %mind, db = %db_path.display(), child = is_child, "memory backend loaded");
-
-                    if let Ok(stats) = backend.stats(&mind).await {
-                        initial_memory_status = memory_status_from_stats(stats);
-                        tracing::info!(
-                            facts = initial_memory_status.active_facts,
-                            episodes = initial_memory_status.episodes,
-                            edges = initial_memory_status.edges,
-                            "memory snapshot for TUI"
-                        );
-                    }
-
-                    // Register MemoryFeature with Arc<dyn MemoryBackend>
-                    let memory_backend: std::sync::Arc<dyn omegon_memory::MemoryBackend> =
-                        std::sync::Arc::new(backend);
-                    context_memory_backend = Some(memory_backend.clone());
-                    context_memory_mind = Some(mind.clone());
-
-                    // ── Embedding service (optional, for hybrid search) ──
-                    // Skip the probe in child processes — the async HTTP request blocks
-                    // single-threaded runtimes (ACP, delegate children).
-                    let embed_service: Option<std::sync::Arc<dyn omegon_memory::EmbeddingService>> =
-                        if is_child {
-                            None
-                        } else {
-                            let profile = crate::settings::Profile::load(&cwd);
-                            let svc = crate::embedding::OllamaEmbeddingService::from_config(
-                                profile.embed_url.as_deref(),
-                                profile.embed_model.as_deref(),
-                            );
-                            if svc.probe().await {
+            tracing::info!(mind = %mind, db = %db_path.display(), child = is_child, "managed memory candidate configured");
+            // Skip the probe in child processes — the async HTTP request blocks
+            // single-threaded runtimes (ACP, delegate children).
+            if !is_child {
+                let profile = crate::settings::Profile::load(&cwd);
+                let svc = crate::embedding::OllamaEmbeddingService::from_config(
+                    profile.embed_url.as_deref(),
+                    profile.embed_model.as_deref(),
+                );
+                embed_service = if svc.probe().await {
+                    tracing::info!(
+                        url = svc.base_url(),
+                        model = svc.model_name(),
+                        "embedding service available — hybrid search enabled"
+                    );
+                    Some(std::sync::Arc::new(svc)
+                        as std::sync::Arc<dyn omegon_memory::EmbeddingService>)
+                } else {
+                    #[cfg(feature = "local-embeddings")]
+                    {
+                        match crate::local_embedding::LocalEmbeddingService::from_default_dir() {
+                            Ok(local_svc) => {
                                 tracing::info!(
-                                    url = svc.base_url(),
-                                    model = svc.model_name(),
-                                    "embedding service available — hybrid search enabled"
+                                    model = local_svc.model_name(),
+                                    "local ONNX embedding service loaded — hybrid search enabled"
                                 );
-                                Some(std::sync::Arc::new(svc)
+                                Some(std::sync::Arc::new(local_svc)
                                     as std::sync::Arc<dyn omegon_memory::EmbeddingService>)
-                            } else {
-                                #[cfg(feature = "local-embeddings")]
-                                {
-                                    match crate::local_embedding::LocalEmbeddingService::from_default_dir()
-                            {
-                                Ok(local_svc) => {
-                                    tracing::info!(
-                                        model = local_svc.model_name(),
-                                        "local ONNX embedding service loaded — hybrid search enabled"
-                                    );
-                                    Some(std::sync::Arc::new(local_svc)
-                                        as std::sync::Arc<dyn omegon_memory::EmbeddingService>)
-                                }
-                                Err(_) => {
-                                    tracing::info!(
-                                        "embedding service not reachable and no local model — FTS-only recall"
-                                    );
-                                    None
-                                }
                             }
-                                }
-                                #[cfg(not(feature = "local-embeddings"))]
-                                {
-                                    tracing::info!(
-                                        "embedding service not reachable — FTS-only recall"
-                                    );
-                                    None
-                                }
+                            Err(_) => {
+                                tracing::info!(
+                                    "embedding service not reachable and no local model — FTS-only recall"
+                                );
+                                None
                             }
-                        }; // end if is_child else probe
-
-                    let mut memory_feature =
-                        features::memory::MemoryFeature::new(memory_backend, mind.clone())
-                            .with_memory_binding(memory_binding.clone());
-                    if let Some(ref svc) = embed_service {
-                        memory_feature = memory_feature.with_embed_service(svc.clone());
-                        context_embed_service = Some(svc.clone());
+                        }
                     }
-                    if embed_service.is_some() {
-                        memory_feature = memory_feature
-                            .with_extraction_model("anthropic:claude-haiku-4-5-20251001".into());
+                    #[cfg(not(feature = "local-embeddings"))]
+                    {
+                        tracing::info!("embedding service not reachable — FTS-only recall");
+                        None
                     }
-                    bus.register(Box::new(memory_feature));
-                    memory_feature_registered = true;
-                    bus.register_internal_tool(
-                        crate::tool_registry::memory::MEMORY_STORE,
-                        "memory",
-                    );
-                }
-                Err(err) => {
-                    let warning = format!(
-                        "Memory backend unavailable — memory_* tools disabled ({})",
-                        db_path.display()
-                    );
-                    tracing::error!(db = %db_path.display(), error = %err, "memory backend unavailable — memory_* tools disabled");
-                    memory_warning = Some(warning);
-                }
+                };
             }
         } else {
             tracing::info!(
@@ -768,9 +755,16 @@ impl AgentSetup {
                     .to_string(),
             );
         }
-        if !memory_feature_registered {
-            bus.register(Box::new(crate::memory_service::MemoryDeclarationFeature));
+        let mut memory_feature =
+            features::memory::MemoryFeature::new(memory_binding.clone(), mind.clone())
+                .with_status_root(project_root.clone());
+        if let Some(ref service) = embed_service {
+            memory_feature = memory_feature
+                .with_embed_service(service.clone())
+                .with_extraction_model("anthropic:claude-haiku-4-5-20251001".into());
         }
+        bus.register(Box::new(memory_feature));
+        bus.register_internal_tool(crate::tool_registry::memory::MEMORY_STORE, "memory");
 
         // ─── Lifecycle (design-tree + openspec) ──────────────────────────
         // Use project root (git repo root), not cwd — docs/ and openspec/
@@ -1044,6 +1038,7 @@ impl AgentSetup {
         if let Some(ref settings) = settings {
             bus.register(Box::new(features::harness_settings::HarnessSettings::new(
                 settings.clone(),
+                project_root.clone(),
             )));
         }
         bus.register(Box::new(features::auto_compact::AutoCompact::new()));
@@ -1063,8 +1058,8 @@ impl AgentSetup {
                 command_tx.clone(),
                 settings.clone(),
                 Some(lifecycle_host.clone()),
-                context_memory_backend.clone(),
-                context_memory_mind.clone(),
+                memory_binding.clone(),
+                mind.clone(),
                 Some(codescan_binding.clone()),
             ));
         bus.register(Box::new(context_service.as_ref().clone()));
@@ -1213,7 +1208,7 @@ impl AgentSetup {
         }
         if memory_binding.available() {
             match memory_binding
-                .invoke(crate::memory_service::MemoryRequestV1::Stats {
+                .invoke(crate::memory_service::MemoryRequestV1::ManagedStatus {
                     scope: crate::memory_service::MemoryScopeV1::Project,
                     mind: mind.clone(),
                     cancellation: tokio_util::sync::CancellationToken::new(),
@@ -1221,14 +1216,44 @@ impl AgentSetup {
                 .await
             {
                 Ok(crate::memory_service::MemoryResponseV1 {
-                    payload: crate::memory_service::MemoryPayloadV1::Stats(stats),
+                    payload: crate::memory_service::MemoryPayloadV1::ManagedStatus(status),
                     ..
-                }) => initial_memory_status = memory_status_from_stats(stats),
-                Ok(_) => tracing::warn!("managed memory readiness returned unexpected statistics"),
+                }) => {
+                    let authority = status.authority.clone();
+                    let index_state = status.index_state;
+                    initial_memory_status = status.into();
+                    crate::status::update_managed_memory_status(
+                        crate::status::ManagedMemoryStatusSnapshot {
+                            project_root: project_root.clone(),
+                            available: true,
+                            warning: None,
+                            status: initial_memory_status.clone(),
+                            authority,
+                            index_state,
+                        },
+                    );
+                }
+                Ok(_) => {
+                    memory_warning = Some("memory:startup_status_invalid_response".into());
+                    tracing::warn!("managed memory readiness returned unexpected statistics");
+                }
                 Err(error) => {
-                    tracing::warn!(?error, "managed memory readiness statistics unavailable")
+                    memory_warning = Some("memory:startup_status_unavailable".into());
+                    tracing::warn!(?error, "managed memory readiness statistics unavailable");
                 }
             }
+        }
+        if !memory_binding.available() || memory_warning.is_some() {
+            crate::status::update_managed_memory_status(
+                crate::status::ManagedMemoryStatusSnapshot {
+                    project_root: project_root.clone(),
+                    available: false,
+                    warning: memory_warning.clone(),
+                    status: initial_memory_status.clone(),
+                    authority: crate::memory_service::ManagedMemoryAuthorityV1::None,
+                    index_state: crate::memory_service::ManagedMemoryIndexStateV1::Unknown,
+                },
+            );
         }
         if lifecycle_binding.available()
             && let Err(error) = lifecycle_host
@@ -1327,7 +1352,7 @@ impl AgentSetup {
         }
 
         // ─── Assemble harness status (bootstrap probe) ──────────────────
-        let mut harness_status = crate::status::HarnessStatus::assemble();
+        let mut harness_status = crate::status::HarnessStatus::assemble(&project_root);
 
         // Account for the active runtime profile before rendering bootstrap.
         // `HarnessStatus::assemble()` starts from conservative defaults; the
@@ -1384,15 +1409,12 @@ impl AgentSetup {
         harness_status.web_auth_source = Some(web_auth_state.source_name().to_string());
 
         // Populate memory stats from the initial count captured during DB load
-        harness_status.update_memory(initial_memory_status.clone());
-        if initial_memory_status.active_facts == 0 {
-            // update_memory() marks memory_available=true even for an empty-but-working backend;
-            // if startup failed earlier, restore the unavailable state and carry the warning.
-            if let Some(ref warning) = memory_warning {
-                harness_status.memory_available = false;
-                harness_status.memory_warning = Some(warning.clone());
-            }
-        }
+        apply_initial_memory_status(
+            &mut harness_status,
+            initial_memory_status.clone(),
+            memory_binding.available(),
+            memory_warning.clone(),
+        );
         harness_status.update_bootstrap_expectations();
 
         tracing::info!(
@@ -1481,7 +1503,7 @@ impl AgentSetup {
         // the bus will provide context via collect_context().
         let mut context_manager = ContextManager::new(base_prompt, vec![]);
         // Wire embedding service for semantic context relevance scoring
-        if let Some(svc) = context_embed_service {
+        if let Some(svc) = embed_service {
             context_manager.set_embed_service(svc);
         }
 
@@ -1665,6 +1687,12 @@ impl AgentSetup {
             .as_ref()
             .map(|r| r.session_id.clone())
             .unwrap_or_else(|| startup_session_id_hint.clone());
+        // Setup owns the canonical session identity. Every host receives this
+        // event before the completed setup can execute a memory tool.
+        bus.emit(&omegon_traits::BusEvent::SessionStart {
+            cwd: cwd.clone(),
+            session_id: session_id.clone(),
+        });
         let session_snapshot = match crate::session_consumers::snapshot_path(&cwd, &session_id) {
             Some(path) => path,
             None => {
@@ -2399,7 +2427,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn production_setup_and_memory_feature_do_not_own_jsonl_or_vault_io() {
+    fn failed_managed_status_overrides_a_live_binding_in_initial_harness_status() {
+        let mut harness = crate::status::HarnessStatus::default();
+        apply_initial_memory_status(
+            &mut harness,
+            crate::status::MemoryStatus {
+                total_facts: 9,
+                ..Default::default()
+            },
+            true,
+            Some("memory:startup_status_unavailable".into()),
+        );
+        assert!(!harness.memory_available);
+        assert_eq!(
+            harness.memory_warning.as_deref(),
+            Some("memory:startup_status_unavailable")
+        );
+    }
+
+    #[test]
+    fn setup_emits_canonical_session_identity_before_returning_tools() {
+        let production = include_str!("setup.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .unwrap()
+            .0;
+        let memory_registration = production
+            .find("bus.register(Box::new(memory_feature))")
+            .expect("memory feature registration");
+        let session_start = production
+            .find("bus.emit(&omegon_traits::BusEvent::SessionStart")
+            .expect("setup-owned SessionStart");
+        let setup_return = production.rfind("Ok(Self {").expect("AgentSetup return");
+        assert!(memory_registration < session_start);
+        assert!(session_start < setup_return);
+    }
+
+    #[test]
+    fn production_memory_consumers_have_no_direct_durable_owner() {
         fn visit(directory: &Path, findings: &mut Vec<String>) {
             for entry in std::fs::read_dir(directory).unwrap() {
                 let entry = entry.unwrap();
@@ -2426,12 +2490,53 @@ mod tests {
                     .split_once("#[cfg(test)]\nmod tests")
                     .map_or(source.as_str(), |(production, _)| production);
                 for forbidden in [
-                    "omegon_memory::vault_sync::",
+                    "MemoryBackend",
+                    "SqliteBackend::open",
+                    "vault_sync::import_",
+                    "vault_sync::materialize_",
+                    "vault_sync::reinforce_",
                     ".import_jsonl(",
                     ".export_jsonl(",
+                    ".store_embedding(",
+                    "SELECT COUNT(*) FROM facts",
                 ] {
                     if production.contains(forbidden) {
                         findings.push(format!("{relative}: {forbidden}"));
+                    }
+                }
+                if relative != "src/setup.rs" && production.contains("SqliteBackend") {
+                    findings.push(format!("{relative}: SqliteBackend import, alias, or open"));
+                }
+                let owns_project_memory_path = [
+                    "facts.db",
+                    "global-memory.db",
+                    "join(\"ai\").join(\"memory\")",
+                    "join(\".omegon\").join(\"memory\")",
+                ]
+                .iter()
+                .any(|marker| production.contains(marker));
+                if owns_project_memory_path
+                    && (production.contains("rusqlite::Connection")
+                        || production.contains("Connection::open")
+                        || production.contains("use rusqlite"))
+                {
+                    findings.push(format!(
+                        "{relative}: rusqlite project-memory connection or alias"
+                    ));
+                }
+                let lines = production.lines().collect::<Vec<_>>();
+                for (line, _) in lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, line)| line.contains("tokio::spawn"))
+                {
+                    let window =
+                        lines[line.saturating_sub(10)..(line + 30).min(lines.len())].join("\n");
+                    if window.contains("MemoryRequestV1::ApplyMutation")
+                        || window.contains("MemoryRequestV1::ApplyToolMutation")
+                        || window.contains("VaultSessionEnd")
+                    {
+                        findings.push(format!("{relative}: detached memory persistence task"));
                     }
                 }
             }
@@ -2446,6 +2551,52 @@ mod tests {
             findings.is_empty(),
             "direct memory persistence owners: {findings:?}"
         );
+
+        let feature = include_str!("features/memory.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .map_or(include_str!("features/memory.rs"), |(production, _)| {
+                production
+            });
+        for forbidden in [
+            "MemoryBackend",
+            "SqliteBackend",
+            "tokio::spawn",
+            "fn backend(",
+        ] {
+            assert!(
+                !feature.contains(forbidden),
+                "memory feature retained forbidden owner or detached task: {forbidden}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn finalize_managed_error_settles_memory_worker_and_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut bus = EventBus::new();
+        bus.set_project_root(directory.path().to_path_buf());
+        bus.register(Box::new(crate::memory_service::MemoryDeclarationFeature));
+        let candidate =
+            crate::memory_service::start_candidate(crate::memory_service::MemoryWorkerConfig {
+                project_memory_root: directory.path().to_path_buf(),
+                project_db_path: directory.path().join("facts.db"),
+                project_jsonl_path: directory.path().join("facts.jsonl"),
+                global_db_path: None,
+                vault: None,
+                startup_sync_enabled: false,
+            })
+            .await
+            .unwrap();
+        bus.stage_managed_generation("memory", candidate).unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        let error =
+            finalize_managed_error::<()>(&mut bus, anyhow::anyhow!("representative failure"))
+                .await
+                .unwrap_err();
+        assert_eq!(error.to_string(), "representative failure");
+        let report = bus.shutdown_managed_services().await;
+        assert!(report.all_resources_settled(), "{report:?}");
     }
 
     #[test]
@@ -2465,12 +2616,15 @@ mod tests {
 
         let source = include_str!("setup.rs");
         let capture = source.find("memory_binding.capture(&bus)").unwrap();
-        let readiness_stats = source[capture..]
-            .find("MemoryRequestV1::Stats")
+        let readiness_status = source[capture..]
+            .find("MemoryRequestV1::ManagedStatus")
             .map(|offset| capture + offset)
             .unwrap();
-        let publish = source.find("harness_status.update_memory").unwrap();
-        assert!(capture < readiness_stats && readiness_stats < publish);
+        let publish = source[capture..]
+            .find("apply_initial_memory_status")
+            .map(|offset| capture + offset)
+            .unwrap();
+        assert!(capture < readiness_status && readiness_status < publish);
     }
 
     struct ExtensionEnvGuard(Option<std::ffi::OsString>);
@@ -2912,6 +3066,7 @@ required = ["OMADA_TEST_SECRET"]
 #[cfg(test)]
 mod init_gating_tests {
     use super::*;
+    use omegon_memory::MemoryBackend as _;
 
     #[test]
     fn startup_migrates_supported_legacy_memory_before_open() {

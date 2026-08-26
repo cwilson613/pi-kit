@@ -334,31 +334,12 @@ fn probe_hardware() -> ProbeResult {
 }
 
 fn probe_memory(cwd: &str) -> ProbeResult {
-    let projection = crate::surfaces::memory_status::project_memory_federation_status(cwd);
-    let summary = match projection.memory_authority {
-        crate::surfaces::memory_status::MemoryAuthority::GitJsonl { ref paths } => {
-            let count = paths
-                .iter()
-                .filter_map(|path| {
-                    std::fs::read_to_string(projection.git_root_or_cwd().join(path)).ok()
-                })
-                .map(|content| {
-                    content
-                        .lines()
-                        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
-                        .count()
-                })
-                .sum::<usize>();
-            if count > 0 {
-                format!("git-jsonl {count} facts")
-            } else {
-                "git-jsonl empty".to_string()
-            }
-        }
-        crate::surfaces::memory_status::MemoryAuthority::LocalIndexOnly => {
-            "local index only".to_string()
-        }
-        crate::surfaces::memory_status::MemoryAuthority::None => "empty".to_string(),
+    let _ = cwd;
+    let snapshot = crate::status::managed_memory_status_snapshot_for(std::path::Path::new(cwd));
+    let summary = if snapshot.available {
+        format!("managed {} facts", snapshot.status.total_facts)
+    } else {
+        "managed unavailable".to_string()
     };
 
     ProbeResult {
@@ -492,15 +473,15 @@ mod tests {
     }
 
     #[test]
-    fn probe_memory_empty_dir() {
+    fn probe_memory_without_managed_status_is_unavailable() {
         let tmp = tempfile::TempDir::new().unwrap();
         let result = probe_memory(tmp.path().to_str().unwrap());
         assert_eq!(result.label, "memory");
-        assert_eq!(result.summary, "empty");
+        assert_eq!(result.summary, "managed unavailable");
     }
 
     #[test]
-    fn probe_memory_with_tracked_jsonl_facts() {
+    fn probe_memory_ignores_tracked_jsonl_facts() {
         let tmp = tempfile::TempDir::new().unwrap();
         let pi_dir = tmp.path().join("ai/memory");
         std::fs::create_dir_all(&pi_dir).unwrap();
@@ -524,18 +505,18 @@ mod tests {
         git(&["commit", "-m", "seed memory"]);
 
         let result = probe_memory(tmp.path().to_str().unwrap());
-        assert_eq!(result.summary, "git-jsonl 2 facts");
+        assert_eq!(result.summary, "managed unavailable");
     }
 
     #[test]
-    fn probe_memory_with_untracked_jsonl_is_empty() {
+    fn probe_memory_ignores_untracked_jsonl() {
         let tmp = tempfile::TempDir::new().unwrap();
         let pi_dir = tmp.path().join("ai/memory");
         std::fs::create_dir_all(&pi_dir).unwrap();
         std::fs::write(pi_dir.join("facts.jsonl"), "{\"id\":\"1\"}\n").unwrap();
 
         let result = probe_memory(tmp.path().to_str().unwrap());
-        assert_eq!(result.summary, "empty");
+        assert_eq!(result.summary, "managed unavailable");
     }
 
     #[test]

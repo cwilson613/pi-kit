@@ -38,6 +38,9 @@ const MAX_RESULT_LIMIT: usize = 10_000;
 const MAX_VECTOR_DIMENSIONS: usize = 16_384;
 const MAX_JSONL_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_VAULT_EPISODES: usize = 1_000;
+const MAX_FACT_PAGE_SIZE: usize = 1_000;
+const MAX_CONTEXT_FACTS: usize = 10_000;
+pub(crate) const MAX_CONTEXT_PINS: usize = 1_000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct MemoryWorkerConfig {
@@ -172,6 +175,19 @@ pub(crate) enum MemoryScopeV1 {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum MemoryToolMutationV1 {
+    Archive {
+        mind: String,
+        fact_ids: Vec<String>,
+    },
+    Supersede {
+        fact_id: String,
+        replacement: omegon_memory::StoreFact,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum MemoryRequestV1 {
     Status {
         scope: MemoryScopeV1,
@@ -190,10 +206,38 @@ pub(crate) enum MemoryRequestV1 {
         #[serde(skip, default)]
         cancellation: CancellationToken,
     },
-    ListFacts {
+    ListFactsPage {
         scope: MemoryScopeV1,
         mind: String,
         filter: FactFilter,
+        limit: usize,
+        cursor: Option<String>,
+        #[serde(skip, default)]
+        cancellation: CancellationToken,
+    },
+    HybridSearch {
+        scope: MemoryScopeV1,
+        mind: String,
+        query: String,
+        query_vector: Option<Vec<f32>>,
+        limit: usize,
+        fetch_limit: usize,
+        min_similarity: f32,
+        #[serde(skip, default)]
+        cancellation: CancellationToken,
+    },
+    ContextSnapshot {
+        scope: MemoryScopeV1,
+        mind: String,
+        working_memory: Vec<String>,
+        fact_limit: usize,
+        episode_limit: usize,
+        #[serde(skip, default)]
+        cancellation: CancellationToken,
+    },
+    ManagedStatus {
+        scope: MemoryScopeV1,
+        mind: String,
         #[serde(skip, default)]
         cancellation: CancellationToken,
     },
@@ -246,6 +290,13 @@ pub(crate) enum MemoryRequestV1 {
         scope: MemoryScopeV1,
         operation_id: String,
         mutation: MemoryMutation,
+        #[serde(skip, default)]
+        cancellation: CancellationToken,
+    },
+    ApplyToolMutation {
+        scope: MemoryScopeV1,
+        operation_id: String,
+        mutation: MemoryToolMutationV1,
         #[serde(skip, default)]
         cancellation: CancellationToken,
     },
@@ -312,7 +363,10 @@ impl MemoryRequestV1 {
             Self::Status { cancellation, .. }
             | Self::Stats { cancellation, .. }
             | Self::GetFact { cancellation, .. }
-            | Self::ListFacts { cancellation, .. }
+            | Self::ListFactsPage { cancellation, .. }
+            | Self::HybridSearch { cancellation, .. }
+            | Self::ContextSnapshot { cancellation, .. }
+            | Self::ManagedStatus { cancellation, .. }
             | Self::FtsSearch { cancellation, .. }
             | Self::VectorSearch { cancellation, .. }
             | Self::EmbeddingMetadata { cancellation, .. }
@@ -320,6 +374,7 @@ impl MemoryRequestV1 {
             | Self::ListEpisodes { cancellation, .. }
             | Self::SearchEpisodes { cancellation, .. }
             | Self::ApplyMutation { cancellation, .. }
+            | Self::ApplyToolMutation { cancellation, .. }
             | Self::ImportConfiguredJsonl { cancellation, .. }
             | Self::ExportConfiguredJsonl { cancellation, .. }
             | Self::VaultSessionStart { cancellation, .. }
@@ -340,7 +395,9 @@ pub(crate) enum MemoryPayloadV1 {
     Status(MemoryStoreStatusV1),
     Stats(MemoryStats),
     Fact(Box<Option<Fact>>),
-    Facts(Vec<Fact>),
+    FactPage(FactPageV1),
+    ContextSnapshot(ContextSnapshotV1),
+    ManagedStatus(ManagedMemoryStatusV1),
     ScoredFacts(Vec<ScoredFact>),
     EmbeddingMetadata(Option<EmbeddingMetadata>),
     Edges(Vec<Edge>),
@@ -348,6 +405,100 @@ pub(crate) enum MemoryPayloadV1 {
     Mutation(MemoryMutationOutcome),
     Jsonl(JsonlSyncReportV1),
     Vault(VaultSyncReportV1),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FactPageV1 {
+    pub facts: Vec<Fact>,
+    pub next_cursor: Option<String>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ContextSnapshotV1 {
+    pub facts: Vec<Fact>,
+    pub episodes: Vec<Episode>,
+    pub working_memory: Vec<Fact>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ManagedMemoryAuthorityV1 {
+    GitJsonl {
+        paths: Vec<PathBuf>,
+    },
+    LocalIndexOnly,
+    #[default]
+    None,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManagedMemoryIndexStateV1 {
+    Fresh,
+    Stale,
+    Missing,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ManagedMemoryStatusV1 {
+    pub total_facts: usize,
+    pub active_facts: usize,
+    pub project_facts: usize,
+    pub persona_facts: usize,
+    pub working_facts: usize,
+    pub episodes: usize,
+    pub edges: usize,
+    pub active_persona_mind: Option<String>,
+    pub authority: ManagedMemoryAuthorityV1,
+    pub index_state: ManagedMemoryIndexStateV1,
+}
+
+fn managed_status_metadata(
+    config: &MemoryWorkerConfig,
+) -> (ManagedMemoryAuthorityV1, ManagedMemoryIndexStateV1) {
+    let database = std::fs::metadata(&config.project_db_path);
+    let jsonl = std::fs::metadata(&config.project_jsonl_path);
+    match (database, jsonl) {
+        (Ok(database), Ok(jsonl)) => {
+            let index = match (database.modified(), jsonl.modified()) {
+                (Ok(database), Ok(jsonl)) if jsonl > database => ManagedMemoryIndexStateV1::Stale,
+                (Ok(_), Ok(_)) => ManagedMemoryIndexStateV1::Fresh,
+                _ => ManagedMemoryIndexStateV1::Unknown,
+            };
+            (
+                ManagedMemoryAuthorityV1::GitJsonl {
+                    paths: vec![config.project_jsonl_path.clone()],
+                },
+                index,
+            )
+        }
+        (Ok(_), Err(error)) if error.kind() == std::io::ErrorKind::NotFound => (
+            ManagedMemoryAuthorityV1::LocalIndexOnly,
+            ManagedMemoryIndexStateV1::Fresh,
+        ),
+        (Err(error), Ok(_)) if error.kind() == std::io::ErrorKind::NotFound => (
+            ManagedMemoryAuthorityV1::GitJsonl {
+                paths: vec![config.project_jsonl_path.clone()],
+            },
+            ManagedMemoryIndexStateV1::Missing,
+        ),
+        (Err(database), Err(jsonl))
+            if database.kind() == std::io::ErrorKind::NotFound
+                && jsonl.kind() == std::io::ErrorKind::NotFound =>
+        {
+            (
+                ManagedMemoryAuthorityV1::None,
+                ManagedMemoryIndexStateV1::Missing,
+            )
+        }
+        _ => (
+            ManagedMemoryAuthorityV1::None,
+            ManagedMemoryIndexStateV1::Unknown,
+        ),
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -434,6 +585,7 @@ impl MemoryServiceErrorV1 {
 
     fn from_memory(error: MemoryError) -> Self {
         let code = match &error {
+            MemoryError::Cancelled => MemoryServiceErrorCodeV1::Cancelled,
             MemoryError::FactNotFound(_) => MemoryServiceErrorCodeV1::FactNotFound,
             MemoryError::EmbeddingDimensionMismatch { .. } => {
                 MemoryServiceErrorCodeV1::EmbeddingDimensionMismatch
@@ -1154,7 +1306,7 @@ fn execute_request(
     global: Option<&SqliteBackend>,
     config: &MemoryWorkerConfig,
     request: MemoryRequestV1,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<MemoryResponseV1, MemoryServiceErrorV1> {
     check_cancelled(cancelled)?;
     validate_request(&request)?;
@@ -1195,6 +1347,31 @@ fn execute_request(
             }
         },
     };
+    if let MemoryRequestV1::ApplyToolMutation {
+        operation_id,
+        mutation,
+        ..
+    } = &request
+    {
+        let payload = serde_json::to_vec(mutation).map_err(|error| {
+            MemoryServiceErrorV1::new(MemoryServiceErrorCodeV1::InvalidRequest, error.to_string())
+        })?;
+        let payload_hash = format!("{:x}", Sha256::digest(payload));
+        let outcome = runtime
+            .block_on(apply_tool_mutation(
+                backend,
+                operation_id,
+                &payload_hash,
+                mutation.clone(),
+            ))
+            .map_err(MemoryServiceErrorV1::from_memory)?;
+        check_cancelled(cancelled)?;
+        return Ok(MemoryResponseV1 {
+            version: DTO_VERSION,
+            scope,
+            payload: MemoryPayloadV1::Mutation(outcome),
+        });
+    }
     let configured_payload = match &request {
         MemoryRequestV1::ImportConfiguredJsonl { .. } => Some(
             import_configured_jsonl(runtime, project, &config.project_memory_root, cancelled)
@@ -1268,10 +1445,119 @@ fn execute_request(
                     .get_fact(&id)
                     .await
                     .map(|fact| MemoryPayloadV1::Fact(Box::new(fact))),
-                MemoryRequestV1::ListFacts { mind, filter, .. } => backend
-                    .list_facts(&mind, filter)
+                MemoryRequestV1::ListFactsPage {
+                    mind,
+                    filter,
+                    limit,
+                    cursor,
+                    ..
+                } => {
+                    let page = backend
+                        .list_facts_page(&mind, filter, limit, cursor.as_deref())
+                        .await?;
+                    Ok(MemoryPayloadV1::FactPage(FactPageV1 {
+                        facts: page.facts,
+                        next_cursor: page.next_cursor,
+                        total: page.total,
+                    }))
+                }
+                MemoryRequestV1::HybridSearch {
+                    mind,
+                    query,
+                    query_vector,
+                    limit,
+                    fetch_limit,
+                    min_similarity,
+                    ..
+                } => {
+                    let fts = backend.fts_search(&mind, &query, fetch_limit).await?;
+                    if cancelled() {
+                        return Err(MemoryError::Cancelled);
+                    }
+                    let vector = if let Some(vector) = query_vector {
+                        if cancelled() {
+                            return Err(MemoryError::Cancelled);
+                        }
+                        match backend
+                            .vector_search_cancellable(
+                                &mind,
+                                &vector,
+                                fetch_limit,
+                                min_similarity,
+                                cancelled,
+                            )
+                            .await
+                        {
+                            Ok(results) => results,
+                            Err(MemoryError::NoEmbeddings) => Vec::new(),
+                            Err(error) => {
+                                tracing::debug!(%error, "vector search unavailable, FTS-only");
+                                Vec::new()
+                            }
+                        }
+                    } else {
+                        Vec::new()
+                    };
+                    if cancelled() {
+                        return Err(MemoryError::Cancelled);
+                    }
+                    let results = if vector.is_empty() {
+                        fts
+                    } else {
+                        omegon_memory::rrf_merge(&fts, &vector, 60.0, fetch_limit)
+                    };
+                    let results = omegon_memory::service::expand_edges_cancellable(
+                        backend,
+                        &mind,
+                        results,
+                        fetch_limit,
+                        cancelled,
+                    )
                     .await
-                    .map(MemoryPayloadV1::Facts),
+                    .ok_or(MemoryError::Cancelled)?
+                    .into_iter()
+                    .take(limit)
+                    .collect();
+                    Ok(MemoryPayloadV1::ScoredFacts(results))
+                }
+                MemoryRequestV1::ContextSnapshot {
+                    mind,
+                    working_memory,
+                    fact_limit,
+                    episode_limit,
+                    ..
+                } => {
+                    let mut facts = backend.list_facts(&mind, FactFilter::default()).await?;
+                    facts.truncate(fact_limit);
+                    let episodes = backend.list_episodes(&mind, episode_limit).await?;
+                    let mut pins = Vec::with_capacity(working_memory.len());
+                    for id in working_memory {
+                        if let Some(fact) = backend.get_fact(&id).await? {
+                            pins.push(fact);
+                        }
+                    }
+                    Ok(MemoryPayloadV1::ContextSnapshot(ContextSnapshotV1 {
+                        facts,
+                        episodes,
+                        working_memory: pins,
+                    }))
+                }
+                MemoryRequestV1::ManagedStatus { .. } => {
+                    let stats = backend.inventory_stats().await?;
+                    let (authority, index_state) = managed_status_metadata(config);
+                    Ok(MemoryPayloadV1::ManagedStatus(ManagedMemoryStatusV1 {
+                        total_facts: stats.total_facts,
+                        active_facts: stats.active_facts,
+                        project_facts: stats.project_facts,
+                        persona_facts: stats.persona_facts,
+                        working_facts: stats.working_facts,
+                        episodes: stats.episodes,
+                        edges: stats.edges,
+                        active_persona_mind: stats.active_persona_mind,
+                        authority,
+                        index_state,
+                    }))
+                }
                 MemoryRequestV1::FtsSearch {
                     mind, query, limit, ..
                 } => backend
@@ -1314,6 +1600,7 @@ fn execute_request(
                     .apply_mutation(&operation_id, mutation)
                     .await
                     .map(MemoryPayloadV1::Mutation),
+                MemoryRequestV1::ApplyToolMutation { .. } => unreachable!("handled above"),
                 MemoryRequestV1::ImportConfiguredJsonl { .. }
                 | MemoryRequestV1::ExportConfiguredJsonl { .. }
                 | MemoryRequestV1::VaultSessionStart { .. }
@@ -1376,12 +1663,71 @@ fn execute_request(
     })
 }
 
+async fn apply_tool_mutation(
+    backend: &dyn MemoryBackend,
+    operation_id: &str,
+    payload_hash: &str,
+    request: MemoryToolMutationV1,
+) -> std::result::Result<MemoryMutationOutcome, MemoryError> {
+    if let Some(outcome) = backend.mutation_receipt(operation_id, payload_hash).await? {
+        return Ok(outcome);
+    }
+    let mutation = match request {
+        MemoryToolMutationV1::Archive { mind, fact_ids } => {
+            let mut facts = Vec::with_capacity(fact_ids.len());
+            for id in fact_ids {
+                if let Some(fact) = backend.get_fact(&id).await? {
+                    if fact.mind != mind {
+                        return Err(MemoryError::InvalidMutation(format!(
+                            "archive target {id} is outside mind {mind}"
+                        )));
+                    }
+                    facts.push(omegon_memory::FactPrecondition {
+                        id: fact.id,
+                        expected_version: fact.version,
+                    });
+                }
+            }
+            MemoryMutation::TransitionFacts {
+                facts,
+                status: omegon_memory::FactStatus::Archived,
+            }
+        }
+        MemoryToolMutationV1::Supersede {
+            fact_id,
+            replacement,
+        } => {
+            let fact = backend
+                .get_fact(&fact_id)
+                .await?
+                .ok_or_else(|| MemoryError::FactNotFound(fact_id.clone()))?;
+            if fact.mind != replacement.mind {
+                return Err(MemoryError::InvalidMutation(format!(
+                    "supersede target {fact_id} is outside mind {}",
+                    replacement.mind
+                )));
+            }
+            MemoryMutation::SupersedeFact {
+                fact: omegon_memory::FactPrecondition {
+                    id: fact.id,
+                    expected_version: fact.version,
+                },
+                replacement,
+            }
+        }
+    };
+    backend
+        .apply_mutation_bound(operation_id, payload_hash, mutation)
+        .await
+}
+
 fn validate_request(request: &MemoryRequestV1) -> Result<(), MemoryServiceErrorV1> {
     let invalid =
         |message| MemoryServiceErrorV1::new(MemoryServiceErrorCodeV1::InvalidRequest, message);
     let limit = match request {
         MemoryRequestV1::FtsSearch { limit, .. }
         | MemoryRequestV1::VectorSearch { limit, .. }
+        | MemoryRequestV1::ListFactsPage { limit, .. }
         | MemoryRequestV1::ListEpisodes { limit, .. }
         | MemoryRequestV1::SearchEpisodes { limit, .. } => Some(*limit),
         _ => None,
@@ -1390,6 +1736,52 @@ fn validate_request(request: &MemoryRequestV1) -> Result<(), MemoryServiceErrorV
         return Err(invalid(format!(
             "memory result limit exceeds {MAX_RESULT_LIMIT}"
         )));
+    }
+    if let MemoryRequestV1::ListFactsPage { limit, cursor, .. } = request {
+        if *limit == 0 || *limit > MAX_FACT_PAGE_SIZE {
+            return Err(invalid(format!(
+                "memory fact page limit must be 1..={MAX_FACT_PAGE_SIZE}"
+            )));
+        }
+        if cursor.as_ref().is_some_and(|cursor| cursor.len() > 512) {
+            return Err(invalid("memory fact page cursor is too long".into()));
+        }
+    }
+    if let MemoryRequestV1::HybridSearch {
+        query_vector,
+        limit,
+        fetch_limit,
+        min_similarity,
+        ..
+    } = request
+    {
+        if *fetch_limit < *limit || *fetch_limit > MAX_RESULT_LIMIT {
+            return Err(invalid(
+                "hybrid fetch limit must include the final result limit".into(),
+            ));
+        }
+        if !min_similarity.is_finite()
+            || query_vector.as_ref().is_some_and(|vector| {
+                vector.len() > MAX_VECTOR_DIMENSIONS
+                    || vector.iter().any(|value| !value.is_finite())
+            })
+        {
+            return Err(invalid(
+                "hybrid query vector and similarity must be finite and bounded".into(),
+            ));
+        }
+    }
+    if let MemoryRequestV1::ContextSnapshot {
+        working_memory,
+        fact_limit,
+        episode_limit,
+        ..
+    } = request
+        && (working_memory.len() > MAX_CONTEXT_PINS
+            || *fact_limit > MAX_CONTEXT_FACTS
+            || *episode_limit > MAX_RESULT_LIMIT)
+    {
+        return Err(invalid("memory context snapshot exceeds its bounds".into()));
     }
     if let MemoryRequestV1::VectorSearch {
         vector,
@@ -1414,7 +1806,10 @@ fn request_scope(request: &MemoryRequestV1) -> MemoryScopeV1 {
         MemoryRequestV1::Status { scope, .. }
         | MemoryRequestV1::Stats { scope, .. }
         | MemoryRequestV1::GetFact { scope, .. }
-        | MemoryRequestV1::ListFacts { scope, .. }
+        | MemoryRequestV1::ListFactsPage { scope, .. }
+        | MemoryRequestV1::HybridSearch { scope, .. }
+        | MemoryRequestV1::ContextSnapshot { scope, .. }
+        | MemoryRequestV1::ManagedStatus { scope, .. }
         | MemoryRequestV1::FtsSearch { scope, .. }
         | MemoryRequestV1::VectorSearch { scope, .. }
         | MemoryRequestV1::EmbeddingMetadata { scope, .. }
@@ -1422,6 +1817,7 @@ fn request_scope(request: &MemoryRequestV1) -> MemoryScopeV1 {
         | MemoryRequestV1::ListEpisodes { scope, .. }
         | MemoryRequestV1::SearchEpisodes { scope, .. }
         | MemoryRequestV1::ApplyMutation { scope, .. }
+        | MemoryRequestV1::ApplyToolMutation { scope, .. }
         | MemoryRequestV1::ImportConfiguredJsonl { scope, .. }
         | MemoryRequestV1::ExportConfiguredJsonl { scope, .. }
         | MemoryRequestV1::VaultSessionStart { scope, .. }
@@ -1562,17 +1958,181 @@ mod tests {
             (MemoryScopeV1::Global, "global fact"),
         ] {
             let response = handle
-                .invoke(MemoryRequestV1::ListFacts {
+                .invoke(MemoryRequestV1::ListFactsPage {
                     scope,
                     mind: MIND.into(),
                     filter: FactFilter::default(),
+                    limit: 10,
+                    cursor: None,
                     cancellation: CancellationToken::new(),
                 })
                 .await
                 .unwrap();
-            assert!(matches!(response.payload, MemoryPayloadV1::Facts(facts)
-                if facts.len() == 1 && facts[0].content == expected));
+            assert!(matches!(response.payload, MemoryPayloadV1::FactPage(page)
+                if page.facts.len() == 1 && page.facts[0].content == expected));
         }
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_compositions_preserve_hybrid_context_page_and_status_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut bus, handle) = managed_service(dir.path().join("facts.db"), None).await;
+        let first = mutation(
+            handle
+                .invoke(request(
+                    MemoryScopeV1::Project,
+                    "composition-first",
+                    store("Authentication uses OAuth with PKCE"),
+                ))
+                .await
+                .unwrap(),
+        );
+        let second = mutation(
+            handle
+                .invoke(request(
+                    MemoryScopeV1::Project,
+                    "composition-second",
+                    store("Adapters preserve provider boundaries"),
+                ))
+                .await
+                .unwrap(),
+        );
+        let MemoryMutationEffect::FactStored {
+            fact_id: first_id,
+            version: first_version,
+            ..
+        } = first.effect
+        else {
+            panic!("expected first fact");
+        };
+        let MemoryMutationEffect::FactStored {
+            fact_id: second_id,
+            version: second_version,
+            ..
+        } = second.effect
+        else {
+            panic!("expected second fact");
+        };
+        for (id, version, vector) in [
+            (first_id.clone(), first_version, vec![1.0, 0.0]),
+            (second_id.clone(), second_version, vec![0.8, 0.2]),
+        ] {
+            handle
+                .invoke(request(
+                    MemoryScopeV1::Project,
+                    &format!("embedding-{id}"),
+                    MemoryMutation::StoreEmbedding {
+                        fact: FactPrecondition {
+                            id,
+                            expected_version: version,
+                        },
+                        model_name: "test-model".into(),
+                        embedding: vector,
+                    },
+                ))
+                .await
+                .unwrap();
+        }
+        handle
+            .invoke(request(
+                MemoryScopeV1::Project,
+                "composition-edge",
+                MemoryMutation::CreateEdge {
+                    mind: MIND.into(),
+                    request: omegon_memory::CreateEdge {
+                        source_id: first_id.clone(),
+                        target_id: second_id.clone(),
+                        relation: "related".into(),
+                        description: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+
+        let hybrid = handle
+            .invoke(MemoryRequestV1::HybridSearch {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                query: "OAuth authentication".into(),
+                query_vector: Some(vec![1.0, 0.0]),
+                limit: 2,
+                fetch_limit: 4,
+                min_similarity: 0.1,
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(hybrid.payload, MemoryPayloadV1::ScoredFacts(results)
+            if results.len() == 2 && results[0].fact.id == first_id)
+        );
+
+        let fts_only = handle
+            .invoke(MemoryRequestV1::HybridSearch {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                query: "OAuth authentication".into(),
+                query_vector: None,
+                limit: 1,
+                fetch_limit: 2,
+                min_similarity: 0.1,
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(fts_only.payload, MemoryPayloadV1::ScoredFacts(results)
+            if results.len() == 1 && results[0].fact.id == first_id)
+        );
+
+        let context = handle
+            .invoke(MemoryRequestV1::ContextSnapshot {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                working_memory: vec![second_id.clone(), first_id.clone()],
+                fact_limit: 10,
+                episode_limit: 1,
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(context.payload, MemoryPayloadV1::ContextSnapshot(snapshot)
+            if snapshot.working_memory.iter().map(|fact| fact.id.as_str()).collect::<Vec<_>>()
+                == vec![second_id.as_str(), first_id.as_str()])
+        );
+
+        let page = handle
+            .invoke(MemoryRequestV1::ListFactsPage {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                filter: FactFilter::default(),
+                limit: 1,
+                cursor: None,
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(page.payload, MemoryPayloadV1::FactPage(page)
+            if page.facts.len() == 1 && page.next_cursor.is_some() && page.total == 2));
+        let status = handle
+            .invoke(MemoryRequestV1::ManagedStatus {
+                scope: MemoryScopeV1::Project,
+                mind: MIND.into(),
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(status.payload, MemoryPayloadV1::ManagedStatus(status)
+            if status.total_facts == 2 && status.active_facts == 2 && status.project_facts == 2)
+        );
         assert!(
             bus.shutdown_managed_services()
                 .await
@@ -1611,6 +2171,87 @@ mod tests {
             .unwrap();
         assert!(matches!(status.payload, MemoryPayloadV1::Status(status)
             if !status.available && status.schema_version == 0));
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_mutations_reject_cross_mind_targets_before_writes_but_replay_receipts_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut bus, handle) = managed_service(dir.path().join("project.db"), None).await;
+        let stored = handle
+            .invoke(request(
+                MemoryScopeV1::Project,
+                "cross-mind-seed",
+                MemoryMutation::StoreFact {
+                    request: StoreFact {
+                        mind: "mind-a".into(),
+                        content: "mind scoped target".into(),
+                        section: Section::Architecture,
+                        decay_profile: DecayProfileName::Standard,
+                        source: Some("test".into()),
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        let MemoryPayloadV1::Mutation(stored) = stored.payload else {
+            panic!("store mutation payload");
+        };
+        let MemoryMutationEffect::FactStored { fact_id, .. } = stored.effect else {
+            panic!("fact stored effect");
+        };
+
+        let archive = MemoryRequestV1::ApplyToolMutation {
+            scope: MemoryScopeV1::Project,
+            operation_id: "cross-mind-archive".into(),
+            mutation: MemoryToolMutationV1::Archive {
+                mind: "mind-b".into(),
+                fact_ids: vec![fact_id.clone()],
+            },
+            cancellation: CancellationToken::new(),
+        };
+        let error = handle.invoke(archive).await.unwrap_err();
+        assert!(matches!(error, ManagedServiceCallError::Operation(error)
+            if error.code == MemoryServiceErrorCodeV1::InvalidMutation));
+
+        let error = handle
+            .invoke(MemoryRequestV1::ApplyToolMutation {
+                scope: MemoryScopeV1::Project,
+                operation_id: "cross-mind-supersede".into(),
+                mutation: MemoryToolMutationV1::Supersede {
+                    fact_id: fact_id.clone(),
+                    replacement: StoreFact {
+                        mind: "mind-b".into(),
+                        content: "unauthorized replacement".into(),
+                        section: Section::Architecture,
+                        decay_profile: DecayProfileName::Standard,
+                        source: Some("test".into()),
+                    },
+                },
+                cancellation: CancellationToken::new(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ManagedServiceCallError::Operation(error)
+            if error.code == MemoryServiceErrorCodeV1::InvalidMutation));
+
+        let authorized = MemoryRequestV1::ApplyToolMutation {
+            scope: MemoryScopeV1::Project,
+            operation_id: "authorized-archive".into(),
+            mutation: MemoryToolMutationV1::Archive {
+                mind: "mind-a".into(),
+                fact_ids: vec![fact_id],
+            },
+            cancellation: CancellationToken::new(),
+        };
+        let first = handle.invoke(authorized.clone()).await.unwrap();
+        let replay = handle.invoke(authorized).await.unwrap();
+        assert!(matches!(first.payload, MemoryPayloadV1::Mutation(outcome) if !outcome.replayed));
+        assert!(matches!(replay.payload, MemoryPayloadV1::Mutation(outcome) if outcome.replayed));
         assert!(
             bus.shutdown_managed_services()
                 .await
@@ -1789,15 +2430,17 @@ mod tests {
         };
         let (mut bus, handle) = managed_service_with_config(config).await;
         let facts = handle
-            .invoke(MemoryRequestV1::ListFacts {
+            .invoke(MemoryRequestV1::ListFactsPage {
                 scope: MemoryScopeV1::Project,
                 mind: MIND.into(),
                 filter: FactFilter::default(),
+                limit: 10,
+                cursor: None,
                 cancellation: CancellationToken::new(),
             })
             .await
             .unwrap();
-        assert!(matches!(facts.payload, MemoryPayloadV1::Facts(facts) if facts.is_empty()));
+        assert!(matches!(facts.payload, MemoryPayloadV1::FactPage(page) if page.facts.is_empty()));
         let sync = handle
             .invoke(MemoryRequestV1::VaultSessionStart {
                 scope: MemoryScopeV1::Project,
@@ -2096,17 +2739,20 @@ mod tests {
         assert!(matches!(start.payload, MemoryPayloadV1::Vault(report)
             if report.imported == 0 && report.skipped == 1));
         let facts = handle
-            .invoke(MemoryRequestV1::ListFacts {
+            .invoke(MemoryRequestV1::ListFactsPage {
                 scope: MemoryScopeV1::Project,
                 mind: MIND.into(),
                 filter: FactFilter::default(),
+                limit: 10,
+                cursor: None,
                 cancellation: CancellationToken::new(),
             })
             .await
             .unwrap();
-        let MemoryPayloadV1::Facts(facts) = facts.payload else {
+        let MemoryPayloadV1::FactPage(page) = facts.payload else {
             panic!("expected imported facts");
         };
+        let facts = page.facts;
         assert_eq!(facts.len(), 2);
         std::fs::write(
             vault.join("note.md"),

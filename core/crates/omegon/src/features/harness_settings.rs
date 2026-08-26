@@ -26,6 +26,7 @@ use crate::settings::SharedSettings;
 /// Single-tool feature that exposes harness settings to the agent.
 pub struct HarnessSettings {
     settings: SharedSettings,
+    project_root: std::path::PathBuf,
     session_start: std::time::Instant,
     turns: u32,
     tool_calls: u32,
@@ -33,9 +34,10 @@ pub struct HarnessSettings {
 }
 
 impl HarnessSettings {
-    pub fn new(settings: SharedSettings) -> Self {
+    pub fn new(settings: SharedSettings, project_root: std::path::PathBuf) -> Self {
         Self {
             settings,
+            project_root,
             session_start: std::time::Instant::now(),
             turns: 0,
             tool_calls: 0,
@@ -80,54 +82,24 @@ impl HarnessSettings {
     }
 
     fn memory_stats_overview(&self) -> String {
-        // Read from ai/memory/facts.db if accessible
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let db_path = {
-            let ai = cwd.join("ai").join("memory").join("facts.db");
-            let legacy = cwd.join(".omegon").join("memory").join("facts.db");
-            if legacy.exists() && !ai.exists() {
-                legacy
-            } else {
-                ai
-            }
-        };
-        if !db_path.exists() {
+        let snapshot = crate::status::managed_memory_status_snapshot_for(&self.project_root);
+        if !snapshot.available {
             return "No memory database found".into();
         }
-
-        match rusqlite::Connection::open_with_flags(
-            &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) {
-            Ok(conn) => {
-                let total: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM facts", [], |r| r.get(0))
-                    .unwrap_or(0);
-                let active: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM facts WHERE status = 'active'",
-                        [],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                let episodes: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM episodes", [], |r| r.get(0))
-                    .unwrap_or(0);
-                let edges: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))
-                    .unwrap_or(0);
-                format!(
-                    "## Memory Stats\n\n\
-                     - **Total facts**: {total}\n\
-                     - **Active facts**: {active}\n\
-                     - **Archived**: {}\n\
-                     - **Episodes**: {episodes}\n\
-                     - **Edges**: {edges}",
-                    total - active,
-                )
-            }
-            Err(e) => format!("Error: Cannot read memory DB: {e}"),
-        }
+        let status = snapshot.status;
+        format!(
+            "## Memory Stats\n\n\
+             - **Total facts**: {}\n\
+             - **Active facts**: {}\n\
+             - **Archived**: {}\n\
+             - **Episodes**: {}\n\
+             - **Edges**: {}",
+            status.total_facts,
+            status.active_facts,
+            status.total_facts.saturating_sub(status.active_facts),
+            status.episodes,
+            status.edges,
+        )
     }
 
     fn sessions_overview(&self) -> String {
@@ -340,7 +312,7 @@ mod tests {
 
     #[test]
     fn exposes_one_tool() {
-        let feature = HarnessSettings::new(test_settings());
+        let feature = HarnessSettings::new(test_settings(), ".".into());
         let tools = feature.tools();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "harness_settings");
@@ -348,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn action_get() {
-        let feature = HarnessSettings::new(test_settings());
+        let feature = HarnessSettings::new(test_settings(), ".".into());
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = feature
             .execute("harness_settings", "c1", json!({"action": "get"}), cancel)
@@ -363,7 +335,7 @@ mod tests {
     #[tokio::test]
     async fn action_set_context_class() {
         let settings = test_settings();
-        let feature = HarnessSettings::new(settings.clone());
+        let feature = HarnessSettings::new(settings.clone(), ".".into());
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = feature
             .execute(
@@ -383,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn action_set_context_class_invalid() {
-        let feature = HarnessSettings::new(test_settings());
+        let feature = HarnessSettings::new(test_settings(), ".".into());
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = feature
             .execute(
@@ -400,7 +372,7 @@ mod tests {
 
     #[tokio::test]
     async fn action_stats() {
-        let feature = HarnessSettings::new(test_settings());
+        let feature = HarnessSettings::new(test_settings(), ".".into());
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = feature
             .execute("harness_settings", "c1", json!({"action": "stats"}), cancel)
@@ -413,7 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn action_unknown() {
-        let feature = HarnessSettings::new(test_settings());
+        let feature = HarnessSettings::new(test_settings(), ".".into());
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = feature
             .execute("harness_settings", "c1", json!({"action": "bogus"}), cancel)
@@ -425,7 +397,7 @@ mod tests {
 
     #[test]
     fn on_event_counts_turns() {
-        let mut feature = HarnessSettings::new(test_settings());
+        let mut feature = HarnessSettings::new(test_settings(), ".".into());
         feature.on_event(&BusEvent::TurnEnd(Box::new(
             omegon_traits::BusEventTurnEnd {
                 turn: 1,
@@ -475,7 +447,7 @@ mod tests {
 
     #[tokio::test]
     async fn action_compact_returns_confirmation() {
-        let feature = HarnessSettings::new(test_settings());
+        let feature = HarnessSettings::new(test_settings(), ".".into());
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = feature
             .execute(
@@ -495,7 +467,7 @@ mod tests {
 
     #[tokio::test]
     async fn action_sessions_does_not_panic() {
-        let feature = HarnessSettings::new(test_settings());
+        let feature = HarnessSettings::new(test_settings(), ".".into());
         let cancel = tokio_util::sync::CancellationToken::new();
         // May or may not find sessions — just shouldn't panic
         let result = feature
@@ -513,7 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn action_memory_stats_does_not_panic() {
-        let feature = HarnessSettings::new(test_settings());
+        let feature = HarnessSettings::new(test_settings(), ".".into());
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = feature
             .execute(

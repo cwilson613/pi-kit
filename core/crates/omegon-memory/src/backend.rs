@@ -16,6 +16,9 @@ use std::collections::HashSet;
 /// Errors specific to the memory backend.
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
+    #[error("Memory operation cancelled")]
+    Cancelled,
+
     #[error("Fact not found: {0}")]
     FactNotFound(String),
 
@@ -51,12 +54,17 @@ pub enum MemoryError {
 pub type Result<T> = std::result::Result<T, MemoryError>;
 
 pub(crate) fn mutation_payload_hash(mutation: &MemoryMutation) -> Result<String> {
-    if let MemoryMutation::StoreEmbedding { embedding, .. } = mutation {
-        validate_embedding(embedding)?;
-    }
+    validate_mutation(mutation)?;
     let payload = serde_json::to_vec(mutation)
         .map_err(|error| MemoryError::InvalidMutation(error.to_string()))?;
     Ok(hex::encode(Sha256::digest(payload)))
+}
+
+fn validate_mutation(mutation: &MemoryMutation) -> Result<()> {
+    if let MemoryMutation::StoreEmbedding { embedding, .. } = mutation {
+        validate_embedding(embedding)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn jsonl_import_effect(stats: ImportStats) -> MemoryMutationEffect {
@@ -111,6 +119,27 @@ pub trait MemoryBackend: Send + Sync {
         &self,
         operation_id: &str,
         mutation: MemoryMutation,
+    ) -> Result<MemoryMutationOutcome> {
+        let payload_hash = mutation_payload_hash(&mutation)?;
+        self.apply_mutation_bound(operation_id, &payload_hash, mutation)
+            .await
+    }
+
+    /// Return a recorded outcome before callers resolve current entity versions.
+    /// A reused operation identity with a different payload is a conflict.
+    async fn mutation_receipt(
+        &self,
+        operation_id: &str,
+        payload_hash: &str,
+    ) -> Result<Option<MemoryMutationOutcome>>;
+
+    /// Atomically apply a mutation while binding its receipt to a caller-owned
+    /// canonical payload. Entity preconditions remain part of `mutation`.
+    async fn apply_mutation_bound(
+        &self,
+        operation_id: &str,
+        payload_hash: &str,
+        mutation: MemoryMutation,
     ) -> Result<MemoryMutationOutcome>;
 
     // ── Facts ────────────────────────────────────────────────────────────
@@ -124,6 +153,16 @@ pub trait MemoryBackend: Send + Sync {
 
     /// List facts matching a filter. Returns active facts by default.
     async fn list_facts(&self, mind: &str, filter: FactFilter) -> Result<Vec<Fact>>;
+
+    /// Return a deterministic, bounded keyset page. The opaque cursor binds a
+    /// first-page insertion watermark and the last returned fact ID.
+    async fn list_facts_page(
+        &self,
+        mind: &str,
+        filter: FactFilter,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<FactPage>;
 
     /// Reinforce a fact — increment reinforcement_count, reset decay timer.
     async fn reinforce_fact(&self, id: &str) -> Result<Fact>;
@@ -158,6 +197,28 @@ pub trait MemoryBackend: Send + Sync {
         k: usize,
         min_similarity: f32,
     ) -> Result<Vec<ScoredFact>>;
+
+    /// Cooperative vector scan used by managed callers. External backends keep
+    /// compatibility through the default whole-call cancellation checks.
+    async fn vector_search_cancellable(
+        &self,
+        mind: &str,
+        embedding: &[f32],
+        k: usize,
+        min_similarity: f32,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<Vec<ScoredFact>> {
+        if cancelled() {
+            return Err(MemoryError::Cancelled);
+        }
+        let results = self
+            .vector_search(mind, embedding, k, min_similarity)
+            .await?;
+        if cancelled() {
+            return Err(MemoryError::Cancelled);
+        }
+        Ok(results)
+    }
 
     /// Store an embedding vector for a fact. Registers the model in embedding_metadata
     /// if not already present.
@@ -203,6 +264,9 @@ pub trait MemoryBackend: Send + Sync {
 
     /// Get summary statistics for a mind's memory store.
     async fn stats(&self, mind: &str) -> Result<MemoryStats>;
+
+    /// Get store-wide layer counts for host status projections.
+    async fn inventory_stats(&self) -> Result<MemoryInventoryStats>;
 }
 
 // ─── Context Rendering ──────────────────────────────────────────────────────
@@ -241,4 +305,16 @@ pub struct MemoryStats {
     pub episodes: usize,
     pub edges: usize,
     pub version_hwm: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MemoryInventoryStats {
+    pub total_facts: usize,
+    pub active_facts: usize,
+    pub project_facts: usize,
+    pub persona_facts: usize,
+    pub working_facts: usize,
+    pub episodes: usize,
+    pub edges: usize,
+    pub active_persona_mind: Option<String>,
 }

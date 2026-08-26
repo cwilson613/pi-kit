@@ -14,25 +14,57 @@ impl ContextRenderer for MarkdownRenderer {
         working_memory: &[Fact],
         max_chars: usize,
     ) -> RenderedContext {
-        let mut lines = Vec::new();
-        let mut char_count = 0;
+        const PREAMBLE: &str = "# Project Memory\n_Use `memory_store` proactively when you learn facts worth persisting. Use `memory_recall` before non-trivial tasks to surface relevant context._";
+
+        let preamble_chars = PREAMBLE.chars().count();
+        if preamble_chars > max_chars {
+            return RenderedContext {
+                markdown: String::new(),
+                facts_injected: 0,
+                episodes_injected: 0,
+                char_count: 0,
+                budget_exhausted: true,
+            };
+        }
+
+        let mut markdown = PREAMBLE.to_string();
+        let mut char_count = preamble_chars;
         let mut facts_injected = 0;
         let mut budget_exhausted = false;
 
+        let append_block = |markdown: &mut String, char_count: &mut usize, block: &str| {
+            let added = 2usize.saturating_add(block.chars().count());
+            if char_count.saturating_add(added) > max_chars {
+                false
+            } else {
+                markdown.push_str("\n\n");
+                markdown.push_str(block);
+                *char_count += added;
+                true
+            }
+        };
+
         // Working memory first (highest priority)
         if !working_memory.is_empty() {
-            lines.push("## Working Memory (pinned)".to_string());
+            let mut block = "## Working Memory (pinned)".to_string();
+            let mut included = 0;
             for f in working_memory {
                 let line = format!("- [{}] {}", f.id, f.content);
-                if char_count + line.len() > max_chars {
+                let candidate = format!("{block}\n{line}");
+                if char_count
+                    .saturating_add(2)
+                    .saturating_add(candidate.chars().count())
+                    > max_chars
+                {
                     budget_exhausted = true;
                     break;
                 }
-                char_count += line.len() + 1;
-                lines.push(line);
-                facts_injected += 1;
+                block = candidate;
+                included += 1;
             }
-            lines.push(String::new());
+            if included > 0 && append_block(&mut markdown, &mut char_count, &block) {
+                facts_injected += included;
+            }
         }
 
         // Group facts by section
@@ -57,6 +89,9 @@ impl ContextRenderer for MarkdownRenderer {
         ];
 
         for (section, desc) in sections.iter().zip(section_descriptions.iter()) {
+            if budget_exhausted {
+                break;
+            }
             let section_facts: Vec<&Fact> = facts
                 .iter()
                 .filter(|f| &f.section == section && f.status == FactStatus::Active)
@@ -65,31 +100,31 @@ impl ContextRenderer for MarkdownRenderer {
                 continue;
             }
 
-            let header = format!(
+            let mut block = format!(
                 "## {}\n{}",
                 serde_json::to_string(section)
                     .unwrap_or_default()
                     .trim_matches('"'),
                 desc
             );
-            if char_count + header.len() > max_chars {
-                budget_exhausted = true;
-                break;
-            }
-            char_count += header.len() + 1;
-            lines.push(header);
-
+            let mut included = 0;
             for f in section_facts {
                 let line = format!("- {}", f.content);
-                if char_count + line.len() > max_chars {
+                let candidate = format!("{block}\n{line}");
+                if char_count
+                    .saturating_add(2)
+                    .saturating_add(candidate.chars().count())
+                    > max_chars
+                {
                     budget_exhausted = true;
                     break;
                 }
-                char_count += line.len() + 1;
-                lines.push(line);
-                facts_injected += 1;
+                block = candidate;
+                included += 1;
             }
-            lines.push(String::new());
+            if included > 0 && append_block(&mut markdown, &mut char_count, &block) {
+                facts_injected += included;
+            }
             if budget_exhausted {
                 break;
             }
@@ -98,29 +133,30 @@ impl ContextRenderer for MarkdownRenderer {
         // Episodes
         let mut episodes_injected = 0;
         if !episodes.is_empty() && !budget_exhausted {
-            lines.push("## Recent Sessions".to_string());
+            let mut block = "## Recent Sessions".to_string();
             for ep in episodes {
                 let line = format!("### {}: {}\n{}", ep.date, ep.title, ep.narrative);
-                if char_count + line.len() > max_chars {
+                let candidate = format!("{block}\n{line}");
+                if char_count
+                    .saturating_add(2)
+                    .saturating_add(candidate.chars().count())
+                    > max_chars
+                {
                     budget_exhausted = true;
                     break;
                 }
-                char_count += line.len() + 1;
-                lines.push(line);
+                block = candidate;
                 episodes_injected += 1;
+            }
+            if episodes_injected > 0 {
+                append_block(&mut markdown, &mut char_count, &block);
             }
         }
 
-        let markdown = if lines.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "# Project Memory\n\
-                _Use `memory_store` proactively when you learn facts worth persisting. \
-                Use `memory_recall` before non-trivial tasks to surface relevant context._\n\n{}",
-                lines.join("\n")
-            )
-        };
+        if facts_injected == 0 && episodes_injected == 0 {
+            markdown.clear();
+            char_count = 0;
+        }
 
         RenderedContext {
             markdown,
@@ -201,7 +237,17 @@ mod tests {
         let ctx = r.render_context(&facts, &[], &[], 500);
         assert!(ctx.budget_exhausted);
         assert!(ctx.facts_injected < 100);
-        assert!(ctx.char_count <= 500 + 100); // allow some overhead
+        assert!(ctx.markdown.chars().count() <= 500);
+        assert_eq!(ctx.char_count, ctx.markdown.chars().count());
+    }
+
+    #[test]
+    fn tiny_budget_returns_no_partial_markdown_or_utf8_panic() {
+        let r = MarkdownRenderer;
+        let facts = vec![make_fact(Section::Architecture, "unicode: 🧠 memory")];
+        let ctx = r.render_context(&facts, &[], &[], 8);
+        assert!(ctx.markdown.is_empty());
+        assert!(ctx.budget_exhausted);
     }
 
     #[test]

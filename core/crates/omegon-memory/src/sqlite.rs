@@ -1085,9 +1085,43 @@ impl SqliteBackend {
 
 #[async_trait]
 impl MemoryBackend for SqliteBackend {
-    async fn apply_mutation(
+    async fn mutation_receipt(
         &self,
         operation_id: &str,
+        payload_hash: &str,
+    ) -> Result<Option<MemoryMutationOutcome>> {
+        if operation_id.trim().is_empty() || payload_hash.trim().is_empty() {
+            return Err(MemoryError::InvalidMutation(
+                "operation identity and payload hash must not be empty".into(),
+            ));
+        }
+        let conn = self.conn.lock().unwrap();
+        let receipt: Option<(String, String)> = conn
+            .query_row(
+                "SELECT payload_hash, effect_json FROM memory_operation_receipts WHERE operation_id = ?1",
+                params![operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let Some((recorded_hash, effect_json)) = receipt else {
+            return Ok(None);
+        };
+        if recorded_hash != payload_hash {
+            return Err(MemoryError::OperationConflict(operation_id.into()));
+        }
+        let effect = serde_json::from_str(&effect_json)
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        Ok(Some(MemoryMutationOutcome {
+            effect,
+            replayed: true,
+        }))
+    }
+
+    async fn apply_mutation_bound(
+        &self,
+        operation_id: &str,
+        payload_hash: &str,
         mutation: MemoryMutation,
     ) -> Result<MemoryMutationOutcome> {
         if operation_id.trim().is_empty() {
@@ -1095,7 +1129,12 @@ impl MemoryBackend for SqliteBackend {
                 "operation identity must not be empty".into(),
             ));
         }
-        let payload_hash = mutation_payload_hash(&mutation)?;
+        let _ = mutation_payload_hash(&mutation)?;
+        if payload_hash.trim().is_empty() {
+            return Err(MemoryError::InvalidMutation(
+                "operation payload hash must not be empty".into(),
+            ));
+        }
         let mut conn = self.conn.lock().unwrap();
         let transaction = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -1364,17 +1403,23 @@ impl MemoryBackend for SqliteBackend {
                     dims,
                 }
             }
-            MemoryMutation::CreateEdge { request } => {
+            MemoryMutation::CreateEdge { mind, request } => {
                 for fact_id in [&request.source_id, &request.target_id] {
-                    let exists: bool = transaction
+                    let endpoint: Option<(String, String)> = transaction
                         .query_row(
-                            "SELECT EXISTS(SELECT 1 FROM facts WHERE id = ?1)",
+                            "SELECT mind, status FROM facts WHERE id = ?1",
                             params![fact_id],
-                            |row| row.get(0),
+                            |row| Ok((row.get(0)?, row.get(1)?)),
                         )
+                        .optional()
                         .map_err(|error| MemoryError::Storage(error.into()))?;
-                    if !exists {
+                    let Some((endpoint_mind, status)) = endpoint else {
                         return Err(MemoryError::FactNotFound(fact_id.clone()));
+                    };
+                    if endpoint_mind != mind || status != "active" {
+                        return Err(MemoryError::InvalidMutation(format!(
+                            "edge endpoint {fact_id} is outside active mind {mind}"
+                        )));
                     }
                 }
                 let edge_id = gen_id();
@@ -1558,6 +1603,84 @@ impl MemoryBackend for SqliteBackend {
                 .collect();
             Ok(facts)
         }
+    }
+
+    async fn list_facts_page(
+        &self,
+        mind: &str,
+        filter: FactFilter,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<FactPage> {
+        let conn = self.conn.lock().unwrap();
+        let (watermark, after) = match cursor {
+            Some(cursor) => {
+                let (version, id) = cursor.split_once(':').ok_or_else(|| {
+                    MemoryError::InvalidMutation("invalid fact-page cursor".into())
+                })?;
+                let rowid = version
+                    .parse::<u64>()
+                    .map_err(|_| MemoryError::InvalidMutation("invalid fact-page cursor".into()))?;
+                (rowid, id)
+            }
+            None => {
+                let watermark = conn
+                    .query_row("SELECT COALESCE(MAX(rowid), 0) FROM facts", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(|error| MemoryError::Storage(error.into()))?
+                    as u64;
+                (watermark, "")
+            }
+        };
+        let status = filter.status.unwrap_or(FactStatus::Active);
+        let status = serde_json::to_string(&status)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string();
+        let section = filter.section.map(|section| {
+            serde_json::to_string(&section)
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string()
+        });
+        let total = conn
+            .query_row(
+                "SELECT COUNT(*) FROM facts WHERE mind = ?1 AND status = ?2 AND rowid <= ?3 AND (?4 IS NULL OR section = ?4)",
+                params![mind, status, watermark as i64, section],
+                |row| row.get(0),
+            )
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let mut statement = conn
+            .prepare(
+                "SELECT * FROM facts WHERE mind = ?1 AND status = ?2 AND rowid <= ?3 AND id > ?4 AND (?5 IS NULL OR section = ?5) ORDER BY id ASC LIMIT ?6",
+            )
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let facts = statement
+            .query_map(
+                params![
+                    mind,
+                    status,
+                    watermark as i64,
+                    after,
+                    section,
+                    limit.saturating_add(1) as i64
+                ],
+                Self::row_to_fact,
+            )
+            .map_err(|error| MemoryError::Storage(error.into()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let has_more = facts.len() > limit;
+        let facts = facts.into_iter().take(limit).collect::<Vec<_>>();
+        let next_cursor = has_more
+            .then(|| facts.last().map(|fact| format!("{watermark}:{}", fact.id)))
+            .flatten();
+        Ok(FactPage {
+            facts,
+            next_cursor,
+            total,
+        })
     }
 
     async fn reinforce_fact(&self, id: &str) -> Result<Fact> {
@@ -1900,6 +2023,79 @@ impl MemoryBackend for SqliteBackend {
         Ok(results)
     }
 
+    async fn vector_search_cancellable(
+        &self,
+        mind: &str,
+        embedding: &[f32],
+        k: usize,
+        min_similarity: f32,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<Vec<ScoredFact>> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT fv.embedding, fv.model_name, fv.dims, f.* FROM facts_vec fv \
+                 JOIN facts f ON f.id = fv.fact_id \
+                 WHERE f.mind = ?1 AND f.status = 'active' ORDER BY fv.fact_id",
+            )
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let mut rows = statement
+            .query(params![mind])
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        let mut found = false;
+        let mut results = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| MemoryError::Storage(error.into()))?
+        {
+            if cancelled() {
+                return Err(MemoryError::Cancelled);
+            }
+            found = true;
+            let dimensions = row
+                .get::<_, u32>("dims")
+                .map_err(|error| MemoryError::Storage(error.into()))?;
+            if dimensions != embedding.len() as u32 {
+                return Err(MemoryError::EmbeddingDimensionMismatch {
+                    expected: dimensions,
+                    got: embedding.len() as u32,
+                    stored_model: row
+                        .get("model_name")
+                        .map_err(|error| MemoryError::Storage(error.into()))?,
+                });
+            }
+            let blob: Vec<u8> = row
+                .get("embedding")
+                .map_err(|error| MemoryError::Storage(error.into()))?;
+            let fact =
+                Self::row_to_fact(row).map_err(|error| MemoryError::Storage(error.into()))?;
+            let similarity = vectors::cosine_similarity(&vectors::blob_to_vector(&blob), embedding);
+            if similarity < min_similarity {
+                continue;
+            }
+            let Some(score) = crate::decay::ambient_score(similarity as f64, &fact) else {
+                continue;
+            };
+            results.push(ScoredFact {
+                fact,
+                similarity: similarity as f64,
+                score,
+            });
+        }
+        if !found {
+            return Err(MemoryError::NoEmbeddings);
+        }
+        results.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.fact.id.cmp(&right.fact.id))
+        });
+        results.truncate(k);
+        Ok(results)
+    }
+
     async fn store_embedding(
         &self,
         fact_id: &str,
@@ -1983,6 +2179,23 @@ impl MemoryBackend for SqliteBackend {
 
     async fn create_edge(&self, req: CreateEdge) -> Result<Edge> {
         let conn = self.conn.lock().unwrap();
+        let endpoint = |id: &str| {
+            conn.query_row(
+                "SELECT mind, status FROM facts WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?
+            .ok_or_else(|| MemoryError::FactNotFound(id.into()))
+        };
+        let source = endpoint(&req.source_id)?;
+        let target = endpoint(&req.target_id)?;
+        if source.0 != target.0 || source.1 != "active" || target.1 != "active" {
+            return Err(MemoryError::InvalidMutation(
+                "edge endpoints must be active facts in the same mind".into(),
+            ));
+        }
         let id = gen_id();
         let ts = now_iso();
         conn.execute(
@@ -2006,8 +2219,13 @@ impl MemoryBackend for SqliteBackend {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT * FROM edges WHERE (source_fact_id = ?1 OR target_fact_id = ?1) \
-                 AND EXISTS (SELECT 1 FROM facts WHERE id = ?1 AND mind = ?2) ORDER BY id",
+                "SELECT edges.* FROM edges \
+                 JOIN facts source ON source.id = source_fact_id \
+                 JOIN facts target ON target.id = target_fact_id \
+                 WHERE (source_fact_id = ?1 OR target_fact_id = ?1) \
+                 AND edges.status = 'active' \
+                 AND source.status = 'active' AND target.status = 'active' \
+                 AND source.mind = ?2 AND target.mind = ?2 ORDER BY edges.id",
             )
             .map_err(|e| MemoryError::Storage(e.into()))?;
 
@@ -2268,6 +2486,39 @@ impl MemoryBackend for SqliteBackend {
             episodes,
             edges,
             version_hwm,
+        })
+    }
+
+    async fn inventory_stats(&self) -> Result<MemoryInventoryStats> {
+        let conn = self.conn.lock().unwrap();
+        let count = |sql: &str| {
+            conn.query_row(sql, [], |row| row.get::<_, usize>(0))
+                .map_err(|error| MemoryError::Storage(error.into()))
+        };
+        let active_persona_mind = conn
+            .query_row(
+                "SELECT mind FROM facts WHERE status = 'active' AND layer = 'persona' \
+                 GROUP BY mind ORDER BY COUNT(*) DESC, mind ASC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| MemoryError::Storage(error.into()))?;
+        Ok(MemoryInventoryStats {
+            total_facts: count("SELECT COUNT(*) FROM facts")?,
+            active_facts: count("SELECT COUNT(*) FROM facts WHERE status = 'active'")?,
+            project_facts: count(
+                "SELECT COUNT(*) FROM facts WHERE status = 'active' AND layer = 'project'",
+            )?,
+            persona_facts: count(
+                "SELECT COUNT(*) FROM facts WHERE status = 'active' AND layer = 'persona'",
+            )?,
+            working_facts: count(
+                "SELECT COUNT(*) FROM facts WHERE status = 'active' AND layer = 'working'",
+            )?,
+            episodes: count("SELECT COUNT(*) FROM episodes")?,
+            edges: count("SELECT COUNT(*) FROM edges")?,
+            active_persona_mind,
         })
     }
 }

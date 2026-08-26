@@ -22,6 +22,8 @@ struct EmbeddingEntry {
 #[derive(Clone)]
 struct State {
     facts: HashMap<String, Fact>,
+    fact_insertion_sequences: HashMap<String, u64>,
+    next_fact_insertion_sequence: u64,
     edges: Vec<Edge>,
     episodes: Vec<Episode>,
     embeddings: Vec<EmbeddingEntry>,
@@ -38,6 +40,8 @@ impl InMemoryBackend {
         Self {
             state: Mutex::new(State {
                 facts: HashMap::new(),
+                fact_insertion_sequences: HashMap::new(),
+                next_fact_insertion_sequence: 0,
                 edges: Vec::new(),
                 episodes: Vec::new(),
                 embeddings: Vec::new(),
@@ -59,6 +63,22 @@ impl InMemoryBackend {
                 actual: existing.version,
             });
         }
+        Ok(())
+    }
+
+    fn insert_fact(state: &mut State, id: String, fact: Fact) -> Result<()> {
+        if !state.fact_insertion_sequences.contains_key(&id) {
+            state.next_fact_insertion_sequence = state
+                .next_fact_insertion_sequence
+                .checked_add(1)
+                .ok_or_else(|| {
+                    MemoryError::InvalidMutation("fact insertion sequence exhausted".into())
+                })?;
+            state
+                .fact_insertion_sequences
+                .insert(id.clone(), state.next_fact_insertion_sequence);
+        }
+        state.facts.insert(id, fact);
         Ok(())
     }
 
@@ -105,7 +125,8 @@ impl InMemoryBackend {
 
                 let fact_id = gen_id();
                 let timestamp = now_iso();
-                state.facts.insert(
+                Self::insert_fact(
+                    state,
                     fact_id.clone(),
                     Fact {
                         id: fact_id.clone(),
@@ -132,7 +153,7 @@ impl InMemoryBackend {
                         layer: "project".into(),
                         tags: vec![],
                     },
-                );
+                )?;
                 Ok(MemoryMutationEffect::FactStored {
                     fact_id,
                     version,
@@ -229,7 +250,8 @@ impl InMemoryBackend {
                 let replacement_version = Self::next_version(state)?;
                 let replacement_id = gen_id();
                 let timestamp = now_iso();
-                state.facts.insert(
+                Self::insert_fact(
+                    state,
                     replacement_id.clone(),
                     Fact {
                         id: replacement_id.clone(),
@@ -256,7 +278,7 @@ impl InMemoryBackend {
                         layer: "project".into(),
                         tags: vec![],
                     },
-                );
+                )?;
                 Ok(MemoryMutationEffect::FactSuperseded {
                     original: FactPrecondition {
                         id: fact.id,
@@ -337,12 +359,17 @@ impl InMemoryBackend {
                     dims,
                 })
             }
-            MemoryMutation::CreateEdge { request } => {
-                if !state.facts.contains_key(&request.source_id) {
-                    return Err(MemoryError::FactNotFound(request.source_id));
-                }
-                if !state.facts.contains_key(&request.target_id) {
-                    return Err(MemoryError::FactNotFound(request.target_id));
+            MemoryMutation::CreateEdge { mind, request } => {
+                for fact_id in [&request.source_id, &request.target_id] {
+                    let fact = state
+                        .facts
+                        .get(fact_id)
+                        .ok_or_else(|| MemoryError::FactNotFound(fact_id.clone()))?;
+                    if fact.mind != mind || fact.status != FactStatus::Active {
+                        return Err(MemoryError::InvalidMutation(format!(
+                            "edge endpoint {fact_id} is outside active mind {mind}"
+                        )));
+                    }
                 }
                 let edge_id = gen_id();
                 state.edges.push(Edge {
@@ -408,7 +435,7 @@ impl InMemoryBackend {
                             updated.tags = jf.tags;
                             updated.version = jf.version;
                             state.version_clock = state.version_clock.max(jf.version);
-                            state.facts.insert(jf.id, updated);
+                            Self::insert_fact(state, jf.id, updated)?;
                             stats.reinforced += 1;
                         } else {
                             stats.skipped += 1;
@@ -440,7 +467,7 @@ impl InMemoryBackend {
                             layer: jf.layer,
                             tags: jf.tags,
                         };
-                        state.facts.insert(jf.id, fact);
+                        Self::insert_fact(state, jf.id, fact)?;
                         stats.imported += 1;
                     }
                 }
@@ -480,9 +507,33 @@ impl Default for InMemoryBackend {
 
 #[async_trait]
 impl MemoryBackend for InMemoryBackend {
-    async fn apply_mutation(
+    async fn mutation_receipt(
         &self,
         operation_id: &str,
+        payload_hash: &str,
+    ) -> Result<Option<MemoryMutationOutcome>> {
+        if operation_id.trim().is_empty() || payload_hash.trim().is_empty() {
+            return Err(MemoryError::InvalidMutation(
+                "operation identity and payload hash must not be empty".into(),
+            ));
+        }
+        let state = self.state.lock().unwrap();
+        let Some((recorded_hash, effect)) = state.operation_receipts.get(operation_id) else {
+            return Ok(None);
+        };
+        if recorded_hash != payload_hash {
+            return Err(MemoryError::OperationConflict(operation_id.into()));
+        }
+        Ok(Some(MemoryMutationOutcome {
+            effect: effect.clone(),
+            replayed: true,
+        }))
+    }
+
+    async fn apply_mutation_bound(
+        &self,
+        operation_id: &str,
+        payload_hash: &str,
         mutation: MemoryMutation,
     ) -> Result<MemoryMutationOutcome> {
         if operation_id.trim().is_empty() {
@@ -490,10 +541,15 @@ impl MemoryBackend for InMemoryBackend {
                 "operation identity must not be empty".into(),
             ));
         }
-        let payload_hash = mutation_payload_hash(&mutation)?;
+        let _ = mutation_payload_hash(&mutation)?;
+        if payload_hash.trim().is_empty() {
+            return Err(MemoryError::InvalidMutation(
+                "operation payload hash must not be empty".into(),
+            ));
+        }
         let mut state = self.state.lock().unwrap();
         if let Some((recorded_hash, effect)) = state.operation_receipts.get(operation_id) {
-            if recorded_hash != &payload_hash {
+            if recorded_hash != payload_hash {
                 return Err(MemoryError::OperationConflict(operation_id.into()));
             }
             return Ok(MemoryMutationOutcome {
@@ -506,7 +562,7 @@ impl MemoryBackend for InMemoryBackend {
         let effect = Self::apply_to_state(&mut staged, mutation)?;
         staged
             .operation_receipts
-            .insert(operation_id.into(), (payload_hash, effect.clone()));
+            .insert(operation_id.into(), (payload_hash.into(), effect.clone()));
         *state = staged;
         Ok(MemoryMutationOutcome {
             effect,
@@ -568,7 +624,7 @@ impl MemoryBackend for InMemoryBackend {
             layer: "project".into(),
             tags: vec![],
         };
-        s.facts.insert(fact.id.clone(), fact.clone());
+        Self::insert_fact(&mut s, fact.id.clone(), fact.clone())?;
         Ok(StoreResult {
             fact,
             action: StoreAction::Stored,
@@ -602,6 +658,63 @@ impl MemoryBackend for InMemoryBackend {
                 .then_with(|| a.id.cmp(&b.id))
         });
         Ok(facts)
+    }
+
+    async fn list_facts_page(
+        &self,
+        mind: &str,
+        filter: FactFilter,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<FactPage> {
+        let state = self.state.lock().unwrap();
+        let (watermark, after) = match cursor {
+            Some(cursor) => {
+                let (version, id) = cursor.split_once(':').ok_or_else(|| {
+                    MemoryError::InvalidMutation("invalid fact-page cursor".into())
+                })?;
+                let version = version
+                    .parse::<u64>()
+                    .map_err(|_| MemoryError::InvalidMutation("invalid fact-page cursor".into()))?;
+                (version, Some(id))
+            }
+            None => (state.next_fact_insertion_sequence, None),
+        };
+        let status = filter.status.unwrap_or(FactStatus::Active);
+        let matches = |fact: &&Fact| {
+            fact.mind == mind
+                && fact.status == status
+                && state
+                    .fact_insertion_sequences
+                    .get(&fact.id)
+                    .is_some_and(|sequence| *sequence <= watermark)
+                && filter
+                    .section
+                    .as_ref()
+                    .is_none_or(|section| &fact.section == section)
+        };
+        let total = state.facts.values().filter(matches).count();
+        let mut matching = state
+            .facts
+            .values()
+            .filter(matches)
+            .filter(|fact| after.is_none_or(|after| fact.id.as_str() > after))
+            .collect::<Vec<_>>();
+        matching.sort_by(|left, right| left.id.cmp(&right.id));
+        let has_more = matching.len() > limit;
+        let facts = matching
+            .into_iter()
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let next_cursor = has_more
+            .then(|| facts.last().map(|fact| format!("{watermark}:{}", fact.id)))
+            .flatten();
+        Ok(FactPage {
+            facts,
+            next_cursor,
+            total,
+        })
     }
 
     async fn reinforce_fact(&self, id: &str) -> Result<Fact> {
@@ -710,7 +823,7 @@ impl MemoryBackend for InMemoryBackend {
             tags: vec![],
         };
 
-        s.facts.insert(new_id, new_fact.clone());
+        Self::insert_fact(&mut s, new_id, new_fact.clone())?;
         Ok(new_fact)
     }
 
@@ -886,6 +999,63 @@ impl MemoryBackend for InMemoryBackend {
         Ok(results)
     }
 
+    async fn vector_search_cancellable(
+        &self,
+        mind: &str,
+        embedding: &[f32],
+        k: usize,
+        min_similarity: f32,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<Vec<ScoredFact>> {
+        let state = self.state.lock().unwrap();
+        let mut matching = state.embeddings.iter().filter(|entry| {
+            state
+                .facts
+                .get(&entry.fact_id)
+                .is_some_and(|fact| fact.mind == mind && fact.status == FactStatus::Active)
+        });
+        let Some(first) = matching.next() else {
+            return Err(MemoryError::NoEmbeddings);
+        };
+        if first.embedding.len() != embedding.len() {
+            return Err(MemoryError::EmbeddingDimensionMismatch {
+                expected: first.embedding.len() as u32,
+                got: embedding.len() as u32,
+                stored_model: first.model_name.clone(),
+            });
+        }
+        let mut results = Vec::new();
+        for entry in std::iter::once(first).chain(matching) {
+            if cancelled() {
+                return Err(MemoryError::Cancelled);
+            }
+            let similarity = vectors::cosine_similarity(&entry.embedding, embedding);
+            if similarity < min_similarity {
+                continue;
+            }
+            let Some(fact) = state.facts.get(&entry.fact_id).cloned() else {
+                continue;
+            };
+            let Some(score) = crate::decay::ambient_score(similarity as f64, &fact) else {
+                continue;
+            };
+            results.push(ScoredFact {
+                fact,
+                similarity: similarity as f64,
+                score,
+            });
+        }
+        results.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.fact.id.cmp(&right.fact.id))
+        });
+        results.truncate(k);
+        Ok(results)
+    }
+
     async fn store_embedding(
         &self,
         fact_id: &str,
@@ -935,11 +1105,21 @@ impl MemoryBackend for InMemoryBackend {
 
     async fn create_edge(&self, req: CreateEdge) -> Result<Edge> {
         let mut s = self.state.lock().unwrap();
-        if !s.facts.contains_key(&req.source_id) {
-            return Err(MemoryError::FactNotFound(req.source_id));
-        }
-        if !s.facts.contains_key(&req.target_id) {
-            return Err(MemoryError::FactNotFound(req.target_id));
+        let source = s
+            .facts
+            .get(&req.source_id)
+            .ok_or_else(|| MemoryError::FactNotFound(req.source_id.clone()))?;
+        let target = s
+            .facts
+            .get(&req.target_id)
+            .ok_or_else(|| MemoryError::FactNotFound(req.target_id.clone()))?;
+        if source.mind != target.mind
+            || source.status != FactStatus::Active
+            || target.status != FactStatus::Active
+        {
+            return Err(MemoryError::InvalidMutation(
+                "edge endpoints must be active facts in the same mind".into(),
+            ));
         }
         let edge = Edge {
             id: gen_id(),
@@ -956,12 +1136,22 @@ impl MemoryBackend for InMemoryBackend {
 
     async fn get_edges(&self, mind: &str, fact_id: &str) -> Result<Vec<Edge>> {
         let s = self.state.lock().unwrap();
-        if s.facts.get(fact_id).is_none_or(|fact| fact.mind != mind) {
+        if s.facts
+            .get(fact_id)
+            .is_none_or(|fact| fact.mind != mind || fact.status != FactStatus::Active)
+        {
             return Ok(Vec::new());
         }
         Ok(s.edges
             .iter()
-            .filter(|e| e.source_id == fact_id || e.target_id == fact_id)
+            .filter(|edge| edge.source_id == fact_id || edge.target_id == fact_id)
+            .filter(|edge| {
+                [&edge.source_id, &edge.target_id].into_iter().all(|id| {
+                    s.facts
+                        .get(id)
+                        .is_some_and(|fact| fact.mind == mind && fact.status == FactStatus::Active)
+                })
+            })
             .cloned()
             .collect())
     }
@@ -1128,6 +1318,36 @@ impl MemoryBackend for InMemoryBackend {
             version_hwm,
         })
     }
+
+    async fn inventory_stats(&self) -> Result<MemoryInventoryStats> {
+        let state = self.state.lock().unwrap();
+        let active = state
+            .facts
+            .values()
+            .filter(|fact| fact.status == FactStatus::Active)
+            .collect::<Vec<_>>();
+        let mut persona_counts = std::collections::BTreeMap::<String, usize>::new();
+        for fact in active.iter().filter(|fact| fact.layer == "persona") {
+            *persona_counts.entry(fact.mind.clone()).or_default() += 1;
+        }
+        Ok(MemoryInventoryStats {
+            total_facts: state.facts.len(),
+            active_facts: active.len(),
+            project_facts: active.iter().filter(|fact| fact.layer == "project").count(),
+            persona_facts: active.iter().filter(|fact| fact.layer == "persona").count(),
+            working_facts: active.iter().filter(|fact| fact.layer == "working").count(),
+            episodes: state.episodes.len(),
+            edges: state.edges.len(),
+            active_persona_mind: persona_counts
+                .into_iter()
+                .max_by(|(left_mind, left_count), (right_mind, right_count)| {
+                    left_count
+                        .cmp(right_count)
+                        .then_with(|| right_mind.cmp(left_mind))
+                })
+                .map(|(mind, _)| mind),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1139,5 +1359,51 @@ mod tests {
     async fn inmemory_backend_passes_all_tests() {
         let backend = InMemoryBackend::new();
         run_backend_tests(&backend).await;
+    }
+
+    #[tokio::test]
+    async fn keyset_pages_reach_inventories_larger_than_ten_thousand() {
+        let backend = InMemoryBackend::new();
+        for index in 0..10_025 {
+            backend
+                .store_fact(StoreFact {
+                    mind: "large-page".into(),
+                    content: format!("fact {index}"),
+                    section: Section::Architecture,
+                    decay_profile: DecayProfileName::Standard,
+                    source: Some("test".into()),
+                })
+                .await
+                .unwrap();
+        }
+        let mut cursor = None;
+        let mut ids = std::collections::HashSet::new();
+        let mut inserted_after_watermark = false;
+        loop {
+            let page = backend
+                .list_facts_page("large-page", FactFilter::default(), 257, cursor.as_deref())
+                .await
+                .unwrap();
+            assert_eq!(page.total, 10_025);
+            ids.extend(page.facts.into_iter().map(|fact| fact.id));
+            cursor = page.next_cursor;
+            if !inserted_after_watermark {
+                backend
+                    .store_fact(StoreFact {
+                        mind: "large-page".into(),
+                        content: "inserted after first-page watermark".into(),
+                        section: Section::Architecture,
+                        decay_profile: DecayProfileName::Standard,
+                        source: Some("test".into()),
+                    })
+                    .await
+                    .unwrap();
+                inserted_after_watermark = true;
+            }
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(ids.len(), 10_025);
     }
 }

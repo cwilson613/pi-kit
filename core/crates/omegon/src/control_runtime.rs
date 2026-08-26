@@ -1597,7 +1597,7 @@ pub async fn switch_dispatcher_response(
         }
     }
 
-    let mut status = crate::status::HarnessStatus::assemble();
+    let mut status = crate::status::HarnessStatus::assemble(&agent.cwd);
     let settings_snapshot = shared_settings.lock().ok().map(|s| s.clone());
     let (
         context_class,
@@ -1819,7 +1819,7 @@ pub async fn set_runtime_mode_response(
         .bus
         .apply_operator_tool_profile(slim, &posture_disabled, &posture_enabled);
 
-    let mut status = crate::status::HarnessStatus::assemble();
+    let mut status = crate::status::HarnessStatus::assemble(runtime_state.bus.project_root());
     let settings = shared_settings.lock().unwrap().clone();
     let operating_profile = settings.operating_profile();
     let operating_profile_label = operating_profile.summary();
@@ -1980,7 +1980,7 @@ pub async fn status_view_response(
         .observe_harness()
         .ok()
         .flatten()
-        .unwrap_or_else(crate::status::HarnessStatus::assemble);
+        .unwrap_or_else(|| crate::status::HarnessStatus::assemble(&agent.cwd));
     let settings = shared_settings
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2167,7 +2167,7 @@ pub async fn session_stats_view_response(
         .observe_harness()
         .ok()
         .flatten()
-        .unwrap_or_else(crate::status::HarnessStatus::assemble);
+        .unwrap_or_else(|| crate::status::HarnessStatus::assemble(&agent.cwd));
     let persona = live_harness
         .active_persona
         .as_ref()
@@ -2374,8 +2374,10 @@ pub async fn checkin_view_response(
         }
     }
 
-    let facts = crate::status::HarnessStatus::assemble().memory.total_facts;
-    let working = crate::status::HarnessStatus::assemble()
+    let facts = crate::status::HarnessStatus::assemble(&agent.cwd)
+        .memory
+        .total_facts;
+    let working = crate::status::HarnessStatus::assemble(&agent.cwd)
         .memory
         .working_facts;
     if facts > 0 {
@@ -2922,6 +2924,11 @@ fn replace_interactive_session(
             request,
         );
         publish_session_view_binding(agent, &outcome);
+        crate::session_replacement::emit_canonical_session_start(
+            &mut runtime_state.bus,
+            &agent.cwd,
+            &outcome,
+        );
         return Ok(outcome);
     }
     let supervisor = supervisor.ok_or_else(|| {
@@ -2959,6 +2966,11 @@ fn replace_interactive_session(
         },
     )?;
     publish_session_view_binding(agent, &outcome);
+    crate::session_replacement::emit_canonical_session_start(
+        &mut runtime_state.bus,
+        &agent.cwd,
+        &outcome,
+    );
     Ok(outcome)
 }
 
@@ -3713,7 +3725,7 @@ pub async fn profile_apply_response(
             .await;
     }
 
-    let mut status = crate::status::HarnessStatus::assemble();
+    let mut status = crate::status::HarnessStatus::assemble(runtime_state.bus.project_root());
     if let Ok(settings) = shared_settings.lock().map(|s| s.clone()) {
         let operating_profile = settings.operating_profile();
         status.update_routing(
@@ -6307,6 +6319,7 @@ mod context_compaction_tests {
             ),
             work_snapshot: None,
             behavior_policy: None,
+            memory_binding: Default::default(),
         }
     }
 
@@ -6406,6 +6419,7 @@ mod context_compaction_tests {
             ),
             work_snapshot: None,
             behavior_policy: None,
+            memory_binding: Default::default(),
         };
         let mut agent = test_agent();
         let settings = crate::settings::shared("test:model");

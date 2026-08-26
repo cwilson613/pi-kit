@@ -2713,6 +2713,12 @@ pub trait Feature: Send + Sync {
     fn on_event(&mut self, _event: &BusEvent) -> Vec<BusRequest> {
         vec![]
     }
+
+    /// Close feature-owned background admission and settle all accepted work
+    /// before managed services begin draining.
+    async fn prepare_managed_shutdown(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

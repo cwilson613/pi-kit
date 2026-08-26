@@ -409,6 +409,12 @@ where
     }
 }
 
+async fn finalize_acp_setup_error(agent: &mut crate::setup::AgentSetup, error: anyhow::Error) {
+    if let Err(error) = crate::setup::finalize_agent_error::<()>(agent, error).await {
+        tracing::error!(%error, "ACP worker setup failed");
+    }
+}
+
 /// The worker's main loop — runs on a dedicated thread with its own runtime.
 #[allow(clippy::too_many_arguments)]
 async fn worker_loop(
@@ -470,8 +476,11 @@ async fn worker_loop(
     let composition_generation_id = match agent_setup.bus.composition_generation_id() {
         Some(generation_id) => generation_id.as_str().to_string(),
         None => {
-            tracing::error!("ACP composition was not published");
-            let _ = agent_setup.bus.shutdown_managed_services().await;
+            finalize_acp_setup_error(
+                &mut agent_setup,
+                anyhow::anyhow!("ACP composition was not published"),
+            )
+            .await;
             return;
         }
     };
@@ -479,8 +488,11 @@ async fn worker_loop(
     let session_snapshot = match crate::session::sessions_dir(&cwd) {
         Some(directory) => directory.join(format!("{session_id}.json")),
         None => {
-            tracing::error!("cannot determine ACP session directory");
-            let _ = agent_setup.bus.shutdown_managed_services().await;
+            finalize_acp_setup_error(
+                &mut agent_setup,
+                anyhow::anyhow!("cannot determine ACP session directory"),
+            )
+            .await;
             return;
         }
     };
@@ -497,8 +509,11 @@ async fn worker_loop(
     ) {
         Ok(authority) => authority,
         Err(error) => {
-            tracing::error!(%error, "failed to open ACP session authority");
-            let _ = agent_setup.bus.shutdown_managed_services().await;
+            finalize_acp_setup_error(
+                &mut agent_setup,
+                anyhow::anyhow!("failed to open ACP session authority: {error}"),
+            )
+            .await;
             return;
         }
     };
@@ -506,8 +521,11 @@ async fn worker_loop(
         match crate::runtime_supervisor::InteractiveRuntimeSupervisor::with_authority(authority) {
             Ok(supervisor) => supervisor,
             Err(error) => {
-                tracing::error!(%error, "failed to restore ACP session supervisor");
-                let _ = agent_setup.bus.shutdown_managed_services().await;
+                finalize_acp_setup_error(
+                    &mut agent_setup,
+                    anyhow::anyhow!("failed to restore ACP session supervisor: {error}"),
+                )
+                .await;
                 return;
             }
         };
@@ -518,8 +536,11 @@ async fn worker_loop(
             "withdrew recovered ACP prompts whose response channels were lost"
         ),
         Err(error) => {
-            tracing::error!(%error, "failed to withdraw orphaned recovered ACP prompts");
-            let _ = agent_setup.bus.shutdown_managed_services().await;
+            finalize_acp_setup_error(
+                &mut agent_setup,
+                anyhow::anyhow!("failed to withdraw orphaned recovered ACP prompts: {error}"),
+            )
+            .await;
             return;
         }
     }
@@ -532,6 +553,12 @@ async fn worker_loop(
     let secrets = agent_setup.secrets;
     let extension_metadata = agent_setup.extension_metadata.clone();
     let extension_rpc_handles = agent_setup.extension_rpc_handles.clone();
+    let mut extension_supervisors = crate::extensions::ExtensionSupervisorSet::new(std::mem::take(
+        &mut agent_setup.extension_supervisors,
+    ));
+    let mut mcp_supervisors = crate::plugins::mcp::McpSupervisorSet::new(std::mem::take(
+        &mut agent_setup.mcp_supervisors,
+    ));
     let mut resume_id: Option<String> = None;
     let mut resume_info = agent_setup.resume_info;
 
@@ -876,6 +903,7 @@ async fn worker_loop(
                         drain_late_requests: false,
                         work_snapshot: work_snapshot.clone(),
                         behavior_policy: behavior_policy.clone(),
+                        memory_binding: agent_setup.memory_binding.clone(),
                         ..Default::default()
                     },
                     cancel_keeps_prompt: None,
@@ -991,6 +1019,9 @@ async fn worker_loop(
                                     },
                                 },
                             )?;
+                            crate::session_replacement::emit_canonical_session_start(
+                                &mut bus, &cwd, &outcome,
+                            );
                             resume_id = Some(session_id.clone());
                             first_prompt = false;
                             let target = crate::session_consumers::SessionViewTarget {
@@ -1022,7 +1053,7 @@ async fn worker_loop(
                     &cwd,
                 )
                 .and_then(|request| {
-                    crate::session_replacement::replace(
+                    let outcome = crate::session_replacement::replace(
                         crate::session_replacement::HostSessionPublication {
                             supervisor: &mut supervisor,
                             conversation: &mut conversation,
@@ -1041,6 +1072,9 @@ async fn worker_loop(
                             },
                         },
                     )?;
+                    crate::session_replacement::emit_canonical_session_start(
+                        &mut bus, &cwd, &outcome,
+                    );
                     resume_id = Some(session_id.clone());
                     first_prompt = true;
                     Ok(session_id.clone())
@@ -1355,7 +1389,15 @@ async fn worker_loop(
         }
     }
 
-    let _ = bus.shutdown_managed_services().await;
+    let managed_cleanup = bus.shutdown_managed_services_strict().await;
+    mcp_supervisors.shutdown().await;
+    extension_supervisors.shutdown().await;
+    if let Err(error) = managed_cleanup {
+        tracing::error!(%error, "ACP worker managed cleanup failed");
+        let _ = event_tx.send(WorkerEvent::StatusUpdate(format!(
+            "ACP worker cleanup failed: {error}"
+        )));
+    }
     tracing::info!("ACP worker shutting down");
 }
 
@@ -1390,7 +1432,7 @@ async fn handle_control_request(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            let mut harness = crate::status::HarnessStatus::assemble();
+            let mut harness = crate::status::HarnessStatus::assemble(workspace_ctx.cwd);
             let operating_profile = settings.operating_profile();
             harness.update_routing(
                 settings.effective_requested_class().label(),

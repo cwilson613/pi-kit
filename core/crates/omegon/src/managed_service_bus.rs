@@ -326,19 +326,22 @@ pub(crate) struct ManagedShutdownGenerationResult {
 pub(crate) struct ManagedServiceShutdownReport {
     pub(crate) generations: Vec<ManagedShutdownGenerationResult>,
     pub(crate) rejected_candidates: Vec<ManagedResourceCleanupReport>,
+    pub(crate) feature_failures: Vec<String>,
 }
 
 impl ManagedServiceShutdownReport {
     pub(crate) fn all_resources_settled(&self) -> bool {
-        self.generations.iter().all(|generation| {
-            generation
-                .result
-                .as_ref()
-                .is_ok_and(|cleanup| cleanup.resources.all_resources_settled())
-        }) && self
-            .rejected_candidates
-            .iter()
-            .all(ManagedResourceCleanupReport::all_resources_settled)
+        self.feature_failures.is_empty()
+            && self.generations.iter().all(|generation| {
+                generation
+                    .result
+                    .as_ref()
+                    .is_ok_and(|cleanup| cleanup.resources.all_resources_settled())
+            })
+            && self
+                .rejected_candidates
+                .iter()
+                .all(ManagedResourceCleanupReport::all_resources_settled)
     }
 }
 

@@ -7,7 +7,7 @@
 //! - context_clear: clear history, start fresh
 
 use async_trait::async_trait;
-use omegon_memory::{MemoryBackend, Section};
+use omegon_memory::Section;
 use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -16,6 +16,49 @@ use tokio::sync::{mpsc, oneshot};
 use crate::operator_commands::OperatorCommand as TuiCommand;
 use crate::settings::{Settings, SharedSettings};
 use crate::shadow_context::{ContextKind, EntryBody, ShadowContext, ShadowEntry};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryPackError {
+    Unavailable(&'static str),
+    Cancelled,
+    InvalidResponse,
+}
+
+fn classify_memory_error(
+    error: &omegon_traits::ManagedServiceCallError<crate::memory_service::MemoryServiceErrorV1>,
+) -> MemoryPackError {
+    use crate::memory_service::MemoryServiceErrorCodeV1;
+    use omegon_traits::ManagedServiceCallError;
+    match error {
+        ManagedServiceCallError::Operation(error)
+            if error.code == MemoryServiceErrorCodeV1::Cancelled =>
+        {
+            MemoryPackError::Cancelled
+        }
+        ManagedServiceCallError::Cancelled => MemoryPackError::Cancelled,
+        ManagedServiceCallError::Operation(error)
+            if matches!(
+                error.code,
+                MemoryServiceErrorCodeV1::Unavailable | MemoryServiceErrorCodeV1::StoreUnavailable
+            ) =>
+        {
+            MemoryPackError::Unavailable("memory:unavailable")
+        }
+        ManagedServiceCallError::GenerationDraining => {
+            MemoryPackError::Unavailable("memory:generation_draining")
+        }
+        ManagedServiceCallError::GenerationDegraded => {
+            MemoryPackError::Unavailable("memory:generation_degraded")
+        }
+        ManagedServiceCallError::GenerationRetired => {
+            MemoryPackError::Unavailable("memory:generation_retired")
+        }
+        ManagedServiceCallError::Panicked => MemoryPackError::Unavailable("memory:panicked"),
+        ManagedServiceCallError::Operation(_) => {
+            MemoryPackError::Unavailable("memory:operation_failed")
+        }
+    }
+}
 
 fn dispatch_command(command_tx: &SharedCommandTx, command: TuiCommand) -> bool {
     if let Ok(guard) = command_tx.lock()
@@ -101,8 +144,8 @@ pub struct ContextProvider {
     metrics: Arc<Mutex<SharedContextMetrics>>,
     settings: Option<SharedSettings>,
     lifecycle: Option<crate::runtime_state::LifecycleHostHandle>,
-    memory_backend: Option<Arc<dyn MemoryBackend>>,
-    memory_mind: Option<String>,
+    memory_binding: crate::memory_service::MemoryBinding,
+    memory_mind: String,
     codescan: crate::codescan_service::CodescanBinding,
 }
 
@@ -178,8 +221,8 @@ impl ContextProvider {
             metrics,
             settings: None,
             lifecycle: None,
-            memory_backend: None,
-            memory_mind: None,
+            memory_binding: crate::memory_service::MemoryBinding::default(),
+            memory_mind: omegon_memory::sqlite::PRIMENSUS_MIND.into(),
             codescan: crate::codescan_service::CodescanBinding::default(),
         }
     }
@@ -189,8 +232,8 @@ impl ContextProvider {
         command_tx: SharedCommandTx,
         settings: Option<SharedSettings>,
         lifecycle: Option<crate::runtime_state::LifecycleHostHandle>,
-        memory_backend: Option<Arc<dyn MemoryBackend>>,
-        memory_mind: Option<String>,
+        memory_binding: crate::memory_service::MemoryBinding,
+        memory_mind: String,
         codescan: Option<crate::codescan_service::CodescanBinding>,
     ) -> Self {
         Self {
@@ -198,7 +241,7 @@ impl ContextProvider {
             metrics,
             settings,
             lifecycle,
-            memory_backend,
+            memory_binding,
             memory_mind,
             codescan: codescan.unwrap_or_default(),
         }
@@ -513,10 +556,22 @@ impl ContextProvider {
         query: &str,
         reason: &str,
         max_items: usize,
-    ) -> Option<PackReport> {
-        let backend = self.memory_backend.as_ref()?;
-        let mind = self.memory_mind.as_deref()?;
-        let results = backend.fts_search(mind, query, max_items).await.ok()?;
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> Result<Option<PackReport>, MemoryPackError> {
+        let response = self
+            .memory_binding
+            .invoke(crate::memory_service::MemoryRequestV1::FtsSearch {
+                scope: crate::memory_service::MemoryScopeV1::Project,
+                mind: self.memory_mind.clone(),
+                query: query.into(),
+                limit: max_items,
+                cancellation,
+            })
+            .await
+            .map_err(|error| classify_memory_error(&error))?;
+        let crate::memory_service::MemoryPayloadV1::ScoredFacts(results) = response.payload else {
+            return Err(MemoryPackError::InvalidResponse);
+        };
         let entries = results
             .into_iter()
             .enumerate()
@@ -545,7 +600,7 @@ impl ContextProvider {
                 entry
             })
             .collect::<Vec<_>>();
-        Self::select_pack("Memory", query, reason, entries)
+        Ok(Self::select_pack("Memory", query, reason, entries))
     }
 
     async fn summarize_code(
@@ -860,18 +915,46 @@ Thinking Level: {}",
                             }
                         }
                         "memory" => {
-                            if let Some(pack) = self
-                                .summarize_memory(query, reason, Self::request_max_items(req))
+                            match self
+                                .summarize_memory(
+                                    query,
+                                    reason,
+                                    Self::request_max_items(req),
+                                    cancel.child_token(),
+                                )
                                 .await
                             {
-                                supported += 1;
-                                sections.push(pack.text.clone());
-                                pack_details.push(pack.details);
-                            } else {
-                                unsupported += 1;
-                                sections.push(format!(
-                                    "### memory\n- Reason: {reason}\n- Query: {query}\n- Status: no memory facts matched this request."
-                                ));
+                                Ok(Some(pack)) => {
+                                    supported += 1;
+                                    sections.push(pack.text.clone());
+                                    pack_details.push(pack.details);
+                                }
+                                Ok(None) => {
+                                    supported += 1;
+                                    sections.push(format!(
+                                        "### memory\n- Reason: {reason}\n- Query: {query}\n- Status: no memory facts matched this request."
+                                    ));
+                                }
+                                Err(MemoryPackError::Cancelled) => {
+                                    anyhow::bail!("memory:cancelled");
+                                }
+                                Err(MemoryPackError::Unavailable(code)) => {
+                                    unsupported += 1;
+                                    sections.push(format!(
+                                        "### memory\n- Reason: {reason}\n- Query: {query}\n- Status: managed memory unavailable ({code})."
+                                    ));
+                                    pack_details.push(json!({
+                                        "kind": "Memory",
+                                        "query": query,
+                                        "reason": reason,
+                                        "available": false,
+                                        "code": code,
+                                        "service": "service:memory",
+                                    }));
+                                }
+                                Err(MemoryPackError::InvalidResponse) => {
+                                    anyhow::bail!("memory:invalid_response");
+                                }
                             }
                         }
                         "code" => {
@@ -1016,6 +1099,34 @@ mod tests {
         bus.try_finalize_managed().await.unwrap();
         binding.capture(&bus).unwrap();
         (bus, binding)
+    }
+
+    async fn managed_memory() -> (
+        crate::bus::EventBus,
+        crate::memory_service::MemoryBinding,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let binding = crate::memory_service::MemoryBinding::default();
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(crate::memory_service::MemoryDeclarationFeature));
+        bus.stage_managed_generation(
+            "memory",
+            crate::memory_service::start_candidate(crate::memory_service::MemoryWorkerConfig {
+                project_memory_root: dir.path().to_path_buf(),
+                project_db_path: dir.path().join("facts.db"),
+                project_jsonl_path: dir.path().join("facts.jsonl"),
+                global_db_path: None,
+                vault: None,
+                startup_sync_enabled: false,
+            })
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+        binding.capture(&bus).unwrap();
+        (bus, binding, dir)
     }
 
     fn expect_text(result: &ToolResult) -> &str {
@@ -1304,8 +1415,8 @@ mod tests {
             new_shared_command_tx(),
             None,
             Some(lifecycle),
-            None,
-            None,
+            Default::default(),
+            omegon_memory::sqlite::PRIMENSUS_MIND.into(),
             None,
         );
         let result = provider
@@ -1343,14 +1454,21 @@ mod tests {
 
     #[tokio::test]
     async fn request_context_returns_memory_pack() {
-        let backend: Arc<dyn MemoryBackend> = Arc::new(omegon_memory::InMemoryBackend::new());
-        backend
-            .store_fact(omegon_memory::StoreFact {
-                mind: "test".into(),
-                content: "Selector policy must remain bounded and mediated".into(),
-                section: Section::Decisions,
-                decay_profile: omegon_memory::DecayProfileName::Standard,
-                source: None,
+        let (mut bus, binding, _dir) = managed_memory().await;
+        binding
+            .invoke(crate::memory_service::MemoryRequestV1::ApplyMutation {
+                scope: crate::memory_service::MemoryScopeV1::Project,
+                operation_id: "context-memory-fixture".into(),
+                mutation: omegon_memory::MemoryMutation::StoreFact {
+                    request: omegon_memory::StoreFact {
+                        mind: omegon_memory::sqlite::PRIMENSUS_MIND.into(),
+                        content: "Selector policy must remain bounded and mediated".into(),
+                        section: Section::Decisions,
+                        decay_profile: omegon_memory::DecayProfileName::Standard,
+                        source: None,
+                    },
+                },
+                cancellation: tokio_util::sync::CancellationToken::new(),
             })
             .await
             .unwrap();
@@ -1360,8 +1478,8 @@ mod tests {
             new_shared_command_tx(),
             None,
             None,
-            Some(backend),
-            Some("test".into()),
+            binding,
+            omegon_memory::sqlite::PRIMENSUS_MIND.into(),
             None,
         );
         let result = provider
@@ -1394,6 +1512,11 @@ mod tests {
         assert!(
             text.contains("bounded and mediated"),
             "unexpected text: {text}"
+        );
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
         );
     }
 
@@ -1449,8 +1572,8 @@ mod tests {
             new_shared_command_tx(),
             None,
             Some(lifecycle),
-            None,
-            None,
+            Default::default(),
+            omegon_memory::sqlite::PRIMENSUS_MIND.into(),
             None,
         );
         let result = provider
@@ -1503,8 +1626,8 @@ mod tests {
             new_shared_command_tx(),
             None,
             None,
-            None,
-            None,
+            Default::default(),
+            omegon_memory::sqlite::PRIMENSUS_MIND.into(),
             Some(codescan),
         );
         let result = provider
@@ -1557,8 +1680,8 @@ mod tests {
             new_shared_command_tx(),
             None,
             None,
-            None,
-            None,
+            Default::default(),
+            omegon_memory::sqlite::PRIMENSUS_MIND.into(),
             Some(codescan),
         );
         let result = provider
@@ -1616,8 +1739,8 @@ mod tests {
             new_shared_command_tx(),
             None,
             None,
-            None,
-            None,
+            Default::default(),
+            omegon_memory::sqlite::PRIMENSUS_MIND.into(),
             Some(codescan),
         );
         let result = provider
@@ -1700,6 +1823,73 @@ mod tests {
             .join("\n");
         assert!(text.contains("codescan unavailable"), "{text}");
         assert!(text.contains("Session State"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn unavailable_memory_pack_preserves_mixed_request_continuity() {
+        let provider = ContextProvider::new(SharedContextMetrics::new(), new_shared_command_tx());
+        let result = provider
+            .execute(
+                crate::tool_registry::context::REQUEST_CONTEXT,
+                "call-memory-absent",
+                json!({"requests": [
+                    {"kind": "memory", "query": "policy", "reason": "need memory"},
+                    {"kind": "session_state", "query": "state", "reason": "need state"}
+                ]}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = result
+            .content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("managed memory unavailable (memory:unavailable)"));
+        assert!(text.contains("Session State"));
+        assert_eq!(result.details["supported"], 1);
+        assert_eq!(result.details["unsupported"], 1);
+        assert_eq!(result.details["packs"][0]["kind"], "Memory");
+        assert_eq!(result.details["packs"][0]["query"], "policy");
+        assert_eq!(result.details["packs"][0]["reason"], "need memory");
+        assert_eq!(result.details["packs"][0]["available"], false);
+        assert_eq!(result.details["packs"][0]["code"], "memory:unavailable");
+        assert_eq!(result.details["packs"][0]["service"], "service:memory");
+    }
+
+    #[tokio::test]
+    async fn cancelled_memory_pack_propagates_instead_of_reporting_no_match() {
+        let (mut bus, binding, _dir) = managed_memory().await;
+        let provider = ContextProvider::new_with_sources(
+            SharedContextMetrics::new(),
+            new_shared_command_tx(),
+            None,
+            None,
+            binding,
+            omegon_memory::sqlite::PRIMENSUS_MIND.into(),
+            None,
+        );
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+        let error = provider
+            .execute(
+                crate::tool_registry::context::REQUEST_CONTEXT,
+                "call-memory-cancelled",
+                json!({"requests": [
+                    {"kind": "memory", "query": "policy", "reason": "need memory"},
+                    {"kind": "session_state", "query": "state", "reason": "need state"}
+                ]}),
+                cancellation,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "memory:cancelled");
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
     }
 
     #[tokio::test]

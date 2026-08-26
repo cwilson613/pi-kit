@@ -10,8 +10,10 @@
 //! - Web dashboard: broadcast over WebSocket on the existing event bus
 
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::{self, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 
 /// Complete observable state of the harness.
 /// Clone + Serialize — crosses thread boundaries and goes over WebSocket.
@@ -264,7 +266,7 @@ pub struct ContainerRuntimeStatus {
     pub available: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryStatus {
     pub total_facts: usize,
     pub active_facts: usize,
@@ -274,6 +276,167 @@ pub struct MemoryStatus {
     pub episodes: usize,
     pub edges: usize,
     pub active_persona_mind: Option<String>, // persona name if persona layer has facts
+}
+
+impl From<crate::memory_service::ManagedMemoryStatusV1> for MemoryStatus {
+    fn from(status: crate::memory_service::ManagedMemoryStatusV1) -> Self {
+        Self {
+            total_facts: status.total_facts,
+            active_facts: status.active_facts,
+            project_facts: status.project_facts,
+            persona_facts: status.persona_facts,
+            working_facts: status.working_facts,
+            episodes: status.episodes,
+            edges: status.edges,
+            active_persona_mind: status.active_persona_mind,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedMemoryStatusSnapshot {
+    pub project_root: PathBuf,
+    pub available: bool,
+    pub warning: Option<String>,
+    pub status: MemoryStatus,
+    pub authority: crate::memory_service::ManagedMemoryAuthorityV1,
+    pub index_state: crate::memory_service::ManagedMemoryIndexStateV1,
+}
+
+impl Default for ManagedMemoryStatusSnapshot {
+    fn default() -> Self {
+        Self {
+            project_root: PathBuf::new(),
+            available: false,
+            warning: None,
+            authority: crate::memory_service::ManagedMemoryAuthorityV1::None,
+            index_state: crate::memory_service::ManagedMemoryIndexStateV1::Missing,
+            status: MemoryStatus {
+                total_facts: 0,
+                active_facts: 0,
+                project_facts: 0,
+                persona_facts: 0,
+                working_facts: 0,
+                episodes: 0,
+                edges: 0,
+                active_persona_mind: None,
+            },
+        }
+    }
+}
+
+fn managed_memory_status_cache() -> &'static RwLock<BTreeMap<PathBuf, ManagedMemoryStatusSnapshot>>
+{
+    static CACHE: OnceLock<RwLock<BTreeMap<PathBuf, ManagedMemoryStatusSnapshot>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+pub(crate) fn managed_memory_status_snapshot_for(path: &Path) -> ManagedMemoryStatusSnapshot {
+    let key = memory_status_cache_key(path);
+    managed_memory_status_cache()
+        .read()
+        .ok()
+        .and_then(|snapshots| snapshots.get(&key).cloned())
+        .unwrap_or_default()
+}
+
+pub(crate) fn update_managed_memory_status(mut snapshot: ManagedMemoryStatusSnapshot) {
+    snapshot.project_root = memory_status_cache_key(&snapshot.project_root);
+    if let Ok(mut snapshots) = managed_memory_status_cache().write() {
+        snapshots.insert(snapshot.project_root.clone(), snapshot);
+    }
+}
+
+pub(crate) async fn refresh_managed_memory_status(
+    binding: &crate::memory_service::MemoryBinding,
+    project_root: &Path,
+) {
+    refresh_managed_memory_status_for_mind(
+        binding,
+        project_root,
+        omegon_memory::sqlite::PRIMENSUS_MIND,
+    )
+    .await;
+}
+
+pub(crate) async fn refresh_managed_memory_status_for_mind(
+    binding: &crate::memory_service::MemoryBinding,
+    project_root: &Path,
+    mind: &str,
+) {
+    let unavailable = |warning: &str| ManagedMemoryStatusSnapshot {
+        project_root: project_root.to_path_buf(),
+        available: false,
+        warning: Some(warning.to_string()),
+        status: MemoryStatus::default(),
+        authority: crate::memory_service::ManagedMemoryAuthorityV1::None,
+        index_state: crate::memory_service::ManagedMemoryIndexStateV1::Missing,
+    };
+    if !binding.available() {
+        update_managed_memory_status(unavailable("memory:status_binding_unavailable"));
+        return;
+    }
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        binding.invoke(crate::memory_service::MemoryRequestV1::ManagedStatus {
+            scope: crate::memory_service::MemoryScopeV1::Project,
+            mind: mind.into(),
+            cancellation: cancellation.clone(),
+        }),
+    )
+    .await;
+    let snapshot = match response {
+        Ok(Ok(crate::memory_service::MemoryResponseV1 {
+            payload: crate::memory_service::MemoryPayloadV1::ManagedStatus(status),
+            ..
+        })) => {
+            let authority = status.authority.clone();
+            let index_state = status.index_state;
+            ManagedMemoryStatusSnapshot {
+                project_root: project_root.to_path_buf(),
+                available: true,
+                warning: None,
+                status: status.into(),
+                authority,
+                index_state,
+            }
+        }
+        Ok(Ok(_)) => unavailable("memory:status_invalid_response"),
+        Ok(Err(omegon_traits::ManagedServiceCallError::GenerationDraining)) => {
+            unavailable("memory:status_generation_draining")
+        }
+        Ok(Err(omegon_traits::ManagedServiceCallError::GenerationDegraded)) => {
+            unavailable("memory:status_generation_degraded")
+        }
+        Ok(Err(omegon_traits::ManagedServiceCallError::GenerationRetired)) => {
+            unavailable("memory:status_generation_retired")
+        }
+        Ok(Err(omegon_traits::ManagedServiceCallError::Cancelled)) => {
+            unavailable("memory:status_cancelled")
+        }
+        Ok(Err(omegon_traits::ManagedServiceCallError::Panicked)) => {
+            unavailable("memory:status_panicked")
+        }
+        Ok(Err(omegon_traits::ManagedServiceCallError::Operation(_))) => {
+            unavailable("memory:status_operation_failed")
+        }
+        Err(_) => {
+            cancellation.cancel();
+            unavailable("memory:status_timeout")
+        }
+    };
+    update_managed_memory_status(snapshot);
+}
+
+fn memory_status_cache_key(path: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canonical
+        .ancestors()
+        .find(|ancestor| ancestor.join(".git").exists() || ancestor.join(".jj").exists())
+        .unwrap_or(canonical.as_path())
+        .to_path_buf()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -405,105 +568,9 @@ impl HarnessStatus {
 }
 
 impl HarnessStatus {
-    fn project_root_from_cwd(cwd: &std::path::Path) -> std::path::PathBuf {
-        let output = std::process::Command::new("git")
-            .current_dir(cwd)
-            .args(["rev-parse", "--show-toplevel"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output();
-        if let Ok(output) = output
-            && output.status.success()
-        {
-            let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !root.is_empty() {
-                return std::path::PathBuf::from(root);
-            }
-        }
-        cwd.to_path_buf()
-    }
-
-    fn probe_memory_status(cwd: &std::path::Path) -> Option<MemoryStatus> {
-        let project_root = Self::project_root_from_cwd(cwd);
-        let ai = project_root.join("ai").join("memory");
-        let omegon = project_root.join(".omegon").join("memory");
-        let memory_dir = if omegon.exists() && !ai.exists() {
-            omegon
-        } else {
-            ai
-        };
-        let db_path = memory_dir.join("facts.db");
-        if !db_path.exists() {
-            return None;
-        }
-
-        let conn = Connection::open(db_path).ok()?;
-        conn.busy_timeout(std::time::Duration::from_secs(5)).ok()?;
-
-        let total_facts: usize = conn
-            .query_row("SELECT COUNT(*) FROM facts", [], |r| r.get(0))
-            .ok()?;
-        let active_facts: usize = conn
-            .query_row(
-                "SELECT COUNT(*) FROM facts WHERE status = 'active'",
-                [],
-                |r| r.get(0),
-            )
-            .ok()?;
-        let project_facts: usize = conn
-            .query_row(
-                "SELECT COUNT(*) FROM facts WHERE status = 'active' AND layer = 'project'",
-                [],
-                |r| r.get(0),
-            )
-            .ok()?;
-        let persona_facts: usize = conn
-            .query_row(
-                "SELECT COUNT(*) FROM facts WHERE status = 'active' AND layer = 'persona'",
-                [],
-                |r| r.get(0),
-            )
-            .ok()?;
-        let working_facts: usize = conn
-            .query_row(
-                "SELECT COUNT(*) FROM facts WHERE status = 'active' AND layer = 'working'",
-                [],
-                |r| r.get(0),
-            )
-            .ok()?;
-        let episodes: usize = conn
-            .query_row("SELECT COUNT(*) FROM episodes", [], |r| r.get(0))
-            .ok()?;
-        let edges: usize = conn
-            .query_row(
-                "SELECT COUNT(*) FROM edges WHERE status = 'active'",
-                [],
-                |r| r.get(0),
-            )
-            .ok()?;
-        let active_persona_mind: Option<String> = conn
-            .query_row(
-                "SELECT mind FROM facts WHERE status = 'active' AND layer = 'persona' GROUP BY mind ORDER BY COUNT(*) DESC, mind ASC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .ok();
-
-        Some(MemoryStatus {
-            total_facts,
-            active_facts,
-            project_facts,
-            persona_facts,
-            working_facts,
-            episodes,
-            edges,
-            active_persona_mind,
-        })
-    }
-
     /// Probe the system and assemble the initial HarnessStatus at startup.
     /// This is the bootstrap probe — runs once before the event loop.
-    pub fn assemble() -> Self {
+    pub fn assemble(project_root: &Path) -> Self {
         let mut status = Self::default();
 
         if let Ok(output) = std::process::Command::new("git")
@@ -530,11 +597,10 @@ impl HarnessStatus {
         // Probe Ollama (common local inference backend)
         status.inference_backends = probe_inference_backends();
 
-        if let Ok(cwd) = std::env::current_dir()
-            && let Some(memory) = Self::probe_memory_status(&cwd)
-        {
-            status.update_memory(memory);
-        }
+        let memory = managed_memory_status_snapshot_for(project_root);
+        status.memory = memory.status;
+        status.memory_available = memory.available;
+        status.memory_warning = memory.warning;
 
         status
     }
@@ -546,9 +612,10 @@ impl HarnessStatus {
         // Populate installed plugins from the bus's registered features
         // (Feature trait doesn't expose identity, so we use tool counts as signal)
         let tool_defs = bus.tool_definitions();
-        self.memory_available = tool_defs
-            .iter()
-            .any(|t| t.name == crate::tool_registry::memory::MEMORY_QUERY);
+        let memory = managed_memory_status_snapshot_for(bus.project_root());
+        self.memory = memory.status;
+        self.memory_available = memory.available;
+        self.memory_warning = memory.warning;
         self.cleave_available = tool_defs
             .iter()
             .any(|t| t.name == crate::tool_registry::cleave::CLEAVE_ASSESS)
@@ -1224,14 +1291,178 @@ mod tests {
 
     #[test]
     fn assemble_runs_without_panic() {
-        let status = HarnessStatus::assemble();
+        let status = HarnessStatus::assemble(std::path::Path::new("."));
         assert_eq!(status.context_class, "Compact");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn assemble_runs_inside_tokio_runtime() {
-        let status = HarnessStatus::assemble();
+        let status = HarnessStatus::assemble(std::path::Path::new("."));
         assert_eq!(status.context_class, "Compact");
+    }
+
+    #[test]
+    fn managed_memory_status_isolated_between_runtime_roots() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        update_managed_memory_status(ManagedMemoryStatusSnapshot {
+            project_root: first.path().to_path_buf(),
+            available: true,
+            warning: None,
+            status: MemoryStatus {
+                total_facts: 11,
+                ..MemoryStatus::default()
+            },
+            ..ManagedMemoryStatusSnapshot::default()
+        });
+        update_managed_memory_status(ManagedMemoryStatusSnapshot {
+            project_root: second.path().to_path_buf(),
+            available: true,
+            warning: None,
+            status: MemoryStatus {
+                total_facts: 22,
+                ..MemoryStatus::default()
+            },
+            ..ManagedMemoryStatusSnapshot::default()
+        });
+        assert_eq!(HarnessStatus::assemble(first.path()).memory.total_facts, 11);
+        assert_eq!(
+            HarnessStatus::assemble(second.path()).memory.total_facts,
+            22
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_refresh_queries_boot_captured_generation_before_cache_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let other_directory = tempfile::tempdir().unwrap();
+        let mut bus = crate::bus::EventBus::new();
+        bus.set_project_root(directory.path().to_path_buf());
+        bus.register(Box::new(crate::memory_service::MemoryDeclarationFeature));
+        let candidate =
+            crate::memory_service::start_candidate(crate::memory_service::MemoryWorkerConfig {
+                project_memory_root: directory.path().to_path_buf(),
+                project_db_path: directory.path().join("facts.db"),
+                project_jsonl_path: directory.path().join("facts.jsonl"),
+                global_db_path: None,
+                vault: None,
+                startup_sync_enabled: false,
+            })
+            .await
+            .unwrap();
+        bus.stage_managed_generation("memory", candidate).unwrap();
+        bus.try_finalize_managed().await.unwrap();
+        let handle = bus
+            .managed_service::<crate::memory_service::MemoryService>(
+                &crate::memory_service::memory_capability_id(),
+                &crate::memory_service::memory_interface_id(),
+            )
+            .unwrap()
+            .unwrap();
+        handle
+            .invoke(crate::memory_service::MemoryRequestV1::ApplyMutation {
+                scope: crate::memory_service::MemoryScopeV1::Project,
+                operation_id: "status-refresh-store".into(),
+                mutation: omegon_memory::MemoryMutation::StoreFact {
+                    request: omegon_memory::StoreFact {
+                        mind: omegon_memory::sqlite::PRIMENSUS_MIND.into(),
+                        content: "Refresh exact managed generation".into(),
+                        section: omegon_memory::Section::Architecture,
+                        decay_profile: omegon_memory::DecayProfileName::Standard,
+                        source: None,
+                    },
+                },
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        update_managed_memory_status(ManagedMemoryStatusSnapshot {
+            project_root: directory.path().to_path_buf(),
+            available: true,
+            warning: None,
+            status: MemoryStatus::default(),
+            ..ManagedMemoryStatusSnapshot::default()
+        });
+        update_managed_memory_status(ManagedMemoryStatusSnapshot {
+            project_root: other_directory.path().to_path_buf(),
+            available: true,
+            warning: None,
+            status: MemoryStatus {
+                total_facts: 22,
+                ..MemoryStatus::default()
+            },
+            ..ManagedMemoryStatusSnapshot::default()
+        });
+
+        let binding = crate::memory_service::MemoryBinding::default();
+        binding.capture(&bus).unwrap();
+        refresh_managed_memory_status(&binding, directory.path()).await;
+        assert_eq!(
+            HarnessStatus::assemble(directory.path()).memory.total_facts,
+            1
+        );
+        let managed = managed_memory_status_snapshot_for(directory.path());
+        assert_eq!(
+            managed.authority,
+            crate::memory_service::ManagedMemoryAuthorityV1::LocalIndexOnly
+        );
+        assert_eq!(
+            managed.index_state,
+            crate::memory_service::ManagedMemoryIndexStateV1::Fresh
+        );
+        assert!(
+            bus.shutdown_managed_services()
+                .await
+                .all_resources_settled()
+        );
+        refresh_managed_memory_status(&binding, directory.path()).await;
+        let failed = managed_memory_status_snapshot_for(directory.path());
+        assert!(!failed.available);
+        assert_eq!(failed.status.total_facts, 0);
+        assert_eq!(
+            failed.warning.as_deref(),
+            Some("memory:status_generation_retired")
+        );
+        let isolated = managed_memory_status_snapshot_for(other_directory.path());
+        assert!(isolated.available);
+        assert_eq!(isolated.status.total_facts, 22);
+    }
+
+    #[tokio::test]
+    async fn absent_binding_replaces_available_status_with_typed_unavailability() {
+        let directory = tempfile::tempdir().unwrap();
+        update_managed_memory_status(ManagedMemoryStatusSnapshot {
+            project_root: directory.path().to_path_buf(),
+            available: true,
+            warning: None,
+            status: MemoryStatus {
+                total_facts: 7,
+                ..MemoryStatus::default()
+            },
+            ..ManagedMemoryStatusSnapshot::default()
+        });
+
+        refresh_managed_memory_status(&Default::default(), directory.path()).await;
+
+        let snapshot = managed_memory_status_snapshot_for(directory.path());
+        assert!(!snapshot.available);
+        assert_eq!(snapshot.status.total_facts, 0);
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("memory:status_binding_unavailable")
+        );
+    }
+
+    #[test]
+    fn managed_memory_status_refresh_has_no_ambient_registry_lookup() {
+        let source = include_str!("status.rs");
+        let refresh = source
+            .split("pub(crate) async fn refresh_managed_memory_status(")
+            .nth(1)
+            .and_then(|tail| tail.split("fn memory_status_cache_key").next())
+            .expect("managed memory status refresh source");
+        assert!(refresh.contains("binding.invoke("));
+        assert!(!refresh.contains("managed_service::<"));
     }
 
     #[test]

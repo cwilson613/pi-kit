@@ -89,6 +89,17 @@ pub(crate) struct SessionReplacementOutcome {
     pub(crate) projection: ProjectionBinding,
 }
 
+pub(crate) fn emit_canonical_session_start(
+    bus: &mut crate::bus::EventBus,
+    cwd: &Path,
+    outcome: &SessionReplacementOutcome,
+) {
+    bus.emit(&omegon_traits::BusEvent::SessionStart {
+        session_id: outcome.session_id.clone(),
+        cwd: cwd.to_path_buf(),
+    });
+}
+
 pub(crate) struct HostSessionPublication<'a> {
     pub(crate) supervisor: &'a mut InteractiveRuntimeSupervisor,
     pub(crate) conversation: &'a mut ConversationState,
@@ -318,6 +329,19 @@ mod source_guards {
             .expect("ACP publishes semantic history");
         assert!(identity_publish < replay_publish);
         assert!(!acp.contains("target_conversation.replay_messages"));
+        assert_eq!(
+            acp.matches("emit_canonical_session_start").count(),
+            2,
+            "ACP resume and new-session replacement each publish once"
+        );
+        assert_eq!(
+            include_str!("control_runtime.rs")
+                .matches("emit_canonical_session_start")
+                .count(),
+            2,
+            "interactive sessionless and authority-backed replacement each publish once"
+        );
+        assert!(include_str!("main.rs").contains("emit_canonical_session_start"));
     }
 }
 
@@ -326,6 +350,45 @@ mod tests {
     use super::*;
     use crate::runtime_prompt::{ControlSurface, QueueMode, RuntimeActor};
     use std::{thread, time::Duration};
+
+    struct SessionObserver(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl omegon_traits::Feature for SessionObserver {
+        fn name(&self) -> &str {
+            "session-observer"
+        }
+
+        fn on_event(&mut self, event: &omegon_traits::BusEvent) -> Vec<omegon_traits::BusRequest> {
+            if let omegon_traits::BusEvent::SessionStart { session_id, .. } = event {
+                self.0.lock().unwrap().push(session_id.clone());
+            }
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn canonical_replacement_event_reaches_retained_features_once() {
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(SessionObserver(observed.clone())));
+        bus.finalize();
+        let outcome = SessionReplacementOutcome {
+            kind: SessionReplacementKind::New,
+            previous_session_id: "old-session".into(),
+            session_id: "new-session".into(),
+            host_generation: 2,
+            projection: ProjectionBinding {
+                session_id: "new-session".into(),
+                stream_id: Uuid::nil(),
+                last_sequence: 0,
+                last_event_id: Uuid::nil(),
+                context_revision: 0,
+            },
+        };
+        emit_canonical_session_start(&mut bus, Path::new("."), &outcome);
+        assert_eq!(observed.lock().unwrap().as_slice(), ["new-session"]);
+    }
 
     const WORKSPACE: &str = "workspace-1";
     const GENERATION: &str = "generation-1";

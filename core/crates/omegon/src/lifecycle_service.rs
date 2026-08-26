@@ -127,8 +127,10 @@ pub(crate) async fn invoke_repository_once(
     let candidate = start_candidate(repo_path).await?;
     bus.stage_managed_generation("lifecycle", candidate)?;
     if let Err(error) = bus.try_finalize_managed().await {
-        let _ = bus.shutdown_managed_services().await;
-        return Err(error);
+        return match bus.shutdown_managed_services_strict().await {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(error.context(format!("managed cleanup also failed: {cleanup:#}"))),
+        };
     }
 
     let result = async {
@@ -139,13 +141,15 @@ pub(crate) async fn invoke_repository_once(
             .map_err(|error| anyhow::anyhow!("managed lifecycle invocation failed: {error:?}"))
     }
     .await;
-    let shutdown = bus.shutdown_managed_services().await;
-    if !shutdown.all_resources_settled() {
-        return Err(anyhow::anyhow!(
-            "managed lifecycle observation cleanup did not settle: {shutdown:?}"
-        ));
+    let cleanup = bus.shutdown_managed_services_strict().await;
+    match (result, cleanup) {
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("managed cleanup also failed: {cleanup:#}")))
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Ok(response), Ok(())) => Ok(response),
     }
-    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

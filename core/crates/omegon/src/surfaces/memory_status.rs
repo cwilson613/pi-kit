@@ -1,8 +1,7 @@
 //! Read-only memory/federation status projection.
 //!
-//! The projection treats Git-tracked JSONL facts as the durable cross-checkout
-//! substrate. Local databases and vector stores are rebuildable indexes over
-//! those files, not coordination state.
+//! Durable-memory state comes from the latest managed-service snapshot. This
+//! projection never probes the live store or its synchronization files.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,23 +75,24 @@ pub fn project_memory_federation_status(cwd: impl AsRef<Path>) -> MemoryFederati
     let federation = federation_signals(root);
     signals.extend(federation.iter().cloned());
 
-    let tracked_jsonl = git
-        .as_ref()
-        .map(|summary| tracked_jsonl_facts(&summary.root))
-        .unwrap_or_default();
-    let memory_authority = if !tracked_jsonl.is_empty() {
-        signals.push("memory:git-jsonl".to_string());
-        MemoryAuthority::GitJsonl {
-            paths: tracked_jsonl,
+    let managed = crate::status::managed_memory_status_snapshot_for(root);
+    let memory_authority = match managed.authority {
+        crate::memory_service::ManagedMemoryAuthorityV1::GitJsonl { paths } => {
+            signals.push("memory:managed".to_string());
+            MemoryAuthority::GitJsonl { paths }
         }
-    } else if has_local_memory_index(root) {
-        signals.push("memory:local-index".to_string());
-        MemoryAuthority::LocalIndexOnly
-    } else {
-        MemoryAuthority::None
+        crate::memory_service::ManagedMemoryAuthorityV1::LocalIndexOnly => {
+            signals.push("memory:managed".to_string());
+            MemoryAuthority::LocalIndexOnly
+        }
+        crate::memory_service::ManagedMemoryAuthorityV1::None => MemoryAuthority::None,
     };
-
-    let memory_index = memory_index_state(root, &memory_authority);
+    let memory_index = match managed.index_state {
+        crate::memory_service::ManagedMemoryIndexStateV1::Fresh => MemoryIndexState::Fresh,
+        crate::memory_service::ManagedMemoryIndexStateV1::Stale => MemoryIndexState::Stale,
+        crate::memory_service::ManagedMemoryIndexStateV1::Missing => MemoryIndexState::Missing,
+        crate::memory_service::ManagedMemoryIndexStateV1::Unknown => MemoryIndexState::Unknown,
+    };
     let mode = if !federation.is_empty() {
         CoordinationMode::Federation
     } else if !lifecycle.is_empty() {
@@ -173,68 +173,6 @@ fn federation_signals(root: &Path) -> Vec<String> {
     signals
 }
 
-fn tracked_jsonl_facts(root: &Path) -> Vec<PathBuf> {
-    let Some(output) = git_output(root, &["ls-files", "*.jsonl"]) else {
-        return Vec::new();
-    };
-    output
-        .lines()
-        .filter(|line| is_memory_fact_jsonl(line))
-        .map(PathBuf::from)
-        .collect()
-}
-
-fn is_memory_fact_jsonl(path: &str) -> bool {
-    let normalized = path.replace('\\', "/");
-    normalized.ends_with("facts.jsonl")
-        && (normalized.starts_with("ai/memory/")
-            || normalized.starts_with(".omegon/memory/")
-            || normalized.starts_with("memory/")
-            || normalized.starts_with("docs/memory/"))
-}
-
-fn has_local_memory_index(root: &Path) -> bool {
-    [
-        root.join("ai/memory/facts.db"),
-        root.join(".omegon/memory/facts.db"),
-        root.join("memory/facts.db"),
-    ]
-    .iter()
-    .any(|path| path.exists())
-}
-
-fn memory_index_state(root: &Path, authority: &MemoryAuthority) -> MemoryIndexState {
-    let index_paths = [
-        root.join("ai/memory/facts.db"),
-        root.join(".omegon/memory/facts.db"),
-        root.join("memory/facts.db"),
-    ];
-    let Some(index_meta) = index_paths
-        .iter()
-        .find_map(|path| path.metadata().ok().and_then(|meta| meta.modified().ok()))
-    else {
-        return match authority {
-            MemoryAuthority::GitJsonl { .. } => MemoryIndexState::Missing,
-            MemoryAuthority::LocalIndexOnly => MemoryIndexState::Unknown,
-            MemoryAuthority::None => MemoryIndexState::Missing,
-        };
-    };
-
-    let MemoryAuthority::GitJsonl { paths } = authority else {
-        return MemoryIndexState::Unknown;
-    };
-
-    let newest_fact = paths
-        .iter()
-        .filter_map(|path| root.join(path).metadata().ok()?.modified().ok())
-        .max();
-    match newest_fact {
-        Some(newest) if newest > index_meta => MemoryIndexState::Stale,
-        Some(_) => MemoryIndexState::Fresh,
-        None => MemoryIndexState::Unknown,
-    }
-}
-
 fn recommendation(
     mode: CoordinationMode,
     authority: &MemoryAuthority,
@@ -299,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn tracked_jsonl_facts_are_authoritative_memory() {
+    fn tracked_jsonl_is_not_probed_as_live_memory_authority() {
         let dir = init_repo();
         fs::create_dir_all(dir.path().join("ai/memory")).expect("memory dir");
         fs::write(
@@ -314,33 +252,20 @@ mod tests {
         let projection = project_memory_federation_status(dir.path());
 
         assert_eq!(projection.mode, CoordinationMode::LifecycleProject);
-        assert_eq!(
-            projection.memory_authority,
-            MemoryAuthority::GitJsonl {
-                paths: vec![PathBuf::from("ai/memory/facts.jsonl")]
-            }
-        );
+        assert_eq!(projection.memory_authority, MemoryAuthority::None);
         assert_eq!(projection.memory_index, MemoryIndexState::Missing);
-        assert!(
-            projection
-                .recommended_behavior
-                .contains("Git-tracked JSONL")
-        );
+        assert!(!projection.signals.contains(&"memory:git-jsonl".into()));
     }
 
     #[test]
-    fn local_index_without_jsonl_is_not_checkout_authority() {
+    fn local_index_file_is_not_probed_as_live_memory_state() {
         let dir = init_repo();
         fs::create_dir_all(dir.path().join(".omegon/memory")).expect("memory dir");
         fs::write(dir.path().join(".omegon/memory/facts.db"), "index").expect("index");
 
         let projection = project_memory_federation_status(dir.path());
 
-        assert_eq!(projection.memory_authority, MemoryAuthority::LocalIndexOnly);
-        assert!(
-            projection
-                .recommended_behavior
-                .contains("local memory index")
-        );
+        assert_eq!(projection.memory_authority, MemoryAuthority::None);
+        assert_eq!(projection.memory_index, MemoryIndexState::Missing);
     }
 }

@@ -21,6 +21,7 @@ pub async fn run_backend_tests(b: &dyn MemoryBackend) {
     test_fts_search(b).await;
     test_vector_store_and_search(b).await;
     test_vector_dimension_mismatch(b).await;
+    test_vector_search_cancellation(b).await;
     test_edges(b).await;
     test_episodes(b).await;
     test_jsonl_round_trip(b).await;
@@ -30,10 +31,96 @@ pub async fn run_backend_tests(b: &dyn MemoryBackend) {
     test_duplicate_target_and_nonfinite_embedding_rejected(b).await;
     test_jsonl_batch_rollback(b).await;
     test_jsonl_import_advances_lamport_clock(b).await;
+    test_page_snapshot_excludes_late_old_version_import(b).await;
     test_jsonl_rejects_unpersistable_lamport_version(b).await;
     test_deterministic_fts_fallback(b).await;
     test_episode_metadata_round_trip(b).await;
     test_stats(b).await;
+    test_inventory_stats(b).await;
+}
+
+async fn test_page_snapshot_excludes_late_old_version_import(b: &dyn MemoryBackend) {
+    for content in ["page alpha", "page beta", "page gamma"] {
+        b.store_fact(store_request("page-snapshot", content))
+            .await
+            .unwrap();
+    }
+    let first = b
+        .list_facts_page("page-snapshot", FactFilter::default(), 1, None)
+        .await
+        .unwrap();
+    assert_eq!(first.total, 3);
+    let late = JsonlRecord::Fact(JsonlFact {
+        id: "late-old-version-import".into(),
+        mind: "page-snapshot".into(),
+        content: "late import with old Lamport version".into(),
+        section: Section::Architecture,
+        status: FactStatus::Active,
+        created_at: "2020-01-01T00:00:00Z".into(),
+        source: Some("test".into()),
+        content_hash: None,
+        supersedes: None,
+        version: 1,
+        decay_profile: DecayProfileName::Standard,
+        persona_id: None,
+        layer: "project".into(),
+        tags: vec![],
+    });
+    b.apply_mutation(
+        "page-snapshot-late-import",
+        MemoryMutation::ImportJsonl {
+            jsonl: serde_json::to_string(&late).unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let mut ids = first
+        .facts
+        .into_iter()
+        .map(|fact| fact.id)
+        .collect::<std::collections::HashSet<_>>();
+    let mut cursor = first.next_cursor;
+    while let Some(next) = cursor {
+        let page = b
+            .list_facts_page("page-snapshot", FactFilter::default(), 1, Some(&next))
+            .await
+            .unwrap();
+        assert_eq!(page.total, 3);
+        for fact in page.facts {
+            assert!(ids.insert(fact.id), "page snapshot returned a duplicate");
+        }
+        cursor = page.next_cursor;
+    }
+    assert_eq!(ids.len(), 3);
+    assert!(!ids.contains("late-old-version-import"));
+}
+
+async fn test_vector_search_cancellation(b: &dyn MemoryBackend) {
+    for index in 0..16 {
+        let fact = b
+            .store_fact(store_request(
+                "vector-cancellation",
+                &format!("vector candidate {index}"),
+            ))
+            .await
+            .unwrap();
+        b.store_embedding(&fact.fact.id, "test-model", &[1.0, index as f32, 0.0, 0.0])
+            .await
+            .unwrap();
+    }
+    let checks = std::sync::atomic::AtomicUsize::new(0);
+    let cancelled = || checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 3;
+    let result = b
+        .vector_search_cancellable(
+            "vector-cancellation",
+            &[1.0, 1.0, 0.0, 0.0],
+            16,
+            -1.0,
+            &cancelled,
+        )
+        .await;
+    assert!(matches!(result, Err(MemoryError::Cancelled)));
 }
 
 async fn test_store_and_get(b: &dyn MemoryBackend) {
@@ -705,6 +792,21 @@ async fn test_stats(b: &dyn MemoryBackend) {
     assert!(stats.total_facts >= stats.active_facts);
 }
 
+async fn test_inventory_stats(b: &dyn MemoryBackend) {
+    let inventory = b.inventory_stats().await.unwrap();
+    assert!(inventory.total_facts >= inventory.active_facts);
+    assert_eq!(
+        inventory.active_facts,
+        inventory.project_facts + inventory.persona_facts + inventory.working_facts
+    );
+    assert!(
+        inventory.active_facts > 0,
+        "shared fixture has active facts"
+    );
+    assert!(inventory.episodes > 0, "shared fixture has episodes");
+    assert!(inventory.edges > 0, "shared fixture has edges");
+}
+
 fn store_request(mind: &str, content: &str) -> StoreFact {
     StoreFact {
         mind: mind.into(),
@@ -731,13 +833,12 @@ async fn test_mutation_replay_and_conflict(b: &dyn MemoryBackend) {
     assert!(replay.replayed);
     assert_eq!(first.effect, replay.effect);
 
-    let fact_id = match first.effect {
-        MemoryMutationEffect::FactStored { fact_id, .. } => fact_id,
+    let fact_id = match &first.effect {
+        MemoryMutationEffect::FactStored { fact_id, .. } => fact_id.clone(),
         other => panic!("unexpected store effect: {other:?}"),
     };
     let fact = b.get_fact(&fact_id).await.unwrap().unwrap();
     assert_eq!(fact.reinforcement_count, 1, "replay must not reinforce");
-
     let conflict = b
         .apply_mutation(
             "operation-replay-store",
@@ -747,6 +848,29 @@ async fn test_mutation_replay_and_conflict(b: &dyn MemoryBackend) {
         )
         .await;
     assert!(matches!(conflict, Err(MemoryError::OperationConflict(_))));
+
+    let bound = b
+        .apply_mutation_bound(
+            "operation-bound-store",
+            "tool-payload-a",
+            MemoryMutation::StoreFact {
+                request: store_request("operation-bound", "Bound payload exactly once"),
+            },
+        )
+        .await
+        .unwrap();
+    let receipt = b
+        .mutation_receipt("operation-bound-store", "tool-payload-a")
+        .await
+        .unwrap()
+        .expect("bound receipt");
+    assert_eq!(bound.effect, receipt.effect);
+    assert!(receipt.replayed);
+    assert!(matches!(
+        b.mutation_receipt("operation-bound-store", "tool-payload-b")
+            .await,
+        Err(MemoryError::OperationConflict(_))
+    ));
 
     let jsonl = serde_json::to_string(&JsonlRecord::Fact(JsonlFact {
         id: "operation-jsonl-fact".into(),
@@ -817,6 +941,17 @@ async fn test_mutation_replay_and_conflict(b: &dyn MemoryBackend) {
         .unwrap();
     assert!(superseded_replay.replayed);
     assert_eq!(superseded.effect, superseded_replay.effect);
+    let archived_store_replay = b
+        .apply_mutation(
+            "operation-replay-store",
+            MemoryMutation::StoreFact {
+                request: store_request("operation-replay", "Store exactly once"),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(archived_store_replay.replayed);
+    assert_eq!(first.effect, archived_store_replay.effect);
     let replacement_id = match &superseded.effect {
         MemoryMutationEffect::FactSuperseded { replacement, .. } => replacement.id.clone(),
         other => panic!("unexpected supersede effect: {other:?}"),
@@ -849,9 +984,10 @@ async fn test_mutation_replay_and_conflict(b: &dyn MemoryBackend) {
         .await
         .unwrap();
     let edge_mutation = MemoryMutation::CreateEdge {
+        mind: "operation-edge".into(),
         request: CreateEdge {
             source_id: source.fact.id.clone(),
-            target_id: target.fact.id,
+            target_id: target.fact.id.clone(),
             relation: "depends_on".into(),
             description: None,
         },
@@ -871,6 +1007,49 @@ async fn test_mutation_replay_and_conflict(b: &dyn MemoryBackend) {
             .unwrap()
             .len(),
         1
+    );
+    let other = b
+        .store_fact(store_request("other-mind", "Cross-mind endpoint"))
+        .await
+        .unwrap();
+    let cross_mind = b
+        .apply_mutation(
+            "operation-cross-mind-edge",
+            MemoryMutation::CreateEdge {
+                mind: "operation-edge".into(),
+                request: CreateEdge {
+                    source_id: source.fact.id.clone(),
+                    target_id: other.fact.id,
+                    relation: "invalid".into(),
+                    description: None,
+                },
+            },
+        )
+        .await;
+    assert!(matches!(cross_mind, Err(MemoryError::InvalidMutation(_))));
+    let active_edge_count = b.inventory_stats().await.unwrap().edges;
+    b.apply_mutation(
+        "operation-edge-archive-target",
+        MemoryMutation::TransitionFacts {
+            facts: vec![FactPrecondition {
+                id: target.fact.id,
+                expected_version: target.fact.version,
+            }],
+            status: FactStatus::Archived,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        b.get_edges("operation-edge", &source.fact.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        b.inventory_stats().await.unwrap().edges,
+        active_edge_count,
+        "inventory compatibility counts edges even after an endpoint is archived"
     );
 
     let episode_mutation = MemoryMutation::StoreEpisode {

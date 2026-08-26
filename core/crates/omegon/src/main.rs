@@ -2119,6 +2119,7 @@ struct DefaultSession {
     conversation: conversation::ConversationState,
     work_snapshot: Option<Arc<styrene_work_runtime::WorkSnapshot>>,
     behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
+    memory_binding: crate::memory_service::MemoryBinding,
 }
 
 /// Type alias for the shared session state. `None` means a turn is in progress.
@@ -2145,6 +2146,21 @@ fn spawn_tracked_daemon_turn<Fut>(
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
     tasks.push(task_spawn::spawn_best_effort_result(name, future));
+}
+
+fn combine_owned_cleanup<T>(
+    primary: anyhow::Result<T>,
+    cleanup: anyhow::Result<()>,
+    owner: &str,
+) -> anyhow::Result<T> {
+    match (primary, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(cleanup)) => Err(cleanup.context(format!("{owner} cleanup failed"))),
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(primary), Err(cleanup)) => {
+            Err(primary.context(format!("{owner} cleanup also failed: {cleanup:#}")))
+        }
+    }
 }
 
 async fn replace_daemon_session(
@@ -2211,10 +2227,17 @@ async fn replace_daemon_session(
             },
         )
     }) {
-        Ok(outcome) => omegon_traits::ControlOutputResponse {
-            accepted: true,
-            output: Some(format!("Active session is now {}", outcome.session_id)),
-        },
+        Ok(outcome) => {
+            session_replacement::emit_canonical_session_start(
+                &mut state.bus,
+                &runtime.cwd,
+                &outcome,
+            );
+            omegon_traits::ControlOutputResponse {
+                accepted: true,
+                output: Some(format!("Active session is now {}", outcome.session_id)),
+            }
+        }
         Err(error) => omegon_traits::ControlOutputResponse {
             accepted: false,
             output: Some(format!("Session was not replaced: {error}")),
@@ -2321,16 +2344,12 @@ async fn run_daemon_turn(
             }
         };
 
-        // Take ownership — Mutex held only for the .take() call.
-        let state = {
-            let mut guard = runtime.state.lock().await;
-            guard
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("daemon session state unavailable"))
-        };
-        let mut state = match state {
-            Ok(state) => state,
-            Err(error) => {
+        // Retain the only EventBus in shared state while the cancellable turn
+        // runs. Aborting this future drops the guard but never drops the bus.
+        let mut state_guard = runtime.state.lock().await;
+        let state = match state_guard.as_mut() {
+            Some(state) => state,
+            None => {
                 runtime
                     .supervisor
                     .lock()
@@ -2340,11 +2359,12 @@ async fn run_daemon_turn(
                         outcome: RuntimeTurnOutcome::Failed,
                         reason_code: "session_state_unavailable".into(),
                     })?;
-                return Err(error);
+                return Err(anyhow::anyhow!("daemon session state unavailable"));
             }
         };
         config.compatibility.work_snapshot = state.work_snapshot.clone();
         config.compatibility.behavior_policy = state.behavior_policy.clone();
+        config.compatibility.memory_binding = state.memory_binding.clone();
 
         state.conversation.push_user(active.prompt.text);
 
@@ -2369,11 +2389,7 @@ async fn run_daemon_turn(
             guard.take();
         }
 
-        // Always return state, even on error.
-        {
-            let mut guard = runtime.state.lock().await;
-            *guard = Some(state);
-        }
+        drop(state_guard);
 
         let terminal_intent = if turn_cancel.is_cancelled() {
             LoopTerminalIntent {
@@ -2759,7 +2775,10 @@ async fn run_embedded_command(
         .and_then(|settings| crate::permissions::styrene_role_from_settings(&settings))
         .unwrap_or(styrene_rbac::Role::Admin);
     let web_authority =
-        load_web_authority_config(web_trusted_proxy_identity, require_web_proxy_identity)?;
+        match load_web_authority_config(web_trusted_proxy_identity, require_web_proxy_identity) {
+            Ok(authority) => authority,
+            Err(error) => return setup::finalize_agent_error(&mut agent, error).await,
+        };
     let state = web::WebState::new(agent.dashboard_handles.clone(), events_tx.clone())
         .with_workspace_root(cwd.clone())
         .with_session_view_binding(agent.session_view_binding.clone())
@@ -2778,8 +2797,18 @@ async fn run_embedded_command(
         active_connections: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         shutdown: global_cancel.clone(),
     };
-    let (startup, mut cmd_rx) =
-        web::start_server_with_options(state, control_port, strict_port, acp_state, tls).await?;
+    let (startup, mut cmd_rx) = match web::start_server_with_options(
+        state,
+        control_port,
+        strict_port,
+        acp_state,
+        tls,
+    )
+    .await
+    {
+        Ok(started) => started,
+        Err(error) => return setup::finalize_agent_error(&mut agent, error).await,
+    };
 
     let event = EmbeddedStartupEvent {
         event_type: "omegon.startup",
@@ -2793,7 +2822,11 @@ async fn run_embedded_command(
         auth_mode: startup.auth_mode,
         auth_source: startup.auth_source,
     };
-    println!("{}", serde_json::to_string(&event)?);
+    let event_json = match serde_json::to_string(&event) {
+        Ok(event_json) => event_json,
+        Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+    };
+    println!("{event_json}");
 
     let cancel_ctrl_c = global_cancel.clone();
     tokio::spawn(async move {
@@ -2836,7 +2869,7 @@ async fn run_embedded_command(
 
     let voice_status =
         std::sync::Arc::new(std::sync::Mutex::new(agent.initial_harness_status.clone()));
-    for rx in agent.voice_notification_receivers {
+    for rx in std::mem::take(&mut agent.voice_notification_receivers) {
         crate::extensions::voice_bridge::start_voice_bridge_with_status(
             rx,
             vox_daemon_events.clone(),
@@ -2873,16 +2906,23 @@ async fn run_embedded_command(
     // Wrap the pre-existing agent state as the default session. This
     // preserves single-session backward compatibility — events without
     // identity metadata route here (web API, anonymous vox messages).
-    let daemon_session_snapshot = session::sessions_dir(&agent.cwd)
-        .ok_or_else(|| anyhow::anyhow!("cannot determine daemon session directory"))?
-        .join(format!("{}.json", agent.session_id));
-    let composition_generation_id = agent
-        .bus
-        .composition_generation_id()
-        .ok_or_else(|| anyhow::anyhow!("daemon composition was not published"))?
-        .as_str()
-        .to_string();
-    let daemon_authority = session_authority::SessionAuthority::open(
+    let Some(daemon_sessions_dir) = session::sessions_dir(&agent.cwd) else {
+        return setup::finalize_agent_error(
+            &mut agent,
+            anyhow::anyhow!("cannot determine daemon session directory"),
+        )
+        .await;
+    };
+    let daemon_session_snapshot = daemon_sessions_dir.join(format!("{}.json", agent.session_id));
+    let Some(composition_generation_id) = agent.bus.composition_generation_id() else {
+        return setup::finalize_agent_error(
+            &mut agent,
+            anyhow::anyhow!("daemon composition was not published"),
+        )
+        .await;
+    };
+    let composition_generation_id = composition_generation_id.as_str().to_string();
+    let daemon_authority = match session_authority::SessionAuthority::open(
         &daemon_session_snapshot,
         &agent.session_id,
         &agent.workspace_state.lease.workspace_id,
@@ -2892,7 +2932,14 @@ async fn run_embedded_command(
             ingress: "daemon".into(),
         },
         &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    )?;
+    ) {
+        Ok(authority) => authority,
+        Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+    };
+    let daemon_supervisor = match InteractiveRuntimeSupervisor::with_authority(daemon_authority) {
+        Ok(supervisor) => supervisor,
+        Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+    };
     let default_session = DefaultSessionRuntime {
         state: Arc::new(tokio::sync::Mutex::new(Some(DefaultSession {
             bus: agent.bus,
@@ -2900,10 +2947,9 @@ async fn run_embedded_command(
             conversation: agent.conversation,
             work_snapshot: agent.work_snapshot,
             behavior_policy: agent.behavior_policy,
+            memory_binding: agent.memory_binding,
         }))),
-        supervisor: Arc::new(tokio::sync::Mutex::new(
-            InteractiveRuntimeSupervisor::with_authority(daemon_authority)?,
-        )),
+        supervisor: Arc::new(tokio::sync::Mutex::new(daemon_supervisor)),
         active_cancel: Arc::new(std::sync::Mutex::new(None)),
         session_id: Arc::new(std::sync::Mutex::new(agent_session_id.clone())),
         resume_info: Arc::new(std::sync::Mutex::new(agent.resume_info)),
@@ -3641,7 +3687,7 @@ async fn run_embedded_command(
     }
 
     // Save the default session (if not currently in a turn).
-    {
+    let managed_cleanup = {
         let mut guard = default_session.state.lock().await;
         if let Some(ref mut sess) = *guard {
             let session_id = default_session
@@ -3654,15 +3700,18 @@ async fn run_embedded_command(
             {
                 tracing::debug!("Daemon session save failed (non-fatal): {e}");
             }
-            let _ = sess.bus.shutdown_managed_services().await;
+            sess.bus.shutdown_managed_services_strict().await
         } else {
             tracing::warn!("daemon session state was lost while joining in-flight turns");
             agent.runtime_ownership.retain_for_stale_pruning();
+            Err(anyhow::anyhow!(
+                "daemon session state unavailable during shutdown"
+            ))
         }
-    }
+    };
     mcp_supervisors.shutdown().await;
     extension_supervisors.shutdown().await;
-    Ok(())
+    managed_cleanup
 }
 
 fn anthropic_subscription_automation_warning(cli: &Cli) -> Option<String> {
@@ -3848,8 +3897,7 @@ async fn run_cleave_command(
     {
         Ok(result) => result,
         Err(error) => {
-            let _ = agent_setup.bus.shutdown_managed_services().await;
-            return Err(error);
+            return setup::finalize_agent_error(&mut agent_setup, error).await;
         }
     };
 
@@ -3910,7 +3958,7 @@ async fn run_cleave_command(
         }
     }
 
-    let _ = agent_setup.bus.shutdown_managed_services().await;
+    agent_setup.bus.shutdown_managed_services_strict().await?;
 
     // Exit with error if any children did not complete successfully.
     if failed > 0 || upstream_exhausted > 0 || unfinished > 0 {
@@ -4172,9 +4220,6 @@ async fn run_embedding_command(action: &EmbeddingAction) -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            let backend: std::sync::Arc<dyn omegon_memory::MemoryBackend> =
-                std::sync::Arc::new(omegon_memory::SqliteBackend::open(&db_path)?);
-
             let embed_svc: Box<dyn omegon_memory::EmbeddingService> = {
                 let profile = crate::settings::Profile::load(&cwd);
                 let ollama = crate::embedding::OllamaEmbeddingService::from_config(
@@ -4205,45 +4250,164 @@ async fn run_embedding_command(action: &EmbeddingAction) -> anyhow::Result<()> {
                 }
             };
 
-            let mind = "default";
-            let facts = backend
-                .list_facts(mind, omegon_memory::FactFilter::default())
+            setup::ensure_project_memory_store_ready(&db_path)?;
+            let mut bus = crate::bus::EventBus::new();
+            bus.register(Box::new(crate::memory_service::MemoryDeclarationFeature));
+            let candidate =
+                crate::memory_service::start_candidate(crate::memory_service::MemoryWorkerConfig {
+                    project_memory_root: memory_dir.clone(),
+                    project_db_path: db_path,
+                    project_jsonl_path: memory_dir.join("facts.jsonl"),
+                    global_db_path: None,
+                    vault: None,
+                    startup_sync_enabled: false,
+                })
                 .await?;
-            let _meta = backend.embedding_metadata(mind).await?;
-
-            let mut backfilled = 0u32;
-            let total = facts.len();
-            println!(
-                "Backfilling embeddings for {total} facts using {}...",
-                embed_svc.model_name()
-            );
-
-            for (i, fact) in facts.iter().enumerate() {
-                match embed_svc.embed(&fact.content).await {
-                    Ok(embedding) => {
-                        if let Err(e) = backend
-                            .store_embedding(&fact.id, embed_svc.model_name(), &embedding)
-                            .await
-                        {
-                            tracing::warn!(fact_id = %fact.id, error = %e, "failed to store embedding");
-                        } else {
-                            backfilled += 1;
+            bus.stage_managed_generation("memory", candidate)?;
+            let operation = async {
+                bus.try_finalize_managed().await?;
+                let handle = bus
+                    .managed_service::<crate::memory_service::MemoryService>(
+                        &crate::memory_service::memory_capability_id(),
+                        &crate::memory_service::memory_interface_id(),
+                    )?
+                    .ok_or_else(|| anyhow::anyhow!("managed memory backfill service unavailable"))?;
+                let mind = omegon_memory::sqlite::PRIMENSUS_MIND;
+                let cancellation = tokio_util::sync::CancellationToken::new();
+                let mut cursor = None;
+                let mut total = None;
+                let mut attempted = 0usize;
+                let mut succeeded = 0usize;
+                let mut failed = 0usize;
+                let mut skipped = 0usize;
+                let mut failures = Vec::new();
+                loop {
+                    let response = handle
+                        .invoke(crate::memory_service::MemoryRequestV1::ListFactsPage {
+                            scope: crate::memory_service::MemoryScopeV1::Project,
+                            mind: mind.into(),
+                            filter: omegon_memory::FactFilter::default(),
+                            limit: 500,
+                            cursor,
+                            cancellation: cancellation.clone(),
+                        })
+                        .await;
+                    let response = match response {
+                        Ok(response) => response,
+                        Err(error) => {
+                            failed += 1;
+                            failures.push(format!("fact page failed: {error:?}"));
+                            break;
+                        }
+                    };
+                    let crate::memory_service::MemoryPayloadV1::FactPage(page) = response.payload
+                    else {
+                        failed += 1;
+                        failures.push(
+                            "managed memory backfill returned an unexpected fact page".into(),
+                        );
+                        break;
+                    };
+                    let inventory_total = *total.get_or_insert(page.total);
+                    if attempted == 0 {
+                        println!(
+                            "Backfilling embeddings for {inventory_total} facts using {}...",
+                            embed_svc.model_name()
+                        );
+                    }
+                    for fact in page.facts {
+                        attempted += 1;
+                        match embed_svc.embed(&fact.content).await {
+                            Ok(embedding) => {
+                                match handle
+                                    .invoke(
+                                        crate::memory_service::MemoryRequestV1::ApplyMutation {
+                                            scope: crate::memory_service::MemoryScopeV1::Project,
+                                            operation_id: format!(
+                                                "embedding-backfill:{}:{}:{}",
+                                                embed_svc.model_name(),
+                                                fact.id,
+                                                fact.version
+                                            ),
+                                            mutation: omegon_memory::MemoryMutation::StoreEmbedding {
+                                                fact: omegon_memory::FactPrecondition {
+                                                    id: fact.id.clone(),
+                                                    expected_version: fact.version,
+                                                },
+                                                model_name: embed_svc.model_name().into(),
+                                                embedding,
+                                            },
+                                            cancellation: cancellation.clone(),
+                                        },
+                                    )
+                                    .await
+                                {
+                                    Ok(crate::memory_service::MemoryResponseV1 {
+                                        payload: crate::memory_service::MemoryPayloadV1::Mutation(
+                                            outcome,
+                                        ),
+                                        ..
+                                    }) if outcome.replayed => skipped += 1,
+                                    Ok(crate::memory_service::MemoryResponseV1 {
+                                        payload: crate::memory_service::MemoryPayloadV1::Mutation(
+                                            _,
+                                        ),
+                                        ..
+                                    }) => succeeded += 1,
+                                    Ok(_) => {
+                                        failed += 1;
+                                        if failures.len() < 10 {
+                                            failures.push(format!(
+                                                "{}: unexpected embedding mutation response",
+                                                fact.id
+                                            ));
+                                        }
+                                    }
+                                    Err(error) => {
+                                        failed += 1;
+                                        if failures.len() < 10 {
+                                            failures.push(format!(
+                                                "{}: embedding store failed: {error:?}",
+                                                fact.id
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                failed += 1;
+                                if failures.len() < 10 {
+                                    failures.push(format!(
+                                        "{}: embedding generation failed: {error}",
+                                        fact.id
+                                    ));
+                                }
+                            }
+                        }
+                        if attempted.is_multiple_of(50) || attempted == inventory_total {
+                            println!(
+                                "  [{attempted}/{inventory_total}] {succeeded} embedded, {skipped} skipped, {failed} failed"
+                            );
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(fact_id = %fact.id, error = %e, "failed to generate embedding");
+                    cursor = page.next_cursor;
+                    if cursor.is_none() {
+                        break;
                     }
                 }
-
-                if (i + 1) % 50 == 0 || i + 1 == total {
-                    println!("  [{}/{}] {backfilled} embedded", i + 1, total);
+                let summary = format!(
+                    "attempted={attempted}, succeeded={succeeded}, failed={failed}, skipped={skipped}, total={}",
+                    total.unwrap_or_default()
+                );
+                if failed > 0 {
+                    anyhow::bail!("embedding backfill incomplete ({summary}): {}", failures.join("; "));
                 }
+                println!("\nBackfill complete: {summary}");
+                Ok::<(), anyhow::Error>(())
             }
-
-            println!(
-                "\nBackfill complete: {backfilled}/{total} facts embedded with {}",
-                embed_svc.model_name()
-            );
+            .await;
+            let cleanup = bus.shutdown_managed_services_strict().await;
+            combine_owned_cleanup(operation, cleanup, "managed memory backfill")?;
         }
     }
     Ok(())
@@ -4806,7 +4970,9 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 route_controller.clone(),
             ),
         ));
-        agent.bus.try_finalize()?;
+        if let Err(error) = agent.bus.try_finalize() {
+            return setup::finalize_agent_error(&mut agent, error).await;
+        }
     }
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(16);
 
@@ -5112,17 +5278,28 @@ fn build_tui_secret_readiness_snapshot(
     let session_authority = if cli.no_session {
         None
     } else {
-        let session_snapshot = session::sessions_dir(&agent.cwd)
-            .ok_or_else(|| anyhow::anyhow!("cannot determine interactive session directory"))?
-            .join(format!("{}.json", agent.session_id));
-        let composition_generation_id = agent
-            .bus
-            .composition_generation_id()
-            .ok_or_else(|| anyhow::anyhow!("interactive composition was not published"))?
-            .as_str()
-            .to_string();
+        let session_snapshot = match session::sessions_dir(&agent.cwd) {
+            Some(directory) => directory.join(format!("{}.json", agent.session_id)),
+            None => {
+                return setup::finalize_agent_error(
+                    &mut agent,
+                    anyhow::anyhow!("cannot determine interactive session directory"),
+                )
+                .await;
+            }
+        };
+        let composition_generation_id = match agent.bus.composition_generation_id() {
+            Some(generation_id) => generation_id.as_str().to_string(),
+            None => {
+                return setup::finalize_agent_error(
+                    &mut agent,
+                    anyhow::anyhow!("interactive composition was not published"),
+                )
+                .await;
+            }
+        };
         let recorded_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let mut authority = session_authority::SessionAuthority::open(
+        let mut authority = match session_authority::SessionAuthority::open(
             &session_snapshot,
             &agent.session_id,
             &agent.workspace_state.lease.workspace_id,
@@ -5132,18 +5309,30 @@ fn build_tui_secret_readiness_snapshot(
                 ingress: "interactive".into(),
             },
             &recorded_at,
-        )?;
-        if let Some(metadata) = agent.resume_meta.as_ref() {
-            session::import_legacy_resume(
+        ) {
+            Ok(authority) => authority,
+            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+        };
+        if let Some(metadata) = agent.resume_meta.as_ref()
+            && let Err(error) = session::import_legacy_resume(
                 &mut authority,
                 &agent.conversation,
                 metadata,
                 &session_snapshot,
                 &agent.cwd,
                 &recorded_at,
-            )?;
+            ) {
+            return setup::finalize_agent_error(&mut agent, error).await;
         }
         Some(authority)
+    };
+
+    let mut runtime = match session_authority {
+        Some(authority) => match InteractiveRuntimeSupervisor::with_authority(authority) {
+            Ok(runtime) => runtime,
+            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+        },
+        None => InteractiveRuntimeSupervisor::default(),
     };
 
     let (mut agent, mut runtime_state) = split_interactive_agent(agent);
@@ -5156,11 +5345,7 @@ fn build_tui_secret_readiness_snapshot(
         route_controller: route_controller.clone(),
     };
 
-    runtime_state.bus.emit(&omegon_traits::BusEvent::SessionStart {
-        cwd: agent.cwd.clone(),
-        session_id: agent.session_id.clone(),
-    });
-    // Drain any requests from session_start handlers
+    // Drain requests produced by setup's canonical SessionStart emission.
     for request in runtime_state.bus.drain_requests() {
         match request {
             omegon_traits::BusRequest::Notify { message, .. } => {
@@ -5171,10 +5356,6 @@ fn build_tui_secret_readiness_snapshot(
         }
     }
 
-    let mut runtime = match session_authority {
-        Some(authority) => InteractiveRuntimeSupervisor::with_authority(authority)?,
-        None => InteractiveRuntimeSupervisor::default(),
-    };
     let mut deferred_commands = VecDeque::new();
     let mut restart_request: Option<(std::path::PathBuf, Vec<String>)> = None;
     let runtime_lifecycle_handles = agent.dashboard_handles.clone();
@@ -6129,7 +6310,7 @@ fn build_tui_secret_readiness_snapshot(
                             s.provider_connected = false;
                         }
                     }
-                    let mut status = crate::status::HarnessStatus::assemble();
+                    let mut status = crate::status::HarnessStatus::assemble(runtime_state.bus.project_root());
                     status.update_runtime_posture(
                         omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
                         omegon_traits::OmegonAutonomyMode::OperatorDriven,
@@ -6683,7 +6864,12 @@ fn build_tui_secret_readiness_snapshot(
                         }
                         omegon_traits::BusRequest::RefreshHarnessStatus => {
                             // Re-assemble and broadcast
-                            let mut status = crate::status::HarnessStatus::assemble();
+                            crate::status::refresh_managed_memory_status(
+                                &runtime_state.memory_binding,
+                                runtime_state.bus.project_root(),
+                            )
+                            .await;
+                            let mut status = crate::status::HarnessStatus::assemble(runtime_state.bus.project_root());
                             status.update_runtime_posture(
                                 omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
                                 omegon_traits::OmegonAutonomyMode::OperatorDriven,
@@ -6704,7 +6890,7 @@ fn build_tui_secret_readiness_snapshot(
                             source,
                         } => {
                             let args =
-                                serde_json::json!({ "content": content, "section": section });
+                                serde_json::json!({ "content": content, "section": section, "source": source });
                             let call_id = format!("auto-ingest:{}", uuid::Uuid::new_v4());
                             let scope = crate::invocation_service::InvocationScope {
                                 principal: "kernel:auto-ingest".into(),
@@ -6909,22 +7095,24 @@ fn build_tui_secret_readiness_snapshot(
                                                 ),
                                             }
                                         }
-                                        match tokio::time::timeout(
+                                        let managed_cleanup = match tokio::time::timeout(
                                             std::time::Duration::from_secs(2),
                                             shared_state.lock(),
                                         )
                                         .await
                                         {
-                                            Ok(mut state) => {
-                                                let _ = state.bus.shutdown_managed_services().await;
-                                            }
-                                            Err(_) => tracing::error!(
+                                            Ok(mut state) => state
+                                                .bus
+                                                .shutdown_managed_services_strict()
+                                                .await,
+                                            Err(_) => Err(anyhow::anyhow!(
                                                 "managed interactive shutdown could not recover retained state"
-                                            ),
-                                        }
+                                            )),
+                                        };
                                         mcp_supervisors.shutdown().await;
                                         extension_supervisors.shutdown().await;
                                         bridge.read().await.shutdown().await;
+                                        managed_cleanup?;
                                         runtime.submit_loop_terminal_intent(
                                             terminal_intent.take().expect("terminal-loss intent"),
                                         )?;
@@ -7278,10 +7466,11 @@ fn build_tui_secret_readiness_snapshot(
         }
     }
 
-    let _ = runtime_state.bus.shutdown_managed_services().await;
+    let managed_cleanup = runtime_state.bus.shutdown_managed_services_strict().await;
     bridge.read().await.shutdown().await;
     mcp_supervisors.shutdown().await;
     extension_supervisors.shutdown().await;
+    managed_cleanup?;
 
     if let Some((binary, args)) = restart_request {
         let args = restart_args_for_session(args, &agent.session_id);
@@ -7747,6 +7936,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     );
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
     loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
+    loop_config.compatibility.memory_binding = agent.memory_binding.clone();
 
     let resolved_provider = providers::resolve_execution_provider(&cli.model).await;
     tracing::info!(
@@ -7760,12 +7950,23 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
             .as_deref()
             .is_some_and(|provider| provider != "anthropic")
     {
-        anyhow::bail!(
-            "provider resolution invariant violated: requested anthropic model '{requested_model}' resolved to '{}'; this should never fall through to another provider",
-            resolved_provider.as_deref().unwrap_or("none")
-        );
+        return setup::finalize_agent_error(
+            &mut agent,
+            anyhow::anyhow!(
+                "provider resolution invariant violated: requested anthropic model '{requested_model}' resolved to '{}'; this should never fall through to another provider",
+                resolved_provider.as_deref().unwrap_or("none")
+            ),
+        )
+        .await;
     }
-    let bridge = bootstrap::resolve_bridge_or_bail(&cli.model).await?;
+    let bridge = match bootstrap::resolve_bridge_or_bail(&cli.model).await {
+        Ok(bridge) => bridge,
+        Err(error) => return setup::finalize_agent_error(&mut agent, error).await,
+    };
+    let mut mcp_supervisors =
+        plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors));
+    let mut extension_supervisors =
+        extensions::ExtensionSupervisorSet::new(std::mem::take(&mut agent.extension_supervisors));
 
     let (events_tx, mut events_rx) = bootstrap::wire_event_channel(&agent, 256);
 
@@ -7931,7 +8132,9 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
         }
     }
 
-    let _ = agent.bus.shutdown_managed_services().await;
+    let managed_cleanup = agent.bus.shutdown_managed_services_strict().await;
+    mcp_supervisors.shutdown().await;
+    extension_supervisors.shutdown().await;
 
     // Graceful bridge shutdown.
     //
@@ -7942,24 +8145,31 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     // usage JSON emission and breaks benchmark artifact finalization.
     bridge.shutdown().await;
 
-    if let Some(path) = usage_json.as_ref() {
+    let usage_result = if let Some(path) = usage_json.as_ref() {
         let summary = benchmark_summary
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or_default();
-        write_benchmark_usage_json(path, &summary, "completed")?;
-    }
+        write_benchmark_usage_json(path, &summary, "completed")
+    } else {
+        Ok(())
+    };
 
     drop(events_tx);
-    match tokio::time::timeout(std::time::Duration::from_millis(250), event_task).await {
+    let mut event_task = event_task;
+    match tokio::time::timeout(std::time::Duration::from_millis(250), &mut event_task).await {
         Ok(_) => {}
         Err(_) => {
             tracing::warn!(
                 "headless benchmark event-printer task did not drain before shutdown; aborting it"
             );
+            event_task.abort();
+            let _ = event_task.await;
         }
     }
 
+    let result = combine_owned_cleanup(result, usage_result, "benchmark usage");
+    let result = combine_owned_cleanup(result, managed_cleanup, "managed service");
     match &result {
         Ok(()) => {
             if let Some(last_text) = agent.conversation.last_assistant_text() {
@@ -8080,9 +8290,15 @@ async fn maybe_run_injected_cleave_smoke_child(
                     .map(|s| s.thinking.as_str().to_string())
                     .unwrap_or_else(|| status.thinking_level.clone()),
             });
-            let report = serde_json::to_string(&report)?;
+            let report = match serde_json::to_string(&report) {
+                Ok(report) => report,
+                Err(error) => {
+                    drop(settings_guard);
+                    return setup::finalize_agent_error(&mut agent, error.into()).await;
+                }
+            };
             drop(settings_guard);
-            let _ = agent.bus.shutdown_managed_services().await;
+            agent.bus.shutdown_managed_services_strict().await?;
             println!("{report}");
             Ok(true)
         }
@@ -9645,16 +9861,23 @@ async fn run_bounded_task(
         omegon_traits::OmegonRuntimeProfile::PrimaryInteractive,
         omegon_traits::OmegonAutonomyMode::OperatorDriven,
     );
-    let session_snapshot = session::sessions_dir(&agent.cwd)
-        .ok_or_else(|| anyhow::anyhow!("cannot determine bounded session directory"))?
-        .join(format!("{}.json", agent.session_id));
-    let composition_generation_id = agent
-        .bus
-        .composition_generation_id()
-        .ok_or_else(|| anyhow::anyhow!("bounded composition was not published"))?
-        .as_str()
-        .to_string();
-    let authority = session_authority::SessionAuthority::open(
+    let Some(session_directory) = session::sessions_dir(&agent.cwd) else {
+        return setup::finalize_agent_error(
+            &mut agent,
+            anyhow::anyhow!("cannot determine bounded session directory"),
+        )
+        .await;
+    };
+    let session_snapshot = session_directory.join(format!("{}.json", agent.session_id));
+    let Some(composition_generation_id) = agent.bus.composition_generation_id() else {
+        return setup::finalize_agent_error(
+            &mut agent,
+            anyhow::anyhow!("bounded composition was not published"),
+        )
+        .await;
+    };
+    let composition_generation_id = composition_generation_id.as_str().to_string();
+    let authority = match session_authority::SessionAuthority::open(
         &session_snapshot,
         &agent.session_id,
         &agent.workspace_state.lease.workspace_id,
@@ -9664,21 +9887,44 @@ async fn run_bounded_task(
             ingress: "bounded".into(),
         },
         &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    )?;
-    let mut supervisor = InteractiveRuntimeSupervisor::with_authority(authority)?;
-    let prompt_id = supervisor.admit_prompt(
+    ) {
+        Ok(authority) => authority,
+        Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+    };
+    let mut supervisor = match InteractiveRuntimeSupervisor::with_authority(authority) {
+        Ok(supervisor) => supervisor,
+        Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+    };
+    let prompt_id = match supervisor.admit_prompt(
         prompt_text,
         Vec::new(),
         RuntimeActor::from_submission("bounded-runner".into(), "bounded"),
         ControlSurface::Bounded,
         operator_commands::PromptMetadata::default(),
         Some(QueueMode::UntilReady),
-    )?;
-    let active = supervisor
-        .start_next_turn()?
-        .ok_or_else(|| anyhow::anyhow!("bounded session did not promote its admitted prompt"))?;
+    ) {
+        Ok(prompt_id) => prompt_id,
+        Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+    };
+    let active = match supervisor.start_next_turn() {
+        Ok(Some(active)) => active,
+        Ok(None) => {
+            return setup::finalize_agent_error(
+                &mut agent,
+                anyhow::anyhow!("bounded session did not promote its admitted prompt"),
+            )
+            .await;
+        }
+        Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+    };
     if active.prompt.id != prompt_id {
-        anyhow::bail!("bounded session recovered older queued work before the requested prompt");
+        return setup::finalize_agent_error(
+            &mut agent,
+            anyhow::anyhow!(
+                "bounded session recovered older queued work before the requested prompt"
+            ),
+        )
+        .await;
     }
     let active_identity = supervisor
         .current_identity()
@@ -9708,6 +9954,7 @@ async fn run_bounded_task(
     loop_config.compatibility.invocation_scope.authority = invocation_authority;
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
     loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
+    loop_config.compatibility.memory_binding = agent.memory_binding.clone();
 
     let bridge =
         match bootstrap::resolve_bridge_or_bail_with_secrets(model, Some(agent.secrets.as_ref()))
@@ -9715,14 +9962,24 @@ async fn run_bounded_task(
         {
             Ok(bridge) => bridge,
             Err(error) => {
-                supervisor.submit_loop_terminal_intent(LoopTerminalIntent {
+                let terminal_result = supervisor.submit_loop_terminal_intent(LoopTerminalIntent {
                     identity: active_identity,
                     outcome: RuntimeTurnOutcome::Failed,
                     reason_code: "provider_unavailable".into(),
-                })?;
-                return Err(error);
+                });
+                let error = match terminal_result {
+                    Ok(_) => error,
+                    Err(terminal_error) => error.context(format!(
+                        "failed to persist provider-unavailable terminal intent: {terminal_error}"
+                    )),
+                };
+                return setup::finalize_agent_error(&mut agent, error).await;
             }
         };
+    let mut mcp_supervisors =
+        plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors));
+    let mut extension_supervisors =
+        extensions::ExtensionSupervisorSet::new(std::mem::take(&mut agent.extension_supervisors));
     let (events_tx, mut events_rx) = bootstrap::wire_event_channel(&agent, 256);
 
     // Token tracking
@@ -9783,14 +10040,19 @@ async fn run_bounded_task(
 
     timeout_handle.abort();
     let timed_out = cancel.is_cancelled();
-    if timed_out {
-        supervisor.request_durable_interrupt_with_reason(
+    if timed_out
+        && let Err(error) = supervisor.request_durable_interrupt_with_reason(
             active_identity,
             RuntimeActor::from_submission("bounded-timeout".into(), "bounded"),
             ControlSurface::Bounded,
             session_authority::InterruptionKind::Revoke,
             "wall_clock_timeout",
-        )?;
+        )
+    {
+        bridge.shutdown().await;
+        mcp_supervisors.shutdown().await;
+        extension_supervisors.shutdown().await;
+        return setup::finalize_agent_error(&mut agent, error.into()).await;
     }
     let terminal_intent = if timed_out {
         LoopTerminalIntent {
@@ -9801,11 +10063,28 @@ async fn run_bounded_task(
     } else {
         terminal.into_intent(active_identity)
     };
-    let _ = agent.bus.shutdown_managed_services().await;
+    let managed_cleanup = agent.bus.shutdown_managed_services_strict().await;
+    mcp_supervisors.shutdown().await;
+    extension_supervisors.shutdown().await;
     bridge.shutdown().await;
     drop(events_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), event_task).await;
-    supervisor.submit_loop_terminal_intent(terminal_intent)?;
+    let mut event_task = event_task;
+    if tokio::time::timeout(std::time::Duration::from_millis(500), &mut event_task)
+        .await
+        .is_err()
+    {
+        event_task.abort();
+        let _ = event_task.await;
+    }
+    let authority_cleanup = supervisor.submit_loop_terminal_intent(terminal_intent);
+    let cleanup_error = match (managed_cleanup.err(), authority_cleanup.err()) {
+        (None, None) => None,
+        (Some(error), None) => Some(format!("managed service cleanup failed: {error:#}")),
+        (None, Some(error)) => Some(format!("session authority cleanup failed: {error:#}")),
+        (Some(managed), Some(authority)) => Some(format!(
+            "managed service cleanup failed: {managed:#}; session authority cleanup failed: {authority:#}"
+        )),
+    };
 
     let elapsed = start.elapsed().as_secs_f64();
     let turns = turn_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -9830,7 +10109,7 @@ async fn run_bounded_task(
         .unwrap_or_default()
         .to_string();
 
-    let (status, error, exit_code) = if timed_out {
+    let (status, mut error, mut exit_code) = if timed_out {
         (
             "timeout".to_string(),
             Some("wall-clock timeout".to_string()),
@@ -9848,6 +10127,15 @@ async fn run_bounded_task(
             }
         }
     };
+    if let Some(cleanup_error) = cleanup_error {
+        error = Some(match error {
+            Some(primary) => format!("{primary}; {cleanup_error}"),
+            None => cleanup_error,
+        });
+        if exit_code == 0 {
+            exit_code = 1;
+        }
+    }
 
     let result = RunResult {
         status,
@@ -10275,6 +10563,7 @@ mod tests {
             inference_runtime: setup.inference_runtime,
             work_snapshot: setup.work_snapshot,
             behavior_policy: setup.behavior_policy,
+            memory_binding: setup.memory_binding,
         }));
         let retained = state.clone();
 
@@ -10675,6 +10964,7 @@ mod tests {
             inference_runtime: setup.inference_runtime,
             work_snapshot: setup.work_snapshot,
             behavior_policy: setup.behavior_policy,
+            memory_binding: setup.memory_binding,
         }));
         let _guard = state.lock().await;
 
@@ -10905,10 +11195,17 @@ mod tests {
             ),
         ];
         for (host, start, end) in hosts {
+            let host_source = section(main, start, end);
             assert!(
-                section(main, start, end).contains("shutdown_managed_services().await"),
-                "{host} must explicitly shut down its EventBus"
+                host_source.contains("shutdown_managed_services_strict().await"),
+                "{host} must strictly shut down its EventBus"
             );
+            if matches!(host, "daemon" | "headless" | "bounded") {
+                assert!(
+                    host_source.contains("finalize_agent_error"),
+                    "{host} post-setup error exits must use the awaited managed finalizer"
+                );
+            }
         }
         let daemon = section(
             main,
@@ -10919,23 +11216,34 @@ mod tests {
             .find("for mut task in daemon_turn_tasks")
             .expect("daemon turn join");
         let managed_shutdown = daemon
-            .find("sess.bus.shutdown_managed_services().await")
+            .find("sess.bus.shutdown_managed_services_strict().await")
             .expect("daemon managed shutdown");
         assert!(
             daemon.contains("spawn_tracked_daemon_turn("),
             "daemon turns must be retained for authoritative joining"
         );
         assert!(turn_join < managed_shutdown);
+        let interactive = section(
+            main,
+            "async fn run_interactive_command(",
+            "fn mark_interactive_session_busy",
+        );
         assert!(
-            section(
-                main,
-                "async fn run_interactive_command(",
-                "fn mark_interactive_session_busy"
-            )
-            .matches("shutdown_managed_services().await")
-            .count()
+            interactive
+                .matches("shutdown_managed_services_strict")
+                .count()
                 >= 2,
             "interactive normal and retained-state exits must shut down managed services"
+        );
+        assert!(interactive.contains("finalize_agent_error"));
+        let authority_setup = interactive
+            .split("let session_authority = if cli.no_session")
+            .nth(1)
+            .and_then(|tail| tail.split("let (mut agent, mut runtime_state)").next())
+            .expect("interactive session authority setup source");
+        assert!(
+            authority_setup.matches("finalize_agent_error").count() >= 4,
+            "every fallible session-authority step must finalize the live AgentSetup"
         );
 
         let acp = include_str!("acp_worker.rs");
@@ -10945,8 +11253,8 @@ mod tests {
                 "async fn worker_loop(",
                 "async fn handle_control_request("
             )
-            .contains("bus.shutdown_managed_services().await"),
-            "ACP worker tail must shut down its EventBus"
+            .contains("bus.shutdown_managed_services_strict().await"),
+            "ACP worker tail must strictly shut down its EventBus"
         );
         let sentry = include_str!("sentry/executor.rs");
         assert!(
@@ -10954,8 +11262,21 @@ mod tests {
                 .split("async fn run_agent_task(")
                 .nth(1)
                 .expect("Sentry agent task source")
-                .contains("shutdown_managed_services().await"),
-            "Sentry task host must shut down its EventBus"
+                .contains("shutdown_managed_services_strict().await"),
+            "Sentry task host must strictly shut down its EventBus"
+        );
+        assert!(
+            sentry.contains("finalize_agent_error(&mut agent, error).await"),
+            "Sentry provider failure must settle managed services before return"
+        );
+        assert!(acp.contains("finalize_acp_setup_error"));
+        assert!(
+            acp.matches("finalize_acp_setup_error(").count() >= 6,
+            "ACP post-setup failures must use the strict managed finalizer"
+        );
+        assert!(
+            acp.contains("bus.shutdown_managed_services_strict().await"),
+            "ACP normal exit must await managed settlement"
         );
     }
 
@@ -11283,6 +11604,48 @@ mod tests {
             runtime.supervisor.lock().await.active_turn().unwrap().phase,
             ActiveTurnPhase::Cancelling { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn daemon_turn_abort_retains_bus_and_settles_memory_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("facts.db");
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(crate::memory_service::MemoryDeclarationFeature));
+        let candidate =
+            crate::memory_service::start_candidate(crate::memory_service::MemoryWorkerConfig {
+                project_memory_root: directory.path().to_path_buf(),
+                project_db_path: database.clone(),
+                project_jsonl_path: directory.path().join("facts.jsonl"),
+                global_db_path: None,
+                vault: None,
+                startup_sync_enabled: false,
+            })
+            .await
+            .unwrap();
+        bus.stage_managed_generation("memory", candidate).unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        let state = Arc::new(tokio::sync::Mutex::new(Some(bus)));
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+        let task_state = state.clone();
+        let task = tokio::spawn(async move {
+            let mut guard = task_state.lock().await;
+            assert!(guard.as_mut().is_some());
+            let _ = locked_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        locked_rx.await.unwrap();
+        task.abort();
+        let _ = task.await;
+
+        let mut guard = state.lock().await;
+        let retained = guard.as_mut().expect("abort must retain the only EventBus");
+        retained.shutdown_managed_services_strict().await.unwrap();
+        drop(guard);
+        let reopened = omegon_memory::SqliteBackend::open(&database).unwrap();
+        drop(reopened);
+        std::fs::remove_file(database).unwrap();
     }
 
     #[test]
@@ -12335,6 +12698,7 @@ mod tests {
             ),
             work_snapshot: None,
             behavior_policy: None,
+            memory_binding: Default::default(),
         };
         runtime_state
             .conversation
@@ -12389,6 +12753,7 @@ mod tests {
                 .snapshot(),
             ),
             behavior_policy: None,
+            memory_binding: Default::default(),
         };
         runtime_state
             .conversation

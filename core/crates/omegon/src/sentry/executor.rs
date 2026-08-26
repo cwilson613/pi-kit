@@ -564,8 +564,10 @@ async fn advance_design_node(cwd: &Path, node_id: &str, task_id: &str) -> anyhow
     let candidate = crate::lifecycle_service::start_candidate(repo_root).await?;
     bus.stage_managed_generation("lifecycle", candidate)?;
     if let Err(error) = bus.try_finalize_managed().await {
-        let _ = bus.shutdown_managed_services().await;
-        return Err(error);
+        return match bus.shutdown_managed_services_strict().await {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(error.context(format!("managed cleanup also failed: {cleanup:#}"))),
+        };
     }
 
     let result = async {
@@ -631,12 +633,16 @@ async fn advance_design_node(cwd: &Path, node_id: &str, task_id: &str) -> anyhow
     .await;
 
     let shutdown = bus.shutdown_managed_services().await;
-    if !shutdown.all_resources_settled() {
-        return Err(anyhow::anyhow!(
-            "managed lifecycle hook cleanup did not settle: {shutdown:?}"
-        ));
+    let cleanup = (!shutdown.all_resources_settled())
+        .then(|| anyhow::anyhow!("managed lifecycle hook cleanup did not settle: {shutdown:?}"));
+    match (result, cleanup) {
+        (Err(error), Some(cleanup)) => {
+            Err(error.context(format!("managed cleanup also failed: {cleanup:#}")))
+        }
+        (Err(error), None) => Err(error),
+        (Ok(_), Some(cleanup)) => Err(cleanup),
+        (Ok(()), None) => Ok(()),
     }
-    result
 }
 
 fn record_budget_usage(state_db: &StateDb, task_id: &str, tokens: u64) {
@@ -982,8 +988,17 @@ async fn run_agent_task(
     );
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
     loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
+    loop_config.compatibility.memory_binding = agent.memory_binding.clone();
 
-    let bridge = crate::bootstrap::resolve_bridge_or_bail(model).await?;
+    let bridge = match crate::bootstrap::resolve_bridge_or_bail(model).await {
+        Ok(bridge) => bridge,
+        Err(error) => return crate::setup::finalize_agent_error(&mut agent, error).await,
+    };
+    let mut mcp_supervisors =
+        crate::plugins::mcp::McpSupervisorSet::new(std::mem::take(&mut agent.mcp_supervisors));
+    let mut extension_supervisors = crate::extensions::ExtensionSupervisorSet::new(std::mem::take(
+        &mut agent.extension_supervisors,
+    ));
     let (events_tx, mut events_rx) = crate::bootstrap::wire_event_channel(&agent, 256);
 
     let total_in = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1047,10 +1062,20 @@ async fn run_agent_task(
 
     timeout_handle.abort();
     global_handle.abort();
-    let _ = agent.bus.shutdown_managed_services().await;
+    let cleanup_result = agent.bus.shutdown_managed_services_strict().await;
+    mcp_supervisors.shutdown().await;
+    extension_supervisors.shutdown().await;
     bridge.shutdown().await;
     drop(events_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), event_task).await;
+    let mut event_task = event_task;
+    if tokio::time::timeout(std::time::Duration::from_millis(500), &mut event_task)
+        .await
+        .is_err()
+    {
+        event_task.abort();
+        let _ = event_task.await;
+    }
+    cleanup_result?;
 
     let session_id = format!("sentry-{}", Utc::now().format("%Y%m%dT%H%M%S"));
     if let Err(e) = crate::session::save_session(&agent.conversation, cwd, None) {

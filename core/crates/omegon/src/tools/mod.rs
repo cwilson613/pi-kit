@@ -253,7 +253,15 @@ pub fn lifecycle_plan_projection(repo_root: &Path) -> LifecyclePlanProjection {
     LifecyclePlanProjection {
         entries,
         tasks,
-        task_identity_findings,
+        task_identity_findings: task_identity_findings
+            .into_iter()
+            .map(|finding| crate::surfaces::plans::TaskIdentityFinding {
+                line: finding.line,
+                task_id: finding.task_id,
+                stable_id: finding.stable_id,
+                message: finding.message,
+            })
+            .collect(),
     }
 }
 

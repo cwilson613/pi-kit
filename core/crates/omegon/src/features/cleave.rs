@@ -24,7 +24,6 @@ use crate::autonomy::{
 };
 use crate::child_agent::ChildTaskItem;
 use crate::surfaces::conversation::ToolActivitySummary;
-use crate::surfaces::operations::OperationWorkbenchProjection;
 
 use omegon_traits::{
     AgentEvent, BusEvent, BusRequest, BusRequestSink, CommandDefinition, CommandResult,
@@ -2416,7 +2415,7 @@ impl Feature for CleaveFeature {
                         }
                         return CommandResult::Display(lines.join("\n"));
                     }
-                    let projection = OperationWorkbenchProjection::from_cleave(&prog);
+                    let projection = crate::features::operation_surface::project_cleave(&prog);
                     let mut lines = Vec::new();
                     if prog.active {
                         lines.push(format!(

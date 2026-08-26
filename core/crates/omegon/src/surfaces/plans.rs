@@ -14,7 +14,15 @@ use crate::conversation::{
 pub struct LifecyclePlanProjection {
     pub entries: Vec<PlanRegistryEntry>,
     pub tasks: Vec<PlanItemProjection>,
-    pub task_identity_findings: Vec<crate::lifecycle::spec::TaskStableIdFinding>,
+    pub task_identity_findings: Vec<TaskIdentityFinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TaskIdentityFinding {
+    pub line: usize,
+    pub task_id: String,
+    pub stable_id: String,
+    pub message: String,
 }
 
 pub(crate) fn from_work_snapshot(snapshot: &WorkSnapshot) -> LifecyclePlanProjection {
@@ -137,7 +145,7 @@ fn openspec_entry(item: &WorkItem) -> Option<PlanRegistryEntry> {
     })
 }
 
-fn openspec_findings(item: &WorkItem) -> Vec<crate::lifecycle::spec::TaskStableIdFinding> {
+fn openspec_findings(item: &WorkItem) -> Vec<TaskIdentityFinding> {
     item.facets
         .openspec
         .as_ref()
@@ -146,7 +154,7 @@ fn openspec_findings(item: &WorkItem) -> Vec<crate::lifecycle::spec::TaskStableI
         .into_iter()
         .flatten()
         .filter_map(|finding| {
-            Some(crate::lifecycle::spec::TaskStableIdFinding {
+            Some(TaskIdentityFinding {
                 line: finding.get("line")?.as_u64()? as usize,
                 task_id: finding.get("task_id")?.as_str()?.to_string(),
                 stable_id: finding.get("stable_id")?.as_str()?.to_string(),

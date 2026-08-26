@@ -25,9 +25,7 @@ use crate::child_agent::{
     parse_child_activity, spawn_headless_child_agent, spawn_sandboxed_child_agent,
     write_child_prompt_file,
 };
-use crate::surfaces::{
-    conversation::ToolActivitySummary, operations::OperationWorkbenchProjection,
-};
+use crate::surfaces::conversation::ToolActivitySummary;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -2211,7 +2209,7 @@ impl Feature for DelegateFeature {
 
             crate::tool_registry::delegate::DELEGATE_STATUS => {
                 let snapshot = self.result_store.progress_snapshot();
-                let projection = OperationWorkbenchProjection::from_delegate(&snapshot);
+                let projection = crate::features::operation_surface::project_delegate(&snapshot);
                 let mut status_text = format!(
                     "# Delegate Tasks
 

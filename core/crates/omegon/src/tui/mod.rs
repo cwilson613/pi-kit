@@ -1164,8 +1164,8 @@ impl App {
         let current = self.settings().model.clone();
         let catalog = crate::model_catalog::ModelCatalog::discover();
         let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
-        let projection =
-            crate::surfaces::model_menu::project_model_menu(&catalog, &preferences, &current);
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
+        let projection = crate::surfaces::model_menu::project_model_menu(&snapshot, &current);
         let mut options = Vec::new();
         for group in projection.favorite_groups {
             for model in group.models {
@@ -1210,8 +1210,8 @@ impl App {
         let current = self.settings().model.clone();
         let catalog = crate::model_catalog::ModelCatalog::discover();
         let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
-        let projection =
-            crate::surfaces::model_menu::project_model_menu(&catalog, &preferences, &current);
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
+        let projection = crate::surfaces::model_menu::project_model_menu(&snapshot, &current);
         let options = projection
             .providers
             .into_iter()
@@ -1233,9 +1233,9 @@ impl App {
         let current = self.settings().model.clone();
         let catalog = crate::model_catalog::ModelCatalog::discover();
         let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
         let Some(group) = crate::surfaces::model_menu::project_provider_inventory(
-            &catalog,
-            &preferences,
+            &snapshot,
             &current,
             provider_id,
         ) else {
@@ -3641,14 +3641,28 @@ impl App {
             loaded_profile.source,
             &settings,
         );
-        let source_line = match &drift.source {
-            crate::settings::ProfileSource::Project(path) => {
-                format!("profile: project · file: {}", path.display())
+        let source_line = match drift.source.kind {
+            crate::surfaces::profile::ProfileSourceKind::Project => {
+                format!(
+                    "profile: project · file: {}",
+                    drift
+                        .source
+                        .path
+                        .as_deref()
+                        .map_or("unknown".into(), |path| path.display().to_string())
+                )
             }
-            crate::settings::ProfileSource::User(path) => {
-                format!("profile: user · file: {}", path.display())
+            crate::surfaces::profile::ProfileSourceKind::User => {
+                format!(
+                    "profile: user · file: {}",
+                    drift
+                        .source
+                        .path
+                        .as_deref()
+                        .map_or("unknown".into(), |path| path.display().to_string())
+                )
             }
-            crate::settings::ProfileSource::BuiltInDefault => {
+            crate::surfaces::profile::ProfileSourceKind::BuiltInDefault => {
                 "profile: built-in defaults".to_string()
             }
         };
@@ -3671,17 +3685,7 @@ impl App {
                 entry.source_kind != crate::settings::ProfileRegistrySourceKind::BuiltInDefault
             })
             .map(|entry| {
-                let is_active = entry
-                    .path
-                    .as_ref()
-                    .is_some_and(|path| match &active_source {
-                        crate::settings::ProfileSource::Project(active)
-                        | crate::settings::ProfileSource::User(active) => active == path,
-                        crate::settings::ProfileSource::BuiltInDefault => {
-                            entry.source_kind
-                                == crate::settings::ProfileRegistrySourceKind::BuiltInDefault
-                        }
-                    });
+                let is_active = entry.path.as_ref() == active_source.path.as_ref();
                 let mut badges = vec![MenuBadgeProjection {
                     label: entry.scope.as_str().into(),
                     tone: MenuBadgeTone::Info,
@@ -4149,7 +4153,7 @@ impl App {
             row_prefix,
             provider_ids
                 .into_iter()
-                .map(crate::surfaces::menu::ProviderStatusProjection::from_credential_probe)
+                .map(crate::auth::provider_status_projection)
                 .collect(),
             &self.provider_route_snapshot(),
         )
@@ -4158,7 +4162,7 @@ impl App {
     fn open_auth_menu(&mut self) {
         let providers = crate::auth::operator_auth_provider_ids()
             .into_iter()
-            .map(crate::surfaces::menu::ProviderStatusProjection::from_credential_probe)
+            .map(crate::auth::provider_status_projection)
             .collect();
         let menu = auth_menu_projection::build_authentication_menu(
             auth_menu_projection::AuthenticationMenuInputs {
@@ -6993,7 +6997,8 @@ warning: {warning}"
     /// Palette: matching commands + subcommands for the current editor text.
     fn matching_commands(&self) -> Vec<crate::surfaces::command_menu::CommandMenuRowProjection> {
         let text = self.editor.render_text();
-        self.command_menu_projection().matching(&text)
+        self.command_menu_projection()
+            .matching(&text, &crate::auth::operator_auth_provider_ids())
     }
 
     /// Untyped suffix for the first registry-ranked command match. Keeping this

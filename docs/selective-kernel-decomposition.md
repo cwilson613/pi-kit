@@ -1365,8 +1365,17 @@ and cursors without depending on missed broadcasts.
   service. Session context, semantic authority, routes, and mutation remain
   host-owned; all planning consumers use one exact-generation handle with typed
   absence and no direct fallback.
-- Convert Git integration to a declared in-process service.
-- Remove concrete feature imports from semantic surfaces.
+- Slice 6.1.11 publishes Git as the final task-6.1 managed service. Core
+  repository/workspace consumers use one boot-captured exact-generation handle;
+  the serial worker owns libgit2 and Git/JJ process trees with strict
+  worker/process-set/writer settlement and typed absence.
+- Slice 6.2 makes `surfaces/` owner-neutral. Feature, service, lifecycle, memory,
+  settings, model, credential, filesystem, and process owners normalize immutable
+  snapshots before projection. TUI, ACP, Web, IPC, CLI, and daemon classifiers
+  share canonical action DTOs; Web, TUI, and IPC operation adapters consume one
+  operation projection. Source guards reject concrete imports and ambient probes
+  in production surfaces, while parity/golden tests preserve action roles,
+  operation fields, settings/profile values, and existing serialized shapes.
 - Unify native extension, MCP, and manifest discovery under the contribution
   graph while retaining transport-specific adapters.
 - Move shipped skills, prompts, personas, tones, workflows, and catalog data into

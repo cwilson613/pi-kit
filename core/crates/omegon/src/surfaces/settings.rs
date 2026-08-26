@@ -5,10 +5,23 @@
 
 use serde::{Deserialize, Serialize};
 
-use std::path::Path;
-
-use crate::settings::{Profile, Settings};
 use crate::surfaces::profile::{ProfileDriftProjection, ProfileDriftRow};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsSurfaceSnapshot {
+    pub model: String,
+    pub thinking: String,
+    pub thinking_choices: Vec<SettingsChoiceProjection>,
+    pub context_class: String,
+    pub context_window: usize,
+    pub context_choices: Vec<SettingsChoiceProjection>,
+    pub max_turns: u32,
+    pub tool_detail: String,
+    pub trusted_directory_count: usize,
+    pub sandbox: bool,
+    pub update_channel: String,
+    pub auto_update: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsSurfaceProjection {
@@ -110,22 +123,8 @@ impl SettingsPersistenceProjection {
 }
 
 impl SettingsSurfaceProjection {
-    pub fn from_settings(settings: &Settings) -> Self {
-        Self::from_settings_with_profile_drift(settings, None)
-    }
-
-    pub fn from_settings_with_profile(settings: &Settings, cwd: &Path) -> Self {
-        let loaded = Profile::load_with_source(cwd);
-        let drift = ProfileDriftProjection::from_profile_and_settings(
-            &loaded.profile,
-            loaded.source,
-            settings,
-        );
-        Self::from_settings_with_profile_drift(settings, Some(&drift))
-    }
-
-    pub fn from_settings_with_profile_drift(
-        settings: &Settings,
+    pub fn from_snapshot(
+        snapshot: &SettingsSurfaceSnapshot,
         drift: Option<&ProfileDriftProjection>,
     ) -> Self {
         let profile_row = |id: &str| {
@@ -152,7 +151,7 @@ impl SettingsSurfaceProjection {
                         choice_row(
                             "runtime.model",
                             "Model",
-                            &settings.model,
+                            &snapshot.model,
                             "Active model route for future turns",
                             SettingsMutationRouteProjection::RuntimeCommand,
                             SettingsPersistenceProjection::RuntimeOnly,
@@ -161,43 +160,25 @@ impl SettingsSurfaceProjection {
                         choice_row(
                             "runtime.thinking",
                             "Thinking",
-                            &format!(
-                                "{} {}",
-                                settings.thinking.icon(),
-                                settings.thinking.as_str()
-                            ),
+                            &snapshot.thinking,
                             "Reasoning budget requested from capable providers",
                             SettingsMutationRouteProjection::RuntimeCommand,
                             SettingsPersistenceProjection::RuntimeOnly,
-                            crate::settings::ThinkingLevel::all()
-                                .iter()
-                                .map(|level| SettingsChoiceProjection {
-                                    value: level.as_str().into(),
-                                    label: format!("{} {}", level.icon(), level.as_str()),
-                                    active: *level == settings.thinking,
-                                })
-                                .collect(),
+                            snapshot.thinking_choices.clone(),
                         ),
                         choice_row(
                             "runtime.context_class",
                             "Context class",
-                            settings.context_class.label(),
-                            &format!("Context window: {} tokens", settings.context_window),
+                            &snapshot.context_class,
+                            &format!("Context window: {} tokens", snapshot.context_window),
                             SettingsMutationRouteProjection::RuntimeCommand,
                             SettingsPersistenceProjection::RuntimeOnly,
-                            crate::settings::ContextClass::all()
-                                .iter()
-                                .map(|class| SettingsChoiceProjection {
-                                    value: class.short().into(),
-                                    label: class.label().into(),
-                                    active: *class == settings.context_class,
-                                })
-                                .collect(),
+                            snapshot.context_choices.clone(),
                         ),
                         row(
                             "runtime.max_turns",
                             "Max turns",
-                            &settings.max_turns.to_string(),
+                            &snapshot.max_turns.to_string(),
                             "Maximum autonomous turns for the current run",
                             SettingsMutationRouteProjection::SharedSettings,
                             SettingsPersistenceProjection::RuntimeOnly,
@@ -211,7 +192,7 @@ impl SettingsSurfaceProjection {
                     rows: vec![choice_row(
                         "ui.tool_detail",
                         "Tool display",
-                        settings.tool_detail.as_str(),
+                        &snapshot.tool_detail,
                         "Density of tool-call summaries in interactive surfaces",
                         SettingsMutationRouteProjection::SharedSettings,
                         SettingsPersistenceProjection::PersistedProfile,
@@ -220,7 +201,7 @@ impl SettingsSurfaceProjection {
                             .map(|value| SettingsChoiceProjection {
                                 value: value.into(),
                                 label: value.into(),
-                                active: value == settings.tool_detail.as_str(),
+                                active: value == snapshot.tool_detail,
                             })
                             .collect(),
                     )],
@@ -232,7 +213,11 @@ impl SettingsSurfaceProjection {
                         row(
                             "workspace.trusted_directories",
                             "Trusted dirs",
-                            &trusted_dir_value(settings),
+                            &if snapshot.trusted_directory_count == 0 {
+                                "none".to_string()
+                            } else {
+                                snapshot.trusted_directory_count.to_string()
+                            },
                             "Directories outside the workspace allowed without repeated prompts",
                             SettingsMutationRouteProjection::RuntimeCommand,
                             SettingsPersistenceProjection::PersistedProfile,
@@ -241,7 +226,7 @@ impl SettingsSurfaceProjection {
                         row(
                             "workspace.sandbox",
                             "Sandbox",
-                            if settings.sandbox {
+                            if snapshot.sandbox {
                                 "enabled"
                             } else {
                                 "disabled"
@@ -259,18 +244,18 @@ impl SettingsSurfaceProjection {
                             SettingsMutationRouteProjection::RuntimeCommand,
                             SettingsPersistenceProjection::ProjectPolicy,
                             [
-                                crate::workspace::types::WorkspaceRole::Primary,
-                                crate::workspace::types::WorkspaceRole::Feature,
-                                crate::workspace::types::WorkspaceRole::CleaveChild,
-                                crate::workspace::types::WorkspaceRole::Benchmark,
-                                crate::workspace::types::WorkspaceRole::Release,
-                                crate::workspace::types::WorkspaceRole::Exploratory,
-                                crate::workspace::types::WorkspaceRole::ReadOnly,
+                                "primary",
+                                "feature",
+                                "cleave_child",
+                                "benchmark",
+                                "release",
+                                "exploratory",
+                                "read_only",
                             ]
-                            .iter()
+                            .into_iter()
                             .map(|role| SettingsChoiceProjection {
-                                value: role.as_str().into(),
-                                label: role.as_str().into(),
+                                value: role.into(),
+                                label: role.into(),
                                 active: false,
                             })
                             .collect(),
@@ -282,21 +267,14 @@ impl SettingsSurfaceProjection {
                             "Primary content shape for workspace/federation projections",
                             SettingsMutationRouteProjection::RuntimeCommand,
                             SettingsPersistenceProjection::ProjectPolicy,
-                            [
-                                crate::workspace::types::WorkspaceKind::Code,
-                                crate::workspace::types::WorkspaceKind::Vault,
-                                crate::workspace::types::WorkspaceKind::Knowledge,
-                                crate::workspace::types::WorkspaceKind::Spec,
-                                crate::workspace::types::WorkspaceKind::Mixed,
-                                crate::workspace::types::WorkspaceKind::Generic,
-                            ]
-                            .iter()
-                            .map(|kind| SettingsChoiceProjection {
-                                value: kind.as_str().into(),
-                                label: kind.as_str().into(),
-                                active: false,
-                            })
-                            .collect(),
+                            ["code", "vault", "knowledge", "spec", "mixed", "generic"]
+                                .into_iter()
+                                .map(|kind| SettingsChoiceProjection {
+                                    value: kind.into(),
+                                    label: kind.into(),
+                                    active: false,
+                                })
+                                .collect(),
                         ),
                     ],
                 },
@@ -307,7 +285,7 @@ impl SettingsSurfaceProjection {
                         choice_row(
                             "updates.channel",
                             "Channel",
-                            &settings.update_channel,
+                            &snapshot.update_channel,
                             "Release stream used by update checks",
                             SettingsMutationRouteProjection::SharedSettings,
                             SettingsPersistenceProjection::PersistedProfile,
@@ -316,14 +294,14 @@ impl SettingsSurfaceProjection {
                                 .map(|value| SettingsChoiceProjection {
                                     value: value.into(),
                                     label: value.into(),
-                                    active: value == settings.update_channel,
+                                    active: value == snapshot.update_channel,
                                 })
                                 .collect(),
                         ),
                         row(
                             "updates.auto_update",
                             "Auto update",
-                            if settings.auto_update { "on" } else { "off" },
+                            if snapshot.auto_update { "on" } else { "off" },
                             "Install discovered updates between sessions",
                             SettingsMutationRouteProjection::SharedSettings,
                             SettingsPersistenceProjection::PersistedProfile,
@@ -427,17 +405,10 @@ fn settings_row_matches_drift(row_id: &str, drift: &ProfileDriftRow) -> bool {
     )
 }
 
-fn trusted_dir_value(settings: &Settings) -> String {
-    if settings.trusted_directories.is_empty() {
-        "none".into()
-    } else {
-        settings.trusted_directories.len().to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::Settings;
 
     #[test]
     fn projection_contains_settings_tabs() {

@@ -60,15 +60,13 @@ fn ipc_operation_episodes(handles: &DashboardHandles) -> Vec<IpcOperationEpisode
     if let Ok(Some(progress)) = handles.observe_delegate()
         && (progress.active || progress.running > 0)
     {
-        let projection =
-            crate::surfaces::operations::OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         episodes.push(ipc_operation_episode(&projection));
     }
     if let Ok(Some(progress)) = handles.observe_cleave()
         && progress.active
     {
-        let projection =
-            crate::surfaces::operations::OperationWorkbenchProjection::from_cleave(&progress);
+        let projection = crate::features::operation_surface::project_cleave(&progress);
         episodes.push(ipc_operation_episode(&projection));
     }
     episodes

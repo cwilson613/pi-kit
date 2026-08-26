@@ -1008,7 +1008,9 @@ async fn memory_campaign_generations_rollback_transfer_and_shared_status_project
     assert_eq!(harness.memory.edges, 1);
     let bootstrap = crate::bootstrap_projection::render_bootstrap(&harness, false);
     assert!(bootstrap.contains("2 facts, 1 episodes, 1 edges"));
-    let federation = crate::surfaces::memory_status::project_memory_federation_status(&root);
+    let federation = crate::surfaces::memory_status::project_memory_federation_status(
+        crate::status::memory_federation_surface_observation(&root),
+    );
     assert_eq!(
         federation.memory_authority,
         crate::surfaces::memory_status::MemoryAuthority::LocalIndexOnly
@@ -1042,13 +1044,15 @@ async fn memory_campaign_generations_rollback_transfer_and_shared_status_project
     assert_eq!(ipc.harness.memory.project_facts, 2);
     assert_eq!(ipc.harness.memory.working_facts, 0);
     assert_eq!(ipc.harness.memory.episodes, 1);
+    let bootstrap_markdown = crate::bootstrap_projection::render_bootstrap(&harness, false);
     let acp = serde_json::to_value(crate::surfaces::diagnostics::HarnessStatusProjection::new(
-        harness.clone(),
+        serde_json::to_value(harness.clone()).expect("harness snapshot"),
         1,
         "memory-campaign",
         "memory-campaign",
         "operator-driven",
         "campaign",
+        bootstrap_markdown,
     ))
     .expect("ACP harness projection");
     assert_eq!(acp["harness"]["memory"]["active_facts"], 2);

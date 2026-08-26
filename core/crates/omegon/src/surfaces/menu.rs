@@ -124,28 +124,6 @@ pub enum ProviderAvailabilityProjection {
 }
 
 impl ProviderStatusProjection {
-    pub fn from_credential_probe(provider_id: &str) -> Self {
-        let credential = crate::route::CredentialLedger.probe(provider_id);
-        let display_name = crate::auth::provider_by_id(provider_id)
-            .map(|provider| provider.display_name.to_string())
-            .unwrap_or_else(|| provider_id.to_string());
-        let credential_available = credential.is_valid();
-        let availability = if credential_available {
-            ProviderAvailabilityProjection::Available
-        } else {
-            ProviderAvailabilityProjection::MissingCredentials
-        };
-        let remediation_command = (!credential_available).then(|| format!("/login {provider_id}"));
-        Self {
-            provider_id: provider_id.to_string(),
-            display_name,
-            credential_state: credential.summary(),
-            credential_available,
-            availability,
-            remediation_command,
-        }
-    }
-
     pub fn badge_label(&self) -> &'static str {
         match self.availability {
             ProviderAvailabilityProjection::Available => "valid",

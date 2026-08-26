@@ -35,6 +35,7 @@ pub mod manage_tools;
 pub mod memory;
 pub mod model_budget;
 pub mod mutation;
+pub mod operation_surface;
 pub mod persona;
 pub mod prompt;
 pub mod session_log;

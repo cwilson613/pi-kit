@@ -5,8 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::status::HarnessStatus;
-
 use omegon_traits::{
     RuntimeCleanupAssurance, RuntimeCleanupState, RuntimeCompositionGenerationId,
     RuntimeContributionDeclaration, RuntimeContributionDiagnostic, RuntimeContributionId,
@@ -162,22 +160,25 @@ fn serialized_label(value: &impl Serialize) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarnessStatusProjection {
     pub version: u16,
-    pub harness: HarnessStatus,
+    pub harness: serde_json::Value,
     pub runtime_generation: u64,
     pub session_id: String,
     pub instance_id: String,
     pub automation_level: String,
     pub automation_summary: String,
+    #[serde(skip)]
+    pub bootstrap_markdown: String,
 }
 
 impl HarnessStatusProjection {
     pub fn new(
-        harness: HarnessStatus,
+        harness: serde_json::Value,
         runtime_generation: u64,
         session_id: impl Into<String>,
         instance_id: impl Into<String>,
         automation_level: impl Into<String>,
         automation_summary: impl Into<String>,
+        bootstrap_markdown: impl Into<String>,
     ) -> Self {
         Self {
             version: DIAGNOSTIC_PROJECTION_VERSION,
@@ -187,13 +188,14 @@ impl HarnessStatusProjection {
             instance_id: instance_id.into(),
             automation_level: automation_level.into(),
             automation_summary: automation_summary.into(),
+            bootstrap_markdown: bootstrap_markdown.into(),
         }
     }
 
     pub fn render_markdown(&self) -> String {
         format!(
             "{}\nRuntime\n  Generation:   {}\n  Session:      {}\n  Instance:     {}\nAutomation\n  Level:        {} ({})",
-            crate::bootstrap_projection::render_bootstrap(&self.harness, false),
+            self.bootstrap_markdown,
             self.runtime_generation,
             self.session_id,
             self.instance_id,
@@ -345,14 +347,18 @@ mod tests {
     #[test]
     fn projection_serialization_contains_no_secret_values() {
         let projection = HarnessStatusProjection::new(
-            HarnessStatus::default(),
+            serde_json::json!({}),
             1,
             "session",
             "instance",
             "guarded",
             "confirm mutations",
+            "Harness",
         );
-        let json = serde_json::to_string(&projection).unwrap();
+        let value = serde_json::to_value(&projection).unwrap();
+        assert_eq!(value["harness"], serde_json::json!({}));
+        assert!(value.get("bootstrap_markdown").is_none());
+        let json = serde_json::to_string(&value).unwrap();
         assert!(!json.contains("secret_value"));
         assert!(!json.contains("api_key"));
     }

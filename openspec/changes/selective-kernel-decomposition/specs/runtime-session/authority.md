@@ -416,3 +416,35 @@ And ACP lacks a safe binding for that action
 When ACP capability metadata is projected
 Then the action is omitted or explicitly unavailable
 And generic command tunneling cannot bypass the missing safe binding
+
+### Requirement: Semantic surfaces are owner-neutral
+
+Shared semantic surfaces must accept immutable owner-neutral snapshots and action descriptors. Concrete feature, service, domain, filesystem, process, credential, and registry owners must adapt their state before invoking a semantic surface. A semantic surface must not discover source state, probe service health or credentials, match implementation-owned enums, or import frontend renderer or protocol types.
+
+#### Scenario: Concrete owner state is projected
+Given a feature or managed service has concrete implementation state
+When an owner prepares data for a semantic surface
+Then the owner converts that state to the shared snapshot vocabulary
+And the semantic surface projects the snapshot without importing or probing the owner
+
+#### Scenario: Optional owner is unavailable
+Given an optional feature or service is absent or degraded
+When its producer prepares a shared snapshot
+Then the snapshot carries typed unavailable or degraded evidence
+And no semantic surface or edge adapter probes for a fallback implementation
+
+### Requirement: Edge adapters share projection and action policy
+
+TUI, ACP, Web, IPC, CLI, and daemon adapters must consume the same semantic snapshots and canonical action descriptors. An adapter may serialize, redact, or narrow unsupported transport bindings, but it must not duplicate semantic projection, availability, or admission policy. Existing wire field names, enum values, omission behavior, and action identities remain compatible unless a separately specified contract explicitly changes them.
+
+#### Scenario: Equivalent snapshot reaches every edge
+Given one authoritative snapshot and action set for a captured generation
+When TUI, ACP, Web, IPC, CLI, and daemon adapters expose the state
+Then each adapter derives its semantic values and action availability from that shared input
+And transport-specific differences are limited to serialization, redaction, and declared support narrowing
+
+#### Scenario: Wire compatibility is retained
+Given a semantic state representable before Slice 6.2
+When the refactored adapter serializes that state
+Then existing field names, enum strings, null or omission behavior, and action identities match the compatibility fixture
+And no new authority is advertised or executable

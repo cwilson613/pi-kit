@@ -402,19 +402,13 @@ fn project_operations(state: &WebState) -> WebOperationsSurface {
         && (delegate.active || !delegate.children.is_empty())
     {
         kind = Some("delegate".to_string());
-        running += delegate.running;
-        completed += delegate.completed;
-        failed += delegate.failed;
-        for child in &delegate.children {
-            children.push(WebOperationChild {
-                label: child.label.clone(),
-                status: child.status.clone(),
-                activity: child.last_tool.clone(),
-                tasks_done: child.tasks_done,
-                tasks_total: child.tasks.len(),
-                result_summary: child.result_summary.clone(),
-            });
-        }
+        append_operation_projection(
+            crate::features::operation_surface::project_delegate(&delegate),
+            &mut running,
+            &mut completed,
+            &mut failed,
+            &mut children,
+        );
     }
 
     if let Some(cleave) = state.handles.observe_cleave().ok().flatten()
@@ -423,23 +417,13 @@ fn project_operations(state: &WebState) -> WebOperationsSurface {
         if kind.is_none() {
             kind = Some("cleave".to_string());
         }
-        running += cleave
-            .children
-            .iter()
-            .filter(|c| c.status == "running")
-            .count();
-        completed += cleave.completed;
-        failed += cleave.failed;
-        for child in &cleave.children {
-            children.push(WebOperationChild {
-                label: child.label.clone(),
-                status: child.status.clone(),
-                activity: child.last_tool.clone(),
-                tasks_done: child.tasks_done,
-                tasks_total: child.tasks.len(),
-                result_summary: None,
-            });
-        }
+        append_operation_projection(
+            crate::features::operation_surface::project_cleave(&cleave),
+            &mut running,
+            &mut completed,
+            &mut failed,
+            &mut children,
+        );
     }
 
     let active_child_runtimes = running;
@@ -451,6 +435,31 @@ fn project_operations(state: &WebState) -> WebOperationsSurface {
         failed,
         children,
     }
+}
+
+fn append_operation_projection(
+    projection: crate::surfaces::operations::OperationWorkbenchProjection,
+    running: &mut usize,
+    completed: &mut usize,
+    failed: &mut usize,
+    children: &mut Vec<WebOperationChild>,
+) {
+    *running += projection.running;
+    *completed += projection.completed;
+    *failed += projection.failed;
+    children.extend(projection.children.into_iter().map(|child| {
+        let progress = child
+            .progress
+            .unwrap_or(crate::surfaces::operations::OperationChildProgress { done: 0, total: 0 });
+        WebOperationChild {
+            label: child.label,
+            status: child.status_label,
+            activity: child.last_activity.map(|activity| activity.label),
+            tasks_done: progress.done,
+            tasks_total: progress.total,
+            result_summary: child.result_summary,
+        }
+    }));
 }
 
 /// Project runtime telemetry for the top HUD strip from `HarnessStatus`.

@@ -5,9 +5,6 @@
 //! projections instead of inferring status from raw tool-call or decomposition
 //! event text.
 
-use crate::features::cleave::{CleaveChildFailureKind, CleaveProgress};
-use crate::features::delegate::{DelegateChildFailureKind, DelegateProgress};
-use crate::surfaces::conversation::ToolActivitySummary;
 use omegon_traits::{OperationKind, OperationRef};
 use serde_json::{Value, json};
 
@@ -95,47 +92,6 @@ impl OperationWorkbenchProjection {
             "children": self.children.iter().map(OperationChildRow::to_status_details).collect::<Vec<_>>(),
         })
     }
-
-    pub fn from_delegate(progress: &DelegateProgress) -> Self {
-        let operation_id = match progress.children.as_slice() {
-            [child] => child.task_id.clone(),
-            [] => "delegate".to_string(),
-            children => format!("delegate-set:{}", children[0].task_id),
-        };
-        Self {
-            operation: OperationRef::delegate(operation_id),
-            running: progress.running,
-            completed: progress.completed,
-            failed: progress.failed,
-            pending_results: progress.pending_results,
-            children: progress
-                .children
-                .iter()
-                .map(OperationChildRow::from_delegate_child)
-                .collect(),
-        }
-    }
-
-    pub fn from_cleave(progress: &CleaveProgress) -> Self {
-        Self {
-            operation: OperationRef::cleave(
-                (!progress.run_id.is_empty()).then_some(progress.run_id.clone()),
-            ),
-            running: progress
-                .children
-                .iter()
-                .filter(|child| child.status == "running")
-                .count(),
-            completed: progress.completed,
-            failed: progress.failed,
-            pending_results: 0,
-            children: progress
-                .children
-                .iter()
-                .map(OperationChildRow::from_cleave_child)
-                .collect(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,7 +106,7 @@ pub struct OperationChildRow {
     pub progress: Option<OperationChildProgress>,
     pub result_summary: Option<String>,
     pub failure: Option<OperationFailure>,
-    pub route_decision: Option<crate::subagent_route::SubagentRouteDecision>,
+    pub route_decision: Option<OperationRouteDecision>,
 }
 
 impl OperationChildRow {
@@ -169,7 +125,7 @@ impl OperationChildRow {
             "route_decision": self.route_decision.as_ref().map(|decision| json!({
                 "selected_model": decision.selected_model,
                 "inventory_generation": decision.inventory_generation,
-                "source": format!("{:?}", decision.source),
+                "source": decision.source,
                 "fallback_reason": decision.fallback_reason,
             })),
             "tasks_done": self.progress.as_ref().map(|progress| progress.done).unwrap_or(0),
@@ -181,108 +137,14 @@ impl OperationChildRow {
             })),
         })
     }
+}
 
-    fn from_cleave_child(child: &crate::features::cleave::ChildProgress) -> Self {
-        let status = OperationChildStatus::from_cleave_status(&child.status);
-        Self {
-            operation_kind: OperationKind::Cleave,
-            id: child.label.clone(),
-            label: child.label.clone(),
-            status,
-            status_label: child.status.clone(),
-            result_viewed: true,
-            last_activity: child
-                .last_tool_activity
-                .clone()
-                .or_else(|| {
-                    child
-                        .last_tool
-                        .as_ref()
-                        .map(|tool| ToolActivitySummary::new(tool.clone(), None))
-                })
-                .map(|activity| OperationActivity {
-                    kind: OperationActivityKind::Tool,
-                    label: activity.raw_name,
-                    args_summary: activity.args_summary,
-                    turn: child.last_turn,
-                }),
-            progress: (!child.tasks.is_empty()).then_some(OperationChildProgress {
-                done: child.tasks_done,
-                total: child.tasks.len(),
-            }),
-            result_summary: None,
-            failure: match status {
-                OperationChildStatus::Failed | OperationChildStatus::TimedOut => {
-                    let kind = child
-                        .failure_kind
-                        .map(OperationFailureKind::from_cleave_child_failure_kind)
-                        .unwrap_or_else(|| match child.status.as_str() {
-                            "upstream_exhausted" => OperationFailureKind::ModelError,
-                            _ => OperationFailureKind::Unknown,
-                        });
-                    Some(OperationFailure {
-                        kind,
-                        message: None,
-                        recoverable: matches!(
-                            kind,
-                            OperationFailureKind::IdleTimeout
-                                | OperationFailureKind::TimedOut
-                                | OperationFailureKind::ModelError
-                                | OperationFailureKind::ToolExecutionFailed
-                        ),
-                    })
-                }
-                _ => None,
-            },
-            route_decision: child
-                .runtime
-                .as_ref()
-                .and_then(|runtime| runtime.route_decision.clone()),
-        }
-    }
-
-    fn from_delegate_child(child: &crate::features::delegate::DelegateProgressChild) -> Self {
-        let status = OperationChildStatus::from_delegate_status(&child.status);
-        let failure = match status {
-            OperationChildStatus::Failed | OperationChildStatus::TimedOut => {
-                Some(OperationFailure::from_delegate_failure(
-                    child.failure_kind,
-                    child.result_summary.clone(),
-                ))
-            }
-            _ => None,
-        };
-        Self {
-            operation_kind: OperationKind::Delegate,
-            id: child.task_id.clone(),
-            label: child.label.clone(),
-            status,
-            status_label: child.status.clone(),
-            result_viewed: child.result_viewed,
-            last_activity: child
-                .last_tool_activity
-                .clone()
-                .or_else(|| {
-                    child
-                        .last_tool
-                        .as_ref()
-                        .map(|tool| ToolActivitySummary::new(tool.clone(), None))
-                })
-                .map(|activity| OperationActivity {
-                    kind: OperationActivityKind::Tool,
-                    label: activity.raw_name,
-                    args_summary: activity.args_summary,
-                    turn: child.last_turn,
-                }),
-            progress: (!child.tasks.is_empty()).then_some(OperationChildProgress {
-                done: child.tasks_done,
-                total: child.tasks.len(),
-            }),
-            result_summary: child.result_summary.clone(),
-            failure,
-            route_decision: child.route_decision.clone(),
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationRouteDecision {
+    pub selected_model: String,
+    pub inventory_generation: u64,
+    pub source: String,
+    pub fallback_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,22 +256,10 @@ pub struct OperationFailure {
 }
 
 impl OperationFailure {
-    fn from_delegate_failure(
-        source_kind: Option<DelegateChildFailureKind>,
-        summary: Option<String>,
-    ) -> Self {
-        let kind = source_kind
-            .and_then(|kind| match kind {
-                DelegateChildFailureKind::Unknown => None,
-                known => Some(OperationFailureKind::from_delegate_child_failure_kind(
-                    known,
-                )),
-            })
-            .or_else(|| summary.as_deref().map(OperationFailureKind::from_message))
-            .unwrap_or(OperationFailureKind::Unknown);
+    pub fn new(kind: OperationFailureKind, message: Option<String>) -> Self {
         Self {
             kind,
-            message: summary,
+            message,
             recoverable: matches!(
                 kind,
                 OperationFailureKind::IdleTimeout
@@ -453,30 +303,7 @@ impl OperationFailureKind {
         }
     }
 
-    fn from_cleave_child_failure_kind(kind: CleaveChildFailureKind) -> Self {
-        match kind {
-            CleaveChildFailureKind::ChildProcessExit => Self::ProcessExit,
-            CleaveChildFailureKind::IdleTimeout => Self::IdleTimeout,
-            CleaveChildFailureKind::WallTimeout => Self::TimedOut,
-            CleaveChildFailureKind::MergeConflict => Self::MergeConflict,
-            CleaveChildFailureKind::ScopeViolation => Self::SandboxViolation,
-            CleaveChildFailureKind::UpstreamExhausted => Self::ModelError,
-            CleaveChildFailureKind::ValidationFailed => Self::ToolExecutionFailed,
-            CleaveChildFailureKind::Unknown => Self::Unknown,
-        }
-    }
-
-    fn from_delegate_child_failure_kind(kind: DelegateChildFailureKind) -> Self {
-        match kind {
-            DelegateChildFailureKind::MissingLocalModel
-            | DelegateChildFailureKind::MissingCredential
-            | DelegateChildFailureKind::ProviderStartup => Self::ModelError,
-            DelegateChildFailureKind::WorkspaceStartup => Self::ProcessExit,
-            DelegateChildFailureKind::Unknown => Self::Unknown,
-        }
-    }
-
-    fn from_message(message: &str) -> Self {
+    pub fn from_message(message: &str) -> Self {
         let lower = message.to_ascii_lowercase();
         if lower.contains("idle timeout") || lower.contains("no output") {
             Self::IdleTimeout
@@ -512,7 +339,10 @@ mod tests {
     use super::*;
     use crate::child_agent::ChildTaskItem;
     use crate::features::cleave::{CleaveChildFailureKind, CleaveProgress};
-    use crate::features::delegate::{DelegateProgress, DelegateProgressChild};
+    use crate::features::delegate::{
+        DelegateChildFailureKind, DelegateProgress, DelegateProgressChild,
+    };
+    use crate::surfaces::conversation::ToolActivitySummary;
 
     fn delegate_child(status: &str) -> DelegateProgressChild {
         DelegateProgressChild {
@@ -541,7 +371,7 @@ mod tests {
             children: vec![delegate_child("running")],
             ..Default::default()
         };
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         assert_eq!(projection.operation.id.as_deref(), Some("delegate_1"));
     }
 
@@ -558,7 +388,7 @@ mod tests {
             children: vec![child],
         };
 
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         let row = &projection.children[0];
         assert_eq!(row.status, OperationChildStatus::Cancelled);
         assert!(row.status.is_terminal());
@@ -577,7 +407,7 @@ mod tests {
             children: vec![delegate_child("running")],
         };
 
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         assert_eq!(projection.operation.kind, OperationKind::Delegate);
         assert_eq!(projection.running, 2);
         assert_eq!(projection.completed, 1);
@@ -615,7 +445,7 @@ mod tests {
             children: vec![child],
         };
 
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         let row = &projection.children[0];
         assert_eq!(row.last_activity.as_ref().unwrap().label, "bash");
         assert_eq!(
@@ -641,7 +471,7 @@ mod tests {
             children: vec![child],
         };
 
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         assert_eq!(
             projection.children[0].failure.as_ref().unwrap().kind,
             OperationFailureKind::IdleTimeout
@@ -662,7 +492,7 @@ mod tests {
             children: vec![child],
         };
 
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         assert_eq!(
             projection.children[0].failure.as_ref().unwrap().kind,
             OperationFailureKind::ModelError
@@ -682,7 +512,7 @@ mod tests {
             children: vec![child],
         };
 
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         let failure = projection.children[0]
             .failure
             .as_ref()
@@ -732,7 +562,7 @@ mod tests {
             total_tokens_out: 0,
         };
 
-        let projection = OperationWorkbenchProjection::from_cleave(&progress);
+        let projection = crate::features::operation_surface::project_cleave(&progress);
         assert_eq!(projection.running, 0);
         assert_eq!(projection.completed, 0);
         assert_eq!(projection.failed, 0);
@@ -783,7 +613,7 @@ mod tests {
             total_tokens_out: 0,
         };
 
-        let projection = OperationWorkbenchProjection::from_cleave(&progress);
+        let projection = crate::features::operation_surface::project_cleave(&progress);
         assert_eq!(projection.running, 0);
         assert_eq!(projection.completed, 1);
         assert_eq!(projection.failed, 1);
@@ -865,7 +695,7 @@ mod tests {
             children: vec![wall, idle],
         };
 
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         assert_eq!(
             projection.children[0].failure.as_ref().unwrap().kind,
             OperationFailureKind::TimedOut
@@ -891,7 +721,7 @@ mod tests {
             children: vec![child],
         };
 
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         let details = projection.to_status_details(false);
         assert_eq!(details["child_count"], 1);
         assert_eq!(details["task_count"], 1);
@@ -917,7 +747,7 @@ mod tests {
             children: vec![child],
         };
 
-        let projection = OperationWorkbenchProjection::from_delegate(&progress);
+        let projection = crate::features::operation_surface::project_delegate(&progress);
         let details = projection.to_status_details(false);
         assert_eq!(
             details["children"][0]["result_summary"],
@@ -995,7 +825,7 @@ mod tests {
         ] {
             let mut child = cleave_child("alpha", "failed");
             child.failure_kind = Some(source);
-            let projection = OperationWorkbenchProjection::from_cleave(&CleaveProgress {
+            let projection = crate::features::operation_surface::project_cleave(&CleaveProgress {
                 active: true,
                 run_id: "run-typed".into(),
                 inventory_generation: None,
@@ -1015,7 +845,7 @@ mod tests {
     #[test]
     fn cleave_legacy_upstream_exhausted_status_maps_to_model_failure() {
         let child = cleave_child("alpha", "upstream_exhausted");
-        let projection = OperationWorkbenchProjection::from_cleave(&CleaveProgress {
+        let projection = crate::features::operation_surface::project_cleave(&CleaveProgress {
             active: true,
             run_id: "run-legacy".into(),
             inventory_generation: None,
@@ -1057,7 +887,7 @@ mod tests {
         }];
         let beta = cleave_child("beta", "failed");
 
-        let projection = OperationWorkbenchProjection::from_cleave(&CleaveProgress {
+        let projection = crate::features::operation_surface::project_cleave(&CleaveProgress {
             active: true,
             run_id: "run-1".into(),
             inventory_generation: None,

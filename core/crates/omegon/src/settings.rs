@@ -2584,6 +2584,155 @@ fn custom_posture_dirs(cwd: &std::path::Path) -> Vec<std::path::PathBuf> {
     dirs
 }
 
+impl crate::surfaces::profile::ProfileDriftProjection {
+    pub fn from_profile_and_settings(
+        profile: &Profile,
+        source: ProfileSource,
+        settings: &Settings,
+    ) -> Self {
+        use crate::surfaces::profile::{
+            DriftSeverity, PersistenceSemantics, ProfileDriftAction, ProfileDriftRow,
+            ProfileSourceKind, ProfileSourceProjection,
+        };
+
+        let mut rows = Vec::new();
+        if let Some(profile_thinking) = profile
+            .thinking_level
+            .as_deref()
+            .and_then(ThinkingLevel::parse)
+            && profile_thinking != settings.thinking
+        {
+            rows.push(ProfileDriftRow {
+                key: "thinking",
+                label: "Thinking",
+                profile_value: profile_thinking.as_str().to_string(),
+                runtime_value: settings.thinking.as_str().to_string(),
+                persistence: PersistenceSemantics::LiveOnly,
+                severity: DriftSeverity::Info,
+            });
+        }
+        if let Some(profile_class) = profile
+            .requested_context_class
+            .as_deref()
+            .and_then(ContextClass::parse)
+            && settings.requested_context_class != Some(profile_class)
+        {
+            rows.push(ProfileDriftRow {
+                key: "requestedContextClass",
+                label: "Context class",
+                profile_value: profile_class.short().to_lowercase(),
+                runtime_value: settings
+                    .requested_context_class
+                    .map(|class| class.short().to_lowercase())
+                    .unwrap_or_else(|| "track model".to_string()),
+                persistence: PersistenceSemantics::LiveOnly,
+                severity: DriftSeverity::Info,
+            });
+        }
+        let dirty = !rows.is_empty();
+        let actions = if dirty {
+            vec![
+                ProfileDriftAction::View,
+                ProfileDriftAction::Save,
+                ProfileDriftAction::Apply,
+            ]
+        } else {
+            vec![ProfileDriftAction::View]
+        };
+        let source = match source {
+            ProfileSource::Project(path) => ProfileSourceProjection {
+                kind: ProfileSourceKind::Project,
+                label: ProfileSource::Project(path.clone()).label().to_string(),
+                display: ProfileSource::Project(path.clone()).to_string(),
+                path: Some(path),
+            },
+            ProfileSource::User(path) => ProfileSourceProjection {
+                kind: ProfileSourceKind::User,
+                label: ProfileSource::User(path.clone()).label().to_string(),
+                display: ProfileSource::User(path.clone()).to_string(),
+                path: Some(path),
+            },
+            ProfileSource::BuiltInDefault => ProfileSourceProjection {
+                kind: ProfileSourceKind::BuiltInDefault,
+                label: ProfileSource::BuiltInDefault.label().to_string(),
+                display: ProfileSource::BuiltInDefault.to_string(),
+                path: None,
+            },
+        };
+        let changed_count = rows.len();
+        Self {
+            profile_label: source.label.clone(),
+            source,
+            dirty,
+            changed_count,
+            rows,
+            actions,
+        }
+    }
+}
+
+fn settings_surface_snapshot(
+    settings: &Settings,
+) -> crate::surfaces::settings::SettingsSurfaceSnapshot {
+    use crate::surfaces::settings::{SettingsChoiceProjection, SettingsSurfaceSnapshot};
+
+    SettingsSurfaceSnapshot {
+        model: settings.model.clone(),
+        thinking: format!(
+            "{} {}",
+            settings.thinking.icon(),
+            settings.thinking.as_str()
+        ),
+        thinking_choices: ThinkingLevel::all()
+            .iter()
+            .map(|level| SettingsChoiceProjection {
+                value: level.as_str().into(),
+                label: format!("{} {}", level.icon(), level.as_str()),
+                active: *level == settings.thinking,
+            })
+            .collect(),
+        context_class: settings.context_class.label().to_string(),
+        context_window: settings.context_window,
+        context_choices: ContextClass::all()
+            .iter()
+            .map(|class| SettingsChoiceProjection {
+                value: class.short().into(),
+                label: class.label().into(),
+                active: *class == settings.context_class,
+            })
+            .collect(),
+        max_turns: settings.max_turns,
+        tool_detail: settings.tool_detail.as_str().to_string(),
+        trusted_directory_count: settings.trusted_directories.len(),
+        sandbox: settings.sandbox,
+        update_channel: settings.update_channel.clone(),
+        auto_update: settings.auto_update,
+    }
+}
+
+impl crate::surfaces::settings::SettingsSurfaceProjection {
+    pub fn from_settings(settings: &Settings) -> Self {
+        Self::from_snapshot(&settings_surface_snapshot(settings), None)
+    }
+
+    pub fn from_settings_with_profile(settings: &Settings, cwd: &std::path::Path) -> Self {
+        let loaded = Profile::load_with_source(cwd);
+        let drift = crate::surfaces::profile::ProfileDriftProjection::from_profile_and_settings(
+            &loaded.profile,
+            loaded.source,
+            settings,
+        );
+        Self::from_snapshot(&settings_surface_snapshot(settings), Some(&drift))
+    }
+
+    pub fn from_settings_with_profile_drift(
+        settings: &Settings,
+        drift: Option<&crate::surfaces::profile::ProfileDriftProjection>,
+    ) -> Self {
+        Self::from_snapshot(&settings_surface_snapshot(settings), drift)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

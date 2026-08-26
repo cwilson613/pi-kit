@@ -2652,6 +2652,30 @@ pub fn auth_status_to_provider_statuses(status: &AuthStatus) -> Vec<ProviderStat
         .collect()
 }
 
+pub(crate) fn provider_status_projection(
+    provider_id: &str,
+) -> crate::surfaces::menu::ProviderStatusProjection {
+    use crate::surfaces::menu::{ProviderAvailabilityProjection, ProviderStatusProjection};
+
+    let credential = crate::route::CredentialLedger.probe(provider_id);
+    let display_name = provider_by_id(provider_id)
+        .map(|provider| provider.display_name.to_string())
+        .unwrap_or_else(|| provider_id.to_string());
+    let credential_available = credential.is_valid();
+    ProviderStatusProjection {
+        provider_id: provider_id.to_string(),
+        display_name,
+        credential_state: credential.summary(),
+        credential_available,
+        availability: if credential_available {
+            ProviderAvailabilityProjection::Available
+        } else {
+            ProviderAvailabilityProjection::MissingCredentials
+        },
+        remediation_command: (!credential_available).then(|| format!("/login {provider_id}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

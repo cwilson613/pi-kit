@@ -13,6 +13,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{OnceLock, RwLock};
 
 /// Complete observable state of the harness.
@@ -339,6 +340,79 @@ pub(crate) fn managed_memory_status_snapshot_for(path: &Path) -> ManagedMemorySt
         .ok()
         .and_then(|snapshots| snapshots.get(&key).cloned())
         .unwrap_or_default()
+}
+
+pub(crate) fn memory_federation_surface_observation(
+    cwd: &Path,
+) -> crate::surfaces::memory_status::MemoryFederationObservation {
+    use crate::surfaces::memory_status::{
+        GitSummary, MemoryAuthority, MemoryFederationObservation, MemoryIndexState,
+    };
+
+    let git_output = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    let git = git_output(&["rev-parse", "--show-toplevel"]).map(|root| GitSummary {
+        root: PathBuf::from(root),
+        branch: git_output(&["branch", "--show-current"]).filter(|value| !value.is_empty()),
+        dirty: git_output(&["status", "--porcelain"]).is_some_and(|value| !value.trim().is_empty()),
+    });
+    let root = git
+        .as_ref()
+        .map(|summary| summary.root.as_path())
+        .unwrap_or(cwd);
+    let lifecycle_signals = [
+        (root.join("AGENTS.md").exists(), "AGENTS.md"),
+        (root.join("openspec").is_dir(), "openspec"),
+        (root.join("CHANGELOG.md").exists(), "CHANGELOG.md"),
+        (root.join("docs").is_dir(), "docs"),
+    ]
+    .into_iter()
+    .filter(|(present, _)| *present)
+    .map(|(_, signal)| signal.to_string())
+    .collect();
+    let federation_signals = git_output(&["worktree", "list", "--porcelain"])
+        .map(|worktrees| {
+            worktrees
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count()
+        })
+        .filter(|count| *count > 1)
+        .map(|count| vec![format!("git-worktrees:{count}")])
+        .unwrap_or_default();
+    let managed = managed_memory_status_snapshot_for(root);
+    let memory_authority = match managed.authority {
+        crate::memory_service::ManagedMemoryAuthorityV1::GitJsonl { paths } => {
+            MemoryAuthority::GitJsonl { paths }
+        }
+        crate::memory_service::ManagedMemoryAuthorityV1::LocalIndexOnly => {
+            MemoryAuthority::LocalIndexOnly
+        }
+        crate::memory_service::ManagedMemoryAuthorityV1::None => MemoryAuthority::None,
+    };
+    let memory_index = match managed.index_state {
+        crate::memory_service::ManagedMemoryIndexStateV1::Fresh => MemoryIndexState::Fresh,
+        crate::memory_service::ManagedMemoryIndexStateV1::Stale => MemoryIndexState::Stale,
+        crate::memory_service::ManagedMemoryIndexStateV1::Missing => MemoryIndexState::Missing,
+        crate::memory_service::ManagedMemoryIndexStateV1::Unknown => MemoryIndexState::Unknown,
+    };
+    MemoryFederationObservation {
+        cwd: cwd.to_path_buf(),
+        git,
+        lifecycle_signals,
+        federation_signals,
+        memory_authority,
+        memory_index,
+    }
 }
 
 pub(crate) fn update_managed_memory_status(mut snapshot: ManagedMemoryStatusSnapshot) {

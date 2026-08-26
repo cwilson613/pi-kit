@@ -835,8 +835,8 @@ impl OmegonAcpAgent {
     ) -> Vec<SessionConfigOption> {
         let catalog = crate::model_catalog::ModelCatalog::discover();
         let preferences = crate::model_preferences::ModelMenuPreferences::load_default();
-        let projection =
-            crate::surfaces::model_menu::project_model_menu(&catalog, &preferences, current_model);
+        let snapshot = crate::model_catalog::model_menu_snapshot(&catalog, &preferences);
+        let projection = crate::surfaces::model_menu::project_model_menu(&snapshot, current_model);
         let mut model_options: Vec<SessionConfigSelectOption> = projection
             .favorite_groups
             .into_iter()
@@ -859,8 +859,7 @@ impl OmegonAcpAgent {
         // provider inventory and de-duplicating favorites.
         for provider in projection.providers {
             let Some(group) = crate::surfaces::model_menu::project_provider_inventory(
-                &catalog,
-                &preferences,
+                &snapshot,
                 current_model,
                 &provider.provider_id,
             ) else {

@@ -2014,13 +2014,15 @@ pub async fn status_view_response(
         &session_kind,
         &authorization,
     );
+    let bootstrap_markdown = crate::bootstrap_projection::render_bootstrap(&status, false);
     let projection = crate::surfaces::diagnostics::HarnessStatusProjection::new(
-        status,
+        serde_json::to_value(status).unwrap_or(serde_json::Value::Null),
         agent.runtime_generation,
         agent.session_id.clone(),
         agent.instance_id.clone(),
         settings.automation_level.as_str(),
         settings.automation_level.summary(),
+        bootstrap_markdown,
     );
     let mut panel = projection.render_markdown();
     if let Some(composition) = runtime_state.bus.composition_diagnostic_projection() {

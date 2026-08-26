@@ -9169,7 +9169,12 @@ fn settings_menu_renders_profile_source_and_drift_actions() {
 #[test]
 fn settings_profile_source_line_separates_source_from_full_path() {
     let path = std::path::PathBuf::from("/tmp/omegon-project/.omegon/profile.json");
-    let line = settings_profile_source_line(&crate::settings::ProfileSource::Project(path.clone()));
+    let line = settings_profile_source_line(&crate::surfaces::profile::ProfileSourceProjection {
+        kind: crate::surfaces::profile::ProfileSourceKind::Project,
+        path: Some(path.clone()),
+        label: "project".into(),
+        display: format!("project:{}", path.display()),
+    });
 
     assert_eq!(line, format!("profile: project · file: {}", path.display()));
     assert!(!line.contains("project:/tmp"));

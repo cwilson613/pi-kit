@@ -17,15 +17,27 @@ impl SettingsMenuInputs {
     }
 }
 
-pub(super) fn settings_profile_source_line(source: &crate::settings::ProfileSource) -> String {
-    match source {
-        crate::settings::ProfileSource::Project(path) => {
-            format!("profile: project · file: {}", path.display())
+pub(super) fn settings_profile_source_line(
+    source: &crate::surfaces::profile::ProfileSourceProjection,
+) -> String {
+    match source.kind {
+        crate::surfaces::profile::ProfileSourceKind::Project => format!(
+            "profile: project · file: {}",
+            source
+                .path
+                .as_deref()
+                .map_or("unknown".into(), |path| path.display().to_string())
+        ),
+        crate::surfaces::profile::ProfileSourceKind::User => format!(
+            "profile: user · file: {}",
+            source
+                .path
+                .as_deref()
+                .map_or("unknown".into(), |path| path.display().to_string())
+        ),
+        crate::surfaces::profile::ProfileSourceKind::BuiltInDefault => {
+            "profile: built-in defaults".to_string()
         }
-        crate::settings::ProfileSource::User(path) => {
-            format!("profile: user · file: {}", path.display())
-        }
-        crate::settings::ProfileSource::BuiltInDefault => "profile: built-in defaults".to_string(),
     }
 }
 

@@ -5,8 +5,6 @@
 //! operation progress. It is intentionally not a durable audit log; transcript
 //! segments remain the durable history.
 
-use crate::features::cleave::CleaveProgress;
-use crate::features::delegate::DelegateProgress;
 use crate::surfaces::layout::UiPresentationLevel;
 use crate::surfaces::operations::OperationWorkbenchProjection;
 
@@ -47,10 +45,9 @@ impl ActivitySurfaceProjection {
     pub fn for_level(
         level: UiPresentationLevel,
         tools: Vec<ActivityToolProjection>,
-        cleave: Option<&CleaveProgress>,
-        delegate: Option<&DelegateProgress>,
+        operation: Option<OperationWorkbenchProjection>,
     ) -> Self {
-        let mut projection = Self::from_parts(tools, cleave, delegate);
+        let mut projection = Self::from_parts(tools, operation);
         if level == UiPresentationLevel::Om {
             projection.entries = select_primary_om_entry(projection.entries);
         }
@@ -59,8 +56,7 @@ impl ActivitySurfaceProjection {
 
     pub fn from_parts(
         tools: Vec<ActivityToolProjection>,
-        cleave: Option<&CleaveProgress>,
-        delegate: Option<&DelegateProgress>,
+        operation: Option<OperationWorkbenchProjection>,
     ) -> Self {
         let mut entries = Vec::new();
         for tool in tools {
@@ -70,19 +66,11 @@ impl ActivitySurfaceProjection {
                 operation: None,
             });
         }
-        if let Some(cleave) = cleave.filter(|progress| progress.active) {
+        if let Some(operation) = operation {
             entries.push(ActivityEntryProjection {
                 kind: ActivityEntryKind::Operation,
                 tool: None,
-                operation: Some(OperationWorkbenchProjection::from_cleave(cleave)),
-            });
-        } else if let Some(delegate) =
-            delegate.filter(|progress| progress.active || progress.running > 0)
-        {
-            entries.push(ActivityEntryProjection {
-                kind: ActivityEntryKind::Operation,
-                tool: None,
-                operation: Some(OperationWorkbenchProjection::from_delegate(delegate)),
+                operation: Some(operation),
             });
         }
         Self { entries }

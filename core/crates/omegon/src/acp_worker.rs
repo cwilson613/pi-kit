@@ -1459,13 +1459,15 @@ async fn handle_control_request(
                     .unwrap_or("unknown"),
                 &operating_profile.authorization.summary(),
             );
+            let bootstrap_markdown = crate::bootstrap_projection::render_bootstrap(&harness, false);
             let mut output = crate::surfaces::diagnostics::HarnessStatusProjection::new(
-                harness,
+                serde_json::to_value(harness).unwrap_or(serde_json::Value::Null),
                 0,
                 workspace_ctx.session_id,
                 workspace_ctx.instance_id,
                 settings.automation_level.as_str(),
                 settings.automation_level.summary(),
+                bootstrap_markdown,
             )
             .render_markdown();
             if let Some(composition) = bus.composition_diagnostic_projection() {

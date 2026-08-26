@@ -3000,8 +3000,8 @@ mod tests {
         let generated = generate_schema_contract(&conn);
 
         assert_eq!(
-            on_disk.trim(),
-            generated.trim(),
+            on_disk.replace("\r\n", "\n").trim(),
+            generated.replace("\r\n", "\n").trim(),
             "schema-contract.json is stale. Regenerate with:\n  cargo test -p omegon-memory schema_contract_generate -- --ignored"
         );
     }

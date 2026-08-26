@@ -2011,12 +2011,12 @@ mod tests {
 
     #[test]
     fn traversal_and_symlink_escape_are_rejected() {
-        let temp = tempdir().unwrap();
+        let _temp = tempdir().unwrap();
         assert!(validate_subdir("../escape").is_err());
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(temp.path(), temp.path().join("linked")).unwrap();
-            assert!(validate_vault_root(&temp.path().join("linked")).is_err());
+            std::os::unix::fs::symlink(_temp.path(), _temp.path().join("linked")).unwrap();
+            assert!(validate_vault_root(&_temp.path().join("linked")).is_err());
         }
     }
 

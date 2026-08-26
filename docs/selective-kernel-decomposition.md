@@ -775,11 +775,25 @@ sub-operations, and strict settlement includes temporary and published file
 handles. Static traversal and symlink escape fail closed; hostile concurrent
 path replacement is not claimed as a filesystem sandbox.
 
-This remains an intermediate ownership checkpoint. Existing memory tools,
-context, status, lifecycle/session producers, embedding-result writers, and
-embedding backfill retain their compatibility backend until 6.1.9.4. Sole
-SQLite ownership and final direct-owner source guards are therefore not claimed
-yet.
+The 6.1.9.4 checkpoint removes the live compatibility backend. Memory tools,
+context, lifecycle ingestion, session-end episode and fact persistence,
+embedding-result writes, status projections, and one-shot embedding backfill
+now use the boot-captured exact-generation binding or a bounded managed
+composition. Production consumers do not open the project or global store.
+
+The host scopes durable operation identities to the canonical session and full
+semantic payload. Exact receipt replay does not depend on current fact state.
+Targeted mutations retain fact-version and mind preconditions. Session-end
+provider work runs in tracked bounded phases and joins before managed shutdown;
+vault synchronization starts only after successful provider-result submission.
+Embedding backfill streams insertion-stable pages and reports partial failure.
+
+Managed status output preserves project-root isolation, JSONL authority and
+index-freshness projections, and typed unavailable state. Session-local pins,
+context budgets, rendering, provider selection, and compaction remain host
+owned. Direct-owner source guards permit only the managed worker, tests, and
+explicit stopped-runtime migration. The portable persistence and surface
+campaign remains checkpoint 6.1.9.5.
 
 Compatibility includes the existing selected-root policy, persisted schema and
 wire vocabulary, SQLite/in-memory parity, retrieval and decay behavior, minds,

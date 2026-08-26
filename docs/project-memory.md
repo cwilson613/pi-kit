@@ -45,13 +45,14 @@ Project memory gives agents persistent knowledge across sessions. It operates at
 | `core/crates/omegon-memory/` | SQLite storage, JSONL sync, embeddings, search, episodes, and graph types |
 | `core/crates/omegon/src/embedding.rs` | Ollama embedding service used for hybrid search when reachable |
 | `core/crates/omegon/src/local_embedding.rs` | Optional ONNX embedding service compiled behind the `local-embeddings` feature |
-| `core/crates/omegon/src/setup.rs` | Wires memory storage, embedding service selection, and tool registration |
+| `core/crates/omegon/src/setup.rs` | Starts and captures the managed memory binding, selects embedding services, and registers tools |
 
 ## Design Decisions
 
 - **SQLite+WAL for storage, JSONL for git sync**: Database handles concurrent reads during extraction; JSONL enables cross-branch merging via git union strategy.
 - **Payload-bound operation replay**: Durable mutations can carry a stable operation identity. Exact replay returns the original compact effect; reuse with a different payload fails before mutation. Targeted changes use fact-version preconditions instead of one global store revision.
 - **Managed JSONL and Codex-vault synchronization**: One boot worker owns the selected project `facts.jsonl` and explicitly configured vault effects. Startup preserves empty-store, non-child JSONL bootstrap behavior. Bounded imports keep Lamport conflict rules and operation replay; deterministic exports and vault projections compare bytes before synced atomic replacement. Vault inputs are snapshotted before mutation, reject static traversal/symlink escape, and use stable note/fact lineage so unchanged, edited, moved, aliased, and repeated synchronization converges.
+- **Managed production consumers**: Tools, context, lifecycle ingestion, session-end persistence, status, provider-result writes, and embedding backfill use a boot-captured exact-generation binding or a bounded managed composition. The host retains session-local pins, context rendering, provider selection, extraction, and embedding computation. Tracked provider tasks settle before the memory worker shuts down.
 - **Governed schema v8 migration**: Startup migrates schemas v5-v7 before opening the store. Historical v5/v6 `default` records move to `legacy`; post-v7 `default` records move to `primensus`. Schema v8 persists operation receipts and complete episode metadata.
 - **Semantic search primary, FTS5 fallback**: Embeddings give better retrieval; FTS5 always works as a fallback. The current selection order is configured Ollama embedding service, optional local ONNX service, then FTS5-only recall.
 - **Pointer facts over inline details**: Facts reference files (`"X does Y. See path/to/file.ts"`) instead of inlining implementation details — keeps facts atomic and maintainable.

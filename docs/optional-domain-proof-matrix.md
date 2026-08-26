@@ -22,7 +22,7 @@ related = ["binary-composition-and-kernel-admission"]
 ## Authority
 
 The executable matrix is
-`openspec/changes/selective-kernel-decomposition/fixtures/optional-domain-proof-v1.toml`.
+`openspec/archive/2026-08-26-selective-kernel-decomposition/fixtures/optional-domain-proof-v1.toml`.
 Run `just check-optional-domain-isolation` to validate it. The checker requires
 each row to name its composition class, architecture evidence, executable
 absence and degradation tests, maintenance dependency exclusions, and public

@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX = (
     ROOT
-    / "openspec/changes/selective-kernel-decomposition/fixtures/optional-domain-proof-v1.toml"
+    / "openspec/archive/2026-08-26-selective-kernel-decomposition/fixtures/optional-domain-proof-v1.toml"
 )
 EXPECTED_DOMAINS = {
     "plans-work",

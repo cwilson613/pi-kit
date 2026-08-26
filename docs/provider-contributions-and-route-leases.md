@@ -37,7 +37,7 @@ discovered offering is executable.
   defines the broader identity and inventory model; this guide identifies the
   implemented subset.
 - The normative OpenSpec delta is
-  [provider routing: route contributions and leases](../openspec/changes/selective-kernel-decomposition/specs/provider-routing/leases.md).
+  [provider routing: route contributions and leases](../openspec/archive/2026-08-26-selective-kernel-decomposition/specs/provider-routing/leases.md).
 
 ## Provider contributions
 

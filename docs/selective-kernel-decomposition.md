@@ -1389,7 +1389,7 @@ and cursors without depending on missed broadcasts.
   compaction; the constitutional host axioms remain available.
 
 The versioned executable evidence for every optional Slice-6 domain is
-`openspec/changes/selective-kernel-decomposition/fixtures/optional-domain-proof-v1.toml`.
+`openspec/archive/2026-08-26-selective-kernel-decomposition/fixtures/optional-domain-proof-v1.toml`.
 `just check-optional-domain-isolation` verifies test symbols, architecture and
 public-documentation dispositions, maintenance dependency exclusions, and the
 absence of optional implementation tokens from selected constitutional

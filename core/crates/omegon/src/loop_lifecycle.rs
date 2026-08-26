@@ -85,10 +85,17 @@ async fn compact_from_request(
 ) {
     tracing::info!("Bus: tier 2 compaction requested by feature");
     let before_tokens = request.conversation.estimate_tokens() as u64;
-    let Some(selection) = request
+    let planning = request
         .context
-        .pressure_compaction_plan(request.conversation)
-    else {
+        .pressure_compaction_plan(
+            request.conversation.context_compaction_snapshot(),
+            request.cancellation.clone(),
+        )
+        .await;
+    let Some(selection) = planning.unwrap_or_else(|error| {
+        tracing::warn!(%error, "feature-requested compaction planning unavailable");
+        None
+    }) else {
         emit_compaction(
             request.events,
             compaction_event(

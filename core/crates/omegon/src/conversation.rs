@@ -833,6 +833,16 @@ impl ConversationState {
         &self.canonical
     }
 
+    pub(crate) fn context_compaction_snapshot(
+        &self,
+    ) -> crate::context_compaction_service::ContextCompactionSnapshotV1 {
+        crate::context_compaction_service::ContextCompactionSnapshotV1 {
+            messages: self.canonical.clone(),
+            current_turn: self.intent.stats.turns,
+            decay_window: self.decay_window as u32,
+        }
+    }
+
     pub fn set_slim_mode(&mut self, slim: bool) {
         self.slim_mode = slim;
     }

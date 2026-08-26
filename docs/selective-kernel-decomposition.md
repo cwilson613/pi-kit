@@ -827,6 +827,42 @@ tie ordering, JSONL rollback/idempotency, and episode metadata. Migration accept
 schemas v5-v7: v5/v6 `default` records remain quarantined in `legacy`, and v7
 `default` records reconcile to `primensus`.
 
+Slice 6.1.10 publishes context/compaction planning as the next managed lane.
+The optional boot-only `service:context-compaction` /
+`interface:omegon-context-compaction-v1` service receives an immutable copy of
+host-normalized canonical conversation entries. It returns only compaction
+eligibility, the selected keep window, evicted-entry count, compatibility
+reason, and provider payload. Normal pressure planning first uses the session's
+decay window and retains the existing four-turn pressure fallback. Overflow
+uses only the decay window. Manual compaction keeps the existing two-turn
+window.
+
+The service does not own session or provider authority. `ContextManager`,
+injection TTLs, prompt assembly, canonical conversation mutation, semantic
+compaction facts, supervisor admission, route leases, provider dispatch,
+metrics, and frontend events remain with their existing host owners. The
+service receives no authority handle, bridge, mutable conversation, event
+sender, or durable writer. Automatic and feature-requested loop paths plus
+manual interactive/daemon paths use one boot-captured handle. ACP transfers the
+same captured handle into its worker, as it does for the other managed service
+bindings.
+
+One strict generation-owned task worker provides bounded request serialization
+and cancellation settlement. Active calls drain for 30 seconds. Cleanup has one
+non-resetting five-second deadline and must join the queue worker before
+retirement. The captured handle retains capability, owner, and contribution
+generation identity; draining, degraded, and retired generations fail instead
+of switching implementations.
+
+If the optional service is absent, ordinary context assembly and unrelated
+turns remain available. Manual compaction reports typed unavailability.
+Automatic compaction does not fabricate a plan or call the removed direct
+planner. Existing host-owned bounded overflow repair can still discard a
+bounded history prefix when no managed plan exists. A source guard prohibits
+production direct planner calls and ambient context/compaction service lookup.
+The service changes no command syntax, configuration schema, durable session
+schema, frontend wire shape, public site contract, or canonical snippet.
+
 ## Selective decomposition map
 
 | Current subsystem | Target tier | First boundary to establish |
@@ -1301,8 +1337,11 @@ and cursors without depending on missed broadcasts.
   Transactional schema-v8 persistence, payload-bound replay, managed consumer
   cutover, native compatibility campaigns, direct-owner guards, and strict
   reopen/cleanup evidence are complete.
-- Convert context/compaction and Git integration to declared
-  in-process services.
+- Slice 6.1.10 publishes context/compaction planning as an optional managed
+  service. Session context, semantic authority, routes, and mutation remain
+  host-owned; all planning consumers use one exact-generation handle with typed
+  absence and no direct fallback.
+- Convert Git integration to a declared in-process service.
 - Remove concrete feature imports from semantic surfaces.
 - Unify native extension, MCP, and manifest discovery under the contribution
   graph while retaining transport-specific adapters.

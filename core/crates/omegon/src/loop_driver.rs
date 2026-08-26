@@ -26,6 +26,7 @@ pub(crate) struct LoopCompatibilityBindings {
     pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
     pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
     pub(crate) memory_binding: crate::memory_service::MemoryBinding,
+    pub(crate) context_compaction: crate::context_compaction_service::ContextCompactionBinding,
 }
 
 impl Default for LoopCompatibilityBindings {
@@ -42,6 +43,7 @@ impl Default for LoopCompatibilityBindings {
             work_snapshot: None,
             behavior_policy: None,
             memory_binding: Default::default(),
+            context_compaction: Default::default(),
         }
     }
 }
@@ -442,14 +444,16 @@ pub(crate) trait LoopContextContract: Send {
     fn messages(&self, conversation: &ConversationState) -> Vec<crate::bridge::LlmMessage>;
     fn default_composition(&self, context_window: usize) -> omegon_traits::ContextComposition;
     fn record_activity(&mut self, calls: &[crate::conversation::ToolCall]);
-    fn pressure_compaction_plan(
+    async fn pressure_compaction_plan(
         &self,
-        conversation: &ConversationState,
-    ) -> Option<crate::loop_context::LoopCompactionPlan>;
-    fn overflow_compaction_plan(
+        snapshot: crate::context_compaction_service::ContextCompactionSnapshotV1,
+        cancellation: CancellationToken,
+    ) -> anyhow::Result<Option<crate::loop_context::LoopCompactionPlan>>;
+    async fn overflow_compaction_plan(
         &self,
-        conversation: &ConversationState,
-    ) -> Option<crate::loop_context::LoopCompactionPlan>;
+        snapshot: crate::context_compaction_service::ContextCompactionSnapshotV1,
+        cancellation: CancellationToken,
+    ) -> anyhow::Result<Option<crate::loop_context::LoopCompactionPlan>>;
     fn begin_compaction(
         &self,
         plan: &crate::loop_context::LoopCompactionPlan,
@@ -945,18 +949,26 @@ impl LoopContextContract for LoopContextPort<'_> {
         self.adapter.record_activity(calls);
     }
 
-    fn pressure_compaction_plan(
+    async fn pressure_compaction_plan(
         &self,
-        conversation: &ConversationState,
-    ) -> Option<crate::loop_context::LoopCompactionPlan> {
-        self.adapter.pressure_compaction_plan(conversation)
+        snapshot: crate::context_compaction_service::ContextCompactionSnapshotV1,
+        cancellation: CancellationToken,
+    ) -> anyhow::Result<Option<crate::loop_context::LoopCompactionPlan>> {
+        self.adapter
+            .pressure_compaction_plan(snapshot, cancellation)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))
     }
 
-    fn overflow_compaction_plan(
+    async fn overflow_compaction_plan(
         &self,
-        conversation: &ConversationState,
-    ) -> Option<crate::loop_context::LoopCompactionPlan> {
-        self.adapter.overflow_compaction_plan(conversation)
+        snapshot: crate::context_compaction_service::ContextCompactionSnapshotV1,
+        cancellation: CancellationToken,
+    ) -> anyhow::Result<Option<crate::loop_context::LoopCompactionPlan>> {
+        self.adapter
+            .overflow_compaction_plan(snapshot, cancellation)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))
     }
 
     fn begin_compaction(
@@ -1579,7 +1591,10 @@ impl<'a> LoopDriverTurn<'a> {
                 active_options: std::sync::Mutex::new(None),
             },
             context: LoopContextPort {
-                adapter: crate::loop_context::LoopContextCompatibilityAdapter::new(context),
+                adapter: crate::loop_context::LoopContextCompatibilityAdapter::new(
+                    context,
+                    config.compatibility.context_compaction.clone(),
+                ),
             },
             invocations: LoopInvocationPort::for_loop(bus, config),
             config,

@@ -63,6 +63,8 @@ pub struct AgentSetup {
     pub(crate) lifecycle_binding: crate::lifecycle_service::LifecycleBinding,
     /// Boot-captured exact-generation memory service binding.
     pub(crate) memory_binding: crate::memory_service::MemoryBinding,
+    /// Boot-captured exact-generation context/compaction planning binding.
+    pub(crate) context_compaction: crate::context_compaction_service::ContextCompactionBinding,
     /// Stable session id for the current live conversation. Fresh sessions
     /// get a generated id at startup; resumed sessions reuse their saved id.
     pub session_id: String,
@@ -799,6 +801,11 @@ impl AgentSetup {
         bus.register(Box::new(
             features::behavior_policy::BehaviorPolicyFeature::default(),
         ));
+        let context_compaction =
+            crate::context_compaction_service::ContextCompactionBinding::default();
+        bus.register(Box::new(
+            crate::context_compaction_service::ContextCompactionFeature,
+        ));
 
         // ─── Sandbox setting (read once, shared by cleave + delegate) ──
         let sandbox = settings
@@ -1130,6 +1137,13 @@ impl AgentSetup {
                 "managed lifecycle startup failed; lifecycle tools remain declared but unavailable"
             ),
         }
+        match crate::context_compaction_service::start_candidate().await {
+            Ok(candidate) => bus.stage_managed_generation("context-compaction", candidate)?,
+            Err(error) => tracing::warn!(
+                %error,
+                "context/compaction startup failed; compaction planning is unavailable"
+            ),
+        }
         if let Some(project_path) = db_path.clone() {
             let global_path = Some(crate::paths::user_config_dir().join("global-memory.db"))
                 .filter(|path| path.is_file());
@@ -1204,6 +1218,9 @@ impl AgentSetup {
             return Err(managed_setup_error(&mut bus, error).await);
         }
         if let Err(error) = memory_binding.capture(&bus) {
+            return Err(managed_setup_error(&mut bus, error).await);
+        }
+        if let Err(error) = context_compaction.capture(&bus) {
             return Err(managed_setup_error(&mut bus, error).await);
         }
         if memory_binding.available() {
@@ -1761,6 +1778,7 @@ impl AgentSetup {
             behavior_policy,
             lifecycle_binding: lifecycle_binding.clone(),
             memory_binding: memory_binding.clone(),
+            context_compaction: context_compaction.clone(),
             session_id,
             session_view_binding,
             instance_id,
@@ -2568,6 +2586,81 @@ mod tests {
                 "memory feature retained forbidden owner or detached task: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn production_compaction_consumers_have_no_direct_planner_or_ambient_lookup() {
+        fn visit(directory: &Path, findings: &mut Vec<String>) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(&path, findings);
+                    continue;
+                }
+                if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap()
+                    .to_string_lossy();
+                if matches!(
+                    relative.as_ref(),
+                    "src/context_compaction_service.rs" | "src/conversation.rs"
+                ) {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let production = source
+                    .split_once("#[cfg(test)]\nmod tests")
+                    .map_or(source.as_str(), |(production, _)| production);
+                for forbidden in [
+                    ".build_compaction_payload(",
+                    ".build_compaction_payload_keeping_recent(",
+                    "managed_service::<ContextCompactionService>",
+                ] {
+                    if production.contains(forbidden) {
+                        findings.push(format!("{relative}: {forbidden}"));
+                    }
+                }
+            }
+        }
+
+        let mut findings = Vec::new();
+        visit(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut findings,
+        );
+        assert!(
+            findings.is_empty(),
+            "direct context/compaction planning bypasses: {findings:?}"
+        );
+
+        for (source, marker) in [
+            (
+                include_str!("interactive_coordinator.rs"),
+                "loop_config.compatibility.context_compaction = runtime_state.context_compaction.clone()",
+            ),
+            (
+                include_str!("acp_worker.rs"),
+                "context_compaction: agent_setup.context_compaction.clone()",
+            ),
+            (
+                include_str!("sentry/executor.rs"),
+                "loop_config.compatibility.context_compaction = agent.context_compaction.clone()",
+            ),
+        ] {
+            assert!(
+                source.contains(marker),
+                "normal loop host lost boot-captured context/compaction binding: {marker}"
+            );
+        }
+        let main = include_str!("main.rs");
+        assert!(
+            main.matches("compatibility.context_compaction").count() >= 3,
+            "daemon, headless, and bounded main hosts must transfer the captured binding"
+        );
     }
 
     #[tokio::test]

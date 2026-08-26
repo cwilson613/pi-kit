@@ -989,6 +989,7 @@ async fn run_agent_task(
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
     loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
     loop_config.compatibility.memory_binding = agent.memory_binding.clone();
+    loop_config.compatibility.context_compaction = agent.context_compaction.clone();
 
     let bridge = match crate::bootstrap::resolve_bridge_or_bail(model).await {
         Ok(bridge) => bridge,

@@ -159,6 +159,8 @@ pub(crate) struct InteractiveAgentState {
     pub(crate) work_snapshot: Option<std::sync::Arc<styrene_work_runtime::WorkSnapshot>>,
     pub(crate) behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
     pub(crate) memory_binding: crate::memory_service::MemoryBinding,
+    pub(crate) context_compaction:
+        crate::context_compaction_service::ContextCompactionBinding,
 }
 
 pub(crate) struct InteractiveAgentHost {
@@ -217,6 +219,7 @@ fn split_interactive_agent(
         work_snapshot: agent.work_snapshot,
         behavior_policy: agent.behavior_policy,
         memory_binding: agent.memory_binding,
+        context_compaction: agent.context_compaction,
     };
     (host, state)
 }
@@ -307,6 +310,7 @@ async fn run_interactive_active_turn(
     loop_config.compatibility.work_snapshot = runtime_state.work_snapshot.clone();
     loop_config.compatibility.behavior_policy = runtime_state.behavior_policy.clone();
     loop_config.compatibility.memory_binding = runtime_state.memory_binding.clone();
+    loop_config.compatibility.context_compaction = runtime_state.context_compaction.clone();
 
     if active.prompt.image_paths.is_empty() {
         runtime_state

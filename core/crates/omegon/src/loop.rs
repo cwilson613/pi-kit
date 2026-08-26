@@ -342,7 +342,16 @@ pub(crate) async fn run_release_coupled(
             } else {
                 omegon_traits::ContextCompactionTrigger::AutoTier2
             };
-            if let Some(selection) = context_contract.pressure_compaction_plan(conversation) {
+            let compaction_plan = context_contract
+                .pressure_compaction_plan(
+                    conversation.context_compaction_snapshot(),
+                    cancel.clone(),
+                )
+                .await;
+            if let Err(error) = &compaction_plan {
+                tracing::warn!(%error, "context compaction planning unavailable");
+            }
+            if let Ok(Some(selection)) = compaction_plan {
                 let evict_count = selection.evict_count;
                 let fallback_reason = selection.reason.clone();
                 tracing::info!(
@@ -528,7 +537,16 @@ pub(crate) async fn run_release_coupled(
                             message: "Context overflow — compacting conversation and retrying…".into(),
                         });
                         let before_tokens = conversation.estimate_tokens() as u64;
-                        if let Some(plan) = context_contract.overflow_compaction_plan(conversation) {
+                        let overflow_plan = context_contract
+                            .overflow_compaction_plan(
+                                conversation.context_compaction_snapshot(),
+                                cancel.clone(),
+                            )
+                            .await;
+                        if let Err(error) = &overflow_plan {
+                            tracing::warn!(%error, "overflow compaction planning unavailable");
+                        }
+                        if let Ok(Some(plan)) = overflow_plan {
                             let evict_count = plan.evict_count;
                             tracing::info!(evict_count, "Emergency compaction: evicting messages");
                             emit_context_compaction_event(events, context_compaction_event(

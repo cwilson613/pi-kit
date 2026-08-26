@@ -6,8 +6,6 @@ use crate::conversation::{ConversationState, ToolCall};
 use crate::r#loop::LoopConfig;
 use crate::util::estimate_chars_to_tokens;
 
-const AUTO_PRESSURE_COMPACTION_KEEP_RECENT_TURNS: u32 = 4;
-
 #[derive(Debug, Clone)]
 pub(crate) struct LoopContextWindows {
     pub(crate) provider_window: usize,
@@ -27,26 +25,22 @@ pub(crate) struct LoopContextUpdate {
     pub(crate) thinking_level: String,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum CompactionApplication {
-    DecayWindow,
-    KeepRecent(u32),
-}
-
-pub(crate) struct LoopCompactionPlan {
-    pub(crate) payload: String,
-    pub(crate) evict_count: usize,
-    pub(crate) reason: Option<String>,
-    application: CompactionApplication,
-}
+pub(crate) type LoopCompactionPlan = crate::context_compaction_service::ContextCompactionPlanV1;
 
 pub(crate) struct LoopContextCompatibilityAdapter<'a> {
     manager: &'a mut ContextManager,
+    compaction: crate::context_compaction_service::ContextCompactionBinding,
 }
 
 impl<'a> LoopContextCompatibilityAdapter<'a> {
-    pub(crate) fn new(manager: &'a mut ContextManager) -> Self {
-        Self { manager }
+    pub(crate) fn new(
+        manager: &'a mut ContextManager,
+        compaction: crate::context_compaction_service::ContextCompactionBinding,
+    ) -> Self {
+        Self {
+            manager,
+            compaction,
+        }
     }
 
     pub(crate) fn resolve_windows(&mut self, config: &LoopConfig) -> LoopContextWindows {
@@ -150,44 +144,42 @@ impl<'a> LoopContextCompatibilityAdapter<'a> {
         self.manager.update_phase_from_activity(calls);
     }
 
-    pub(crate) fn pressure_compaction_plan(
+    pub(crate) async fn pressure_compaction_plan(
         &self,
-        conversation: &ConversationState,
-    ) -> Option<LoopCompactionPlan> {
-        if let Some((payload, evict_count)) = conversation.build_compaction_payload() {
-            return Some(LoopCompactionPlan {
-                payload,
-                evict_count,
-                reason: None,
-                application: CompactionApplication::DecayWindow,
-            });
-        }
-        conversation
-            .build_compaction_payload_keeping_recent(AUTO_PRESSURE_COMPACTION_KEEP_RECENT_TURNS)
-            .map(|(payload, evict_count)| LoopCompactionPlan {
-                payload,
-                evict_count,
-                reason: Some(format!(
-                    "no decay-window payload; compacting under token pressure with keep_recent_turns={AUTO_PRESSURE_COMPACTION_KEEP_RECENT_TURNS}"
-                )),
-                application: CompactionApplication::KeepRecent(
-                    AUTO_PRESSURE_COMPACTION_KEEP_RECENT_TURNS,
-                ),
-            })
+        snapshot: crate::context_compaction_service::ContextCompactionSnapshotV1,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> Result<
+        Option<LoopCompactionPlan>,
+        omegon_traits::ManagedServiceCallError<
+            crate::context_compaction_service::ContextCompactionServiceErrorV1,
+        >,
+    > {
+        self.compaction
+            .plan(
+                snapshot,
+                crate::context_compaction_service::ContextCompactionModeV1::Pressure,
+                cancellation,
+            )
+            .await
     }
 
-    pub(crate) fn overflow_compaction_plan(
+    pub(crate) async fn overflow_compaction_plan(
         &self,
-        conversation: &ConversationState,
-    ) -> Option<LoopCompactionPlan> {
-        conversation
-            .build_compaction_payload()
-            .map(|(payload, evict_count)| LoopCompactionPlan {
-                payload,
-                evict_count,
-                reason: None,
-                application: CompactionApplication::DecayWindow,
-            })
+        snapshot: crate::context_compaction_service::ContextCompactionSnapshotV1,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> Result<
+        Option<LoopCompactionPlan>,
+        omegon_traits::ManagedServiceCallError<
+            crate::context_compaction_service::ContextCompactionServiceErrorV1,
+        >,
+    > {
+        self.compaction
+            .plan(
+                snapshot,
+                crate::context_compaction_service::ContextCompactionModeV1::Overflow,
+                cancellation,
+            )
+            .await
     }
 
     pub(crate) fn apply_compaction(
@@ -197,8 +189,12 @@ impl<'a> LoopContextCompatibilityAdapter<'a> {
         summary: String,
     ) {
         match plan.application {
-            CompactionApplication::DecayWindow => conversation.apply_compaction(summary),
-            CompactionApplication::KeepRecent(turns) => {
+            crate::context_compaction_service::ContextCompactionApplicationV1::DecayWindow => {
+                conversation.apply_compaction(summary);
+            }
+            crate::context_compaction_service::ContextCompactionApplicationV1::KeepRecent(
+                turns,
+            ) => {
                 conversation.apply_compaction_keeping_recent(summary, turns);
             }
         }
@@ -441,55 +437,9 @@ mod tests {
     }
 
     #[test]
-    fn pressure_compaction_falls_back_before_decay_window() {
-        let mut manager = ContextManager::new(String::new(), vec![]);
-        let adapter = LoopContextCompatibilityAdapter::new(&mut manager);
-        let mut conversation = ConversationState::new();
-        conversation.push_user("turn zero context".into());
-        conversation.intent.stats.turns = 1;
-        conversation.push_user("turn one context".into());
-        conversation.intent.stats.turns = 6;
-        conversation.push_user("recent context".into());
-
-        let plan = adapter
-            .pressure_compaction_plan(&conversation)
-            .expect("pressure plan");
-
-        assert_eq!(plan.evict_count, 2);
-        assert!(plan.payload.contains("turn zero context"));
-        assert!(plan.payload.contains("turn one context"));
-        assert!(!plan.payload.contains("recent context"));
-        assert!(plan.reason.is_some());
-    }
-
-    #[test]
-    fn pressure_compaction_prefers_decay_window_and_applies_summary() {
-        let mut manager = ContextManager::new(String::new(), vec![]);
-        let adapter = LoopContextCompatibilityAdapter::new(&mut manager);
-        let mut conversation = ConversationState::new();
-        conversation.push_user("very old context".into());
-        conversation.intent.stats.turns = 99;
-        conversation.push_user("recent context".into());
-
-        let plan = adapter
-            .pressure_compaction_plan(&conversation)
-            .expect("pressure plan");
-        assert_eq!(plan.evict_count, 1);
-        assert!(plan.reason.is_none());
-
-        adapter.apply_compaction(&mut conversation, plan, "retained summary".into());
-
-        let replay = conversation.build_llm_view();
-        assert!(replay.iter().any(|message| {
-            matches!(message, LlmMessage::User { content, .. } if content.contains("retained summary"))
-        }));
-        assert_eq!(conversation.intent.stats.compactions, 1);
-    }
-
-    #[test]
     fn malformed_history_repair_is_bounded_and_keeps_a_legal_view() {
         let mut manager = ContextManager::new(String::new(), vec![]);
-        let adapter = LoopContextCompatibilityAdapter::new(&mut manager);
+        let adapter = LoopContextCompatibilityAdapter::new(&mut manager, Default::default());
         let mut conversation = ConversationState::new();
         conversation.push_user("oldest".into());
         conversation.push_user("middle".into());
@@ -505,7 +455,7 @@ mod tests {
     #[test]
     fn overflow_repair_without_compaction_plan_decays_exactly_half_the_history() {
         let mut manager = ContextManager::new(String::new(), vec![]);
-        let adapter = LoopContextCompatibilityAdapter::new(&mut manager);
+        let adapter = LoopContextCompatibilityAdapter::new(&mut manager, Default::default());
         let mut conversation = ConversationState::new();
         for message in ["oldest", "older", "recent", "newest"] {
             conversation.push_user(message.into());
@@ -531,7 +481,7 @@ mod tests {
             ..LoopConfig::default()
         };
         let mut manager = ContextManager::new(String::new(), vec![]);
-        let mut adapter = LoopContextCompatibilityAdapter::new(&mut manager);
+        let mut adapter = LoopContextCompatibilityAdapter::new(&mut manager, Default::default());
 
         let windows = adapter.resolve_windows(&config);
 

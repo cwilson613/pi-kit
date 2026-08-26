@@ -904,6 +904,7 @@ async fn worker_loop(
                         work_snapshot: work_snapshot.clone(),
                         behavior_policy: behavior_policy.clone(),
                         memory_binding: agent_setup.memory_binding.clone(),
+                        context_compaction: agent_setup.context_compaction.clone(),
                         ..Default::default()
                     },
                     cancel_keeps_prompt: None,

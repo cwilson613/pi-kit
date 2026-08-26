@@ -20,6 +20,8 @@ This change remains `proposed` overall. Slices 0 through 5 are complete; optiona
 
 Slice 6.1.9 is complete. Memory persistence, filesystem synchronization, and production consumers now use one managed durable service with strict settlement and typed absence. Its portable campaign and direct-owner/write source guard pass on macOS, Ubuntu, and Windows in GitHub Actions run `32936194406` at `a4b14499`.
 
+Slice 6.1.10 completes context/compaction as a managed deterministic-planning lane. The service receives immutable host-normalized conversation entries and owns only eligibility, keep-window selection, evicted-entry counts, reasons, and provider-payload formatting. Session-owned `ContextManager` state, canonical conversation mutation, semantic compaction authority, supervisor admission, provider routing, metrics, and frontend events remain outside the service. This boundary is optional, boot-captured, exact-generation, cancellation-aware, and backed by one strict task worker; absence never triggers ambient lookup or direct planner fallback. Git remains the only unfinished task-6.1 domain.
+
 ## Architectural layers
 
 ### Constitutional kernel

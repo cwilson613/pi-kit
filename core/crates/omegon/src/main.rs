@@ -123,6 +123,7 @@ mod catalog;
 mod checkpoint;
 mod child_agent;
 mod codescan_service;
+mod context_compaction_service;
 mod contribution_loading;
 mod conversation;
 mod eval;
@@ -2122,6 +2123,7 @@ struct DefaultSession {
     work_snapshot: Option<Arc<styrene_work_runtime::WorkSnapshot>>,
     behavior_policy: Option<crate::behavior::BehaviorPolicyBinding>,
     memory_binding: crate::memory_service::MemoryBinding,
+    context_compaction: crate::context_compaction_service::ContextCompactionBinding,
 }
 
 /// Type alias for the shared session state. `None` means a turn is in progress.
@@ -2367,6 +2369,7 @@ async fn run_daemon_turn(
         config.compatibility.work_snapshot = state.work_snapshot.clone();
         config.compatibility.behavior_policy = state.behavior_policy.clone();
         config.compatibility.memory_binding = state.memory_binding.clone();
+        config.compatibility.context_compaction = state.context_compaction.clone();
 
         state.conversation.push_user(active.prompt.text);
 
@@ -2950,6 +2953,7 @@ async fn run_embedded_command(
             work_snapshot: agent.work_snapshot,
             behavior_policy: agent.behavior_policy,
             memory_binding: agent.memory_binding,
+            context_compaction: agent.context_compaction,
         }))),
         supervisor: Arc::new(tokio::sync::Mutex::new(daemon_supervisor)),
         active_cancel: Arc::new(std::sync::Mutex::new(None)),
@@ -6059,8 +6063,16 @@ fn build_tui_secret_readiness_snapshot(
                         ..Default::default()
                     }
                 };
-                if let Some((payload, _evict_count)) = runtime_state.conversation.build_compaction_payload()
-                {
+                let planning = runtime_state
+                    .context_compaction
+                    .plan(
+                        runtime_state.conversation.context_compaction_snapshot(),
+                        context_compaction_service::ContextCompactionModeV1::Pressure,
+                        CancellationToken::new(),
+                    )
+                    .await;
+                if let Ok(Some(plan)) = planning {
+                    let payload = plan.payload;
                     match session_execution::boot_execution_binding()
                         .compact(bridge_guard.as_ref(), &payload, &stream_options)
                         .await
@@ -6128,6 +6140,10 @@ fn build_tui_secret_readiness_snapshot(
                             });
                         }
                     }
+                } else if let Err(error) = planning {
+                    let _ = events_tx.send(AgentEvent::SystemNotification {
+                        message: format!("Compaction unavailable: {error:?}"),
+                    });
                 } else {
                     let _ = events_tx.send(AgentEvent::SystemNotification {
                         message: "Nothing eligible to compact yet — compaction only summarizes older turns after the decay window.".into(),
@@ -7939,6 +7955,7 @@ async fn run_agent_command(cli: &Cli, usage_json: Option<PathBuf>) -> anyhow::Re
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
     loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
     loop_config.compatibility.memory_binding = agent.memory_binding.clone();
+    loop_config.compatibility.context_compaction = agent.context_compaction.clone();
 
     let resolved_provider = providers::resolve_execution_provider(&cli.model).await;
     tracing::info!(
@@ -9957,6 +9974,7 @@ async fn run_bounded_task(
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
     loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
     loop_config.compatibility.memory_binding = agent.memory_binding.clone();
+    loop_config.compatibility.context_compaction = agent.context_compaction.clone();
 
     let bridge =
         match bootstrap::resolve_bridge_or_bail_with_secrets(model, Some(agent.secrets.as_ref()))
@@ -10499,6 +10517,7 @@ mod tests {
             behavior_policy: None,
             lifecycle_binding: crate::lifecycle_service::LifecycleBinding::default(),
             memory_binding: crate::memory_service::MemoryBinding::default(),
+            context_compaction: Default::default(),
             session_id: "test-session".into(),
             session_view_binding: crate::session_consumers::SessionViewBinding::new(
                 cwd.join("test-session.json"),
@@ -10566,6 +10585,7 @@ mod tests {
             work_snapshot: setup.work_snapshot,
             behavior_policy: setup.behavior_policy,
             memory_binding: setup.memory_binding,
+            context_compaction: setup.context_compaction,
         }));
         let retained = state.clone();
 
@@ -10967,6 +10987,7 @@ mod tests {
             work_snapshot: setup.work_snapshot,
             behavior_policy: setup.behavior_policy,
             memory_binding: setup.memory_binding,
+            context_compaction: setup.context_compaction,
         }));
         let _guard = state.lock().await;
 
@@ -12701,6 +12722,7 @@ mod tests {
             work_snapshot: None,
             behavior_policy: None,
             memory_binding: Default::default(),
+            context_compaction: Default::default(),
         };
         runtime_state
             .conversation
@@ -12756,6 +12778,7 @@ mod tests {
             ),
             behavior_policy: None,
             memory_binding: Default::default(),
+            context_compaction: Default::default(),
         };
         runtime_state
             .conversation

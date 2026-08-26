@@ -425,6 +425,49 @@ Then migration remains a non-concurrent maintenance owner
 And embedding backfill uses a bounded managed memory composition that shuts down before exit
 And neither path can bypass an active memory generation
 
+### Requirement: Context compaction planning is an optional managed service
+
+The release-coupled context/compaction implementation must publish `service:context-compaction` / `interface:omegon-context-compaction-v1` as an optional boot-only managed service. The service must select compaction eligibility, keep windows, evicted-entry counts, and provider payloads only from immutable host-normalized conversation entries. Consumers must use one boot-captured generation-tagged handle and must not perform ambient registry lookup or call a direct compaction planner after cutover.
+
+`ContextManager`, prompt and injection state, canonical conversation mutation, semantic compaction facts, supervisor admission, provider route selection and dispatch, context metrics, and frontend events must remain session or host owned. The service must not receive a session authority handle, provider bridge, mutable conversation, frontend sender, or durable writer.
+
+#### Scenario: Context compaction service is present
+Given an accepted context/compaction generation was captured at boot
+When automatic pressure, provider overflow, a feature request, or a manual command asks for a compaction plan
+Then the consumer invokes the same exact-generation handle with immutable host-normalized conversation entries
+And the returned eligibility, keep window, evicted-entry count, reason, and provider payload preserve existing compaction behavior
+And the host alone admits semantic compaction, dispatches the provider, applies or repairs conversation state, and publishes metrics and events
+
+#### Scenario: Context compaction service is absent
+Given the optional context/compaction service is unavailable at boot
+When ordinary context assembly or a compaction trigger executes
+Then ordinary prompt assembly and unrelated turns remain available
+And manual compaction returns typed unavailable state
+And automatic consumers do not fabricate a plan, service owner, or generation
+And host-owned bounded emergency history repair may continue without an ambient lookup or direct planner fallback
+
+#### Scenario: Context compaction call is cancelled
+Given a planning request is queued or active under one accepted generation
+When caller or generation cancellation occurs
+Then the request returns typed cancellation or managed generation state
+And no provider call, semantic compaction fact, conversation mutation, metric, or frontend event is performed by the service
+And managed call accounting settles before retirement
+
+#### Scenario: Context compaction generation shuts down
+Given the context/compaction generation owns one strict task worker
+When managed shutdown closes admission
+Then active calls receive one 30-second drain deadline
+And cleanup receives one non-resetting 5-second deadline
+And the request queue and worker stop and join before retirement
+And a stale captured handle reports draining, degraded, or retired state instead of switching to another generation
+
+#### Scenario: Two sessions share context compaction implementation policy
+Given two sessions use handles for the same accepted context/compaction generation
+When they have different prompt injections, TTLs, conversation histories, routes, or semantic frontiers
+Then each request contains only its host-normalized immutable conversation snapshot
+And each session retains independent context, conversation, provider, and semantic authority
+And the service retains no session state between requests
+
 ### Requirement: Behavior policy is a stateless optional service
 
 The release-coupled behavior-policy implementation must publish `service:behavior-policy` / `interface:omegon-behavior-policy-v1` as an optional synchronous in-process service with strict no-resource teardown. Its object-safe contract may consume immutable host-normalized per-turn policy views and return only advisory unpinned task-mode inference, phase, drift, progress/evidence, pressure, pressure/meta-message, substantive-prose, and pathological-meta-response decisions. It must not retain conversation, tool, controller, frontend, or durable-session state. Session and host owners retain explicit operator mode parsing and correction recovery, declared tool capabilities, authoritative observation normalization, `IntentDocument`, persisted task mode, controller streaks, stuck/dead-mouse/meta counters, tool execution, event emission, and nudge insertion. Dynamic tool declarations and normalized observations are caller input rather than boot-cached service state.

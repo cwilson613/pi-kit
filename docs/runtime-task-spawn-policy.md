@@ -246,6 +246,16 @@ This is not a silent detached-task hazard.
 This worker is not a best-effort task. The managed-service lifecycle retains ownership until
 strict cleanup has positive settlement evidence.
 
+#### `core/crates/omegon/src/context_compaction_service.rs`
+
+- one serial generation-owned worker plans compaction from immutable host input
+- managed call admission carries queued and active cancellation
+- strict cleanup stops and joins the worker before retirement
+- the worker owns no session authority, provider task, or durable writer
+
+This worker exists to provide exact-generation admission and settlement. The
+session host remains the only owner of context state and compaction effects.
+
 ### Startup / host ownership in `main.rs`
 
 Some remaining spawn sites in `main.rs` are top-level host/runtime tasks where:
@@ -360,6 +370,7 @@ Completed migrations include:
 - advisory/background tasks (version check, plugin telemetry, auth refresh,
   delegate simulation, update check)
 - generation-owned codescan worker with managed call drain and strict cleanup
+- generation-owned context/compaction planner with managed cancellation and strict cleanup
 - provider stream parser tasks
 
 Future work should apply this policy to new runtime code by default rather than

@@ -2523,8 +2523,6 @@ fn context_status_projection(
         ))
 }
 
-const MANUAL_COMPACTION_KEEP_RECENT_TURNS: u32 = 2;
-
 pub async fn context_compact_response(
     runtime_state: &mut InteractiveAgentState,
     agent: &mut InteractiveAgentHost,
@@ -2544,10 +2542,26 @@ pub async fn context_compact_response(
         }
     };
     let before_tokens = runtime_state.conversation.estimate_tokens() as u64;
-    if let Some((payload, evict_count)) = runtime_state
-        .conversation
-        .build_compaction_payload_keeping_recent(MANUAL_COMPACTION_KEEP_RECENT_TURNS)
-    {
+    let planning = runtime_state
+        .context_compaction
+        .plan(
+            runtime_state.conversation.context_compaction_snapshot(),
+            crate::context_compaction_service::ContextCompactionModeV1::Manual,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+    let plan = match planning {
+        Ok(plan) => plan,
+        Err(error) => {
+            return SlashCommandResponse {
+                accepted: false,
+                output: Some(format!("Compression unavailable: {error:?}")),
+            };
+        }
+    };
+    if let Some(plan) = plan {
+        let payload = plan.payload;
+        let evict_count = plan.evict_count;
         let authority_compaction = match (
             invocation_scope.authority.clone(),
             invocation_scope.turn_id,
@@ -2616,9 +2630,10 @@ pub async fn context_compact_response(
         match compact_result {
             Ok(summary) => {
                 let summary_chars = summary.chars().count();
-                runtime_state
-                    .conversation
-                    .apply_compaction_keeping_recent(summary, MANUAL_COMPACTION_KEEP_RECENT_TURNS);
+                runtime_state.conversation.apply_compaction_keeping_recent(
+                    summary,
+                    crate::context_compaction_service::MANUAL_KEEP_RECENT_TURNS,
+                );
                 let est = runtime_state.conversation.estimate_tokens();
                 let settings = shared_settings.lock().unwrap();
                 if let Ok(mut metrics) = agent.context_metrics.lock() {
@@ -6320,6 +6335,8 @@ mod context_compaction_tests {
             work_snapshot: None,
             behavior_policy: None,
             memory_binding: Default::default(),
+            context_compaction:
+                crate::context_compaction_service::ContextCompactionBinding::direct_for_test(),
         }
     }
 
@@ -6420,6 +6437,8 @@ mod context_compaction_tests {
             work_snapshot: None,
             behavior_policy: None,
             memory_binding: Default::default(),
+            context_compaction:
+                crate::context_compaction_service::ContextCompactionBinding::direct_for_test(),
         };
         let mut agent = test_agent();
         let settings = crate::settings::shared("test:model");

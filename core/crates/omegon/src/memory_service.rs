@@ -2584,6 +2584,7 @@ mod tests {
         let jsonl = dir.path().join("facts.jsonl");
         let file = std::fs::File::create(&jsonl).unwrap();
         file.set_len(MAX_JSONL_BYTES + 1).unwrap();
+        drop(file);
         let mut config = worker_config(project, None);
         config.startup_sync_enabled = false;
         let (mut bus, handle) = managed_service_with_config(config).await;

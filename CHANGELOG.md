@@ -16,6 +16,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed interactive startup after managed services are published by binding the boot-published model-budget feature to the resolved provider route without replacing or synchronously re-finalizing the active contribution graph.
+
 ### Added
 
 - Added Sigstore-signed package and executable-resident composition locks. Offline maintenance verification validates required identity, digest, protocol, target, fallback, member, and signing evidence fail-closed without extracting or executing optional contributions. Source/linked/release profile matrices and measured composition budgets now gate releases with owner-attributed diagnostics. Both companion build scripts refresh commit and dirty-state identity so linked validation cannot pair a current runtime with stale maintenance metadata.

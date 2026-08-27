@@ -6,7 +6,7 @@
 //!
 //! Tools: set_model_intent, set_thinking_level
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -85,25 +85,39 @@ impl ModelGrade {
 
 pub struct ModelBudget {
     settings: SharedSettings,
-    route_controller: Option<Arc<crate::route::RouteController>>,
+    route_binding: ModelBudgetRouteBinding,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ModelBudgetRouteBinding {
+    controller: Arc<OnceLock<Arc<crate::route::RouteController>>>,
+}
+
+impl ModelBudgetRouteBinding {
+    pub(crate) fn bind(
+        &self,
+        controller: Arc<crate::route::RouteController>,
+    ) -> anyhow::Result<()> {
+        self.controller
+            .set(controller)
+            .map_err(|_| anyhow::anyhow!("model budget route controller is already bound"))
+    }
+
+    fn get(&self) -> Option<&Arc<crate::route::RouteController>> {
+        self.controller.get()
+    }
 }
 
 impl ModelBudget {
     pub fn new(settings: SharedSettings) -> Self {
         Self {
             settings,
-            route_controller: None,
+            route_binding: ModelBudgetRouteBinding::default(),
         }
     }
 
-    pub fn with_route_controller(
-        settings: SharedSettings,
-        route_controller: Arc<crate::route::RouteController>,
-    ) -> Self {
-        Self {
-            settings,
-            route_controller: Some(route_controller),
-        }
+    pub(crate) fn route_binding(&self) -> ModelBudgetRouteBinding {
+        self.route_binding.clone()
     }
 
     fn current_provider(&self) -> String {
@@ -117,7 +131,7 @@ impl ModelBudget {
         };
         let model = grade.resolve_model(&provider, &current);
         let target = format!("{provider}:{model}");
-        if let Some(controller) = self.route_controller.as_ref() {
+        if let Some(controller) = self.route_binding.get() {
             let bridge = crate::providers::auto_detect_bridge(&target).await;
             let snapshot = controller
                 .switch_model(target.clone(), &crate::route::CredentialLedger, bridge)
@@ -164,7 +178,7 @@ impl ModelBudget {
             "qwen3:30b".to_string()
         };
         let target = format!("ollama:{model}");
-        if let Some(controller) = self.route_controller.as_ref() {
+        if let Some(controller) = self.route_binding.get() {
             let bridge = crate::providers::auto_detect_bridge(&target).await;
             let snapshot = controller
                 .switch_model(target.clone(), &crate::route::CredentialLedger, bridge)
@@ -483,5 +497,27 @@ mod tests {
                 "legacy command /{command} should not be handled: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn route_binding_is_visible_after_feature_construction_and_rejects_rebinding() {
+        let budget = ModelBudget::new(crate::settings::shared("openai:gpt-5.6"));
+        let binding = budget.route_binding();
+        assert!(budget.route_binding.get().is_none());
+
+        let controller = Arc::new(crate::route::RouteController::new(
+            crate::route::ProviderRoute::Serving {
+                model: "openai:gpt-5.6".into(),
+            },
+            Box::new(crate::bridge::MockBridge { events: Vec::new() }),
+            None,
+        ));
+        binding.bind(Arc::clone(&controller)).unwrap();
+
+        assert!(Arc::ptr_eq(
+            budget.route_binding.get().unwrap(),
+            &controller
+        ));
+        assert!(binding.bind(controller).is_err());
     }
 }

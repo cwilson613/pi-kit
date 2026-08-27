@@ -5004,7 +5004,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         s.provider_connected = startup_decision.provider_connected;
     }
     let (events_tx, events_rx) = bootstrap::wire_event_channel(&agent, 256);
-    let mut dynamic_contributions = std::mem::take(&mut agent.dynamic_contributions);
     let startup_model_intent = settings::Profile::load(&agent.cwd)
         .model_intent
         .and_then(|intent| intent.to_route_intent())
@@ -5016,17 +5015,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         startup_model_intent,
     ));
     let bridge: Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>> = route_controller.bridge();
-    if shared_settings.lock().is_ok() {
-        agent.bus.replace_feature(Box::new(
-            features::model_budget::ModelBudget::with_route_controller(
-                shared_settings.clone(),
-                route_controller.clone(),
-            ),
-        ));
-        if let Err(error) = agent.bus.try_finalize() {
-            return setup::finalize_agent_error(&mut agent, error).await;
-        }
+    if let Some(model_budget_route) = &agent.model_budget_route
+        && let Err(error) = model_budget_route.bind(route_controller.clone())
+    {
+        return setup::finalize_agent_error(&mut agent, error).await;
     }
+    let mut dynamic_contributions = std::mem::take(&mut agent.dynamic_contributions);
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(16);
 
     // Bridge terminal completion into both the renderer-neutral event stream
@@ -10599,6 +10593,7 @@ mod tests {
             inference_runtime: crate::inference_runtime::InferenceRuntimeState::new(
                 std::path::Path::new("."),
             ),
+            model_budget_route: None,
             cwd,
             secrets,
             web_auth_state: crate::web::WebAuthState::ephemeral_generated("test-token".into()),

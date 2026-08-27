@@ -89,6 +89,8 @@ pub struct AgentSetup {
     pub cwd: PathBuf,
     /// Single shared owner for the active inference inventory generation.
     pub inference_runtime: crate::inference_runtime::InferenceRuntimeState,
+    /// One-shot route binding for the boot-published model-budget feature.
+    pub(crate) model_budget_route: Option<crate::features::model_budget::ModelBudgetRouteBinding>,
     /// Secrets manager — redaction, guards, recipes.
     pub secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
     /// Resolved web auth state for the embedded dashboard.
@@ -154,6 +156,18 @@ pub(crate) async fn finalize_agent_error<T>(
             "runtime resources did not settle while finalizing error: managed={report:?}; dynamic={dynamic_failures:?}"
         )))
     }
+}
+
+fn register_model_budget(
+    bus: &mut EventBus,
+    settings: Option<&crate::settings::SharedSettings>,
+) -> Option<crate::features::model_budget::ModelBudgetRouteBinding> {
+    settings.map(|settings| {
+        let feature = features::model_budget::ModelBudget::new(settings.clone());
+        let binding = feature.route_binding();
+        bus.register(Box::new(feature));
+        binding
+    })
 }
 
 pub(crate) async fn finalize_managed_error<T>(
@@ -911,11 +925,7 @@ impl AgentSetup {
         }
 
         // ─── Model budget (grade intent + thinking) ───────────────────
-        if let Some(ref settings) = settings {
-            bus.register(Box::new(features::model_budget::ModelBudget::new(
-                settings.clone(),
-            )));
-        }
+        let model_budget_route = register_model_budget(&mut bus, settings.as_ref());
 
         // ─── Tool management ─────────────────────────────────────────────
         let manage_tools = features::manage_tools::ManageTools::new();
@@ -1757,6 +1767,7 @@ impl AgentSetup {
             context_manager,
             conversation,
             inference_runtime,
+            model_budget_route,
             cwd,
             secrets: secrets.clone(),
             web_auth_state,
@@ -2455,6 +2466,30 @@ mod tests {
         let setup_return = production.rfind("Ok(Self {").expect("AgentSetup return");
         assert!(memory_registration < session_start);
         assert!(session_start < setup_return);
+    }
+
+    #[test]
+    fn model_budget_route_binding_preserves_the_accepted_composition() {
+        let mut bus = EventBus::new();
+        let settings = crate::settings::shared("openai:gpt-5.6");
+        let binding = register_model_budget(&mut bus, Some(&settings)).unwrap();
+        bus.try_finalize().unwrap();
+        let accepted_generation = bus.composition_generation_id().unwrap().clone();
+        let controller = std::sync::Arc::new(crate::route::RouteController::new(
+            crate::route::ProviderRoute::Serving {
+                model: "openai:gpt-5.6".into(),
+            },
+            Box::new(crate::bridge::MockBridge { events: Vec::new() }),
+            None,
+        ));
+
+        binding.bind(controller).unwrap();
+
+        assert_eq!(
+            bus.composition_generation_id(),
+            Some(&accepted_generation),
+            "late route binding must not stage or publish a replacement graph"
+        );
     }
 
     #[test]

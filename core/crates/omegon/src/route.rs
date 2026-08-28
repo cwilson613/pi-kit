@@ -889,7 +889,14 @@ impl RouteController {
         new_bridge: Option<Box<dyn LlmBridge>>,
     ) -> anyhow::Result<RouteSnapshot> {
         let model = ModelRouteSpec::try_parse(model)?;
-        let provider = crate::providers::infer_provider_id(model.as_str());
+        let Some(provider) = crate::providers::infer_provider_id_strict(model.as_str()) else {
+            let mut state = self.state.write().await;
+            state.warning = Some(format!(
+                "Model switch to {model} refused: unknown provider or model identity"
+            ));
+            drop(state);
+            return Ok(self.emit_changed().await);
+        };
         crate::auth::trace_auth_store_probe(&provider, "route_switch_model");
         let credential_state = ledger.probe_provider(&provider);
         tracing::info!(model = %model, provider = %provider, credential_state = %credential_state.summary(), "provider route model switch credential probe");
@@ -1405,6 +1412,33 @@ mod tests {
             }
         );
         assert!(snapshot.warning.unwrap().contains("refused"));
+    }
+
+    #[tokio::test]
+    async fn switch_model_refuses_unknown_bare_model_without_changing_route() {
+        let controller = RouteController::new(
+            ProviderRoute::Serving {
+                model: "anthropic:claude-fable-5".into(),
+            },
+            Box::new(NullBridge),
+            None,
+        );
+        let snapshot = controller
+            .switch_model(
+                "mystery-model-with-no-catalog-match".into(),
+                &ledger(&[("anthropic", valid())]),
+                Some(Box::new(NullBridge)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot.route,
+            ProviderRoute::Serving {
+                model: "anthropic:claude-fable-5".into()
+            }
+        );
+        let warning = snapshot.warning.expect("unknown model warning");
+        assert!(warning.contains("unknown provider or model"), "{warning}");
     }
 
     #[tokio::test]

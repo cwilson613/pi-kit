@@ -264,6 +264,7 @@ pub(crate) struct ResolvedProviderRoute {
     selected_model: String,
     serving_model: String,
     credential_source_class: String,
+    supports_tools: Option<bool>,
     bridge: Box<dyn LlmBridge>,
 }
 
@@ -271,6 +272,7 @@ struct RoutedBridge {
     selected_model: String,
     serving_model: String,
     credential_source_class: String,
+    supports_tools: Option<bool>,
     inner: Box<dyn LlmBridge>,
 }
 
@@ -283,6 +285,7 @@ impl LlmBridge for RoutedBridge {
         tools: &[omegon_traits::ToolDefinition],
         options: &StreamOptions,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<LlmEvent>> {
+        reject_unsupported_tools(self.supports_tools, tools)?;
         self.inner
             .stream(system_prompt, messages, tools, options)
             .await
@@ -315,6 +318,7 @@ impl ResolvedProviderRoute {
             selected_model: self.selected_model,
             serving_model: self.serving_model,
             credential_source_class: self.credential_source_class,
+            supports_tools: self.supports_tools,
             inner: self.bridge,
         })
     }
@@ -327,6 +331,7 @@ impl ResolvedProviderRoute {
         tools: &[omegon_traits::ToolDefinition],
         options: &StreamOptions,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<LlmEvent>> {
+        reject_unsupported_tools(self.supports_tools, tools)?;
         let lease = route_lease(
             &self.selected_model,
             &self.serving_model,
@@ -352,10 +357,12 @@ pub(crate) trait ProviderRouteServiceContract: Send + Sync {
     ) -> Option<ResolvedProviderRoute> {
         None
     }
-    async fn resolve_exact(
+    async fn resolve_exact_admitted(
         &self,
         _model_spec: &str,
         _secrets: Option<&omegon_secrets::SecretsManager>,
+        _inventory: &crate::inference_inventory::InventorySnapshot,
+        _required_capabilities: &[String],
     ) -> Option<ResolvedProviderRoute> {
         None
     }
@@ -405,12 +412,27 @@ impl ProviderRouteServiceContract for ProviderRouteService {
         resolve_provider_route(model_spec, secrets, false).await
     }
 
-    async fn resolve_exact(
+    async fn resolve_exact_admitted(
         &self,
         model_spec: &str,
         secrets: Option<&omegon_secrets::SecretsManager>,
+        inventory: &crate::inference_inventory::InventorySnapshot,
+        required_capabilities: &[String],
     ) -> Option<ResolvedProviderRoute> {
-        resolve_provider_route(model_spec, secrets, true).await
+        let offering = match admit_exact_route(inventory, model_spec, required_capabilities) {
+            Ok(offering) => offering,
+            Err(rejection) => {
+                tracing::warn!(
+                    model_spec,
+                    ?rejection,
+                    "exact provider route rejected by active inventory"
+                );
+                return None;
+            }
+        };
+        let mut route = resolve_provider_route(model_spec, secrets, true).await?;
+        route.supports_tools = Some(offering_supports_capability(offering, "tools"));
+        Some(route)
     }
 
     async fn startup_route(
@@ -496,14 +518,65 @@ impl ProviderRouteService {
     ) -> Option<ResolvedProviderRoute> {
         resolve_provider_route(model_spec, secrets, false).await
     }
+}
 
-    pub(crate) async fn resolve_exact(
-        self,
-        model_spec: &str,
-        secrets: Option<&omegon_secrets::SecretsManager>,
-    ) -> Option<ResolvedProviderRoute> {
-        resolve_provider_route(model_spec, secrets, true).await
+pub(crate) fn admit_exact_route<'a>(
+    snapshot: &'a crate::inference_inventory::InventorySnapshot,
+    model_spec: &str,
+    required_capabilities: &[String],
+) -> Result<
+    &'a crate::inference_inventory::InferenceOffering,
+    crate::inference_inventory::ExactAdmissionRejection,
+> {
+    use crate::inference_inventory::{CompatibilityRequest, ExactAdmissionRejection, OfferingId};
+
+    let canonical = crate::providers::canonical_model_spec(model_spec);
+    let Some(provider) = crate::providers::infer_provider_id_strict(&canonical) else {
+        return Err(ExactAdmissionRejection::UnknownOffering(OfferingId(
+            canonical,
+        )));
+    };
+    let offering_id = OfferingId(crate::inference_runtime::normalize_route_id_for_resolution(
+        &format!(
+            "{provider}:{}",
+            crate::providers::model_id_from_spec(&canonical)
+        ),
+    ));
+    let offering = snapshot
+        .offerings
+        .get(&offering_id)
+        .ok_or_else(|| ExactAdmissionRejection::UnknownOffering(offering_id.clone()))?;
+    let interface = snapshot
+        .endpoints
+        .get(&offering.endpoint.value)
+        .map(|endpoint| endpoint.adapter.value.clone())
+        .ok_or_else(|| ExactAdmissionRejection::UnknownOffering(offering_id.clone()))?;
+    let request = CompatibilityRequest {
+        interface,
+        required_capabilities: required_capabilities.iter().cloned().collect(),
+        exact_offering: Some(offering_id),
+        ..Default::default()
+    };
+    snapshot.admit_exact(&request)
+}
+
+fn offering_supports_capability(
+    offering: &crate::inference_inventory::InferenceOffering,
+    capability: &str,
+) -> bool {
+    offering.capabilities.get(capability).is_some_and(|value| {
+        value.value && value.evidence >= crate::inference_inventory::EvidenceKind::Declared
+    })
+}
+
+fn reject_unsupported_tools(
+    supports_tools: Option<bool>,
+    tools: &[omegon_traits::ToolDefinition],
+) -> anyhow::Result<()> {
+    if !tools.is_empty() && supports_tools == Some(false) {
+        anyhow::bail!("selected offering is missing tool capability evidence");
     }
+    Ok(())
 }
 
 async fn resolve_provider_route(
@@ -538,6 +611,7 @@ async fn resolve_provider_route(
                 selected_model,
                 serving_model,
                 credential_source_class: resolution.credential_source_class,
+                supports_tools: None,
                 bridge: resolution.bridge,
             });
         }
@@ -2041,6 +2115,17 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn exact_route_admission_rejects_model_absent_from_current_inventory() {
+        let snapshot = crate::inference_inventory::InventorySnapshot::empty();
+        let rejection = admit_exact_route(&snapshot, "anthropic:claude-fable-5", &[])
+            .expect_err("absent exact offering must fail closed");
+        assert!(matches!(
+            rejection,
+            crate::inference_inventory::ExactAdmissionRejection::UnknownOffering(_)
+        ));
+    }
+
     fn loop_route(provider: &str, model: &str) -> LoopRoute {
         let serving_model = format!("{provider}:{model}");
         let contribution = crate::provider_contributions::registry()
@@ -2077,6 +2162,35 @@ mod tests {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
             Ok(rx)
         }
+    }
+
+    #[tokio::test]
+    async fn admitted_tool_deficient_route_rejects_before_network_dispatch() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bridge = RoutedBridge {
+            selected_model: "lab:model".into(),
+            serving_model: "lab:model".into(),
+            credential_source_class: "test".into(),
+            supports_tools: Some(false),
+            inner: Box::new(CountingBridge(calls.clone())),
+        };
+        let tools = [omegon_traits::ToolDefinition {
+            name: "read".into(),
+            label: "Read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            capabilities: Vec::new(),
+        }];
+
+        let result = bridge
+            .stream("system", &[], &tools, &StreamOptions::default())
+            .await;
+        let error = match result {
+            Ok(_) => panic!("tool-deficient route reached its transport"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("missing tool capability"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     fn staged_request() -> (
@@ -3095,6 +3209,7 @@ mod tests {
             selected_model: "anthropic:claude-sonnet-4-6".into(),
             serving_model: "anthropic:claude-sonnet-4-6".into(),
             credential_source_class: "test".into(),
+            supports_tools: None,
             bridge: Box::new(CountingBridge(dispatches.clone())),
         };
 

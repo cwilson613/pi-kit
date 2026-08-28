@@ -16,6 +16,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Changed
+
+- Exact model routes now fail closed against the active inference inventory before startup, login, or operator bridge replacement. Unknown and disabled offerings are rejected without changing the active route, and admitted offerings without tool capability evidence reject tool-bearing requests before network dispatch.
+
 ### Fixed
 
 - Fixed interactive startup after managed services are published by binding the boot-published model-budget feature to the resolved provider route without replacing or synchronously re-finalizing the active contribution graph.

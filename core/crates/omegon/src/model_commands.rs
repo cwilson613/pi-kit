@@ -53,12 +53,14 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
             return;
         }
         tui::TuiCommand::SetModel { model, respond_to } => {
+            let inventory = inference_runtime.snapshot().await;
             let response = control_runtime::set_model_response(
                 agent,
                 shared_settings,
                 bridge,
                 Some(route_controller.clone()),
                 &model,
+                &inventory,
             )
             .await;
             if response.accepted {

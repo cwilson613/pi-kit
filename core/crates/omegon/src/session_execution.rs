@@ -91,12 +91,16 @@ impl SessionExecutionBinding {
         self.route_service.resolve(model_spec, secrets).await
     }
 
-    pub(crate) async fn resolve_exact_provider_route(
+    pub(crate) async fn resolve_exact_admitted_provider_route(
         &self,
         model_spec: &str,
         secrets: Option<&omegon_secrets::SecretsManager>,
+        inventory: &crate::inference_inventory::InventorySnapshot,
+        required_capabilities: &[String],
     ) -> Option<crate::provider_route_service::ResolvedProviderRoute> {
-        self.route_service.resolve_exact(model_spec, secrets).await
+        self.route_service
+            .resolve_exact_admitted(model_spec, secrets, inventory, required_capabilities)
+            .await
     }
 
     pub(crate) async fn compact(

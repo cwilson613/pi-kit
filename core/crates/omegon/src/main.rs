@@ -4916,11 +4916,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             .await;
         }
     }
+    let startup_inventory = agent.inference_runtime.snapshot().await;
     let resolved_bridge = match &startup_route {
         route::ProviderRoute::Serving { model }
         | route::ProviderRoute::Fallback { serving: model, .. } => {
             session_execution::boot_execution_binding()
-                .resolve_exact_provider_route(model, None)
+                .resolve_exact_admitted_provider_route(model, None, &startup_inventory, &[])
                 .await
                 .map(provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
         }
@@ -5899,12 +5900,14 @@ fn build_tui_secret_readiness_snapshot(
             }
 
             operator_commands::OperatorCommand::SetModel { model, respond_to } => {
+                let inventory = runtime_state.inference_runtime.snapshot().await;
                 let response = control_runtime::set_model_response(
                     &mut agent,
                     &shared_settings,
                     &bridge,
                     Some(route_controller.clone()),
                     &model,
+                    &inventory,
                 )
                 .await;
                 if let Some(output) = response.output.clone() {
@@ -6330,13 +6333,12 @@ fn build_tui_secret_readiness_snapshot(
                     &bridge,
                     &login_prompt_tx,
                     &events_tx,
-                    &CliRuntimeView {
-                        no_session: cli.no_session,
-                        model: &cli.model,
-                        dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
-                    },
-                    &agent.cwd,
                     &provider,
+                    control_runtime::AuthLoginRouteContext {
+                        cwd: &agent.cwd,
+                        fallback_model: &cli.model,
+                        inference_runtime: &runtime_state.inference_runtime,
+                    },
                 )
                 .await;
                 if let Some(respond_to) = respond_to {
@@ -6690,6 +6692,8 @@ fn build_tui_secret_readiness_snapshot(
                             let cwd_for_profile = agent.cwd.clone();
                             let settings_for_login = shared_settings.clone();
                             let bridge_model_for_login = runtime_resources.bridge_model.clone();
+                            let inference_runtime_for_login =
+                                runtime_state.inference_runtime.clone();
                             crate::task_spawn::spawn_operator_task(
                                 "interactive-auth-login",
                                 events_tx_clone.clone(),
@@ -6774,9 +6778,16 @@ fn build_tui_secret_readiness_snapshot(
                                             providers::default_model_for_provider(&provider_clone)
                                                 .unwrap_or(model_for_redetect.clone());
                                         let effective_model = login_provider_model;
+                                        let inventory =
+                                            inference_runtime_for_login.snapshot().await;
                                         if let Some(new_bridge) =
                                             session_execution::boot_execution_binding()
-                                                .resolve_exact_provider_route(&effective_model, None)
+                                                .resolve_exact_admitted_provider_route(
+                                                    &effective_model,
+                                                    None,
+                                                    &inventory,
+                                                    &[],
+                                                )
                                                 .await
                                                 .map(provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
                                         {

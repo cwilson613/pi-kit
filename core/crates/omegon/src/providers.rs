@@ -292,15 +292,28 @@ pub fn infer_provider_id(model_spec: &str) -> String {
         return head.to_string();
     }
 
-    let lower = trimmed.to_ascii_lowercase();
+    if let Some(provider) = infer_bare_provider_id(trimmed) {
+        return provider;
+    }
+
+    // Unknown model — warn rather than silently route to Anthropic
+    tracing::warn!(
+        "provider_from_model: unrecognized model spec {:?}, defaulting to anthropic",
+        model_spec
+    );
+    "anthropic".to_string()
+}
+
+fn infer_bare_provider_id(model_spec: &str) -> Option<String> {
+    let lower = model_spec.to_ascii_lowercase();
     if lower == "local" {
-        return "ollama".to_string();
+        return Some("ollama".to_string());
     }
     if lower == "deepseek-local" {
-        return "dwarfstar".to_string();
+        return Some("dwarfstar".to_string());
     }
     if lower.starts_with("claude") || matches!(lower.as_str(), "haiku" | "sonnet" | "opus") {
-        return "anthropic".to_string();
+        return Some("anthropic".to_string());
     }
     if lower.starts_with("gpt-")
         || matches!(lower.as_str(), "o1" | "o3" | "o4")
@@ -308,16 +321,16 @@ pub fn infer_provider_id(model_spec: &str) -> String {
         || lower.starts_with("o3-")
         || lower.starts_with("o4-")
     {
-        return "openai".to_string();
+        return Some("openai".to_string());
     }
     if lower.starts_with("codex") {
-        return "openai-codex".to_string();
+        return Some("openai-codex".to_string());
     }
     if lower.starts_with("gemini") {
-        return "google".to_string();
+        return Some("google".to_string());
     }
     if lower.contains('/') {
-        return "openrouter".to_string();
+        return Some("openrouter".to_string());
     }
     // Common open-source models typically run on Ollama
     if lower.starts_with("qwen")
@@ -336,21 +349,15 @@ pub fn infer_provider_id(model_spec: &str) -> String {
         || lower.starts_with("orca")
         || lower.starts_with("vicuna")
     {
-        return "ollama".to_string();
+        return Some("ollama".to_string());
     }
-
-    // Unknown model — warn rather than silently route to Anthropic
-    tracing::warn!(
-        "provider_from_model: unrecognized model spec {:?}, defaulting to anthropic",
-        model_spec
-    );
-    "anthropic".to_string()
+    None
 }
 
 pub fn infer_provider_id_strict(model_spec: &str) -> Option<String> {
     let trimmed = model_spec.trim();
     if trimmed.is_empty() {
-        return Some("anthropic".to_string());
+        return None;
     }
 
     if trimmed.contains(':') {
@@ -361,10 +368,10 @@ pub fn infer_provider_id_strict(model_spec: &str) -> Option<String> {
         if let Some(head) = provider_chain.first().copied() {
             return Some(head.to_string());
         }
-        return None;
+        return infer_bare_provider_id(trimmed);
     }
 
-    Some(infer_provider_id(trimmed))
+    infer_bare_provider_id(trimmed)
 }
 
 fn leading_provider_chain(model_spec: &str) -> Vec<&'static str> {
@@ -5075,6 +5082,14 @@ mod tests {
             Some("github-copilot".to_string())
         );
         assert_eq!(infer_provider_id_strict("nonexistent-provider:test"), None);
+    }
+
+    #[test]
+    fn infer_provider_id_strict_rejects_unknown_bare_model() {
+        assert_eq!(
+            infer_provider_id_strict("mystery-model-with-no-catalog-match"),
+            None
+        );
     }
 
     #[test]

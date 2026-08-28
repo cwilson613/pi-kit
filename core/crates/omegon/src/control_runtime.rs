@@ -721,12 +721,14 @@ pub async fn execute_control(
 
     match request {
         ControlRequest::SetModel { requested_model } => {
+            let inventory = ctx.runtime_state.inference_runtime.snapshot().await;
             set_model_response(
                 ctx.agent,
                 ctx.shared_settings,
                 ctx.bridge,
                 ctx.route_controller.clone(),
                 &requested_model,
+                &inventory,
             )
             .await
         }
@@ -983,9 +985,12 @@ pub async fn execute_control(
                 ctx.bridge,
                 ctx.login_prompt_tx,
                 ctx.events_tx,
-                ctx.cli,
-                &ctx.agent.cwd,
                 &provider,
+                AuthLoginRouteContext {
+                    cwd: &ctx.agent.cwd,
+                    fallback_model: ctx.cli.model,
+                    inference_runtime: &ctx.runtime_state.inference_runtime,
+                },
             )
             .await
         }
@@ -1401,6 +1406,7 @@ pub async fn set_model_response(
     bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
     route_controller: Option<Arc<crate::route::RouteController>>,
     requested_model: &str,
+    inventory: &crate::inference_inventory::InventorySnapshot,
 ) -> SlashCommandResponse {
     let intent_policy = if let Some(controller) = route_controller.as_ref() {
         controller.snapshot().await.intent.to_provider_policy()
@@ -1427,8 +1433,18 @@ pub async fn set_model_response(
         .unwrap_or_else(|| (String::new(), String::new()));
     let new_provider = crate::providers::infer_provider_id(&effective_model);
     if let Some(controller) = route_controller {
+        if let Err(rejection) =
+            crate::provider_route_service::admit_exact_route(inventory, &effective_model, &[])
+        {
+            return SlashCommandResponse {
+                accepted: false,
+                output: Some(format!(
+                    "Model switch to {effective_model} refused by active inventory: {rejection}"
+                )),
+            };
+        }
         let new_bridge = crate::session_execution::boot_execution_binding()
-            .resolve_exact_provider_route(&effective_model, None)
+            .resolve_exact_admitted_provider_route(&effective_model, None, inventory, &[])
             .await
             .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge);
         let snapshot = match controller
@@ -3047,14 +3063,19 @@ pub async fn auth_unlock_response() -> SlashCommandResponse {
     }
 }
 
+pub struct AuthLoginRouteContext<'a> {
+    pub cwd: &'a Path,
+    pub fallback_model: &'a str,
+    pub inference_runtime: &'a crate::inference_runtime::InferenceRuntimeState,
+}
+
 pub async fn auth_login_response(
     shared_settings: &settings::SharedSettings,
     bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
     login_prompt_tx: &std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
     events_tx: &broadcast::Sender<AgentEvent>,
-    cli: &CliRuntimeView<'_>,
-    cwd: &Path,
     provider: &str,
+    route_context: AuthLoginRouteContext<'_>,
 ) -> SlashCommandResponse {
     let provider = provider.trim();
     let provider = if provider.is_empty() {
@@ -3087,9 +3108,10 @@ pub async fn auth_login_response(
         .lock()
         .ok()
         .map(|s| s.model.clone())
-        .unwrap_or_else(|| cli.model.to_string());
-    let cwd_for_profile = cwd.to_path_buf();
+        .unwrap_or_else(|| route_context.fallback_model.to_string());
+    let cwd_for_profile = route_context.cwd.to_path_buf();
     let settings_for_login = shared_settings.clone();
+    let inference_runtime = route_context.inference_runtime.clone();
     tokio::spawn(async move {
         let progress: auth::LoginProgress = Box::new(move |msg| {
             let _ = progress_tx.send(AgentEvent::SystemNotification {
@@ -3176,8 +3198,9 @@ pub async fn auth_login_response(
             let login_provider_model = providers::default_model_for_provider(&provider_clone)
                 .unwrap_or(model_for_redetect.clone());
             let effective_model = login_provider_model;
+            let inventory = inference_runtime.snapshot().await;
             if let Some(new_bridge) = crate::session_execution::boot_execution_binding()
-                .resolve_exact_provider_route(&effective_model, None)
+                .resolve_exact_admitted_provider_route(&effective_model, None, &inventory, &[])
                 .await
                 .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
             {

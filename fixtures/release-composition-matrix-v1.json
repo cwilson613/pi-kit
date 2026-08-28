@@ -9,6 +9,8 @@
     "interactive": {
       "executable": "omegon",
       "paths": ["source", "linked", "release"],
+      "artifact_profile": "full-product",
+      "canonical_entrypoint": ["omegon"],
       "runtime_mode": "tui",
       "surfaces": ["agent-loop", "tui"],
       "absent_optional": [],
@@ -17,6 +19,8 @@
     "headless": {
       "executable": "omegon",
       "paths": ["source", "linked", "release"],
+      "artifact_profile": "full-product",
+      "canonical_entrypoint": ["omegon"],
       "runtime_mode": "headless",
       "surfaces": ["agent-loop", "bounded-task"],
       "absent_optional": ["tui"],
@@ -25,6 +29,8 @@
     "daemon": {
       "executable": "omegon",
       "paths": ["source", "linked", "release"],
+      "artifact_profile": "full-product",
+      "canonical_entrypoint": ["omegon"],
       "runtime_mode": "daemon",
       "surfaces": ["agent-loop", "control-plane"],
       "absent_optional": ["tui"],
@@ -33,6 +39,8 @@
     "full": {
       "executable": "omegon",
       "paths": ["source", "linked", "release"],
+      "artifact_profile": "full-product",
+      "canonical_entrypoint": ["omegon"],
       "runtime_mode": "full",
       "surfaces": ["agent-loop", "bounded-task", "control-plane", "tui"],
       "absent_optional": [],

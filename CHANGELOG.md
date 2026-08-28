@@ -36,6 +36,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Added
 
+- Added the source-built `task-capsule-v0` artifact profile for bounded `omegon run` execution. Its dedicated build disables default features, rejects TUI, self-update, and local-embedding composition, reports compile-derived artifact identity, and enforces dependency absence for presentation, codescan engine, Sigstore, and X.509 parsing packages. V0 does not add a published archive, update channel, or container image.
+
 - Added `/doctor` and `/runtime doctor` diagnostics for published extension-process health, with explicit `/runtime replace <extension>` recommendations. Operators can now perform one bounded same-generation replacement from the retained admitted snapshot without rediscovery, EventBus republication, or an automatic retry loop; replacement rejects changed published tool definitions and leaves failures local to the named extension.
 
 - Added Sigstore-signed package and executable-resident composition locks. Offline maintenance verification validates required identity, digest, protocol, target, fallback, member, and signing evidence fail-closed without extracting or executing optional contributions. Source/linked/release profile matrices and measured composition budgets now gate releases with owner-attributed diagnostics. Both companion build scripts refresh commit and dirty-state identity so linked validation cannot pair a current runtime with stale maintenance metadata.

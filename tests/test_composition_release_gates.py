@@ -43,6 +43,8 @@ class CompositionReleaseGateTests(unittest.TestCase):
                 payload = {
                     "schema_version": 1,
                     "profile": profile,
+                    "artifact_profile": row["artifact_profile"],
+                    "canonical_entrypoint": row["canonical_entrypoint"],
                     "runtime_mode": row["runtime_mode"],
                     "surfaces": row["surfaces"],
                     "absent_optional": row["absent_optional"],
@@ -65,6 +67,21 @@ class CompositionReleaseGateTests(unittest.TestCase):
             )
         self.assertEqual(len(commands), len(matrix.REQUIRED_PROFILES))
         self.assertTrue(all(command[:2] == ["cargo", "run"] for command in commands))
+
+    def test_profile_validation_rejects_forged_artifact_identity(self) -> None:
+        matrix = load("check_composition_matrix")
+        row = matrix.load_policy()["profiles"]["headless"]
+        payload = {
+            "schema_version": 1,
+            "profile": "headless",
+            "artifact_profile": "task-capsule-v0",
+            "canonical_entrypoint": ["omegon", "run"],
+            "runtime_mode": row["runtime_mode"],
+            "surfaces": row["surfaces"],
+            "absent_optional": row["absent_optional"],
+        }
+        with self.assertRaisesRegex(ValueError, "artifact profile"):
+            matrix.validate_profile(payload, "headless", row)
 
     def test_linked_path_fails_when_installed_launchers_are_absent(self) -> None:
         matrix = load("check_composition_matrix")

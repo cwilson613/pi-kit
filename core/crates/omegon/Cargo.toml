@@ -9,6 +9,14 @@ license.workspace = true
 name = "omegon"
 path = "src/main.rs"
 
+[[example]]
+name = "fractal_demo"
+required-features = ["tui"]
+
+[[example]]
+name = "instrument_lab"
+required-features = ["tui"]
+
 [dependencies]
 omegon-extension = "0.25"
 omegon-maintenance-contracts = { path = "../omegon-maintenance-contracts" }
@@ -88,8 +96,8 @@ hyperrat = { version = "0.1", optional = true }
 rmcp = { version = "1.2", features = ["transport-child-process", "client", "transport-streamable-http-client-reqwest", "auth"], default-features = false }
 tar = "0.4"
 flate2 = "1.0"
-sigstore = { version = "0.13.0", default-features = false, features = ["cosign", "rustls-tls"] }
-x509-parser = "0.17"
+sigstore = { version = "0.13.0", default-features = false, features = ["cosign", "rustls-tls"], optional = true }
+x509-parser = { version = "0.17", optional = true }
 rpassword = "7"
 rpkl = "0.8"
 percent-encoding = "2"
@@ -108,7 +116,9 @@ tokenizers = { version = "0.23", optional = true, default-features = false, feat
 ndarray = { version = "0.17", optional = true }
 
 [features]
-default = ["tui"]
+default = ["tui", "self-update"]
+task-capsule = []
+self-update = ["dep:sigstore", "dep:x509-parser"]
 tui = ["dep:ratatui", "dep:syntect", "dep:tui-syntax-highlight", "dep:tachyonfx", "dep:crossterm", "dep:unicode-width", "dep:ratatui-image", "dep:image", "dep:ansi-to-tui", "dep:tui-tree-widget", "dep:ratatui-toaster", "dep:ratatui-textarea", "dep:tui-popup", "dep:hyperrat"]
 local-embeddings = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
 

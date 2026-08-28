@@ -22,6 +22,8 @@ const NORMAL_RESIDENT_CONTRIBUTIONS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CompositionInspectionV1 {
     pub(crate) schema_version: u32,
+    pub(crate) artifact_profile: String,
+    pub(crate) canonical_entrypoint: Vec<String>,
     pub(crate) profile: String,
     pub(crate) runtime_mode: String,
     pub(crate) surfaces: Vec<String>,
@@ -42,7 +44,7 @@ pub(crate) fn inspect_runtime_composition(
     profile: &str,
     bus: &crate::bus::EventBus,
 ) -> anyhow::Result<CompositionInspectionV1> {
-    let (runtime_mode, surfaces, absent_optional) = profile_state(profile)?;
+    let (runtime_mode, surfaces, absent_optional) = validated_profile_state(profile)?;
     let definitions = bus.callable_tool_definitions_by_owner();
     let callable_capabilities = definitions
         .iter()
@@ -59,6 +61,11 @@ pub(crate) fn inspect_runtime_composition(
 
     Ok(CompositionInspectionV1 {
         schema_version: 1,
+        artifact_profile: compiled_artifact_profile().to_string(),
+        canonical_entrypoint: canonical_entrypoint()
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect(),
         profile: profile.to_string(),
         runtime_mode: runtime_mode.to_string(),
         surfaces: surfaces.into_iter().map(str::to_string).collect(),
@@ -79,10 +86,61 @@ pub(crate) fn inspect_runtime_composition(
     })
 }
 
+pub(crate) const fn compiled_artifact_profile() -> &'static str {
+    if cfg!(feature = "task-capsule") {
+        "task-capsule-v0"
+    } else if cfg!(all(
+        feature = "tui",
+        feature = "self-update",
+        feature = "local-embeddings"
+    )) {
+        "full-product-local-embeddings"
+    } else if cfg!(all(feature = "tui", feature = "self-update")) {
+        "full-product"
+    } else if cfg!(all(not(feature = "tui"), not(feature = "self-update"))) {
+        "shrinking-host"
+    } else {
+        "custom-host"
+    }
+}
+
+fn canonical_entrypoint() -> &'static [&'static str] {
+    if cfg!(feature = "task-capsule") {
+        &["omegon", "run"]
+    } else {
+        &["omegon"]
+    }
+}
+
+pub(crate) fn validated_runtime_mode(profile: &str) -> anyhow::Result<&'static str> {
+    Ok(validated_profile_state(profile)?.0)
+}
+
+fn validated_profile_state(
+    profile: &str,
+) -> anyhow::Result<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
+    if cfg!(feature = "task-capsule") {
+        if profile != "task-capsule" {
+            anyhow::bail!("composition profile '{profile}' is incompatible with task-capsule-v0");
+        }
+    } else if profile == "task-capsule" {
+        anyhow::bail!("task-capsule composition requires the task-capsule artifact feature");
+    }
+    if !cfg!(feature = "tui") && matches!(profile, "interactive" | "full") {
+        anyhow::bail!("composition profile '{profile}' requires the tui feature");
+    }
+    profile_state(profile)
+}
+
 fn profile_state(
     profile: &str,
 ) -> anyhow::Result<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
     match profile {
+        "task-capsule" => Ok((
+            "bounded-task",
+            vec!["agent-loop", "bounded-task"],
+            vec!["tui", "self-update"],
+        )),
         "interactive" => Ok(("tui", vec!["agent-loop", "tui"], vec![])),
         "headless" => Ok(("headless", vec!["agent-loop", "bounded-task"], vec!["tui"])),
         "daemon" => Ok(("daemon", vec!["agent-loop", "control-plane"], vec!["tui"])),
@@ -209,5 +267,46 @@ mod tests {
         assert!(headless.2.contains(&"tui"));
         assert!(full.1.contains(&"tui"));
         assert!(profile_state("unknown").is_err());
+    }
+
+    #[cfg(feature = "task-capsule")]
+    #[test]
+    fn task_capsule_identity_is_compile_derived_and_bounded() {
+        assert_eq!(compiled_artifact_profile(), "task-capsule-v0");
+        assert_eq!(canonical_entrypoint(), ["omegon", "run"]);
+        assert!(validated_profile_state("task-capsule").is_ok());
+        for incompatible in ["interactive", "headless", "daemon", "full"] {
+            assert!(validated_profile_state(incompatible).is_err());
+        }
+    }
+
+    #[cfg(all(
+        feature = "tui",
+        feature = "self-update",
+        not(feature = "task-capsule")
+    ))]
+    #[test]
+    fn ordinary_product_cannot_claim_task_capsule_identity() {
+        let expected = if cfg!(feature = "local-embeddings") {
+            "full-product-local-embeddings"
+        } else {
+            "full-product"
+        };
+        assert_eq!(compiled_artifact_profile(), expected);
+        assert!(validated_profile_state("task-capsule").is_err());
+    }
+
+    #[cfg(all(
+        not(feature = "task-capsule"),
+        not(feature = "tui"),
+        not(feature = "self-update")
+    ))]
+    #[test]
+    fn bare_no_default_build_reports_shrinking_host_identity() {
+        assert_eq!(compiled_artifact_profile(), "shrinking-host");
+        assert!(validated_profile_state("headless").is_ok());
+        assert!(validated_profile_state("daemon").is_ok());
+        assert!(validated_profile_state("interactive").is_err());
+        assert!(validated_profile_state("full").is_err());
     }
 }

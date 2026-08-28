@@ -6,6 +6,13 @@
 //! Phase 2: Native TUI rendering.
 //! Phase 3: Native LLM provider clients.
 
+#[cfg(all(feature = "task-capsule", feature = "tui"))]
+compile_error!("the task-capsule artifact must be built without the tui feature");
+#[cfg(all(feature = "task-capsule", feature = "self-update"))]
+compile_error!("the task-capsule artifact must be built without the self-update feature");
+#[cfg(all(feature = "task-capsule", feature = "local-embeddings"))]
+compile_error!("the task-capsule artifact must be built without the local-embeddings feature");
+
 use crate::conversation::PlanAction;
 #[cfg(any(feature = "tui", test))]
 use crate::runtime_composition::{decide_interactive_startup_model, restart_args_for_session};
@@ -558,7 +565,10 @@ enum Commands {
     /// Inspect the bounded runtime composition used by release gates.
     #[command(hide = true)]
     CompositionInspect {
-        #[arg(long, value_parser = ["interactive", "headless", "daemon", "full"])]
+        #[arg(
+            long,
+            value_parser = ["task-capsule", "interactive", "headless", "daemon", "full"]
+        )]
         profile: String,
     },
 
@@ -1364,14 +1374,8 @@ pub fn startup_elapsed_ms() -> u64 {
 }
 
 async fn run_composition_inspection(cli: &Cli, profile: &str) -> anyhow::Result<()> {
+    let runtime_mode = runtime_composition::validated_runtime_mode(profile)?;
     let settings = settings::shared(&cli.model);
-    let runtime_mode = match profile {
-        "interactive" => "tui",
-        "headless" => "headless",
-        "daemon" => "daemon",
-        "full" => "full",
-        _ => anyhow::bail!("unknown composition profile: {profile}"),
-    };
     let mut agent = setup::AgentSetup::new_with_safety_and_mode(
         &cli.cwd,
         None,
@@ -10877,6 +10881,17 @@ mod tests {
     fn debug_tui_is_an_explicit_global_diagnostic_switch() {
         assert!(!Cli::parse_from(["omegon"]).debug_tui);
         assert!(Cli::parse_from(["omegon", "--debug-tui"]).debug_tui);
+    }
+
+    #[test]
+    fn task_capsule_composition_profile_is_accepted_by_the_cli() {
+        let cli =
+            Cli::try_parse_from(["omegon", "composition-inspect", "--profile", "task-capsule"])
+                .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::CompositionInspect { profile }) if profile == "task-capsule"
+        ));
     }
 
     #[test]

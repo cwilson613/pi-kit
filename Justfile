@@ -133,6 +133,15 @@ check:
 check-omegon-headless:
     {{cargo}} check -p omegon --locked --no-default-features
 
+# Compile the bounded-task capsule with its exact additive feature contract.
+check-task-capsule:
+    {{cargo}} check -p omegon --locked --no-default-features --features task-capsule
+    python3 scripts/check_task_capsule_dependency_boundary.py
+
+# Build the capsule separately so it cannot overwrite the full product artifact.
+build-task-capsule:
+    CARGO_TARGET_DIR=target/task-capsule {{cargo}} build -p omegon --release --locked --no-default-features --features task-capsule
+
 # Compatibility compile boundary for the default interactive artifact.
 check-omegon-default:
     {{cargo}} check -p omegon --locked

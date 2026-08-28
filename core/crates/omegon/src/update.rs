@@ -381,6 +381,7 @@ async fn download_to_path(client: &reqwest::Client, url: &str, path: &Path) -> a
 /// base64-encoded (sigstore/cosign#2059). Older releases shipped the raw PEM
 /// text. Accept either: if the content doesn't begin with a PEM boundary,
 /// attempt one base64 decode and require the result to be PEM.
+#[cfg(feature = "self-update")]
 fn normalize_certificate_pem(content: &str) -> anyhow::Result<String> {
     use base64::Engine;
 
@@ -404,6 +405,7 @@ fn normalize_certificate_pem(content: &str) -> anyhow::Result<String> {
     Ok(decoded)
 }
 
+#[cfg(feature = "self-update")]
 fn verify_archive_signature(
     archive_path: &Path,
     sig_path: &Path,
@@ -425,6 +427,7 @@ fn verify_archive_signature(
     Ok(())
 }
 
+#[cfg(feature = "self-update")]
 fn verify_certificate_identity(cert_pem: &str) -> anyhow::Result<()> {
     use x509_parser::extensions::GeneralName;
     use x509_parser::pem::parse_x509_pem;
@@ -828,6 +831,20 @@ async fn validate_release_pair(
 /// Download, verify, and replace the current binary, then exec() into it.
 /// Returns the path to the new binary on success (caller does the exec).
 pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> {
+    #[cfg(not(feature = "self-update"))]
+    {
+        let _ = info;
+        anyhow::bail!("self-update support was not compiled into this artifact");
+    }
+
+    #[cfg(feature = "self-update")]
+    {
+        download_and_replace_enabled(info).await
+    }
+}
+
+#[cfg(feature = "self-update")]
+async fn download_and_replace_enabled(info: &UpdateInfo) -> anyhow::Result<PathBuf> {
     if info.download_url.is_empty() {
         anyhow::bail!("No download URL for this platform");
     }
@@ -1183,6 +1200,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn certificate_identity_requires_repo_workflow_prefix() {
         let cert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
@@ -1193,6 +1211,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn normalize_certificate_pem_accepts_raw_pem() {
         let pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
@@ -1201,6 +1220,7 @@ mod tests {
         assert!(normalized.ends_with("-----END CERTIFICATE-----"));
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn normalize_certificate_pem_decodes_cosign_output() {
         use base64::Engine;
@@ -1210,6 +1230,7 @@ mod tests {
         assert_eq!(normalized, pem.trim());
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn normalize_certificate_pem_rejects_neither_pem_nor_base64() {
         let err =
@@ -1220,6 +1241,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn normalize_certificate_pem_rejects_base64_without_pem_boundary() {
         use base64::Engine;
@@ -1229,6 +1251,27 @@ mod tests {
         assert!(
             err.to_string().contains("does not contain a PEM boundary"),
             "{err}"
+        );
+    }
+
+    #[cfg(not(feature = "self-update"))]
+    #[tokio::test]
+    async fn disabled_self_update_fails_before_processing_release_metadata() {
+        let info = UpdateInfo {
+            current: "0.0.0".into(),
+            latest: "0.0.1".into(),
+            download_url: "https://example.invalid/release.tar.gz".into(),
+            signature_url: "https://example.invalid/release.tar.gz.sig".into(),
+            certificate_url: "https://example.invalid/release.tar.gz.pem".into(),
+            release_notes: String::new(),
+            is_newer: true,
+        };
+        let error = download_and_replace(&info)
+            .await
+            .expect_err("self-update must be unavailable");
+        assert_eq!(
+            error.to_string(),
+            "self-update support was not compiled into this artifact"
         );
     }
 }

@@ -117,6 +117,9 @@ pub struct AgentSetup {
     /// One generation owner for native extension, MCP, and manifest resources.
     pub(crate) dynamic_contributions:
         crate::contribution_lifecycle::DynamicContributionGenerationOwner,
+    /// Process-local diagnostic and one-shot replacement controls for the published generation.
+    pub(crate) dynamic_contribution_control:
+        crate::contribution_lifecycle::DynamicContributionControl,
     /// Extension widgets discovered during setup — passed to TUI for rendering.
     pub extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
     /// Extension deployment metadata discovered during startup.
@@ -436,6 +439,23 @@ async fn managed_setup_error(bus: &mut EventBus, error: anyhow::Error) -> anyhow
     }
 }
 
+async fn published_setup_error(
+    bus: &mut EventBus,
+    dynamic: &mut crate::contribution_lifecycle::DynamicContributionGenerationOwner,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let failures = dynamic.shutdown().await;
+    let error = managed_setup_error(bus, error).await;
+    if failures.is_empty() {
+        error
+    } else {
+        error.context(format!(
+            "published dynamic-contribution cleanup degraded: {}",
+            failures.join("; ")
+        ))
+    }
+}
+
 impl AgentSetup {
     /// Initialize the event bus, tools, memory, lifecycle context, and conversation.
     pub async fn new(
@@ -476,9 +496,6 @@ impl AgentSetup {
         runtime_mode: &str,
     ) -> anyhow::Result<Self> {
         let cwd = std::fs::canonicalize(cwd)?;
-        // Canonical project root — extensions read this instead of
-        // embedder-specific env vars (FLYNT_VAULT, CODEX_VAULT).
-        unsafe { std::env::set_var("OMEGON_PROJECT_ROOT", &cwd) };
         let is_child = std::env::var("OMEGON_CHILD").is_ok();
 
         // ─── Secrets manager ────────────────────────────────────────────
@@ -1043,6 +1060,7 @@ impl AgentSetup {
             admission: extension_admission,
         } = match discover_and_register_extensions(
             &cwd,
+            &project_root,
             &mut bus,
             std::sync::Arc::clone(&secrets),
             dynamic_inventory.clone(),
@@ -1086,13 +1104,6 @@ impl AgentSetup {
             dynamic_inventory.clone(),
         )
         .await;
-        match crate::codescan_service::start_candidate(project_root.clone()).await {
-            Ok(candidate) => bus.stage_managed_generation("codescan", candidate)?,
-            Err(error) => tracing::warn!(
-                %error,
-                "codescan startup failed; code search and code context are unavailable"
-            ),
-        }
         match crate::lifecycle_service::start_candidate(project_root.clone()).await {
             Ok(candidate) => bus.stage_managed_generation("lifecycle", candidate)?,
             Err(error) => tracing::warn!(
@@ -1179,20 +1190,24 @@ impl AgentSetup {
             )));
         }
         dynamic_contributions.publish();
-        if let Err(error) = codescan_binding.capture(&bus) {
-            return Err(managed_setup_error(&mut bus, error).await);
+        if let Err(error) = codescan_binding.capture(
+            extension_rpc_handles
+                .get(crate::codescan_service::CODESCAN_EXTENSION)
+                .cloned(),
+        ) {
+            return Err(published_setup_error(&mut bus, &mut dynamic_contributions, error).await);
         }
         if let Err(error) = lifecycle_binding.capture(&bus) {
-            return Err(managed_setup_error(&mut bus, error).await);
+            return Err(published_setup_error(&mut bus, &mut dynamic_contributions, error).await);
         }
         if let Err(error) = memory_binding.capture(&bus) {
-            return Err(managed_setup_error(&mut bus, error).await);
+            return Err(published_setup_error(&mut bus, &mut dynamic_contributions, error).await);
         }
         if let Err(error) = context_compaction.capture(&bus) {
-            return Err(managed_setup_error(&mut bus, error).await);
+            return Err(published_setup_error(&mut bus, &mut dynamic_contributions, error).await);
         }
         if let Err(error) = git_binding.capture(&bus) {
-            return Err(managed_setup_error(&mut bus, error).await);
+            return Err(published_setup_error(&mut bus, &mut dynamic_contributions, error).await);
         }
         let git_snapshot = match git_binding
             .invoke(crate::git_service::GitRequest::Snapshot {
@@ -1748,6 +1763,7 @@ impl AgentSetup {
 
         let initial_harness_status = harness_status;
 
+        let dynamic_contribution_control = dynamic_contributions.control();
         Ok(Self {
             bus,
             work_snapshot,
@@ -1778,6 +1794,7 @@ impl AgentSetup {
             startup_snapshot,
             initial_harness_status: initial_harness_status.clone(),
             dynamic_contributions,
+            dynamic_contribution_control,
             extension_widgets,
             extension_metadata,
             extension_rpc_handles,
@@ -2179,23 +2196,20 @@ impl DiscoveredExtensions {
 
 async fn discover_and_register_extensions(
     cwd: &Path,
+    project_root: &Path,
     bus: &mut crate::bus::EventBus,
     secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
     inventory: crate::contribution_lifecycle::DynamicContributionInventory,
 ) -> anyhow::Result<DiscoveredExtensions> {
     let home = crate::paths::omegon_home()?;
     let ext_dir = home.join("extensions");
-    let Some(admission) = crate::contribution_loading::GuardedContributionDirectory::open(
+    let admission = crate::contribution_loading::GuardedContributionDirectory::open(
         &home,
         &[b"extensions"],
         &home,
         omegon_maintenance_contracts::ContributionKind::Extension,
         "user",
-    )?
-    else {
-        tracing::debug!("extension directory not found: {}", ext_dir.display());
-        return Ok(DiscoveredExtensions::empty());
-    };
+    )?;
 
     let profile = crate::settings::Profile::load(cwd);
     let dynamic_admission =
@@ -2212,9 +2226,17 @@ async fn discover_and_register_extensions(
     let mut extension_metadata = std::collections::BTreeMap::new();
     let mut extension_rpc_handles = std::collections::BTreeMap::new();
     let mut candidates = Vec::new();
-    let mut raw_names = admission.entry_names(10_000)?;
+    let mut operator_codescan_present = false;
+    let release_codescan_dir = release_coupled_codescan_dir();
+    let mut raw_names = match admission.as_ref() {
+        Some(admission) => admission.entry_names(10_000)?,
+        None => Vec::new(),
+    };
     raw_names.sort();
     for raw_name in raw_names {
+        let admission = admission
+            .as_ref()
+            .expect("extension names require an admitted extension directory");
         if crate::contribution_loading::is_internal_contribution_entry(&raw_name)
             || !admission.allows(&raw_name)?
         {
@@ -2233,6 +2255,21 @@ async fn discover_and_register_extensions(
         let Some(directory) = admission.open_child_directory(&raw_name)? else {
             continue;
         };
+        if ext_name == crate::codescan_service::CODESCAN_EXTENSION
+            && release_codescan_dir.is_some()
+            && crate::contribution_loading::read_file_at(
+                &directory,
+                b".omegon-release-coupled",
+                1024,
+            )?
+            .is_some()
+        {
+            tracing::info!(
+                extension = ext_name,
+                "installed release supersedes development codescan copy"
+            );
+            continue;
+        }
         if crate::contribution_loading::read_file_at(&directory, b"manifest.toml", 1024 * 1024)?
             .is_none()
         {
@@ -2254,6 +2291,14 @@ async fn discover_and_register_extensions(
                 continue;
             }
         };
+        if manifest.extension.name != ext_name {
+            tracing::warn!(
+                extension = ext_name,
+                manifest_name = %manifest.extension.name,
+                "extension directory and manifest identities differ"
+            );
+            continue;
+        }
         let preflight = match crate::extensions::dynamic_preflight(&manifest, snapshot.path()) {
             Ok(preflight) => preflight,
             Err(error) => {
@@ -2271,10 +2316,14 @@ async fn discover_and_register_extensions(
         let trust_admission = match inventory.admit(&candidate, &dynamic_admission) {
             Ok(admission) => admission,
             Err(error) => {
+                if ext_name == crate::codescan_service::CODESCAN_EXTENSION {
+                    inventory.forget_rejected(&candidate.preflight.id);
+                }
                 tracing::warn!(extension = ext_name, %error, "extension trust admission denied before execution");
                 continue;
             }
         };
+        operator_codescan_present |= ext_name == crate::codescan_service::CODESCAN_EXTENSION;
         candidates.push((
             ext_name.to_string(),
             ext_dir.join(ext_name),
@@ -2282,10 +2331,50 @@ async fn discover_and_register_extensions(
             manifest,
             trust_admission,
             candidate.preflight.id,
+            false,
         ));
     }
 
-    for (ext_name, state_dir, snapshot, manifest, trust_admission, candidate_id) in candidates {
+    if !operator_codescan_present
+        && profile.extensions.permits(
+            crate::codescan_service::CODESCAN_EXTENSION,
+            &env_enabled,
+            &env_disabled,
+        )
+        && let Some(release_dir) = release_codescan_dir
+    {
+        let bundled = (|| -> anyhow::Result<_> {
+            let source = std::fs::File::open(&release_dir)?;
+            let snapshot = std::sync::Arc::new(
+                crate::contribution_loading::snapshot_contribution_directory(&source)?,
+            );
+            let manifest =
+                crate::extensions::ExtensionManifest::from_extension_dir(snapshot.path())?;
+            if manifest.extension.name != crate::codescan_service::CODESCAN_EXTENSION {
+                anyhow::bail!("release-coupled codescan manifest identity is invalid");
+            }
+            let preflight = crate::extensions::dynamic_preflight(&manifest, snapshot.path())?;
+            let candidate = inventory.discover(preflight)?;
+            let trust_admission = inventory.admit_kernel_release(&candidate)?;
+            Ok((
+                crate::codescan_service::CODESCAN_EXTENSION.to_string(),
+                release_dir,
+                snapshot,
+                manifest,
+                trust_admission,
+                candidate.preflight.id,
+                true,
+            ))
+        })();
+        match bundled {
+            Ok(candidate) => candidates.push(candidate),
+            Err(error) => tracing::warn!(%error, "release-coupled codescan extension skipped"),
+        }
+    }
+
+    for (ext_name, state_dir, snapshot, manifest, trust_admission, candidate_id, release_coupled) in
+        candidates
+    {
         // Spawning an enabled extension is its explicit operation boundary:
         // resolve declared credentials on demand here, then deliver them only
         // through bootstrap_secrets RPC. Discovery/status paths remain
@@ -2293,14 +2382,25 @@ async fn discover_and_register_extensions(
         let resolved_secrets = resolve_extension_secrets(&manifest, secrets.as_ref()).await;
 
         // Try to spawn this extension
-        match crate::extensions::spawn_from_admitted_snapshot(
-            snapshot,
-            &state_dir,
-            trust_admission,
-            &resolved_secrets,
-        )
-        .await
-        {
+        let spawned = if release_coupled {
+            crate::extensions::spawn_from_release_snapshot(
+                snapshot,
+                trust_admission,
+                project_root,
+                &resolved_secrets,
+            )
+            .await
+        } else {
+            crate::extensions::spawn_from_admitted_snapshot(
+                snapshot,
+                &state_dir,
+                trust_admission,
+                project_root,
+                &resolved_secrets,
+            )
+            .await
+        };
+        match spawned {
             Ok(spawned) => {
                 inventory.ready(&candidate_id);
                 let tool_count = spawned.feature.tools().len();
@@ -2362,7 +2462,24 @@ async fn discover_and_register_extensions(
         voice_polling_handles,
         extension_metadata,
         extension_rpc_handles,
-        admission: Some(admission),
+        admission,
+    })
+}
+
+fn release_coupled_codescan_dir() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let executable = std::fs::canonicalize(executable).ok()?;
+    let binary_dir = executable.parent()?;
+    [
+        binary_dir.join("share/omegon/extensions/omegon-codescan"),
+        binary_dir.join("../share/omegon/extensions/omegon-codescan"),
+    ]
+    .into_iter()
+    .find_map(|directory| {
+        directory
+            .is_dir()
+            .then(|| std::fs::canonicalize(directory).ok())
+            .flatten()
     })
 }
 
@@ -2836,6 +2953,7 @@ required = ["OMADA_TEST_SECRET"]
 
         let discovered = discover_and_register_extensions(
             project.path(),
+            project.path(),
             &mut bus,
             secrets,
             crate::contribution_lifecycle::DynamicContributionInventory::default(),
@@ -2901,6 +3019,7 @@ required = ["OMADA_TEST_SECRET"]
 
         assert!(
             discover_and_register_extensions(
+                project.path(),
                 project.path(),
                 &mut bus,
                 secrets,

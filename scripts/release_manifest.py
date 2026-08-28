@@ -30,6 +30,9 @@ PACKAGE_EXECUTABLES = ("omegon", "omegon-maintain")
 RESIDENT_LOCKS = tuple(f"{name}.composition-lock.json" for name in PACKAGE_EXECUTABLES)
 CONTENT_PREFIX = "share/omegon/content-packs/omegon-shipped/"
 CONTENT_MANIFEST = f"{CONTENT_PREFIX}content-pack.toml"
+CODESCAN_PREFIX = "share/omegon/extensions/omegon-codescan/"
+CODESCAN_MANIFEST = f"{CODESCAN_PREFIX}manifest.toml"
+CODESCAN_EXECUTABLE = f"{CODESCAN_PREFIX}target/release/omegon-codescan"
 DOMAIN_PREFIX = b"omegon-maint-v1\0"
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_BYTES = 1024 * 1024 * 1024
@@ -154,10 +157,15 @@ def build_package_manifest(
     aggregate_size = 0
     with tarfile.open(archive, mode="r:gz") as package:
         for member in package:
-            allowed = member.name in PACKAGE_EXECUTABLES or member.name in RESIDENT_LOCKS or member.name.startswith(CONTENT_PREFIX)
+            allowed = (
+                member.name in PACKAGE_EXECUTABLES
+                or member.name in RESIDENT_LOCKS
+                or member.name.startswith(CONTENT_PREFIX)
+                or member.name in (CODESCAN_MANIFEST, CODESCAN_EXECUTABLE)
+            )
             if not member.isfile() or not allowed or member.name in seen:
                 raise ValueError(f"Invalid package archive member: {member.name}")
-            expected_mode = 0o755 if member.name in PACKAGE_EXECUTABLES else 0o644
+            expected_mode = 0o755 if member.name in (*PACKAGE_EXECUTABLES, CODESCAN_EXECUTABLE) else 0o644
             if member.mode != expected_mode:
                 raise ValueError(f"Package member {member.name} must have mode {expected_mode:04o}")
             aggregate_size += member.size

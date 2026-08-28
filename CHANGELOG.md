@@ -28,11 +28,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 - Admitted manifest HTTP endpoints using the `chat-completions` adapter can now construct an OpenAI-compatible bridge from their declared base URL and endpoint-bound bearer-token secret. Remote endpoints require HTTPS, while loopback endpoints can use HTTP. Transport sends the admitted native model ID. Sessionless leases and a new session endpoint-provenance fact preserve endpoint, adapter, inventory generation, credential class, and host adapter generation without changing `route.lease_recorded` v1. Unsupported adapters fail before secret resolution or network dispatch.
 
+- Extracted codescan from every Omegon binary into a release-coupled native extension. The host links only versioned portable contracts, retains stable code-search tool and context schemas, propagates RPC cancellation, and reports typed unavailability when the extension is absent. Installer and self-update generations now activate and roll back the matching sidecar atomically, while CI rejects the indexing engine from every Omegon feature graph.
+
 ### Fixed
 
 - Fixed interactive startup after managed services are published by binding the boot-published model-budget feature to the resolved provider route without replacing or synchronously re-finalizing the active contribution graph.
 
 ### Added
+
+- Added `/doctor` and `/runtime doctor` diagnostics for published extension-process health, with explicit `/runtime replace <extension>` recommendations. Operators can now perform one bounded same-generation replacement from the retained admitted snapshot without rediscovery, EventBus republication, or an automatic retry loop; replacement rejects changed published tool definitions and leaves failures local to the named extension.
 
 - Added Sigstore-signed package and executable-resident composition locks. Offline maintenance verification validates required identity, digest, protocol, target, fallback, member, and signing evidence fail-closed without extracting or executing optional contributions. Source/linked/release profile matrices and measured composition budgets now gate releases with owner-attributed diagnostics. Both companion build scripts refresh commit and dirty-state identity so linked validation cannot pair a current runtime with stale maintenance metadata.
 

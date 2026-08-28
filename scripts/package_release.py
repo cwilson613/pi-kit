@@ -96,7 +96,13 @@ def add_file(archive: tarfile.TarFile, name: str, payload: bytes, mode: int) -> 
     archive.addfile(member, io.BytesIO(payload))
 
 
-def package(binary_dir: Path, output: Path) -> None:
+def package(
+    binary_dir: Path,
+    output: Path,
+    codescan_binary: Path | None = None,
+    codescan_manifest: Path | None = None,
+    without_codescan: bool = False,
+) -> None:
     match = TARGET_RE.search(output.name)
     if match is None:
         raise ValueError("release archive filename does not identify a supported target")
@@ -134,6 +140,21 @@ def package(binary_dir: Path, output: Path) -> None:
                 for asset in content_pack_manifest.assets():
                     path = str(asset["path"])
                     add_file(archive, f"{prefix}/{path}", (content_pack_manifest.ROOT / path).read_bytes(), 0o644)
+                if (codescan_binary is None) != (codescan_manifest is None):
+                    raise ValueError("codescan binary and manifest must be supplied together")
+                if codescan_binary is None and not without_codescan:
+                    raise ValueError(
+                        "product archives require codescan; use --without-codescan only for test fixtures"
+                    )
+                if codescan_binary is not None and codescan_manifest is not None:
+                    prefix = "share/omegon/extensions/omegon-codescan"
+                    add_file(archive, f"{prefix}/manifest.toml", codescan_manifest.read_bytes(), 0o644)
+                    add_file(
+                        archive,
+                        f"{prefix}/target/release/omegon-codescan",
+                        codescan_binary.read_bytes(),
+                        0o755,
+                    )
 
 
 def write_resident_locks(binary_dir: Path, output_dir: Path, target: str) -> None:
@@ -157,13 +178,22 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--lock-dir", type=Path)
     parser.add_argument("--target")
+    parser.add_argument("--codescan-binary", type=Path)
+    parser.add_argument("--codescan-manifest", type=Path)
+    parser.add_argument("--without-codescan", action="store_true")
     args = parser.parse_args()
     if args.lock_dir:
         if not args.target:
             parser.error("--lock-dir requires --target")
         write_resident_locks(args.binary_dir, args.lock_dir, args.target)
     elif args.output:
-        package(args.binary_dir, args.output)
+        package(
+            args.binary_dir,
+            args.output,
+            args.codescan_binary,
+            args.codescan_manifest,
+            args.without_codescan,
+        )
     else:
         parser.error("one of --output or --lock-dir is required")
     return 0

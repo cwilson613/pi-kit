@@ -21,7 +21,7 @@ ignore = "0.4"
 grep-regex = "0.1"
 grep-matcher = "0.1"
 omegon-memory = { path = "../omegon-memory", features = ["agent"] }
-omegon-codescan = { path = "../omegon-codescan" }
+omegon-codescan-contracts = { path = "../omegon-codescan-contracts" }
 omegon-secrets = { path = "../omegon-secrets", features = ["agent"] }
 omegon-opsx = { path = "../omegon-opsx" }
 omegon-skills = { path = "../omegon-skills" }

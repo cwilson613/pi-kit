@@ -12,7 +12,7 @@
 //! This prevents plain-text secrets from appearing in `/proc/<pid>/environ`,
 //! `ps` output, crash dumps, or child processes of the extension.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -228,8 +228,13 @@ impl ProcessHandles {
         }
 
         kill_extension_process_group(pid);
-        self.child.kill().await?;
-        let _ = self.child.wait().await?;
+        let _ = self.child.start_kill();
+        tokio::time::timeout(
+            grace.max(std::time::Duration::from_millis(500)),
+            self.child.wait(),
+        )
+        .await
+        .map_err(|_| anyhow!("extension process did not exit after forced termination"))??;
         Ok(())
     }
 }
@@ -299,6 +304,7 @@ struct ExtensionRuntimeContext {
     state_binding: Option<ExtensionStateBinding>,
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
     restart: Arc<Mutex<crate::contribution_lifecycle::RestartController>>,
+    project_root: Option<PathBuf>,
 }
 
 struct ExtensionSource {
@@ -307,6 +313,7 @@ struct ExtensionSource {
     snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
     state_binding: Option<ExtensionStateBinding>,
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    project_root: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -322,14 +329,39 @@ pub struct ExtensionSupervisor {
     name: String,
     handles: Mutex<Option<ProcessHandles>>,
     accepting_calls: std::sync::atomic::AtomicBool,
+    shutdown_signal: CancellationToken,
+    pid: AtomicU64,
+    runtime: ExtensionRuntimeContext,
+    expected_tools: Value,
+    request_id: Arc<AtomicU64>,
+    process_state: std::sync::atomic::AtomicU8,
+    last_error: std::sync::Mutex<Option<String>>,
 }
 
 impl ExtensionSupervisor {
-    fn new(name: String, handles: ProcessHandles) -> Self {
+    const RUNNING: u8 = 0;
+    const UNAVAILABLE: u8 = 1;
+    const REPLACING: u8 = 2;
+    const SHUTTING_DOWN: u8 = 3;
+
+    fn new(
+        runtime: ExtensionRuntimeContext,
+        tools: &[ToolDefinition],
+        request_id: Arc<AtomicU64>,
+        handles: ProcessHandles,
+    ) -> Self {
+        let pid = handles.child.id().map_or(0, u64::from);
         Self {
-            name,
+            name: runtime.name.clone(),
             handles: Mutex::new(Some(handles)),
             accepting_calls: std::sync::atomic::AtomicBool::new(true),
+            shutdown_signal: CancellationToken::new(),
+            pid: AtomicU64::new(pid),
+            runtime,
+            expected_tools: serde_json::to_value(tools).unwrap_or(Value::Null),
+            request_id,
+            process_state: std::sync::atomic::AtomicU8::new(Self::RUNNING),
+            last_error: std::sync::Mutex::new(None),
         }
     }
 
@@ -344,8 +376,30 @@ impl ExtensionSupervisor {
     /// Disable new RPC/respawn work, take the canonical child exactly once,
     /// then close, terminate if needed, and reap it.
     pub async fn shutdown(&self, grace: std::time::Duration) -> Result<()> {
+        self.process_state
+            .store(Self::SHUTTING_DOWN, Ordering::Release);
         self.accepting_calls.store(false, Ordering::Release);
-        let mut handles = self.handles.lock().await.take();
+        self.shutdown_signal.cancel();
+        let mut guard = match tokio::time::timeout(grace, self.handles.lock()).await {
+            Ok(guard) => guard,
+            Err(_) => {
+                let pid = self.pid.load(Ordering::Acquire);
+                if let Ok(pid) = u32::try_from(pid)
+                    && pid != 0
+                {
+                    kill_extension_process_group(Some(pid));
+                }
+                tokio::time::timeout(
+                    grace.max(std::time::Duration::from_millis(100)),
+                    self.handles.lock(),
+                )
+                .await
+                .map_err(|_| {
+                    anyhow!("extension '{}' RPC did not release for shutdown", self.name)
+                })?
+            }
+        };
+        let mut handles = guard.take();
         if let Some(handles) = handles.as_mut()
             && let Err(error) = handles.shutdown(grace).await
         {
@@ -355,12 +409,180 @@ impl ExtensionSupervisor {
             let _ = handles.child.start_kill();
             return Err(error);
         }
+        self.pid.store(0, Ordering::Release);
         Ok(())
     }
 
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    pub(crate) fn health(&self) -> ExtensionProcessHealth {
+        let state = self.process_state.load(Ordering::Acquire);
+        if state == Self::RUNNING
+            && let Ok(mut guard) = self.handles.try_lock()
+        {
+            let exited = match guard.as_mut() {
+                Some(handles) => handles.child.try_wait().ok().flatten(),
+                None => None,
+            };
+            if let Some(status) = exited {
+                guard.take();
+                self.pid.store(0, Ordering::Release);
+                self.accepting_calls.store(false, Ordering::Release);
+                self.process_state
+                    .store(Self::UNAVAILABLE, Ordering::Release);
+                *self
+                    .last_error
+                    .lock()
+                    .expect("extension health lock poisoned") =
+                    Some(format!("process exited with {status}"));
+            }
+        }
+
+        let state = self.process_state.load(Ordering::Acquire);
+        ExtensionProcessHealth {
+            name: self.name.clone(),
+            state: match state {
+                Self::RUNNING => ExtensionProcessState::Healthy,
+                Self::REPLACING => ExtensionProcessState::Replacing,
+                Self::SHUTTING_DOWN => ExtensionProcessState::ShuttingDown,
+                _ => ExtensionProcessState::Unavailable,
+            },
+            pid: u32::try_from(self.pid.load(Ordering::Acquire))
+                .ok()
+                .filter(|pid| *pid != 0),
+            detail: self
+                .last_error
+                .lock()
+                .expect("extension health lock poisoned")
+                .clone(),
+        }
+    }
+
+    pub(crate) async fn replace(&self) -> Result<u32> {
+        if self.shutdown_signal.is_cancelled()
+            || self.process_state.load(Ordering::Acquire) == Self::SHUTTING_DOWN
+        {
+            anyhow::bail!("extension '{}' is shutting down", self.name);
+        }
+        let state = self.process_state.load(Ordering::Acquire);
+        if state == Self::REPLACING {
+            anyhow::bail!(
+                "extension '{}' replacement is already in progress",
+                self.name
+            );
+        }
+        self.process_state
+            .compare_exchange(state, Self::REPLACING, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| anyhow!("extension '{}' state changed before replacement", self.name))?;
+        self.accepting_calls.store(false, Ordering::Release);
+
+        let old_pid = self.pid.swap(0, Ordering::AcqRel);
+        if let Ok(old_pid) = u32::try_from(old_pid)
+            && old_pid != 0
+        {
+            kill_extension_process_group(Some(old_pid));
+        }
+
+        let result = self.replace_locked().await;
+        match &result {
+            Ok(_) => {
+                *self
+                    .last_error
+                    .lock()
+                    .expect("extension health lock poisoned") = None;
+                self.accepting_calls.store(true, Ordering::Release);
+                self.process_state.store(Self::RUNNING, Ordering::Release);
+            }
+            Err(error) => {
+                self.pid.store(0, Ordering::Release);
+                *self
+                    .last_error
+                    .lock()
+                    .expect("extension health lock poisoned") = Some(error.to_string());
+                self.process_state
+                    .store(Self::UNAVAILABLE, Ordering::Release);
+            }
+        }
+        result
+    }
+
+    async fn replace_locked(&self) -> Result<u32> {
+        let mut guard = self.handles.lock().await;
+        if let Some(mut stale) = guard.take() {
+            let _ = stale.stdin.shutdown().await;
+            kill_extension_process_group(stale.child.id());
+            let _ = stale.child.start_kill();
+            tokio::time::timeout(std::time::Duration::from_millis(500), stale.child.wait())
+                .await
+                .with_context(|| format!("timed out settling extension '{}'", self.name))??;
+        }
+
+        let mut candidate = spawn_process_handles(
+            &self.runtime.manifest,
+            &self.runtime.ext_dir,
+            &self.runtime.admission,
+            self.runtime.project_root.as_deref(),
+        )
+        .await
+        .with_context(|| format!("failed to spawn extension '{}' replacement", self.name))?;
+        let candidate_handshake = match handshake(
+            &mut candidate,
+            &self.runtime.manifest,
+            &self.runtime.ext_dir,
+            &self.runtime.resolved_secrets,
+            self.runtime.notification_sink.as_ref(),
+        )
+        .await
+        {
+            Ok(handshake) => handshake,
+            Err(error) => {
+                let _ = candidate.shutdown(std::time::Duration::ZERO).await;
+                return Err(error).with_context(|| {
+                    format!("extension '{}' replacement handshake failed", self.name)
+                });
+            }
+        };
+        let candidate_tools = serde_json::to_value(&candidate_handshake.tools)
+            .context("could not compare replacement tool definitions")?;
+        if candidate_tools != self.expected_tools {
+            let _ = candidate.shutdown(std::time::Duration::ZERO).await;
+            anyhow::bail!(
+                "extension '{}' replacement changed its published tool definitions",
+                self.name
+            );
+        }
+        if self.shutdown_signal.is_cancelled() {
+            let _ = candidate.shutdown(std::time::Duration::ZERO).await;
+            anyhow::bail!("extension '{}' shut down during replacement", self.name);
+        }
+
+        self.request_id.store(candidate.next_id, Ordering::SeqCst);
+        let pid = candidate
+            .child
+            .id()
+            .ok_or_else(|| anyhow!("extension '{}' replacement has no process id", self.name))?;
+        self.pid.store(u64::from(pid), Ordering::Release);
+        *guard = Some(candidate);
+        Ok(pid)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExtensionProcessState {
+    Healthy,
+    Unavailable,
+    Replacing,
+    ShuttingDown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtensionProcessHealth {
+    pub(crate) name: String,
+    pub(crate) state: ExtensionProcessState,
+    pub(crate) pid: Option<u32>,
+    pub(crate) detail: Option<String>,
 }
 
 /// Shut down all canonical extension children. Every runtime surface uses this
@@ -403,13 +625,19 @@ impl ExtensionFeature {
     ) -> (Self, broadcast::Receiver<WidgetEvent>) {
         let (widget_tx, widget_rx) = broadcast::channel::<WidgetEvent>(100);
         let next_id = handles.next_id;
-        let supervisor = Arc::new(ExtensionSupervisor::new(runtime.name.clone(), handles));
+        let request_id = Arc::new(AtomicU64::new(next_id));
+        let supervisor = Arc::new(ExtensionSupervisor::new(
+            runtime.clone(),
+            &tools,
+            request_id.clone(),
+            handles,
+        ));
         (
             Self {
                 runtime,
                 tools,
                 supervisor,
-                request_id: Arc::new(AtomicU64::new(next_id)),
+                request_id,
                 widgets,
                 widget_tx,
                 state: Arc::new(Mutex::new(state)),
@@ -457,15 +685,22 @@ impl ExtensionFeature {
 
         let started_at = std::time::Instant::now();
         let mut last_notification: Option<String> = None;
-        let mut line = String::new();
+        let mut line = Vec::new();
         loop {
             line.clear();
-            let read = handles.reader.read_line(&mut line);
+            let read = handles.reader.read_until(b'\n', &mut line);
             let n = if let Some(timeout) = idle_timeout {
                 tokio::select! {
                     result = tokio::time::timeout(timeout, read) => match result {
                         Ok(result) => result?,
                         Err(_) => {
+                            let notification = json!({
+                                "jsonrpc": "2.0",
+                                "method": "notifications/cancelled",
+                                "params": {"request_id": id},
+                            });
+                            handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
+                            handles.stdin.flush().await?;
                             anyhow::bail!(
                                 "extension '{}' RPC '{}' id {} timed out after {}ms waiting for response (last_notification={})",
                                 self.runtime.name,
@@ -477,6 +712,13 @@ impl ExtensionFeature {
                         }
                     },
                     _ = cancel.cancelled() => {
+                        let notification = json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/cancelled",
+                            "params": {"request_id": id},
+                        });
+                        handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
+                        handles.stdin.flush().await?;
                         anyhow::bail!(
                             "extension '{}' RPC '{}' id {} cancelled after {}ms (last_notification={})",
                             self.runtime.name,
@@ -485,12 +727,22 @@ impl ExtensionFeature {
                             started_at.elapsed().as_millis(),
                             last_notification.as_deref().unwrap_or("none")
                         );
+                    }
+                    _ = self.supervisor.shutdown_signal.cancelled() => {
+                        anyhow::bail!("extension '{}' is shutting down", self.runtime.name);
                     }
                 }
             } else {
                 tokio::select! {
                     result = read => result?,
                     _ = cancel.cancelled() => {
+                        let notification = json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/cancelled",
+                            "params": {"request_id": id},
+                        });
+                        handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
+                        handles.stdin.flush().await?;
                         anyhow::bail!(
                             "extension '{}' RPC '{}' id {} cancelled after {}ms (last_notification={})",
                             self.runtime.name,
@@ -500,12 +752,15 @@ impl ExtensionFeature {
                             last_notification.as_deref().unwrap_or("none")
                         );
                     }
+                    _ = self.supervisor.shutdown_signal.cancelled() => {
+                        anyhow::bail!("extension '{}' is shutting down", self.runtime.name);
+                    }
                 }
             };
             if n == 0 {
                 return Err(anyhow!("extension closed connection"));
             }
-            let trimmed = line.trim();
+            let trimmed = std::str::from_utf8(&line)?.trim();
             if trimmed.is_empty() {
                 continue;
             }
@@ -587,6 +842,16 @@ impl ExtensionFeature {
                 self.supervisor
                     .accepting_calls
                     .store(false, Ordering::Release);
+                self.supervisor
+                    .process_state
+                    .store(ExtensionSupervisor::UNAVAILABLE, Ordering::Release);
+                *self
+                    .supervisor
+                    .last_error
+                    .lock()
+                    .expect("extension health lock poisoned") = Some(format!(
+                    "transport failed and restart budget was exhausted: {cause}"
+                ));
                 return Err(anyhow!(
                     "extension '{}' entered quarantine after exhausting its restart budget: {cause}",
                     self.runtime.name
@@ -594,54 +859,15 @@ impl ExtensionFeature {
             }
         };
         tokio::time::sleep(delay).await;
-        self.supervisor.ensure_accepting()?;
-        let mut guard = self.supervisor.handles.lock().await;
-        if let Some(mut stale) = guard.take() {
-            let _ = stale.child.kill().await;
-            let _ = stale.child.wait().await;
-        }
-
-        let mut handles = spawn_process_handles(
-            &self.runtime.manifest,
-            &self.runtime.ext_dir,
-            &self.runtime.admission,
-        )
-        .await
-        .map_err(|err| {
+        let pid = self.supervisor.replace().await.map_err(|error| {
             anyhow!(
-                "extension '{}' transport failed ({cause}); respawn failed: {err}",
+                "extension '{}' transport failed ({cause}); respawn failed: {error}",
                 self.runtime.name
             )
         })?;
-        let handshake = match handshake(
-            &mut handles,
-            &self.runtime.manifest,
-            &self.runtime.ext_dir,
-            &self.runtime.resolved_secrets,
-            self.runtime.notification_sink.as_ref(),
-        )
-        .await
-        {
-            Ok(handshake) => handshake,
-            Err(err) => {
-                if let Err(cleanup_error) = handles.shutdown(std::time::Duration::ZERO).await {
-                    tracing::warn!(
-                        extension = %self.runtime.name,
-                        %cleanup_error,
-                        "failed to reap extension after respawn handshake failure"
-                    );
-                }
-                return Err(anyhow!(
-                    "extension '{}' transport failed ({cause}); respawn handshake failed: {err}",
-                    self.runtime.name
-                ));
-            }
-        };
-        self.request_id.store(handles.next_id, Ordering::SeqCst);
-        *guard = Some(handles);
         tracing::warn!(
             extension = %self.runtime.name,
-            tools = handshake.tools.len(),
+            pid,
             cause = %cause,
             "respawned extension after transport failure"
         );
@@ -744,6 +970,22 @@ impl std::fmt::Debug for ExtensionPollingHandle {
     }
 }
 
+fn cancellation_notification(method: &str, request_id: u64) -> Value {
+    let params = if method == omegon_codescan_contracts::CODESCAN_RPC_METHOD {
+        json!({
+            "protocol_version": omegon_codescan_contracts::CODESCAN_PROTOCOL_VERSION,
+            "request_id": request_id,
+        })
+    } else {
+        json!({"request_id": request_id})
+    };
+    json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": params,
+    })
+}
+
 impl ExtensionPollingHandle {
     pub async fn pump_notifications_for(&self, idle_timeout: std::time::Duration) -> Result<()> {
         self.supervisor.ensure_accepting()?;
@@ -752,14 +994,19 @@ impl ExtensionPollingHandle {
             .as_mut()
             .ok_or_else(|| anyhow!("extension process not running"))?;
         let read = async {
-            let mut line = String::new();
-            let n = handles.reader.read_line(&mut line).await?;
-            anyhow::Ok::<(usize, String)>((n, line))
+            let mut line = Vec::new();
+            let n = handles.reader.read_until(b'\n', &mut line).await?;
+            anyhow::Ok::<(usize, Vec<u8>)>((n, line))
         };
-        match tokio::time::timeout(idle_timeout, read).await {
+        match tokio::select! {
+            result = tokio::time::timeout(idle_timeout, read) => result,
+            _ = self.supervisor.shutdown_signal.cancelled() => {
+                return Err(anyhow!("extension '{}' is shutting down", self.name));
+            }
+        } {
             Ok(Ok((0, _))) => Err(anyhow!("extension closed connection")),
             Ok(Ok((_n, line))) => {
-                let trimmed = line.trim();
+                let trimmed = std::str::from_utf8(&line)?.trim();
                 if trimmed.is_empty() {
                     return Ok(());
                 }
@@ -783,8 +1030,41 @@ impl ExtensionPollingHandle {
 
     /// Send a JSON-RPC request and receive the response.
     pub async fn rpc_call(&self, method: &str, params: Value) -> Result<Value> {
+        self.rpc_call_with_cancel(
+            method,
+            params,
+            CancellationToken::new(),
+            Some(EXTENSION_TOOL_RPC_TIMEOUT),
+        )
+        .await
+    }
+
+    /// Send a cancellable JSON-RPC request to a long-running extension service.
+    pub async fn rpc_call_with_cancel(
+        &self,
+        method: &str,
+        params: Value,
+        cancel: CancellationToken,
+        idle_timeout: Option<std::time::Duration>,
+    ) -> Result<Value> {
         self.supervisor.ensure_accepting()?;
-        let mut guard = self.supervisor.handles.lock().await;
+        let mut guard = tokio::select! {
+            guard = self.supervisor.handles.lock() => guard,
+            _ = cancel.cancelled() => {
+                anyhow::bail!("extension '{}' RPC '{}' cancelled before dispatch", self.name, method);
+            }
+            _ = self.supervisor.shutdown_signal.cancelled() => {
+                anyhow::bail!("extension '{}' is shutting down", self.name);
+            }
+        };
+        self.supervisor.ensure_accepting()?;
+        if cancel.is_cancelled() {
+            anyhow::bail!(
+                "extension '{}' RPC '{}' cancelled before dispatch",
+                self.name,
+                method
+            );
+        }
         let handles = guard
             .as_mut()
             .ok_or_else(|| anyhow!("extension process not running"))?;
@@ -802,14 +1082,49 @@ impl ExtensionPollingHandle {
             .await?;
         handles.stdin.flush().await?;
 
-        let mut line = String::new();
+        let mut line = Vec::new();
         loop {
             line.clear();
-            let n = handles.reader.read_line(&mut line).await?;
+            let read = handles.reader.read_until(b'\n', &mut line);
+            let n = if let Some(timeout) = idle_timeout {
+                tokio::select! {
+                    result = tokio::time::timeout(timeout, read) => match result {
+                        Ok(result) => result?,
+                        Err(_) => {
+                            let notification = cancellation_notification(method, id);
+                            handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
+                            handles.stdin.flush().await?;
+                            anyhow::bail!("extension '{}' RPC '{}' timed out", self.name, method);
+                        }
+                    },
+                    _ = cancel.cancelled() => {
+                        let notification = cancellation_notification(method, id);
+                        handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
+                        handles.stdin.flush().await?;
+                        anyhow::bail!("extension '{}' RPC '{}' cancelled", self.name, method);
+                    }
+                    _ = self.supervisor.shutdown_signal.cancelled() => {
+                        anyhow::bail!("extension '{}' is shutting down", self.name);
+                    }
+                }
+            } else {
+                tokio::select! {
+                    result = read => result?,
+                    _ = cancel.cancelled() => {
+                        let notification = cancellation_notification(method, id);
+                        handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
+                        handles.stdin.flush().await?;
+                        anyhow::bail!("extension '{}' RPC '{}' cancelled", self.name, method);
+                    }
+                    _ = self.supervisor.shutdown_signal.cancelled() => {
+                        anyhow::bail!("extension '{}' is shutting down", self.name);
+                    }
+                }
+            };
             if n == 0 {
                 return Err(anyhow!("extension closed connection"));
             }
-            let trimmed = line.trim();
+            let trimmed = std::str::from_utf8(&line)?.trim();
             if trimmed.is_empty() {
                 continue;
             }
@@ -1220,13 +1535,23 @@ pub async fn spawn_from_manifest(
     let manifest = ExtensionManifest::from_extension_dir(ext_dir)?;
     let preflight = dynamic_preflight(&manifest, ext_dir)?;
     let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test(preflight);
-    spawn_from_manifest_source(ext_dir, ext_dir, None, None, admission, resolved_secrets).await
+    spawn_from_manifest_source(
+        ext_dir,
+        ext_dir,
+        None,
+        None,
+        admission,
+        None,
+        resolved_secrets,
+    )
+    .await
 }
 
 pub(crate) async fn spawn_from_admitted_snapshot(
     snapshot: Arc<crate::contribution_loading::ContributionSnapshot>,
     state_dir: &Path,
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    project_root: &Path,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
     let ext_dir = snapshot.path().to_path_buf();
@@ -1237,6 +1562,26 @@ pub(crate) async fn spawn_from_admitted_snapshot(
         Some(snapshot),
         Some(state_binding),
         admission,
+        Some(project_root.to_path_buf()),
+        resolved_secrets,
+    )
+    .await
+}
+
+pub(crate) async fn spawn_from_release_snapshot(
+    snapshot: Arc<crate::contribution_loading::ContributionSnapshot>,
+    admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    project_root: &Path,
+    resolved_secrets: &[(String, String)],
+) -> Result<SpawnedExtension> {
+    let ext_dir = snapshot.path().to_path_buf();
+    spawn_from_manifest_source(
+        &ext_dir,
+        &ext_dir,
+        Some(snapshot),
+        None,
+        admission,
+        Some(project_root.to_path_buf()),
         resolved_secrets,
     )
     .await
@@ -1248,6 +1593,7 @@ async fn spawn_from_manifest_source(
     snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
     state_binding: Option<ExtensionStateBinding>,
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    project_root: Option<PathBuf>,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
     let source = ExtensionSource {
@@ -1256,6 +1602,7 @@ async fn spawn_from_manifest_source(
         snapshot,
         state_binding,
         admission,
+        project_root,
     };
     let manifest = ExtensionManifest::from_extension_dir(&source.ext_dir)?;
     if source.snapshot.is_some() {
@@ -1434,6 +1781,7 @@ async fn spawn_process_handles(
     manifest: &ExtensionManifest,
     ext_dir: &Path,
     admission: &crate::dynamic_admission::DynamicAdmissionPermit,
+    project_root: Option<&Path>,
 ) -> Result<ProcessHandles> {
     admission.validate_source_path(ext_dir)?;
     let extension_name = manifest.extension.name.clone();
@@ -1441,6 +1789,9 @@ async fn spawn_process_handles(
         RuntimeConfig::Native { .. } => {
             let binary = manifest.native_binary_path(ext_dir)?;
             let mut cmd = clean_command(&binary, manifest)?;
+            if let Some(project_root) = project_root {
+                cmd.env("OMEGON_PROJECT_ROOT", project_root);
+            }
             configure_extension_process(&mut cmd);
             cmd.arg("--rpc")
                 .stdin(std::process::Stdio::piped())
@@ -1455,6 +1806,12 @@ async fn spawn_process_handles(
             cmd.args(["run", "--rm", "-i"]);
             for (name, value) in resolved_runtime_env(manifest)? {
                 cmd.args(["--env", &format!("{name}={value}")]);
+            }
+            if let Some(project_root) = project_root {
+                cmd.args([
+                    "--env",
+                    &format!("OMEGON_PROJECT_ROOT={}", project_root.display()),
+                ]);
             }
             cmd.arg(&image)
                 .stdin(std::process::Stdio::piped())
@@ -1660,6 +2017,49 @@ async fn handshake(
         }
     }
 
+    // 5. Run the manifest-declared readiness probe after bootstrap. `get_tools`
+    // already served as readiness above, so avoid issuing it twice.
+    if let Some(method) = manifest
+        .startup
+        .ping_method
+        .as_deref()
+        .filter(|method| *method != "get_tools")
+    {
+        let readiness = tokio::time::timeout_at(
+            readiness_deadline,
+            handles.rpc_call_with_notifications(method, json!({}), notification_sink),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "extension '{}' readiness timed out during {} after {}ms",
+                name,
+                method,
+                manifest.startup.timeout_ms.max(1)
+            )
+        })?
+        .map_err(|error| {
+            anyhow!(
+                "extension '{}' readiness probe '{}' failed: {error}",
+                name,
+                method
+            )
+        })?;
+        if method == omegon_codescan_contracts::CODESCAN_STATUS_METHOD {
+            let status =
+                serde_json::from_value::<omegon_codescan_contracts::CodescanStatusV1>(readiness)
+                    .map_err(|error| {
+                        anyhow!("extension '{name}' returned invalid codescan status: {error}")
+                    })?;
+            if status.protocol_version != omegon_codescan_contracts::CODESCAN_PROTOCOL_VERSION
+                || status.service != omegon_codescan_contracts::CODESCAN_SERVICE_ID
+                || !status.ready
+            {
+                anyhow::bail!("extension '{name}' returned incompatible codescan status");
+            }
+        }
+    }
+
     Ok(ExtensionHandshake {
         tools,
         metadata,
@@ -1823,7 +2223,13 @@ async fn spawn_native(
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(manifest, &source.ext_dir, &source.admission).await?;
+    let mut handles = spawn_process_handles(
+        manifest,
+        &source.ext_dir,
+        &source.admission,
+        source.project_root.as_deref(),
+    )
+    .await?;
 
     let notification_pair = if manifest.capabilities.voice {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -1889,6 +2295,7 @@ async fn spawn_native(
                 std::time::Duration::from_secs(2),
             ),
         )),
+        project_root: source.project_root,
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(
@@ -1957,7 +2364,13 @@ async fn spawn_container(
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(manifest, &source.ext_dir, &source.admission).await?;
+    let mut handles = spawn_process_handles(
+        manifest,
+        &source.ext_dir,
+        &source.admission,
+        source.project_root.as_deref(),
+    )
+    .await?;
 
     let notification_pair = if manifest.capabilities.voice {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -2023,6 +2436,7 @@ async fn spawn_container(
                 std::time::Duration::from_secs(2),
             ),
         )),
+        project_root: source.project_root,
     };
 
     let (feature, widget_rx) = ExtensionFeature::new(
@@ -2087,6 +2501,25 @@ mod tests {
     #[test]
     fn extension_manifest_paths() {
         // Placeholder for integration tests
+    }
+
+    #[test]
+    fn codescan_cancellation_uses_the_versioned_wire_contract() {
+        assert_eq!(
+            cancellation_notification(omegon_codescan_contracts::CODESCAN_RPC_METHOD, 42),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": {
+                    "protocol_version": omegon_codescan_contracts::CODESCAN_PROTOCOL_VERSION,
+                    "request_id": 42,
+                },
+            })
+        );
+        assert_eq!(
+            cancellation_notification("execute_tool", 42)["params"],
+            json!({"request_id": 42})
+        );
     }
 
     #[test]
@@ -2342,9 +2775,10 @@ timeout_ms = 30000
         let manifest = ExtensionManifest::from_extension_dir(snapshot.path()).unwrap();
         let preflight = dynamic_preflight(&manifest, snapshot.path()).unwrap();
         let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test(preflight);
-        let spawned = spawn_from_admitted_snapshot(snapshot, &extension_dir, admission, &[])
-            .await
-            .unwrap();
+        let spawned =
+            spawn_from_admitted_snapshot(snapshot, &extension_dir, admission, temp.path(), &[])
+                .await
+                .unwrap();
         let first = spawned
             .feature
             .execute("echo", "call-1", json!({}), CancellationToken::new())
@@ -2366,6 +2800,175 @@ timeout_ms = 30000
                 .last_error
                 .is_some_and(|error| error.contains("transport failure"))
         );
+
+        let replacement_pid = spawned.supervisor.replace().await.unwrap();
+        let health = spawned.supervisor.health();
+        assert_eq!(health.state, ExtensionProcessState::Healthy);
+        assert_eq!(health.pid, Some(replacement_pid));
+        let third = spawned
+            .feature
+            .execute("echo", "call-3", json!({}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(third.details["is_error"], Value::Null);
+        spawned
+            .supervisor
+            .shutdown(std::time::Duration::from_millis(500))
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_replacement_rejects_changed_published_tool_shape() {
+        let _env_guard = crate::test_support::env::lock_async().await;
+        unsafe {
+            std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
+            std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let extension_dir = temp.path().join("shape");
+        std::fs::create_dir(&extension_dir).unwrap();
+        let marker = temp.path().join("change-tools");
+        let script = extension_dir.join("shape-extension.sh");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+marker={}
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,}}]*\).*/\1/p')
+  case "$line" in
+    *initialize*) printf '%s\n' "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{{\"code\":-32601,\"message\":\"Method not found\"}}}}" ;;
+    *get_tools*)
+      if [ -f "$marker" ]; then name=changed; else name=echo; fi
+      printf '%s\n' "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":[{{\"name\":\"$name\",\"label\":\"Echo\",\"description\":\"Echo\",\"parameters\":{{\"type\":\"object\",\"properties\":{{}}}}}}]}}"
+      ;;
+  esac
+done
+"#,
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        std::fs::write(
+            extension_dir.join("manifest.toml"),
+            r#"[extension]
+name = "shape"
+version = "0.1.0"
+description = "fixture"
+[runtime]
+type = "native"
+binary = "shape-extension.sh"
+[startup]
+timeout_ms = 30000
+"#,
+        )
+        .unwrap();
+
+        let spawned = spawn_from_manifest(&extension_dir, &[]).await.unwrap();
+        std::fs::write(&marker, "changed").unwrap();
+        let error = spawned.supervisor.replace().await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("changed its published tool definitions"),
+            "unexpected replacement error: {error:#}"
+        );
+        let health = spawned.supervisor.health();
+        assert_eq!(health.state, ExtensionProcessState::Unavailable);
+        assert!(health.pid.is_none());
+        assert!(
+            health
+                .detail
+                .is_some_and(|detail| detail.contains("published tool definitions"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_replacement_fences_and_terminates_an_in_flight_rpc() {
+        let _env_guard = crate::test_support::env::lock_async().await;
+        unsafe {
+            std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
+            std::env::remove_var("KUBERNETES_SERVICE_HOST");
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let extension_dir = temp.path().join("blocking");
+        std::fs::create_dir(&extension_dir).unwrap();
+        let marker = temp.path().join("rpc-started");
+        let script = extension_dir.join("blocking-extension.sh");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+marker={}
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([^,}}]*\).*/\1/p')
+  case "$line" in
+    *initialize*) printf '%s\n' "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{{\"code\":-32601,\"message\":\"Method not found\"}}}}" ;;
+    *get_tools*) printf '%s\n' "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":[{{\"name\":\"echo\",\"label\":\"Echo\",\"description\":\"Echo\",\"parameters\":{{\"type\":\"object\",\"properties\":{{}}}}}}]}}" ;;
+    *execute_tool*) touch "$marker"; sleep 30 ;;
+    *ping*) printf '%s\n' "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"ok\":true}}}}" ;;
+  esac
+done
+"#,
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        std::fs::write(
+            extension_dir.join("manifest.toml"),
+            r#"[extension]
+name = "blocking"
+version = "0.1.0"
+description = "fixture"
+[runtime]
+type = "native"
+binary = "blocking-extension.sh"
+[startup]
+timeout_ms = 30000
+"#,
+        )
+        .unwrap();
+
+        let spawned = spawn_from_manifest(&extension_dir, &[]).await.unwrap();
+        let polling = spawned.rpc_polling_handle.clone();
+        let blocked = tokio::spawn({
+            let polling = polling.clone();
+            async move { polling.rpc_call("execute_tool", json!({})).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !marker.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fixture RPC should start");
+
+        let replacement_pid = spawned.supervisor.replace().await.unwrap();
+        assert!(blocked.await.unwrap().is_err());
+        assert_eq!(spawned.supervisor.health().pid, Some(replacement_pid));
+        assert_eq!(
+            polling.rpc_call("ping", json!({})).await.unwrap()["ok"],
+            true
+        );
+        spawned
+            .supervisor
+            .shutdown(std::time::Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert!(polling.rpc_call("ping", json!({})).await.is_err());
     }
 
     #[test]

@@ -4748,6 +4748,8 @@ mod extension_metadata_tests {
         assert!(names.contains(&"version".to_string()), "{names:?}");
         assert!(names.contains(&"stats".to_string()), "{names:?}");
         assert!(names.contains(&"profile".to_string()), "{names:?}");
+        assert!(names.contains(&"doctor".to_string()), "{names:?}");
+        assert!(names.contains(&"runtime".to_string()), "{names:?}");
         assert!(!names.contains(&"think".to_string()), "{names:?}");
         assert!(!names.contains(&"auth".to_string()), "{names:?}");
 
@@ -4810,6 +4812,9 @@ mod extension_metadata_tests {
             "/profile use built-in-default built-in",
             "/skills list",
             "/skills install rust",
+            "/doctor",
+            "/runtime doctor",
+            "/runtime replace omegon-codescan",
         ] {
             assert_eq!(
                 agent.handle_slash_command(command).await,

@@ -1,0 +1,12 @@
+[extension]
+name = "omegon-codescan"
+version = "0.1.0"
+description = "Release-coupled code and knowledge indexing service"
+
+[runtime]
+type = "native"
+binary = "target/release/omegon-codescan"
+
+[startup]
+ping_method = "codescan/status"
+timeout_ms = 10000

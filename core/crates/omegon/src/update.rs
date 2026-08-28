@@ -743,6 +743,50 @@ fn extract_release_pair(
     Ok(())
 }
 
+fn extract_release_assets(archive_path: &Path, generation: &Path) -> anyhow::Result<()> {
+    let file = std::fs::File::open(archive_path)?;
+    let gz = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(gz);
+    let codescan_manifest = Path::new("share/omegon/extensions/omegon-codescan/manifest.toml");
+    let codescan_binary =
+        Path::new("share/omegon/extensions/omegon-codescan/target/release/omegon-codescan");
+    let content_manifest = Path::new("share/omegon/content-packs/omegon-shipped/content-pack.toml");
+    let mut extracted = std::collections::HashSet::new();
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let allowed = path == Path::new("omegon.composition-lock.json")
+            || path == Path::new("omegon-maintain.composition-lock.json")
+            || path.starts_with("share/omegon/content-packs/omegon-shipped")
+            || path == codescan_manifest
+            || path == codescan_binary;
+        if !allowed {
+            continue;
+        }
+        if !entry.header().entry_type().is_file() || !extracted.insert(path.clone()) {
+            anyhow::bail!("Downloaded archive contains an invalid release asset");
+        }
+        let destination = generation.join(&path);
+        let parent = destination
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("release asset has no parent"))?;
+        std::fs::create_dir_all(parent)?;
+        let mut output = std::fs::File::create(destination)?;
+        std::io::copy(&mut entry, &mut output)?;
+    }
+
+    for required in [content_manifest, codescan_manifest, codescan_binary] {
+        if !extracted.contains(required) {
+            anyhow::bail!(
+                "Downloaded archive did not contain release asset {}",
+                required.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn validate_release_pair(
     omegon_path: &Path,
     maintenance_path: &Path,
@@ -850,12 +894,14 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
     let archive_path_clone = archive_path.clone();
     let tmp_path_clone = tmp_path.clone();
     let maintenance_tmp_path_clone = maintenance_tmp_path.clone();
+    let candidate_dir_clone = candidate_dir.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         extract_release_pair(
             &archive_path_clone,
             &tmp_path_clone,
             &maintenance_tmp_path_clone,
-        )
+        )?;
+        extract_release_assets(&archive_path_clone, &candidate_dir_clone)
     })
     .await??;
 
@@ -866,6 +912,12 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
         tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).await?;
         tokio::fs::set_permissions(
             &maintenance_tmp_path,
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .await?;
+        tokio::fs::set_permissions(
+            candidate_dir
+                .join("share/omegon/extensions/omegon-codescan/target/release/omegon-codescan"),
             std::fs::Permissions::from_mode(0o755),
         )
         .await?;
@@ -885,7 +937,9 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
         serde_json::to_string_pretty(&receipt)? + "\n",
     )
     .await?;
+    crate::installed_release::validate_release_coupled_generation(&candidate_dir)?;
     let published = layout.publish_generation(&candidate_dir, &info.latest)?;
+    crate::installed_release::validate_release_coupled_generation(&published)?;
     validate_release_pair(
         &published.join("omegon"),
         &published.join("omegon-maintain"),

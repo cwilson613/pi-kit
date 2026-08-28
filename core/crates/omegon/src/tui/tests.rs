@@ -6337,6 +6337,45 @@ fn runtime_inventory_status_queues_shared_control() {
 }
 
 #[test]
+fn runtime_doctor_aliases_queue_shared_read_only_control() {
+    for command in ["/doctor", "/runtime doctor"] {
+        let mut app = test_app();
+        let (tx, mut rx) = test_tx_with_rx();
+        assert!(matches!(
+            app.handle_slash_command(command, &tx),
+            SlashResult::Handled
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TuiCommand::ExecuteControl {
+                request: crate::operator_commands::InterfaceControlRequest::RuntimeDoctor,
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn runtime_replace_queues_named_extension_control() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+    assert!(matches!(
+        app.handle_slash_command("/runtime replace omegon-codescan", &tx),
+        SlashResult::Handled
+    ));
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(TuiCommand::ExecuteControl {
+            request:
+                crate::operator_commands::InterfaceControlRequest::RuntimeExtensionReplace {
+                    name,
+                },
+            ..
+        }) if name == "omegon-codescan"
+    ));
+}
+
+#[test]
 fn runtime_refresh_aliases_canonicalize() {
     for args in ["refresh", "reload", "restart", "hot-restart"] {
         assert_eq!(

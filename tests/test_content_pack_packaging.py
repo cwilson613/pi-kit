@@ -70,7 +70,15 @@ class ContentPackPackagingTests(unittest.TestCase):
                 (binaries / name).write_bytes(name.encode())
             archive = root / "omegon-1.2.3-x86_64-unknown-linux-gnu.tar.gz"
             subprocess.run(
-                ["python3", "scripts/package_release.py", "--binary-dir", str(binaries), "--output", str(archive)],
+                [
+                    "python3",
+                    "scripts/package_release.py",
+                    "--binary-dir",
+                    str(binaries),
+                    "--output",
+                    str(archive),
+                    "--without-codescan",
+                ],
                 cwd=ROOT,
                 check=True,
             )
@@ -117,6 +125,56 @@ class ContentPackPackagingTests(unittest.TestCase):
                 commit="a" * 40,
             )
             self.assertTrue(any(member["path"].endswith("content-pack.toml") for member in manifest["members"]))
+
+    def test_release_archive_can_embed_codescan_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binaries = root / "bin"
+            binaries.mkdir()
+            for name in ("omegon", "omegon-maintain"):
+                (binaries / name).write_bytes(name.encode())
+            codescan = root / "omegon-codescan"
+            codescan.write_bytes(b"codescan")
+            manifest = root / "manifest.toml"
+            manifest.write_text('[extension]\nname = "omegon-codescan"\n')
+            archive = root / "omegon-1.2.3-x86_64-unknown-linux-gnu.tar.gz"
+
+            subprocess.run(
+                [
+                    "python3",
+                    "scripts/package_release.py",
+                    "--binary-dir",
+                    str(binaries),
+                    "--output",
+                    str(archive),
+                    "--codescan-binary",
+                    str(codescan),
+                    "--codescan-manifest",
+                    str(manifest),
+                ],
+                cwd=ROOT,
+                check=True,
+            )
+
+            with tarfile.open(archive, "r:gz") as package:
+                names = {member.name for member in package.getmembers()}
+            prefix = "share/omegon/extensions/omegon-codescan"
+            self.assertIn(f"{prefix}/manifest.toml", names)
+            self.assertIn(f"{prefix}/target/release/omegon-codescan", names)
+            release_manifest = load_release_manifest()
+            manifest = release_manifest.build_package_manifest(
+                archive=archive,
+                tag="v1.2.3",
+                target="x86_64-unknown-linux-gnu",
+                repo="styrene-lab/omegon",
+                commit="a" * 40,
+            )
+            self.assertTrue(
+                any(
+                    member["path"] == f"{prefix}/target/release/omegon-codescan"
+                    for member in manifest["members"]
+                )
+            )
 
     def test_source_and_link_layouts_cover_exact_manifest_inventory(self) -> None:
         inventory = tomllib.loads((ROOT / "content-pack.toml").read_text())["assets"]

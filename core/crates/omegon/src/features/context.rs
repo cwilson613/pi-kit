@@ -610,19 +610,26 @@ impl ContextProvider {
         max_items: usize,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<Option<PackReport>, &'static str> {
-        let handle = self.codescan.handle().ok_or("service:unavailable")?;
         let candidate_count = max_items.saturating_mul(4).clamp(max_items, 12);
-        let results = match handle
-            .invoke(crate::codescan_service::CodescanRequest::CodeContext {
-                query: query.into(),
-                max_results: candidate_count,
+        let results = match self
+            .codescan
+            .execute(
+                omegon_codescan_contracts::CodescanOperationV1::Search(
+                    omegon_codescan_contracts::SearchRequestV1 {
+                        query: query.into(),
+                        scope: omegon_codescan_contracts::SearchScope::Code,
+                        max_results: candidate_count,
+                        tags: Vec::new(),
+                        within: None,
+                    },
+                ),
                 cancellation,
-            })
+            )
             .await
         {
-            Ok(crate::codescan_service::CodescanResponse::CodeContext(results)) => results,
+            Ok(omegon_codescan_contracts::CodescanResponseV1::Search(response)) => response.results,
             Ok(_) => return Err("service:invalid_response"),
-            Err(error) => return Err(crate::codescan_service::unavailable_code(&error)),
+            Err(error) => return Err(error.code()),
         };
         let entries = results
             .into_iter()
@@ -1076,29 +1083,86 @@ Thinking Level: {}",
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use omegon_codescan_contracts::{
+        ChunkType, CodescanOperationV1, CodescanResponseV1, SearchChunk, SearchResponseV1,
+    };
+
+    struct TestCodescanClient {
+        root: std::path::PathBuf,
+    }
+
+    #[async_trait]
+    impl crate::codescan_service::CodescanClient for TestCodescanClient {
+        async fn execute(
+            &self,
+            operation: CodescanOperationV1,
+            _cancellation: tokio_util::sync::CancellationToken,
+        ) -> Result<CodescanResponseV1, crate::codescan_service::CodescanCallError> {
+            let CodescanOperationV1::Search(_) = operation else {
+                return Err(crate::codescan_service::CodescanCallError::InvalidResponse);
+            };
+            let mut results = Vec::new();
+            collect_test_chunks(&self.root, &self.root, &mut results);
+            Ok(CodescanResponseV1::Search(SearchResponseV1 {
+                indexed_code_chunks: results.len(),
+                indexed_knowledge_chunks: 0,
+                results,
+            }))
+        }
+    }
+
+    fn collect_test_chunks(
+        root: &std::path::Path,
+        directory: &std::path::Path,
+        results: &mut Vec<SearchChunk>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().and_then(|name| name.to_str()) != Some(".omegon") {
+                    collect_test_chunks(root, &path, results);
+                }
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let file = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            for (line_index, line) in content.lines().enumerate() {
+                let trimmed = line.trim();
+                if !(trimmed.contains("fn ") || trimmed.contains("struct ")) {
+                    continue;
+                }
+                results.push(SearchChunk {
+                    file: file.clone(),
+                    start_line: line_index + 1,
+                    end_line: line_index + 1,
+                    chunk_type: ChunkType::Code,
+                    score: 1.0,
+                    preview: content.clone(),
+                    label: trimmed.to_string(),
+                });
+            }
+        }
+    }
 
     async fn managed_codescan(
         path: std::path::PathBuf,
-    ) -> (
-        crate::bus::EventBus,
-        crate::codescan_service::CodescanBinding,
-    ) {
-        let binding = crate::codescan_service::CodescanBinding::default();
-        let mut bus = crate::bus::EventBus::new();
-        bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
-            path.clone(),
-            binding.clone(),
-        )));
-        bus.stage_managed_generation(
-            "codescan",
-            crate::codescan_service::start_candidate(path)
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        bus.try_finalize_managed().await.unwrap();
-        binding.capture(&bus).unwrap();
-        (bus, binding)
+    ) -> ((), crate::codescan_service::CodescanBinding) {
+        let binding = crate::codescan_service::CodescanBinding::from_test_client(Arc::new(
+            TestCodescanClient { root: path },
+        ));
+        ((), binding)
     }
 
     async fn managed_memory() -> (

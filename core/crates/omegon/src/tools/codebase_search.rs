@@ -1,15 +1,15 @@
 //! codebase_search and codebase_index tools backed by omegon-codescan.
 
 use async_trait::async_trait;
-use omegon_codescan::SearchScope;
+use omegon_codescan_contracts::{
+    CodescanOperationV1, CodescanResponseV1, IndexRequestV1, SearchRequestV1, SearchScope,
+};
 use omegon_traits::{ContentBlock, ToolDefinition, ToolProvider, ToolResult};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
-use crate::codescan_service::{
-    CodescanBinding, CodescanRequest, CodescanResponse, unavailable_code,
-};
+use crate::codescan_service::CodescanBinding;
 
 pub struct CodescanProvider {
     repo_path: PathBuf,
@@ -88,37 +88,32 @@ impl CodescanProvider {
 
         let scope = SearchScope::parse(scope_str);
 
-        let Some(handle) = self.codescan.handle() else {
-            return Ok(self.unavailable_result("service:unavailable"));
-        };
-        let response = handle
-            .invoke(CodescanRequest::Search {
-                query: query.into(),
-                scope,
-                max_results,
-                tags: tag_filter,
-                within: within.clone(),
-                cancellation: cancel,
-            })
+        let response = self
+            .codescan
+            .execute(
+                CodescanOperationV1::Search(SearchRequestV1 {
+                    query: query.to_string(),
+                    scope,
+                    max_results,
+                    tags: tag_filter,
+                    within: within.as_ref().map(|path| path.display().to_string()),
+                }),
+                cancel,
+            )
             .await;
         let (results, indexed_code_chunks, indexed_knowledge_chunks) = match response {
-            Ok(CodescanResponse::Search {
-                results,
-                indexed_code_chunks,
-                indexed_knowledge_chunks,
-            }) => (results, indexed_code_chunks, indexed_knowledge_chunks),
+            Ok(CodescanResponseV1::Search(response)) => (
+                response.results,
+                response.indexed_code_chunks,
+                response.indexed_knowledge_chunks,
+            ),
             Ok(_) => anyhow::bail!("codescan returned an unexpected search response"),
-            Err(
-                error @ (omegon_traits::ManagedServiceCallError::GenerationDraining
-                | omegon_traits::ManagedServiceCallError::GenerationDegraded
-                | omegon_traits::ManagedServiceCallError::GenerationRetired),
-            ) => {
-                return Ok(self.unavailable_result(unavailable_code(&error)));
+            Err(error)
+                if matches!(error.code(), "service:unavailable" | "service:incompatible") =>
+            {
+                return Ok(self.unavailable_result(error.code()));
             }
-            Err(omegon_traits::ManagedServiceCallError::Operation(error)) => {
-                anyhow::bail!(error)
-            }
-            Err(error) => anyhow::bail!("codescan search failed: {}", unavailable_code(&error)),
+            Err(error) => anyhow::bail!("codescan search failed: {error}"),
         };
 
         if results.is_empty() {
@@ -206,29 +201,22 @@ impl CodescanProvider {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         let invalidate = args["invalidate"].as_bool().unwrap_or(false);
-        let Some(handle) = self.codescan.handle() else {
-            return Ok(self.unavailable_result("service:unavailable"));
-        };
-        let stats = match handle
-            .invoke(CodescanRequest::Index {
-                invalidate,
-                cancellation: cancel,
-            })
+        let stats = match self
+            .codescan
+            .execute(
+                CodescanOperationV1::Index(IndexRequestV1 { invalidate }),
+                cancel,
+            )
             .await
         {
-            Ok(CodescanResponse::Index(stats)) => stats,
+            Ok(CodescanResponseV1::Index(stats)) => stats,
             Ok(_) => anyhow::bail!("codescan returned an unexpected index response"),
-            Err(
-                error @ (omegon_traits::ManagedServiceCallError::GenerationDraining
-                | omegon_traits::ManagedServiceCallError::GenerationDegraded
-                | omegon_traits::ManagedServiceCallError::GenerationRetired),
-            ) => {
-                return Ok(self.unavailable_result(unavailable_code(&error)));
+            Err(error)
+                if matches!(error.code(), "service:unavailable" | "service:incompatible") =>
+            {
+                return Ok(self.unavailable_result(error.code()));
             }
-            Err(omegon_traits::ManagedServiceCallError::Operation(error)) => {
-                anyhow::bail!(error)
-            }
-            Err(error) => anyhow::bail!("codescan index failed: {}", unavailable_code(&error)),
+            Err(error) => anyhow::bail!("codescan index failed: {error}"),
         };
         let text = format!(
             "## codebase_index\n\n**Status:** {}\n\n\
@@ -326,30 +314,78 @@ impl ToolProvider for CodescanProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    async fn managed_provider(path: PathBuf) -> (crate::bus::EventBus, CodescanProvider) {
-        let binding = CodescanBinding::default();
-        let mut bus = crate::bus::EventBus::new();
-        bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
-            path.clone(),
-            binding.clone(),
-        )));
-        bus.stage_managed_generation(
-            "codescan",
-            crate::codescan_service::start_candidate(path.clone())
-                .await
-                .unwrap(),
+    use omegon_codescan_contracts::{
+        ChunkType, CodescanErrorCodeV1, CodescanErrorV1, IndexStats, SearchChunk, SearchResponseV1,
+    };
+
+    struct TestCodescanClient;
+
+    #[async_trait]
+    impl crate::codescan_service::CodescanClient for TestCodescanClient {
+        async fn execute(
+            &self,
+            operation: CodescanOperationV1,
+            cancellation: CancellationToken,
+        ) -> Result<CodescanResponseV1, crate::codescan_service::CodescanCallError> {
+            if cancellation.is_cancelled() {
+                return Err(crate::codescan_service::CodescanCallError::Operation(
+                    CodescanErrorV1 {
+                        code: CodescanErrorCodeV1::Cancelled,
+                        message: "request cancelled".into(),
+                    },
+                ));
+            }
+            match operation {
+                CodescanOperationV1::Index(_) => Ok(CodescanResponseV1::Index(IndexStats {
+                    code_files: 1,
+                    knowledge_files: 0,
+                    code_chunks: 1,
+                    knowledge_chunks: 0,
+                    duration_ms: 1,
+                })),
+                CodescanOperationV1::Search(request) => {
+                    let mut results = if request.query.starts_with("zzz_not_found") {
+                        Vec::new()
+                    } else {
+                        ["alpha/Needle.java", "beta/Needle.java"]
+                            .into_iter()
+                            .map(|file| SearchChunk {
+                                file: file.into(),
+                                start_line: 1,
+                                end_line: 1,
+                                chunk_type: ChunkType::Code,
+                                score: 1.0,
+                                preview: "public class Needle {}".into(),
+                                label: "Needle".into(),
+                            })
+                            .collect()
+                    };
+                    if let Some(within) = request.within {
+                        results.retain(|result| result.file.starts_with(&within));
+                    }
+                    Ok(CodescanResponseV1::Search(SearchResponseV1 {
+                        results,
+                        indexed_code_chunks: 2,
+                        indexed_knowledge_chunks: 0,
+                    }))
+                }
+            }
+        }
+    }
+
+    fn test_provider(path: PathBuf) -> CodescanProvider {
+        CodescanProvider::new(
+            path,
+            CodescanBinding::from_test_client(Arc::new(TestCodescanClient)),
         )
-        .unwrap();
-        bus.try_finalize_managed().await.unwrap();
-        binding.capture(&bus).unwrap();
-        (bus, CodescanProvider::new(path, binding))
     }
 
     #[tokio::test]
     async fn tool_definitions_have_correct_names() {
         let dir = tempfile::tempdir().unwrap();
-        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
+        let p = test_provider(dir.path().to_path_buf());
         let tools = p.tools();
         assert_eq!(tools.len(), 2);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -360,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn execute_index_returns_stats() {
         let dir = tempfile::tempdir().unwrap();
-        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
+        let p = test_provider(dir.path().to_path_buf());
         let result = p
             .execute("codebase_index", "tc", json!({}), CancellationToken::new())
             .await
@@ -375,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn execute_search_empty_returns_no_results() {
         let dir = tempfile::tempdir().unwrap();
-        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
+        let p = test_provider(dir.path().to_path_buf());
         let result = p
             .execute(
                 "codebase_search",
@@ -395,20 +431,7 @@ mod tests {
     #[tokio::test]
     async fn execute_search_within_filters_results() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("alpha")).unwrap();
-        std::fs::create_dir_all(dir.path().join("beta")).unwrap();
-        std::fs::write(
-            dir.path().join("alpha/Needle.java"),
-            "public class Needle { public void alphaNeedle() {} }",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("beta/Needle.java"),
-            "public class Needle { public void betaNeedle() {} }",
-        )
-        .unwrap();
-
-        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
+        let p = test_provider(dir.path().to_path_buf());
         let result = p
             .execute(
                 "codebase_search",
@@ -432,7 +455,7 @@ mod tests {
     #[tokio::test]
     async fn execute_search_rejects_within_traversal() {
         let dir = tempfile::tempdir().unwrap();
-        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
+        let p = test_provider(dir.path().to_path_buf());
         let err = p
             .execute(
                 "codebase_search",
@@ -448,7 +471,7 @@ mod tests {
     #[tokio::test]
     async fn execute_search_respects_pre_cancelled_token() {
         let dir = tempfile::tempdir().unwrap();
-        let (_bus, p) = managed_provider(dir.path().to_path_buf()).await;
+        let p = test_provider(dir.path().to_path_buf());
         let cancel = CancellationToken::new();
         cancel.cancel();
         let err = p

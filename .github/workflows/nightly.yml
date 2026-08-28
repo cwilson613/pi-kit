@@ -64,6 +64,7 @@ jobs:
           ./scripts/milestone-update.sh nightly "$VERSION"
           # (workspace at root)
           cargo check -p omegon
+          cargo check --manifest-path extensions/omegon-codescan/Cargo.toml
 
       - name: Create nightly release commit and tag
         if: steps.exists.outputs.exists == 'false'
@@ -71,7 +72,7 @@ jobs:
           set -euo pipefail
           VERSION='${{ steps.nightly.outputs.version }}'
           TAG='${{ steps.nightly.outputs.tag }}'
-          git add Cargo.toml Cargo.lock .omegon/milestones.json
+          git add Cargo.toml Cargo.lock extensions/omegon-codescan/Cargo.lock .omegon/milestones.json
           git commit -m "chore(release): ${VERSION}"
           git tag "$TAG"
           git push origin "refs/tags/${TAG}"

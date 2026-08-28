@@ -20,6 +20,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Build omegon binary
         run: cargo build -p omegon
+      - name: Check shrinking Omegon composition
+        run: |
+          cargo check -p omegon --locked --no-default-features
+          python3 scripts/check_headless_dependency_boundary.py
 
   rust-unit:
     name: Rust unit tests
@@ -164,11 +168,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run codescan domain tests
-        run: cargo test -p omegon-codescan --locked
-      - name: Run managed codescan lifecycle tests serially
+        run: |
+          cargo test -p omegon-codescan-contracts --locked
+          cargo test -p omegon-codescan --locked
+      - name: Run native codescan extension tests
+        run: cargo test --manifest-path extensions/omegon-codescan/Cargo.toml --locked
+      - name: Run host codescan adapter tests
         env:
           OMEGON_NERD_FONT: "1"
-        run: "cargo test -p omegon --bin omegon codescan_service::tests:: --locked -- --test-threads=1 --nocapture"
+        run: |
+          cargo test -p omegon --bin omegon codescan_service::tests:: --locked --no-default-features -- --test-threads=1 --nocapture
+          cargo test -p omegon --bin omegon tools::codebase_search::tests:: --locked --no-default-features -- --test-threads=1 --nocapture
 
   rust-standalone-crates:
     name: Standalone crate tests

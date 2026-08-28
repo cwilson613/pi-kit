@@ -2542,10 +2542,15 @@ required = ["MISSING_REQUIRED_TOKEN"]
 
     #[tokio::test]
     async fn extensions_status_reports_extension_inventory_schema() {
+        let _guard = crate::GLOBAL_TEST_ENV_LOCK.lock().await;
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("OMEGON_HOME");
+        unsafe { std::env::set_var("OMEGON_HOME", home.path()) };
         let response = get_extensions_status(axum::extract::State(test_state()))
             .await
-            .unwrap()
-            .0;
+            .unwrap();
+        restore_env("OMEGON_HOME", previous_home);
+        let response = response.0;
         assert_eq!(response.schema_version, 1);
         // Inventory is host-dependent; the endpoint contract is that it returns
         // a sorted metadata vector without requiring the UI to scrape files.

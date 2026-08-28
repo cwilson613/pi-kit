@@ -7413,6 +7413,9 @@ fn build_tui_secret_readiness_snapshot(
                                             cwd: &agent.cwd,
                                             dashboard_handles: &agent.dashboard_handles,
                                             route_controller: Some(route_controller.clone()),
+                                            dynamic_contribution_control: Some(
+                                                &agent.dynamic_contribution_control,
+                                            ),
                                         };
                                         match control_runtime::execute_active_harness_command(
                                             &harness_context,
@@ -8460,9 +8463,15 @@ async fn call_tdd_savepoint_extension(
         &crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile),
     )?;
     let ext_dir = home.join("extensions/omegon-tdd-savepoint");
-    let spawned =
-        crate::extensions::spawn_from_admitted_snapshot(snapshot, &ext_dir, trust_admission, &[])
-            .await?;
+    let project_root = std::env::current_dir()?;
+    let spawned = crate::extensions::spawn_from_admitted_snapshot(
+        snapshot,
+        &ext_dir,
+        trust_admission,
+        &project_root,
+        &[],
+    )
+    .await?;
     inventory.ready(&candidate_id);
     let mut candidate_owner =
         crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(inventory);
@@ -9212,6 +9221,14 @@ fn remote_builtin_policy(
 
     if !definition.availability.cli {
         return RemoteBuiltinPolicy::Deny;
+    }
+
+    if matches!(
+        command,
+        crate::runtime_commands::CanonicalSlashCommand::RuntimeDoctor
+            | crate::runtime_commands::CanonicalSlashCommand::RuntimeInventoryStatus
+    ) {
+        return RemoteBuiltinPolicy::Allow;
     }
 
     match command {
@@ -10658,6 +10675,7 @@ mod tests {
                 admission: crate::workspace::types::AdmissionOutcome::GrantedMutable,
             },
             dynamic_contributions: Default::default(),
+            dynamic_contribution_control: Default::default(),
             extension_widgets: vec![],
             extension_metadata: Default::default(),
             extension_rpc_handles: Default::default(),
@@ -12062,6 +12080,33 @@ mod tests {
                 &crate::runtime_commands::CanonicalSlashCommand::AuthUnlock,
             ),
             RemoteBuiltinPolicy::RequiresBypass
+        );
+    }
+
+    #[test]
+    fn remote_runtime_doctor_and_explicit_replacement_are_available() {
+        assert_eq!(
+            remote_builtin_policy(
+                "doctor",
+                &crate::runtime_commands::CanonicalSlashCommand::RuntimeDoctor,
+            ),
+            RemoteBuiltinPolicy::Allow
+        );
+        assert_eq!(
+            remote_builtin_policy(
+                "runtime",
+                &crate::runtime_commands::CanonicalSlashCommand::RuntimeDoctor,
+            ),
+            RemoteBuiltinPolicy::Allow
+        );
+        assert_eq!(
+            remote_builtin_policy(
+                "runtime",
+                &crate::runtime_commands::CanonicalSlashCommand::RuntimeExtensionReplace(
+                    "omegon-codescan".into(),
+                ),
+            ),
+            RemoteBuiltinPolicy::Allow
         );
     }
 

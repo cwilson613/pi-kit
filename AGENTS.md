@@ -19,6 +19,7 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
 
 - **Workspace root**: Cargo workspace at the repository root. Crates live under `core/crates/`:
   - `omegon` — main binary, agent loop, providers, tools, TUI, ACP, daemon/control plane, and integration composition
+  - `omegon-codescan-contracts` — portable codescan request, response, and status types without indexing dependencies
   - `omegon-codescan` — code and knowledge indexing
   - `omegon-git` — repository, commit, merge, worktree, and submodule operations
   - `omegon-memory` — fact storage, decay, search, injection, and vault synchronization
@@ -30,7 +31,8 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
   - `omegon-web` — web search and content extraction (not the embedded dashboard, which remains in `omegon`)
   - `styrene-work-model` — provider-neutral work-item contracts
   - `styrene-work-runtime` — work-source refresh and immutable aggregate snapshots
-- **Build and run**: `just run` rebuilds and launches the current `dev-release` binary. `just link` performs its own release build, installs the stable launchers, registers the checkout/channel, and installs bundled skills/catalog; do not precede it with a redundant `just build` unless a standalone release build is itself required.
+- **First-party extensions**: `extensions/omegon-codescan` owns the release-coupled codescan process, SQLite connection, indexing worker, and RPC lifecycle. The `omegon` binary must not depend on the `omegon-codescan` engine crate.
+- **Build and run**: `just run` rebuilds and launches the current `dev-release` binary. `just link` performs its own release build, installs the stable launchers, registers the checkout/channel, and installs bundled skills/catalog plus the codescan native extension; do not precede it with a redundant `just build` unless a standalone release build is itself required.
 - **Validation ladder**: use the narrowest relevant test while iterating. For an isolated single-crate change, land with `just test-crate <crate>` (or its feature-specific recipe) plus `just clippy-changed`; `just test-secrets` covers both shipped `omegon-secrets` configurations. Reserve `just test-commit` for multi-crate changes, shared contracts/dependencies, or cases where reverse-dependent coverage is materially useful—it may cold-build every affected crate. Use `just lint` and serialized `just test-rust` for broad/high-risk changes and release hardening.
 - **Long-running Cargo gates**: cold dependency/feature builds are routinely longer than blocking tool-call ceilings. A timeout without compiler/test failure is indeterminate, not a failed gate. Start long gates in an interactive terminal and monitor them to completion; do not repeatedly restart a cold build or halt progress because a short wrapper timeout expired.
 - **Single crate**: `just test-crate omegon-memory`

@@ -14,15 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::cache::{FileKind, ScanCache};
 use crate::code::{CodeScanner, is_supported_code_extension};
 use crate::knowledge::{KnowledgeDirs, KnowledgeScanner};
-
-#[derive(Debug, Clone)]
-pub struct IndexStats {
-    pub code_files: usize,
-    pub knowledge_files: usize,
-    pub code_chunks: usize,
-    pub knowledge_chunks: usize,
-    pub duration_ms: u64,
-}
+pub use omegon_codescan_contracts::IndexStats;
 
 pub struct Indexer;
 

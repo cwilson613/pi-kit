@@ -12,7 +12,7 @@ const NORMAL_RESIDENT_CONTRIBUTIONS: &[&str] = &[
     "system:constitutional-kernel",
     "system:default-loop",
     "system:host-effects",
-    "feature:codescan",
+    "feature:codescan-adapter",
     "feature:context-compaction",
     "feature:git",
     "feature:lifecycle",

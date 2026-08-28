@@ -1,0 +1,22 @@
+[package]
+name = "omegon-codescan-extension"
+version = "0.1.0"
+edition = "2024"
+license = "BUSL-1.1"
+description = "Native Omegon codescan indexing service"
+
+[workspace]
+
+[[bin]]
+name = "omegon-codescan"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+omegon-codescan = { path = "../../core/crates/omegon-codescan" }
+omegon-codescan-contracts = { path = "../../core/crates/omegon-codescan-contracts" }
+serde_json = "1"
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -113,6 +113,9 @@ pub fn control_request_from_slash(
             ControlRequest::PermissionTrustRemove { path: path.clone() }
         }
         crate::runtime_commands::CanonicalSlashCommand::StatusView => ControlRequest::StatusView,
+        crate::runtime_commands::CanonicalSlashCommand::RuntimeDoctor => {
+            ControlRequest::RuntimeDoctor
+        }
         crate::runtime_commands::CanonicalSlashCommand::SetRuntimeMode { slim } => {
             ControlRequest::SetRuntimeMode { slim: *slim }
         }
@@ -121,6 +124,9 @@ pub fn control_request_from_slash(
         }
         crate::runtime_commands::CanonicalSlashCommand::RuntimeSubstrateRefresh => {
             ControlRequest::RuntimeSubstrateRefresh
+        }
+        crate::runtime_commands::CanonicalSlashCommand::RuntimeExtensionReplace(name) => {
+            ControlRequest::RuntimeExtensionReplace { name: name.clone() }
         }
         crate::runtime_commands::CanonicalSlashCommand::WorkspaceStatusView => {
             ControlRequest::WorkspaceStatusView
@@ -508,6 +514,8 @@ pub struct HarnessControlContext<'a> {
     pub cwd: &'a Path,
     pub dashboard_handles: &'a crate::runtime_state::RuntimeStateHandles,
     pub route_controller: Option<Arc<crate::route::RouteController>>,
+    pub dynamic_contribution_control:
+        Option<&'a crate::contribution_lifecycle::DynamicContributionControl>,
 }
 
 pub enum ActiveHarnessCommandResult {
@@ -676,6 +684,10 @@ pub async fn execute_harness_control(
         ControlRequest::SetThinking { level } => {
             set_thinking_response(ctx.shared_settings, ctx.cwd, *level).await
         }
+        ControlRequest::RuntimeDoctor => runtime_doctor_response(ctx.dynamic_contribution_control),
+        ControlRequest::RuntimeExtensionReplace { name } => {
+            runtime_extension_replace_response(ctx.dynamic_contribution_control, name).await
+        }
         ControlRequest::ClearModelOverride => {
             let controller = ctx.route_controller.as_ref()?;
             let snapshot = controller.clear_exact_model_override().await;
@@ -699,6 +711,85 @@ pub async fn execute_harness_control(
     })
 }
 
+pub(crate) fn runtime_doctor_response(
+    control: Option<&crate::contribution_lifecycle::DynamicContributionControl>,
+) -> SlashCommandResponse {
+    let Some(control) = control else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("Runtime diagnostics are unavailable on this surface.".into()),
+        };
+    };
+    let health = control.extension_health();
+    if health.is_empty() {
+        return SlashCommandResponse {
+            accepted: true,
+            output: Some("Runtime doctor: no published extension processes.".into()),
+        };
+    }
+
+    let mut lines = vec!["Runtime doctor".to_string()];
+    for extension in health {
+        let pid = extension
+            .pid
+            .map(|pid| format!(" (pid {pid})"))
+            .unwrap_or_default();
+        match extension.state {
+            crate::extensions::ExtensionProcessState::Healthy => {
+                lines.push(format!("- {}: healthy{pid}", extension.name));
+            }
+            crate::extensions::ExtensionProcessState::Replacing => {
+                lines.push(format!(
+                    "- {}: replacement in progress{pid}",
+                    extension.name
+                ));
+            }
+            crate::extensions::ExtensionProcessState::ShuttingDown => {
+                lines.push(format!("- {}: shutting down{pid}", extension.name));
+            }
+            crate::extensions::ExtensionProcessState::Unavailable => {
+                let detail = extension
+                    .detail
+                    .as_deref()
+                    .map(|detail| format!(": {detail}"))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "- {}: unavailable{detail}. Recommended: `/runtime replace {}`",
+                    extension.name, extension.name
+                ));
+            }
+        }
+    }
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(lines.join("\n")),
+    }
+}
+
+pub(crate) async fn runtime_extension_replace_response(
+    control: Option<&crate::contribution_lifecycle::DynamicContributionControl>,
+    name: &str,
+) -> SlashCommandResponse {
+    let Some(control) = control else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("Runtime replacement is unavailable on this surface.".into()),
+        };
+    };
+    match control.replace_extension(name).await {
+        Ok(pid) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!(
+                "Replaced extension `{name}` from its admitted snapshot (pid {pid})."
+            )),
+        },
+        Err(error) => SlashCommandResponse {
+            accepted: false,
+            output: Some(format!("Could not replace extension `{name}`: {error}")),
+        },
+    }
+}
+
 pub async fn execute_control(
     ctx: &mut ControlContext<'_>,
     request: ControlRequest,
@@ -711,6 +802,7 @@ pub async fn execute_control(
             cwd: &ctx.agent.cwd,
             dashboard_handles: &ctx.agent.dashboard_handles,
             route_controller: ctx.route_controller.clone(),
+            dynamic_contribution_control: Some(&ctx.agent.dynamic_contribution_control),
         },
         &request,
     )
@@ -5600,6 +5692,7 @@ mod tests {
             cwd: temp.path(),
             dashboard_handles: &handles,
             route_controller: None,
+            dynamic_contribution_control: None,
         };
         let (events_tx, _) = broadcast::channel(8);
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -5634,6 +5727,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_doctor_is_read_only_and_unknown_replacement_is_rejected() {
+        let control = crate::contribution_lifecycle::DynamicContributionControl::default();
+        let diagnosis = runtime_doctor_response(Some(&control));
+        assert!(diagnosis.accepted);
+        assert_eq!(
+            diagnosis.output.as_deref(),
+            Some("Runtime doctor: no published extension processes.")
+        );
+
+        let replacement =
+            runtime_extension_replace_response(Some(&control), "missing-extension").await;
+        assert!(!replacement.accepted);
+        assert!(
+            replacement
+                .output
+                .is_some_and(|output| output.contains("not published in this runtime"))
+        );
+    }
+
+    #[tokio::test]
     async fn active_harness_preserves_non_tui_control_surface_on_handoff() {
         let temp = tempfile::tempdir().unwrap();
         let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
@@ -5646,6 +5759,7 @@ mod tests {
             cwd: temp.path(),
             dashboard_handles: &handles,
             route_controller: None,
+            dynamic_contribution_control: None,
         };
         let (events_tx, _) = broadcast::channel(8);
 
@@ -5712,6 +5826,7 @@ mod tests {
             cwd: temp.path(),
             dashboard_handles: &handles,
             route_controller: None,
+            dynamic_contribution_control: None,
         };
         let (events_tx, _) = broadcast::channel(8);
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -5759,6 +5874,7 @@ mod tests {
             cwd: temp.path(),
             dashboard_handles: &handles,
             route_controller: None,
+            dynamic_contribution_control: None,
         };
         let (events_tx, _) = broadcast::channel(8);
         let result = execute_active_harness_command(
@@ -6433,6 +6549,7 @@ mod context_compaction_tests {
             },
             runtime_generation: 1,
             git_binding: Default::default(),
+            dynamic_contribution_control: Default::default(),
         }
     }
 

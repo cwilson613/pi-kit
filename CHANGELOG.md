@@ -18,7 +18,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
-- Exact model routes now fail closed against the active inference inventory before startup, login, or operator bridge replacement. Unknown and disabled offerings are rejected without changing the active route, and admitted offerings without tool capability evidence reject tool-bearing requests before network dispatch.
+- Exact model routes now fail closed against the active inference inventory before startup, login, or operator bridge replacement. Unknown and disabled offerings are rejected without changing the active route, admitted offerings without tool capability evidence reject tool-bearing requests before network dispatch, and configured provider order deterministically breaks ties without overriding eligibility or capability scores.
+
+- Environment credential provenance now uses each provider's declared variable-level authentication semantics. Credential ledgers and route metadata distinguish API keys from OAuth and token-exchange credentials without inferring the kind from variable names.
+
+- Provider error responses now carry bounded `Retry-After-Ms`, numeric `Retry-After`, and HTTP-date guidance into the central retry scheduler. Server timing cannot authorize retries or exceed existing attempt and elapsed-time ceilings, and Codex no longer performs hidden adapter-local retries.
+
+- Exact admitted routes now reject tool-bearing and explicit-reasoning requests when the selected offering lacks sufficient model-level evidence. Provider contribution declarations remain authoritative for tool support and schema normalization, and rejection occurs before semantic request preparation, lease persistence, or network dispatch.
+
+- Admitted manifest HTTP endpoints using the `chat-completions` adapter can now construct an OpenAI-compatible bridge from their declared base URL and endpoint-bound bearer-token secret. Remote endpoints require HTTPS, while loopback endpoints can use HTTP. Transport sends the admitted native model ID. Sessionless leases and a new session endpoint-provenance fact preserve endpoint, adapter, inventory generation, credential class, and host adapter generation without changing `route.lease_recorded` v1. Unsupported adapters fail before secret resolution or network dispatch.
 
 ### Fixed
 

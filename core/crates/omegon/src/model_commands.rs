@@ -82,6 +82,7 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
                 refresh_model_intent_route(
                     route_controller,
                     inference_runtime,
+                    shared_settings,
                     bridge_model,
                     events_tx,
                 )
@@ -103,6 +104,7 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
                 refresh_model_intent_route(
                     route_controller,
                     inference_runtime,
+                    shared_settings,
                     bridge_model,
                     events_tx,
                 )
@@ -121,6 +123,7 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
                 refresh_model_intent_route(
                     route_controller,
                     inference_runtime,
+                    shared_settings,
                     bridge_model,
                     events_tx,
                 )
@@ -136,6 +139,7 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
             refresh_model_intent_route(
                 route_controller,
                 inference_runtime,
+                shared_settings,
                 bridge_model,
                 events_tx,
             )
@@ -163,11 +167,17 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
 async fn refresh_model_intent_route(
     route_controller: &Arc<route::RouteController>,
     inference_runtime: &inference_runtime::InferenceRuntimeState,
+    shared_settings: &settings::SharedSettings,
     bridge_model: &Arc<Mutex<Option<String>>>,
     events_tx: &broadcast::Sender<AgentEvent>,
 ) {
     let Some(snapshot) =
-        crate::resolve_current_model_intent_route(route_controller, inference_runtime).await
+        crate::resolve_current_model_intent_route(
+            route_controller,
+            inference_runtime,
+            shared_settings,
+        )
+        .await
     else {
         notify(
             events_tx,

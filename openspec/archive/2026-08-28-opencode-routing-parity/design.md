@@ -27,6 +27,13 @@ protocol compatibility from URL shape. Endpoint base URL, secret reference,
 native model ID, capability evidence, and inventory generation are captured
 before bridge construction.
 
+Remote endpoints require HTTPS. Plain HTTP is allowed only for loopback hosts.
+Each endpoint can resolve only its dedicated
+`OMEGON_<SOURCE>_ENDPOINT_<HEX_ENDPOINT_ID>_TOKEN` secret. The source and
+collision-free endpoint encoding bind the secret to the inventory owner. This
+binding prevents a project manifest from claiming an unrelated user or provider
+credential.
+
 ### Capability checks are model-level
 
 Provider contributions continue to own schema dialect and authentication class.
@@ -67,7 +74,13 @@ Failing closed can expose previously accepted typoed model names. The failure
 must preserve the active route and provide a bounded diagnostic. Existing
 canonical built-in routes and declared provider aliases remain valid.
 
-No persisted route-lease schema is widened in this change. If endpoint identity
-cannot be represented honestly by the existing selected/serving fields and
-contribution generation, implementation must stop and revise this design rather
-than silently dropping provenance.
+Manifest endpoint execution widens only the sessionless route-lease schema with
+optional endpoint ID, adapter ID, and inventory generation fields. Existing
+sessionless records remain readable when those fields are absent. The frozen
+session `route.lease_recorded` v1 payload remains unchanged. A new
+`route.endpoint_provenance_recorded` v1 fact links the three endpoint fields to
+the lease ID. Session-idle compaction uses the corresponding
+`compaction.endpoint_provenance_recorded` v1 fact because it does not create a
+turn route lease. A manifest-backed route records the host adapter contribution
+generation. Selected offering identity remains distinct from the native serving
+model. Native aliasing is not provider fallback.

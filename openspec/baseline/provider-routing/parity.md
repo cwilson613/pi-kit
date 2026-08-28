@@ -1,6 +1,4 @@
-# provider-routing/parity - Delta Spec
-
-## ADDED Requirements
+# provider-routing/parity - Baseline
 
 ### Requirement: Exact routes fail closed against current inventory
 
@@ -26,11 +24,24 @@ And the rejection identifies the missing tool capability
 An admitted manifest endpoint using a host-supported HTTP adapter may construct
 an executable provider bridge from its validated transport, native model ID,
 secret references, capability evidence, and contribution generation. Unknown
-adapters and unadmitted endpoints remain non-executable.
+adapters and unadmitted endpoints remain non-executable. Remote endpoints must
+use HTTPS. Loopback endpoints may use HTTP. An endpoint may resolve only the
+dedicated secret name derived from its inventory source and collision-free
+endpoint ID encoding.
+
+Sessionless manifest route leases add optional endpoint ID, adapter ID, and
+inventory generation fields. Existing sessionless records remain readable when
+the fields are absent. Session-backed routes retain the frozen
+`route.lease_recorded` v1 payload and append a linked
+`route.endpoint_provenance_recorded` v1 fact. Manifest routes use the host
+adapter contribution generation instead of inventing a provider contribution.
+Session-idle compaction appends equivalent endpoint provenance through
+`compaction.endpoint_provenance_recorded` v1.
 
 #### Scenario: Admitted OpenAI-compatible endpoint is selected
 Given a manifest declares an enabled HTTP endpoint using the supported OpenAI-compatible chat adapter
 And its offering has sufficient evidence and a resolvable secret reference
+And a remote endpoint uses HTTPS or a loopback endpoint uses HTTP
 When route resolution selects that offering
 Then Omegon constructs an executable bridge using the declared base URL and native model ID
 And the route lease retains the endpoint and contribution generation identity

@@ -1330,6 +1330,32 @@ mod tests {
     }
 
     #[test]
+    fn exact_admission_distinguishes_insufficient_capability_evidence() {
+        let mut layer = layer_with_offering(InventorySource::Project, Modality::TEXT, false);
+        layer.evidence = EvidenceKind::Declared;
+        layer
+            .offerings
+            .get_mut(&OfferingId("lab:model".into()))
+            .unwrap()
+            .capabilities
+            .insert("tools".into(), true);
+        let snapshot = InventorySnapshot::build(1, vec![layer]).unwrap();
+        let request = CompatibilityRequest {
+            exact_offering: Some(OfferingId("lab:model".into())),
+            required_capabilities: ["tools".to_string()].into(),
+            minimum_evidence: EvidenceKind::Probed,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            snapshot.admit_exact(&request),
+            Err(ExactAdmissionRejection::Incompatible(vec![
+                RejectionReason::InsufficientEvidence("tools".into())
+            ]))
+        );
+    }
+
+    #[test]
     fn project_override_changes_one_field_and_preserves_other_provenance() {
         let base = layer_with_offering(InventorySource::Embedded, Modality::TEXT, true);
         let mut project = InventoryLayer::new(InventorySource::Project, EvidenceKind::Declared);

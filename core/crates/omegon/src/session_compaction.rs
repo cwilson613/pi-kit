@@ -398,6 +398,22 @@ impl crate::loop_driver::LoopCompactionAuthority for SessionCompaction {
         &self,
         evidence: crate::loop_driver::LoopCompactionRouteEvidence,
     ) -> anyhow::Result<()> {
+        let endpoint_provenance = match (
+            evidence.endpoint_id.clone(),
+            evidence.adapter_id.clone(),
+            evidence.inventory_generation,
+        ) {
+            (Some(endpoint_id), Some(adapter_id), Some(inventory_generation)) => Some(
+                crate::session_authority::CompactionEndpointProvenanceRecorded {
+                    compaction_request_id: self.compaction_request_id,
+                    endpoint_id,
+                    adapter_id,
+                    inventory_generation,
+                },
+            ),
+            (None, None, None) => None,
+            _ => anyhow::bail!("compaction endpoint provenance is incomplete"),
+        };
         let route = match self.owner_scope() {
             CompactionOwnerScope::Turn { .. } => CompactionRoute::TurnLease {
                 lease_id: evidence
@@ -421,7 +437,30 @@ impl crate::loop_driver::LoopCompactionAuthority for SessionCompaction {
                 }
             }
         };
-        self.prepare(route).map_err(anyhow::Error::from)
+        if matches!(self.owner_scope(), CompactionOwnerScope::SessionIdle)
+            && let Some(provenance) = endpoint_provenance
+        {
+            let recorded = self
+                .authority
+                .state()
+                .compaction_endpoint_provenance
+                .get(&self.compaction_request_id)
+                .cloned();
+            if let Some(recorded) = recorded {
+                if recorded != provenance {
+                    anyhow::bail!("compaction endpoint provenance changed during retry");
+                }
+            } else {
+                self.authority
+                    .record_compaction_endpoint_provenance(
+                        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        provenance,
+                    )
+                    .map_err(anyhow::Error::from)?;
+            }
+        }
+        self.prepare(route).map_err(anyhow::Error::from)?;
+        Ok(())
     }
 
     fn commit_done(&self, summary: &str) -> anyhow::Result<()> {

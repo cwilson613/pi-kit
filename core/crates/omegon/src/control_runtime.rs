@@ -990,6 +990,7 @@ pub async fn execute_control(
                     cwd: &ctx.agent.cwd,
                     fallback_model: ctx.cli.model,
                     inference_runtime: &ctx.runtime_state.inference_runtime,
+                    secrets: &ctx.agent.secrets,
                 },
             )
             .await
@@ -1444,7 +1445,12 @@ pub async fn set_model_response(
             };
         }
         let new_bridge = crate::session_execution::boot_execution_binding()
-            .resolve_exact_admitted_provider_route(&effective_model, None, inventory, &[])
+            .resolve_exact_admitted_provider_route(
+                &effective_model,
+                Some(agent.secrets.as_ref()),
+                inventory,
+                &[],
+            )
             .await
             .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge);
         let snapshot = match controller
@@ -3067,6 +3073,7 @@ pub struct AuthLoginRouteContext<'a> {
     pub cwd: &'a Path,
     pub fallback_model: &'a str,
     pub inference_runtime: &'a crate::inference_runtime::InferenceRuntimeState,
+    pub secrets: &'a std::sync::Arc<omegon_secrets::SecretsManager>,
 }
 
 pub async fn auth_login_response(
@@ -3112,6 +3119,7 @@ pub async fn auth_login_response(
     let cwd_for_profile = route_context.cwd.to_path_buf();
     let settings_for_login = shared_settings.clone();
     let inference_runtime = route_context.inference_runtime.clone();
+    let secrets = route_context.secrets.clone();
     tokio::spawn(async move {
         let progress: auth::LoginProgress = Box::new(move |msg| {
             let _ = progress_tx.send(AgentEvent::SystemNotification {
@@ -3200,7 +3208,12 @@ pub async fn auth_login_response(
             let effective_model = login_provider_model;
             let inventory = inference_runtime.snapshot().await;
             if let Some(new_bridge) = crate::session_execution::boot_execution_binding()
-                .resolve_exact_admitted_provider_route(&effective_model, None, &inventory, &[])
+                .resolve_exact_admitted_provider_route(
+                    &effective_model,
+                    Some(secrets.as_ref()),
+                    &inventory,
+                    &[],
+                )
                 .await
                 .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
             {
@@ -3663,8 +3676,12 @@ async fn apply_profile_model_intent(
 
     let mut inventory = crate::routing::ProviderInventory::probe();
     inventory.probe_ollama().await;
-    let candidate = crate::route::select_candidate_for_intent(&intent, &inventory)
-        .ok_or_else(|| anyhow::anyhow!("no provider candidate satisfies {}", intent.summary()))?;
+    let candidate = crate::route::select_candidate_for_intent_with_provider_order(
+        &intent,
+        &inventory,
+        &profile.provider_order,
+    )
+    .ok_or_else(|| anyhow::anyhow!("no provider candidate satisfies {}", intent.summary()))?;
     let target = format!("{}:{}", candidate.provider_id, candidate.model_id);
     let bridge = providers::auto_detect_bridge(&target)
         .await

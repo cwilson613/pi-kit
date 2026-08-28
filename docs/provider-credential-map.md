@@ -27,7 +27,8 @@ The canonical routing and lease semantics are in
 ## Authorities
 
 - `core/crates/omegon/src/auth.rs` owns the current credential catalog, storage
-  keys, login metadata, and provider-specific credential probes.
+  keys, variable-level authentication kinds, login metadata, and
+  provider-specific credential probes.
 - `core/crates/omegon/src/providers.rs` resolves credentials at the executable
   bridge boundary and reports bounded credential-source classes.
 - `core/crates/omegon/src/provider_contributions.rs` declares each executable
@@ -49,6 +50,10 @@ provide more specific source evidence, route-lease recording may use the
 contribution authentication class as the bounded evidence value. Route leases
 never contain secret values.
 
+Environment source classes use the authentication kind declared for the
+selected provider variable. Variable names do not determine whether a
+credential is an API key, OAuth token, or token-exchange credential.
+
 Credential availability is evaluated at execution boundaries and may change.
 Do not infer current authentication, refreshability, quota, or route eligibility
 from a static catalog row.
@@ -56,7 +61,7 @@ from a static catalog row.
 ## Routing boundary
 
 Credentials do not define fallback compatibility. Interactive fallback is
-limited by explicit `fallbackProviders`; ordinary sessionless resolution may
+limited by explicit `fallbackProviders`. Ordinary sessionless resolution may
 follow directed compatibility declarations, while exact resolution does not.
 An authenticated provider can still be ineligible because no executable
 contribution or declared compatible route exists.

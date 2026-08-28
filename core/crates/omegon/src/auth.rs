@@ -49,6 +49,8 @@ pub struct ProviderCredential {
     pub display_name: &'static str,
     /// Environment variables that can carry this credential (checked in order)
     pub env_vars: &'static [&'static str],
+    /// Environment variables in `env_vars` that carry OAuth or exchange tokens.
+    pub oauth_env_vars: &'static [&'static str],
     /// How this provider authenticates
     pub auth_method: AuthMethod,
     /// Short description for the login selector
@@ -62,6 +64,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "anthropic",
         display_name: "Anthropic/Claude",
         env_vars: &["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+        oauth_env_vars: &["ANTHROPIC_OAUTH_TOKEN"],
         auth_method: AuthMethod::OAuth,
         description: "OAuth — Claude Pro/Max subscription",
     },
@@ -70,6 +73,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "openai",
         display_name: "OpenAI API",
         env_vars: &["OPENAI_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — GPT models via api.openai.com",
     },
@@ -78,6 +82,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "openai-codex",
         display_name: "OpenAI/Codex",
         env_vars: &["CHATGPT_OAUTH_TOKEN"],
+        oauth_env_vars: &["CHATGPT_OAUTH_TOKEN"],
         auth_method: AuthMethod::OAuth,
         description: "OAuth — experimental consumer ChatGPT/Codex route",
     },
@@ -86,6 +91,11 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "github-copilot",
         display_name: "GitHub Copilot",
         env_vars: &[
+            "GITHUB_COPILOT_OAUTH_TOKEN",
+            "GITHUB_COPILOT_TOKEN",
+            "COPILOT_OAUTH_TOKEN",
+        ],
+        oauth_env_vars: &[
             "GITHUB_COPILOT_OAUTH_TOKEN",
             "GITHUB_COPILOT_TOKEN",
             "COPILOT_OAUTH_TOKEN",
@@ -99,6 +109,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "openrouter",
         display_name: "OpenRouter",
         env_vars: &["OPENROUTER_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — 200+ models, free tier",
     },
@@ -107,6 +118,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "groq",
         display_name: "Groq",
         env_vars: &["GROQ_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — ultra-fast inference",
     },
@@ -115,6 +127,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "xai",
         display_name: "xAI (Grok)",
         env_vars: &["XAI_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — Grok models",
     },
@@ -123,6 +136,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "mistral",
         display_name: "Mistral AI",
         env_vars: &["MISTRAL_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — Mistral/Codestral models",
     },
@@ -131,6 +145,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "cerebras",
         display_name: "Cerebras",
         env_vars: &["CEREBRAS_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — hardware-accelerated inference",
     },
@@ -139,6 +154,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "moonshot",
         display_name: "Moonshot AI",
         env_vars: &["MOONSHOT_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — Kimi models via api.moonshot.ai",
     },
@@ -147,6 +163,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "google",
         display_name: "Google Gemini",
         env_vars: &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — Gemini models via generativelanguage.googleapis.com",
     },
@@ -155,6 +172,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "google-antigravity",
         display_name: "Google Antigravity",
         env_vars: &["ANTIGRAVITY_OAUTH_TOKEN"],
+        oauth_env_vars: &["ANTIGRAVITY_OAUTH_TOKEN"],
         auth_method: AuthMethod::OAuth,
         description: "OAuth — Gemini models via Google Antigravity IDE subscription",
     },
@@ -163,6 +181,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "opencode-go",
         display_name: "OpenCode Go",
         env_vars: &["OPENCODE_GO_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — DeepSeek, Kimi, Qwen, MiniMax via opencode.ai/go",
     },
@@ -171,6 +190,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "perplexity",
         display_name: "Perplexity AI",
         env_vars: &["PERPLEXITY_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — Sonar models with built-in search via api.perplexity.ai",
     },
@@ -183,6 +203,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
             "DWARFSTAR_BASE_URL",
             "DWARFSTAR_API_KEY",
         ],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "Local OpenAI-compatible inference endpoint",
     },
@@ -191,6 +212,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "ollama",
         display_name: "Ollama (Local)",
         env_vars: &["OLLAMA_HOST"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "Local inference — your hardware, your models",
     },
@@ -199,6 +221,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "ollama-cloud",
         display_name: "Ollama Cloud",
         env_vars: &["OLLAMA_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — hosted Ollama via ollama.com/api",
     },
@@ -208,6 +231,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "brave",
         display_name: "Brave Search",
         env_vars: &["BRAVE_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — web search",
     },
@@ -216,6 +240,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "tavily",
         display_name: "Tavily Search",
         env_vars: &["TAVILY_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — AI-optimized search",
     },
@@ -224,6 +249,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "serper",
         display_name: "Serper (Google Search)",
         env_vars: &["SERPER_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — Google results",
     },
@@ -232,6 +258,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "firecrawl",
         display_name: "Firecrawl",
         env_vars: &["FIRECRAWL_API_KEY"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — structured web scraping and search",
     },
@@ -240,6 +267,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "github",
         display_name: "GitHub",
         env_vars: &["GITHUB_TOKEN", "GH_TOKEN"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::Dynamic,
         description: "Dynamic — uses gh CLI",
     },
@@ -248,6 +276,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "gitlab",
         display_name: "GitLab",
         env_vars: &["GITLAB_TOKEN"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "Token — git operations, API",
     },
@@ -256,6 +285,7 @@ pub static PROVIDERS: &[ProviderCredential] = &[
         auth_key: "huggingface",
         display_name: "Hugging Face",
         env_vars: &["HF_TOKEN", "HUGGING_FACE_TOKEN"],
+        oauth_env_vars: &[],
         auth_method: AuthMethod::ApiKey,
         description: "API key — models, datasets",
     },
@@ -313,6 +343,16 @@ pub fn provider_env_vars(provider_id: &str) -> &[&str] {
     provider_by_id(provider_id)
         .map(|p| p.env_vars)
         .unwrap_or(&[])
+}
+
+/// Whether a declared provider environment variable carries OAuth semantics.
+pub fn provider_env_var_is_oauth(provider_id: &str, env_var: &str) -> bool {
+    provider_by_id(provider_id).is_some_and(|provider| {
+        provider
+            .oauth_env_vars
+            .iter()
+            .any(|declared| declared.eq_ignore_ascii_case(env_var))
+    })
 }
 
 /// Get endpoint-declared secret references for providers that are present in
@@ -433,9 +473,9 @@ pub fn provider_oauth_for_model(model_spec: &str) -> bool {
 
 fn provider_has_oauth_credentials(provider: &ProviderCredential) -> bool {
     if provider
-        .env_vars
+        .oauth_env_vars
         .iter()
-        .any(|key| key.contains("OAUTH") && std::env::var(key).is_ok_and(|s| !s.trim().is_empty()))
+        .any(|key| std::env::var(key).is_ok_and(|s| !s.trim().is_empty()))
     {
         return true;
     }
@@ -981,7 +1021,7 @@ async fn probe_provider(provider: &str) -> ProviderInfo {
         if let Ok(val) = std::env::var(key)
             && !val.is_empty()
         {
-            let is_oauth = key.contains("OAUTH");
+            let is_oauth = provider_env_var_is_oauth(provider, key);
             return ProviderInfo {
                 name: provider.to_string(),
                 status: ProviderAuthStatus::Authenticated,
@@ -1157,7 +1197,7 @@ pub async fn resolve_with_refresh(provider: &str) -> Option<(String, bool)> {
     for key in env_vars
         .iter()
         .copied()
-        .filter(|key| !key.contains("OAUTH"))
+        .filter(|key| !provider_env_var_is_oauth(provider, key))
     {
         if let Ok(val) = std::env::var(key)
             && !val.is_empty()
@@ -1194,7 +1234,11 @@ pub async fn resolve_with_refresh(provider: &str) -> Option<(String, bool)> {
                 }
                 c
             } else {
-                for key in env_vars.iter().copied().filter(|key| key.contains("OAUTH")) {
+                for key in env_vars
+                    .iter()
+                    .copied()
+                    .filter(|key| provider_env_var_is_oauth(provider, key))
+                {
                     if let Ok(val) = std::env::var(key)
                         && !val.is_empty()
                     {

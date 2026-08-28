@@ -72,12 +72,23 @@ Inventory and executable semantics are different layers:
 - Route resolution chooses an executable bridge and records the evidence used
   at the dispatch boundary.
 
-The contribution registry can diagnose missing offerings, modalities, or
-capabilities in an inventory snapshot. Those diagnostics exist, but the current
-dispatch path does not consume them as an eligibility gate. Documentation must
-not claim that inventory evidence presently blocks provider dispatch. Likewise,
-inventory presence alone never supplies a bridge factory or makes a route
-executable.
+Exact route resolution uses the current inventory as an eligibility gate. It
+rejects unknown, disabled, and capability-deficient offerings before bridge
+replacement or dispatch. Ordinary contribution-backed route resolution retains
+its existing provider and compatibility policy. Inventory presence alone does
+not make an arbitrary endpoint executable.
+
+One manifest endpoint class is executable. An enabled HTTP endpoint that uses
+the `chat-completions` adapter can construct the existing OpenAI-compatible
+bridge after exact admission. The endpoint must declare one bearer-token secret
+reference named `OMEGON_<SOURCE>_ENDPOINT_<HEX_ENDPOINT_ID>_TOKEN`. The source
+and collision-free endpoint encoding bind the secret to its inventory owner.
+This binding prevents a project manifest from claiming an unrelated user or
+provider secret.
+Remote endpoints require HTTPS. Loopback endpoints can use HTTP. Omegon resolves
+the secret only after adapter, transport, URL, and secret-name admission. Other
+adapters and transports fail closed without secret resolution, protocol
+guessing, or network activity.
 
 ## Identity and selection
 
@@ -98,6 +109,10 @@ Selected and serving identities are equal on a direct route. They differ on
 fallback and are both retained by compatibility bridge handles and route leases.
 Never rewrite a fallback route as though the operator selected the serving
 provider.
+
+A manifest offering can map its selected model alias to a different native
+model ID. The selected alias remains visible and durable. The transport sends
+only the admitted native model ID. This mapping is not provider fallback.
 
 Model intent may select a provider-neutral grade/provider policy or carry an
 exact concrete model override. An exact model override is a pinned intent until
@@ -142,6 +157,20 @@ These are separate states:
 No provider retry or fallback proves that an unknown invocation is safe to
 replay.
 
+Provider adapters can attach a bounded delay from `Retry-After-Ms` or
+`Retry-After` to a sanitized upstream failure. Only the route service schedules
+the retry. Server timing does not authorize a retry or fallback, and it cannot
+extend attempt or elapsed-time ceilings. For semantic requests, the route
+service records the failed-attempt fact before it sleeps or dispatches the next
+attempt.
+
+Exact route admission retains separate model-level evidence for tools and
+reasoning. A tool-bearing or explicit-reasoning request must satisfy that
+offering evidence before semantic request preparation, lease persistence, or
+provider dispatch. The serving provider contribution remains authoritative for
+tool support and schema dialect. Offering evidence cannot enable a tool contract
+that the contribution declares unsupported.
+
 ## Authentication evidence
 
 The contribution authentication class is a compatibility constraint such as
@@ -163,9 +192,15 @@ authority boundaries, not an exhaustive provider or endpoint inventory.
 ## Route lease durability
 
 Every provider stream records a versioned lease before dispatch. The lease
-contains lease/request identity, selected and serving provider/model identity,
-schema dialect or unsupported state, credential-source/authentication-class
-evidence, bounded fallback reason, contribution generation, and route policy.
+contains lease/request identity and selected and serving provider/model
+identity. It also contains schema dialect, credential-source evidence, bounded
+fallback reason, contribution generation, and route policy.
+Sessionless manifest-backed leases also contain endpoint ID, adapter ID, and
+inventory generation. These fields are optional so existing sessionless records
+remain readable. Session-backed dispatch keeps `route.lease_recorded` v1
+unchanged and appends `route.endpoint_provenance_recorded` v1 with those fields.
+Session-idle compaction appends
+`compaction.endpoint_provenance_recorded` v1 because it has no turn route lease.
 Current contribution generation and declared fallback compatibility are
 revalidated before persistence. A stale generation, undeclared fallback,
 partial session scope, or persistence failure prevents the provider call.

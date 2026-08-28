@@ -577,6 +577,7 @@ mod tests {
                 serving_model: format!("{}:{}", self.generation, policy.selected_model),
                 provider_id: self.generation.into(),
                 schema_dialect: "full".into(),
+                contribution_generation_id: format!("provider-route:{}", self.generation),
                 normalizer_contribution_id: omegon_traits::RuntimeContributionId::new(
                     "provider:test",
                 )

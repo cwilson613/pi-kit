@@ -1241,11 +1241,21 @@ fn parse_csv_env(name: &str) -> Vec<String> {
 async fn resolve_current_model_intent_route(
     route_controller: &std::sync::Arc<route::RouteController>,
     inference_runtime: &crate::inference_runtime::InferenceRuntimeState,
+    shared_settings: &settings::SharedSettings,
 ) -> Option<route::RouteSnapshot> {
     let mut inventory = routing::ProviderInventory::probe();
     inventory.probe_ollama().await;
     let intent = route_controller.snapshot().await.intent;
-    let candidate = route::select_candidate_for_intent(&intent, &inventory)?;
+    let provider_order = shared_settings
+        .lock()
+        .ok()
+        .map(|settings| settings.provider_order.clone())
+        .unwrap_or_default();
+    let candidate = route::select_candidate_for_intent_with_provider_order(
+        &intent,
+        &inventory,
+        &provider_order,
+    )?;
     let target = format!("{}:{}", candidate.provider_id, candidate.model_id);
     let only_providers = match &intent.provider_selection {
         route::ProviderSelection::Endpoint(provider) => vec![provider.clone()],
@@ -4921,7 +4931,12 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         route::ProviderRoute::Serving { model }
         | route::ProviderRoute::Fallback { serving: model, .. } => {
             session_execution::boot_execution_binding()
-                .resolve_exact_admitted_provider_route(model, None, &startup_inventory, &[])
+                .resolve_exact_admitted_provider_route(
+                    model,
+                    Some(agent.secrets.as_ref()),
+                    &startup_inventory,
+                    &[],
+                )
                 .await
                 .map(provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
         }
@@ -5942,7 +5957,12 @@ fn build_tui_secret_readiness_snapshot(
                     if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
                         let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
                     }
-                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
+                    let resolved = resolve_current_model_intent_route(
+                        &route_controller,
+                        &runtime_state.inference_runtime,
+                        &shared_settings,
+                    )
+                    .await;
                     let active = resolved
                         .as_ref()
                         .and_then(|snapshot| snapshot.serving_model())
@@ -5985,7 +6005,12 @@ fn build_tui_secret_readiness_snapshot(
                     if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
                         let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
                     }
-                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
+                    let resolved = resolve_current_model_intent_route(
+                        &route_controller,
+                        &runtime_state.inference_runtime,
+                        &shared_settings,
+                    )
+                    .await;
                     let active = resolved
                         .as_ref()
                         .and_then(|snapshot| snapshot.serving_model())
@@ -6022,7 +6047,12 @@ fn build_tui_secret_readiness_snapshot(
                     if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
                         let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
                     }
-                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
+                    let resolved = resolve_current_model_intent_route(
+                        &route_controller,
+                        &runtime_state.inference_runtime,
+                        &shared_settings,
+                    )
+                    .await;
                     let active = resolved
                         .as_ref()
                         .and_then(|snapshot| snapshot.serving_model())
@@ -6338,6 +6368,7 @@ fn build_tui_secret_readiness_snapshot(
                         cwd: &agent.cwd,
                         fallback_model: &cli.model,
                         inference_runtime: &runtime_state.inference_runtime,
+                        secrets: &agent.secrets,
                     },
                 )
                 .await;
@@ -6694,6 +6725,7 @@ fn build_tui_secret_readiness_snapshot(
                             let bridge_model_for_login = runtime_resources.bridge_model.clone();
                             let inference_runtime_for_login =
                                 runtime_state.inference_runtime.clone();
+                            let secrets_for_login = agent.secrets.clone();
                             crate::task_spawn::spawn_operator_task(
                                 "interactive-auth-login",
                                 events_tx_clone.clone(),
@@ -6784,7 +6816,7 @@ fn build_tui_secret_readiness_snapshot(
                                             session_execution::boot_execution_binding()
                                                 .resolve_exact_admitted_provider_route(
                                                     &effective_model,
-                                                    None,
+                                                    Some(secrets_for_login.as_ref()),
                                                     &inventory,
                                                     &[],
                                                 )

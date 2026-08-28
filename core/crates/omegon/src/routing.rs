@@ -282,6 +282,15 @@ pub struct ProviderCandidate {
 /// Route a capability request against an inventory.
 /// Returns candidates sorted by score (descending).
 pub fn route(req: &CapabilityRequest, inventory: &ProviderInventory) -> Vec<ProviderCandidate> {
+    route_with_provider_order(req, inventory, &[])
+}
+
+/// Route eligible candidates by score, then configured provider preference.
+pub fn route_with_provider_order(
+    req: &CapabilityRequest,
+    inventory: &ProviderInventory,
+    provider_order: &[String],
+) -> Vec<ProviderCandidate> {
     let mut candidates: Vec<ProviderCandidate> = inventory
         .entries
         .iter()
@@ -322,8 +331,21 @@ pub fn route(req: &CapabilityRequest, inventory: &ProviderInventory) -> Vec<Prov
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                provider_preference_rank(&a.provider_id, provider_order)
+                    .cmp(&provider_preference_rank(&b.provider_id, provider_order))
+            })
+            .then_with(|| a.provider_id.cmp(&b.provider_id))
+            .then_with(|| a.model_id.cmp(&b.model_id))
     });
     candidates
+}
+
+fn provider_preference_rank(provider_id: &str, provider_order: &[String]) -> usize {
+    provider_order
+        .iter()
+        .position(|preferred| preferred.eq_ignore_ascii_case(provider_id))
+        .unwrap_or(usize::MAX)
 }
 
 /// Default model for a provider at a given internal capability grade band.
@@ -575,6 +597,53 @@ mod tests {
             only_providers: vec![],
         };
         let candidates = route(&req, &inv);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].provider_id, "openai");
+    }
+
+    #[test]
+    fn configured_provider_order_breaks_equal_score_ties_without_changing_scores() {
+        let inv = mock_inventory(vec![
+            ("openai", CapabilityGradeBand::Max),
+            ("anthropic", CapabilityGradeBand::Max),
+        ]);
+        let req = CapabilityRequest {
+            grade: CapabilityGradeBand::Frontier,
+            ..Default::default()
+        };
+        let order = vec!["anthropic".to_string(), "openai".to_string()];
+
+        let candidates = route_with_provider_order(&req, &inv, &order);
+
+        assert_eq!(candidates[0].provider_id, "anthropic");
+        assert_eq!(candidates[1].provider_id, "openai");
+        assert_eq!(candidates[0].score, candidates[1].score);
+    }
+
+    #[test]
+    fn provider_order_never_bypasses_hard_eligibility_filters() {
+        let mut inv = mock_inventory(vec![
+            ("anthropic", CapabilityGradeBand::Max),
+            ("openai", CapabilityGradeBand::Max),
+            ("ollama", CapabilityGradeBand::Mid),
+            ("xai", CapabilityGradeBand::Max),
+        ]);
+        inv.entries[0].has_credentials = false;
+        let req = CapabilityRequest {
+            grade: CapabilityGradeBand::Frontier,
+            prefer_local: false,
+            avoid_providers: vec!["anthropic".into()],
+            only_providers: vec!["anthropic".into(), "openai".into(), "ollama".into()],
+        };
+        let order = vec![
+            "anthropic".into(),
+            "ollama".into(),
+            "xai".into(),
+            "openai".into(),
+        ];
+
+        let candidates = route_with_provider_order(&req, &inv, &order);
+
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].provider_id, "openai");
     }

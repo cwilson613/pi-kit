@@ -1069,21 +1069,20 @@ mod tests {
             let compatible = match provider.authentication {
                 ProviderAuthenticationClass::ApiKey => {
                     credential.auth_method == crate::auth::AuthMethod::ApiKey
+                        && credential.oauth_env_vars.is_empty()
                 }
                 ProviderAuthenticationClass::OAuth
                 | ProviderAuthenticationClass::OAuthTokenExchange => {
                     credential.auth_method == crate::auth::AuthMethod::OAuth
+                        && !credential.oauth_env_vars.is_empty()
                 }
                 ProviderAuthenticationClass::ApiKeyOrOAuth => {
                     credential.auth_method == crate::auth::AuthMethod::OAuth
+                        && !credential.oauth_env_vars.is_empty()
                         && credential
                             .env_vars
                             .iter()
-                            .any(|name| name.contains("API_KEY"))
-                        && credential
-                            .env_vars
-                            .iter()
-                            .any(|name| name.contains("OAUTH") || name.contains("TOKEN"))
+                            .any(|name| !credential.oauth_env_vars.contains(name))
                 }
                 ProviderAuthenticationClass::CredentiallessLocal
                 | ProviderAuthenticationClass::OptionalApiKeyLocal => {

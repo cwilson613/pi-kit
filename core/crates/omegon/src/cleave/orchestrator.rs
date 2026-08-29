@@ -916,6 +916,7 @@ async fn terminate_child_process(
 ) -> Result<std::process::ExitStatus, ChildError> {
     let shutdown_grace = tokio::time::Duration::from_secs(2);
     if child.id().is_some() {
+        crate::child_agent::kill_child_process_group(child.id());
         let _ = child.start_kill();
     }
     match tokio::time::timeout(shutdown_grace, child.wait()).await {

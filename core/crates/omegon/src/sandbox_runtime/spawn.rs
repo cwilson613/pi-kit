@@ -10,7 +10,7 @@ use tokio::process::Child;
 
 use super::container::materialize_container;
 use super::profile::SandboxProfile;
-use crate::child_agent::ChildAgentSpawnConfig;
+use crate::child_agent::{ChildAgentSpawnConfig, configure_child_process_group};
 
 /// Spawn a child agent inside an OCI container.
 ///
@@ -41,6 +41,7 @@ pub fn spawn_containerized_child_agent(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
+    configure_child_process_group(&mut cmd);
 
     let child = cmd.spawn().with_context(|| {
         format!(

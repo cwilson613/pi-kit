@@ -32,6 +32,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Headless delegate and cleave timeout/cancellation paths now terminate the complete owned Unix process group instead of only the immediate child process, preventing quiet descendants from surviving agent cleanup.
+
 - Fixed interactive startup after managed services are published by binding the boot-published model-budget feature to the resolved provider route without replacing or synchronously re-finalizing the active contribution graph.
 
 ### Added

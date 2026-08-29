@@ -961,8 +961,11 @@ pub fn entry_identity_at(parent: &File, name: &[u8]) -> Result<Option<FileIdenti
         .and_then(|seconds| seconds.checked_add(metadata.st_mtime_nsec))
         .and_then(|value| u64::try_from(value).ok())
         .ok_or_else(|| ContractError::InvalidValue("entry mtime cannot be represented".into()))?;
+    // dev_t is not u64 on every supported Unix target.
+    #[allow(clippy::unnecessary_cast)]
+    let device = metadata.st_dev as u64;
     Ok(Some(FileIdentityV1 {
-        device: metadata.st_dev as u64,
+        device,
         inode: metadata.st_ino,
         size: metadata.st_size as u64,
         modified_ns,

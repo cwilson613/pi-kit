@@ -85,8 +85,11 @@ impl ProtocolLock {
         }
         // SAFETY: fstatat succeeded and initialized named.
         let named = unsafe { named.assume_init() };
+        // dev_t is not u64 on every supported Unix target.
+        #[allow(clippy::unnecessary_cast)]
+        let named_device = named.st_dev as u64;
         if named.st_mode & libc::S_IFMT != libc::S_IFREG
-            || named.st_dev as u64 != metadata.dev()
+            || named_device != metadata.dev()
             || named.st_ino != metadata.ino()
         {
             return Err(ContractError::InvalidValue(

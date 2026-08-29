@@ -16,11 +16,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ## [Unreleased]
 
+### Changed
+
+- Exact model routes now fail closed against the active inference inventory before startup, login, or operator bridge replacement. Unknown and disabled offerings are rejected without changing the active route, admitted offerings without tool capability evidence reject tool-bearing requests before network dispatch, and configured provider order deterministically breaks ties without overriding eligibility or capability scores.
+
+- Environment credential provenance now uses each provider's declared variable-level authentication semantics. Credential ledgers and route metadata distinguish API keys from OAuth and token-exchange credentials without inferring the kind from variable names.
+
+- Provider error responses now carry bounded `Retry-After-Ms`, numeric `Retry-After`, and HTTP-date guidance into the central retry scheduler. Server timing cannot authorize retries or exceed existing attempt and elapsed-time ceilings, and Codex no longer performs hidden adapter-local retries.
+
+- Exact admitted routes now reject tool-bearing and explicit-reasoning requests when the selected offering lacks sufficient model-level evidence. Provider contribution declarations remain authoritative for tool support and schema normalization, and rejection occurs before semantic request preparation, lease persistence, or network dispatch.
+
+- Admitted manifest HTTP endpoints using the `chat-completions` adapter can now construct an OpenAI-compatible bridge from their declared base URL and endpoint-bound bearer-token secret. Remote endpoints require HTTPS, while loopback endpoints can use HTTP. Transport sends the admitted native model ID. Sessionless leases and a new session endpoint-provenance fact preserve endpoint, adapter, inventory generation, credential class, and host adapter generation without changing `route.lease_recorded` v1. Unsupported adapters fail before secret resolution or network dispatch.
+
+- Extracted codescan from every Omegon binary into a release-coupled native extension. The host links only versioned portable contracts, retains stable code-search tool and context schemas, propagates RPC cancellation, and reports typed unavailability when the extension is absent. Installer and self-update generations now activate and roll back the matching sidecar atomically, while CI rejects the indexing engine from every Omegon feature graph.
+
 ### Fixed
+
+- Headless delegate and cleave timeout/cancellation paths now terminate the complete owned Unix process group instead of only the immediate child process, preventing quiet descendants from surviving agent cleanup.
 
 - Fixed interactive startup after managed services are published by binding the boot-published model-budget feature to the resolved provider route without replacing or synchronously re-finalizing the active contribution graph.
 
 ### Added
+
+- Added the source-built `task-capsule-v0` artifact profile for bounded `omegon run` execution. Its dedicated build disables default features, rejects TUI, self-update, and local-embedding composition, reports compile-derived artifact identity, and enforces dependency absence for presentation, codescan engine, Sigstore, and X.509 parsing packages. V0 does not add a published archive, update channel, or container image.
+
+- Added `/doctor` and `/runtime doctor` diagnostics for published extension-process health, with explicit `/runtime replace <extension>` recommendations. Operators can now perform one bounded same-generation replacement from the retained admitted snapshot without rediscovery, EventBus republication, or an automatic retry loop; replacement rejects changed published tool definitions and leaves failures local to the named extension.
 
 - Added Sigstore-signed package and executable-resident composition locks. Offline maintenance verification validates required identity, digest, protocol, target, fallback, member, and signing evidence fail-closed without extracting or executing optional contributions. Source/linked/release profile matrices and measured composition budgets now gate releases with owner-attributed diagnostics. Both companion build scripts refresh commit and dirty-state identity so linked validation cannot pair a current runtime with stale maintenance metadata.
 

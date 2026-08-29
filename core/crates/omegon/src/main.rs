@@ -6,6 +6,13 @@
 //! Phase 2: Native TUI rendering.
 //! Phase 3: Native LLM provider clients.
 
+#[cfg(all(feature = "task-capsule", feature = "tui"))]
+compile_error!("the task-capsule artifact must be built without the tui feature");
+#[cfg(all(feature = "task-capsule", feature = "self-update"))]
+compile_error!("the task-capsule artifact must be built without the self-update feature");
+#[cfg(all(feature = "task-capsule", feature = "local-embeddings"))]
+compile_error!("the task-capsule artifact must be built without the local-embeddings feature");
+
 use crate::conversation::PlanAction;
 #[cfg(any(feature = "tui", test))]
 use crate::runtime_composition::{decide_interactive_startup_model, restart_args_for_session};
@@ -558,7 +565,10 @@ enum Commands {
     /// Inspect the bounded runtime composition used by release gates.
     #[command(hide = true)]
     CompositionInspect {
-        #[arg(long, value_parser = ["interactive", "headless", "daemon", "full"])]
+        #[arg(
+            long,
+            value_parser = ["task-capsule", "interactive", "headless", "daemon", "full"]
+        )]
         profile: String,
     },
 
@@ -1241,11 +1251,21 @@ fn parse_csv_env(name: &str) -> Vec<String> {
 async fn resolve_current_model_intent_route(
     route_controller: &std::sync::Arc<route::RouteController>,
     inference_runtime: &crate::inference_runtime::InferenceRuntimeState,
+    shared_settings: &settings::SharedSettings,
 ) -> Option<route::RouteSnapshot> {
     let mut inventory = routing::ProviderInventory::probe();
     inventory.probe_ollama().await;
     let intent = route_controller.snapshot().await.intent;
-    let candidate = route::select_candidate_for_intent(&intent, &inventory)?;
+    let provider_order = shared_settings
+        .lock()
+        .ok()
+        .map(|settings| settings.provider_order.clone())
+        .unwrap_or_default();
+    let candidate = route::select_candidate_for_intent_with_provider_order(
+        &intent,
+        &inventory,
+        &provider_order,
+    )?;
     let target = format!("{}:{}", candidate.provider_id, candidate.model_id);
     let only_providers = match &intent.provider_selection {
         route::ProviderSelection::Endpoint(provider) => vec![provider.clone()],
@@ -1354,14 +1374,8 @@ pub fn startup_elapsed_ms() -> u64 {
 }
 
 async fn run_composition_inspection(cli: &Cli, profile: &str) -> anyhow::Result<()> {
+    let runtime_mode = runtime_composition::validated_runtime_mode(profile)?;
     let settings = settings::shared(&cli.model);
-    let runtime_mode = match profile {
-        "interactive" => "tui",
-        "headless" => "headless",
-        "daemon" => "daemon",
-        "full" => "full",
-        _ => anyhow::bail!("unknown composition profile: {profile}"),
-    };
     let mut agent = setup::AgentSetup::new_with_safety_and_mode(
         &cli.cwd,
         None,
@@ -4916,11 +4930,17 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             .await;
         }
     }
+    let startup_inventory = agent.inference_runtime.snapshot().await;
     let resolved_bridge = match &startup_route {
         route::ProviderRoute::Serving { model }
         | route::ProviderRoute::Fallback { serving: model, .. } => {
             session_execution::boot_execution_binding()
-                .resolve_exact_provider_route(model, None)
+                .resolve_exact_admitted_provider_route(
+                    model,
+                    Some(agent.secrets.as_ref()),
+                    &startup_inventory,
+                    &[],
+                )
                 .await
                 .map(provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
         }
@@ -5899,12 +5919,14 @@ fn build_tui_secret_readiness_snapshot(
             }
 
             operator_commands::OperatorCommand::SetModel { model, respond_to } => {
+                let inventory = runtime_state.inference_runtime.snapshot().await;
                 let response = control_runtime::set_model_response(
                     &mut agent,
                     &shared_settings,
                     &bridge,
                     Some(route_controller.clone()),
                     &model,
+                    &inventory,
                 )
                 .await;
                 if let Some(output) = response.output.clone() {
@@ -5939,7 +5961,12 @@ fn build_tui_secret_readiness_snapshot(
                     if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
                         let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
                     }
-                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
+                    let resolved = resolve_current_model_intent_route(
+                        &route_controller,
+                        &runtime_state.inference_runtime,
+                        &shared_settings,
+                    )
+                    .await;
                     let active = resolved
                         .as_ref()
                         .and_then(|snapshot| snapshot.serving_model())
@@ -5982,7 +6009,12 @@ fn build_tui_secret_readiness_snapshot(
                     if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
                         let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
                     }
-                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
+                    let resolved = resolve_current_model_intent_route(
+                        &route_controller,
+                        &runtime_state.inference_runtime,
+                        &shared_settings,
+                    )
+                    .await;
                     let active = resolved
                         .as_ref()
                         .and_then(|snapshot| snapshot.serving_model())
@@ -6019,7 +6051,12 @@ fn build_tui_secret_readiness_snapshot(
                     if let Err(err) = settings::persist_model_intent(&agent.cwd, &snapshot.intent) {
                         let _ = events_tx.send(AgentEvent::SystemNotification { message: format!("Failed to persist model intent: {err}") });
                     }
-                    let resolved = resolve_current_model_intent_route(&route_controller, &runtime_state.inference_runtime).await;
+                    let resolved = resolve_current_model_intent_route(
+                        &route_controller,
+                        &runtime_state.inference_runtime,
+                        &shared_settings,
+                    )
+                    .await;
                     let active = resolved
                         .as_ref()
                         .and_then(|snapshot| snapshot.serving_model())
@@ -6330,13 +6367,13 @@ fn build_tui_secret_readiness_snapshot(
                     &bridge,
                     &login_prompt_tx,
                     &events_tx,
-                    &CliRuntimeView {
-                        no_session: cli.no_session,
-                        model: &cli.model,
-                        dangerously_bypass_permissions: cli.dangerously_bypass_permissions,
-                    },
-                    &agent.cwd,
                     &provider,
+                    control_runtime::AuthLoginRouteContext {
+                        cwd: &agent.cwd,
+                        fallback_model: &cli.model,
+                        inference_runtime: &runtime_state.inference_runtime,
+                        secrets: &agent.secrets,
+                    },
                 )
                 .await;
                 if let Some(respond_to) = respond_to {
@@ -6690,6 +6727,9 @@ fn build_tui_secret_readiness_snapshot(
                             let cwd_for_profile = agent.cwd.clone();
                             let settings_for_login = shared_settings.clone();
                             let bridge_model_for_login = runtime_resources.bridge_model.clone();
+                            let inference_runtime_for_login =
+                                runtime_state.inference_runtime.clone();
+                            let secrets_for_login = agent.secrets.clone();
                             crate::task_spawn::spawn_operator_task(
                                 "interactive-auth-login",
                                 events_tx_clone.clone(),
@@ -6774,9 +6814,16 @@ fn build_tui_secret_readiness_snapshot(
                                             providers::default_model_for_provider(&provider_clone)
                                                 .unwrap_or(model_for_redetect.clone());
                                         let effective_model = login_provider_model;
+                                        let inventory =
+                                            inference_runtime_for_login.snapshot().await;
                                         if let Some(new_bridge) =
                                             session_execution::boot_execution_binding()
-                                                .resolve_exact_provider_route(&effective_model, None)
+                                                .resolve_exact_admitted_provider_route(
+                                                    &effective_model,
+                                                    Some(secrets_for_login.as_ref()),
+                                                    &inventory,
+                                                    &[],
+                                                )
                                                 .await
                                                 .map(provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
                                         {
@@ -7370,6 +7417,9 @@ fn build_tui_secret_readiness_snapshot(
                                             cwd: &agent.cwd,
                                             dashboard_handles: &agent.dashboard_handles,
                                             route_controller: Some(route_controller.clone()),
+                                            dynamic_contribution_control: Some(
+                                                &agent.dynamic_contribution_control,
+                                            ),
                                         };
                                         match control_runtime::execute_active_harness_command(
                                             &harness_context,
@@ -8417,9 +8467,15 @@ async fn call_tdd_savepoint_extension(
         &crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile),
     )?;
     let ext_dir = home.join("extensions/omegon-tdd-savepoint");
-    let spawned =
-        crate::extensions::spawn_from_admitted_snapshot(snapshot, &ext_dir, trust_admission, &[])
-            .await?;
+    let project_root = std::env::current_dir()?;
+    let spawned = crate::extensions::spawn_from_admitted_snapshot(
+        snapshot,
+        &ext_dir,
+        trust_admission,
+        &project_root,
+        &[],
+    )
+    .await?;
     inventory.ready(&candidate_id);
     let mut candidate_owner =
         crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(inventory);
@@ -9169,6 +9225,14 @@ fn remote_builtin_policy(
 
     if !definition.availability.cli {
         return RemoteBuiltinPolicy::Deny;
+    }
+
+    if matches!(
+        command,
+        crate::runtime_commands::CanonicalSlashCommand::RuntimeDoctor
+            | crate::runtime_commands::CanonicalSlashCommand::RuntimeInventoryStatus
+    ) {
+        return RemoteBuiltinPolicy::Allow;
     }
 
     match command {
@@ -10615,6 +10679,7 @@ mod tests {
                 admission: crate::workspace::types::AdmissionOutcome::GrantedMutable,
             },
             dynamic_contributions: Default::default(),
+            dynamic_contribution_control: Default::default(),
             extension_widgets: vec![],
             extension_metadata: Default::default(),
             extension_rpc_handles: Default::default(),
@@ -10816,6 +10881,17 @@ mod tests {
     fn debug_tui_is_an_explicit_global_diagnostic_switch() {
         assert!(!Cli::parse_from(["omegon"]).debug_tui);
         assert!(Cli::parse_from(["omegon", "--debug-tui"]).debug_tui);
+    }
+
+    #[test]
+    fn task_capsule_composition_profile_is_accepted_by_the_cli() {
+        let cli =
+            Cli::try_parse_from(["omegon", "composition-inspect", "--profile", "task-capsule"])
+                .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::CompositionInspect { profile }) if profile == "task-capsule"
+        ));
     }
 
     #[test]
@@ -12019,6 +12095,33 @@ mod tests {
                 &crate::runtime_commands::CanonicalSlashCommand::AuthUnlock,
             ),
             RemoteBuiltinPolicy::RequiresBypass
+        );
+    }
+
+    #[test]
+    fn remote_runtime_doctor_and_explicit_replacement_are_available() {
+        assert_eq!(
+            remote_builtin_policy(
+                "doctor",
+                &crate::runtime_commands::CanonicalSlashCommand::RuntimeDoctor,
+            ),
+            RemoteBuiltinPolicy::Allow
+        );
+        assert_eq!(
+            remote_builtin_policy(
+                "runtime",
+                &crate::runtime_commands::CanonicalSlashCommand::RuntimeDoctor,
+            ),
+            RemoteBuiltinPolicy::Allow
+        );
+        assert_eq!(
+            remote_builtin_policy(
+                "runtime",
+                &crate::runtime_commands::CanonicalSlashCommand::RuntimeExtensionReplace(
+                    "omegon-codescan".into(),
+                ),
+            ),
+            RemoteBuiltinPolicy::Allow
         );
     }
 

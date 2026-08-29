@@ -233,6 +233,10 @@ pub enum LlmEvent {
     },
     #[serde(rename = "error")]
     Error { message: String },
+    #[serde(rename = "upstream_failure")]
+    UpstreamFailure {
+        failure: crate::upstream_errors::UpstreamResponseFailure,
+    },
 }
 
 /// A bridge response line from the subprocess.
@@ -273,11 +277,32 @@ pub struct StreamOptions {
     pub extra_body: std::collections::HashMap<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointRouteProvenance {
+    pub selected_provider_id: String,
+    pub endpoint_id: String,
+    pub adapter_id: String,
+    pub inventory_generation: u64,
+    pub contribution_generation_id: String,
+    pub schema_dialect: String,
+}
+
 /// Abstraction over how we call LLM providers.
 /// Native: AnthropicClient, OpenAIClient, CodexClient, OpenAICompatClient.
 /// Test: MockBridge (scripted responses).
 #[async_trait]
 pub trait LlmBridge: Send + Sync {
+    /// Validate model-level request capabilities before lease persistence or
+    /// transport dispatch. Native bridges accept by default; admitted route
+    /// wrappers enforce offering evidence.
+    fn validate_request_capabilities(
+        &self,
+        _tools: &[ToolDefinition],
+        _options: &StreamOptions,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn stream(
         &self,
         system_prompt: &str,
@@ -294,6 +319,14 @@ pub trait LlmBridge: Send + Sync {
     }
 
     fn selected_model_hint(&self) -> Option<&str> {
+        None
+    }
+
+    fn native_model_hint(&self) -> Option<&str> {
+        None
+    }
+
+    fn endpoint_route_provenance_hint(&self) -> Option<&EndpointRouteProvenance> {
         None
     }
 

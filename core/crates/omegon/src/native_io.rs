@@ -40,9 +40,9 @@ pub fn copy_text_to_clipboard(text: &str) -> bool {
                 ("xsel", &["--clipboard", "--input"]),
             ]
         };
-        return commands
+        commands
             .iter()
-            .any(|(command, args)| write_to_process(command, args, text.as_bytes()));
+            .any(|(command, args)| write_to_process(command, args, text.as_bytes()))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]

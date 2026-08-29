@@ -237,6 +237,7 @@ pub(crate) struct LoopRoute {
     pub(crate) serving_model: String,
     pub(crate) provider_id: String,
     pub(crate) schema_dialect: String,
+    pub(crate) contribution_generation_id: String,
     pub(crate) normalizer_contribution_id: omegon_traits::RuntimeContributionId,
     pub(crate) normalizer_generation_id: omegon_traits::RuntimeContributionGenerationId,
 }
@@ -346,6 +347,9 @@ pub(crate) struct LoopCompactionRouteEvidence {
     pub(crate) fallback_reason: Option<String>,
     pub(crate) contribution_generation_id: String,
     pub(crate) route_policy: String,
+    pub(crate) endpoint_id: Option<String>,
+    pub(crate) adapter_id: Option<String>,
+    pub(crate) inventory_generation: Option<u64>,
 }
 
 pub(crate) trait LoopCompactionAuthority: Send + Sync {
@@ -418,6 +422,10 @@ pub(crate) trait LoopRouteContract: Sync {
         route: &LoopRoute,
         events: &broadcast::Sender<omegon_traits::AgentEvent>,
     );
+    fn validate_request_capabilities(
+        &self,
+        tools: &[omegon_traits::ToolDefinition],
+    ) -> anyhow::Result<()>;
     async fn dispatch(&self, request: LoopRouteRequest<'_>) -> anyhow::Result<LoopRouteDispatch>;
     async fn compact(&self, request: LoopCompactionRequest<'_>) -> anyhow::Result<String>;
     fn failure_kind(&self, error: &anyhow::Error) -> LoopRouteFailure;
@@ -731,6 +739,7 @@ impl From<crate::provider_route_service::LoopRoute> for LoopRoute {
             serving_model: route.serving_model,
             provider_id: route.provider_id,
             schema_dialect: route.schema_dialect,
+            contribution_generation_id: route.contribution_generation_id,
             normalizer_contribution_id: route.normalizer_contribution_id,
             normalizer_generation_id: route.normalizer_generation_id,
         }
@@ -781,6 +790,20 @@ impl LoopRouteContract for LoopRoutePort<'_> {
     ) {
         let route = self.provider_route(route);
         self.service.prepare(&route, &self.setup, events).await;
+    }
+
+    fn validate_request_capabilities(
+        &self,
+        tools: &[omegon_traits::ToolDefinition],
+    ) -> anyhow::Result<()> {
+        let options = self
+            .active_options
+            .lock()
+            .expect("route options lock")
+            .clone()
+            .expect("turn route must precede request validation");
+        self.leased_bridge
+            .validate_request_capabilities(tools, &options)
     }
 
     async fn dispatch(&self, request: LoopRouteRequest<'_>) -> anyhow::Result<LoopRouteDispatch> {
@@ -878,6 +901,7 @@ impl LoopRoutePort<'_> {
             serving_model: route.serving_model.clone(),
             provider_id: route.provider_id.clone(),
             schema_dialect: route.schema_dialect.clone(),
+            contribution_generation_id: route.contribution_generation_id.clone(),
             normalizer_contribution_id: route.normalizer_contribution_id.clone(),
             normalizer_generation_id: route.normalizer_generation_id.clone(),
             options,

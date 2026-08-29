@@ -427,32 +427,35 @@ async fn lifecycle_campaign_shared_observation_projects_consistent_values() {
         (change.done_tasks, change.total_tasks)
     );
 
-    use crate::surfaces::dashboard::ProjectDashboardSurface;
-    use crate::tui::dashboard::DashboardHandleExt;
-    let mut dashboard = crate::tui::dashboard::DashboardState::default();
-    handles.refresh_into(&mut dashboard);
-    let tui = dashboard.project_dashboard_surface();
-    let tui_node = tui
-        .all_nodes
-        .iter()
-        .find(|candidate| candidate.id == node.id)
-        .expect("TUI design node");
-    assert_eq!(tui_node.title, node.title);
-    assert_eq!(tui_node.status, node.status.as_str());
-    assert_eq!(
-        tui.focused_node.as_ref().map(|focused| focused.id.as_str()),
-        Some(node.id.as_str())
-    );
-    let tui_change = tui
-        .active_changes
-        .iter()
-        .find(|candidate| candidate.name == change.name)
-        .expect("TUI OpenSpec change");
-    assert_eq!(tui_change.stage, change.lifecycle_state);
-    assert_eq!(
-        (tui_change.done_tasks, tui_change.total_tasks),
-        (change.done_tasks, change.total_tasks)
-    );
+    #[cfg(feature = "tui")]
+    {
+        use crate::surfaces::dashboard::ProjectDashboardSurface;
+        use crate::tui::dashboard::DashboardHandleExt;
+        let mut dashboard = crate::tui::dashboard::DashboardState::default();
+        handles.refresh_into(&mut dashboard);
+        let tui = dashboard.project_dashboard_surface();
+        let tui_node = tui
+            .all_nodes
+            .iter()
+            .find(|candidate| candidate.id == node.id)
+            .expect("TUI design node");
+        assert_eq!(tui_node.title, node.title);
+        assert_eq!(tui_node.status, node.status.as_str());
+        assert_eq!(
+            tui.focused_node.as_ref().map(|focused| focused.id.as_str()),
+            Some(node.id.as_str())
+        );
+        let tui_change = tui
+            .active_changes
+            .iter()
+            .find(|candidate| candidate.name == change.name)
+            .expect("TUI OpenSpec change");
+        assert_eq!(tui_change.stage, change.lifecycle_state);
+        assert_eq!(
+            (tui_change.done_tasks, tui_change.total_tasks),
+            (change.done_tasks, change.total_tasks)
+        );
+    }
 
     let graph = crate::web::api::build_graph_data(&handles);
     let graph_node = graph

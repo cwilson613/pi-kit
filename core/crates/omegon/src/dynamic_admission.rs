@@ -93,6 +93,28 @@ impl DynamicAdmissionPermit {
         Ok(())
     }
 
+    pub(crate) fn for_kernel_release(
+        preflight: RuntimeDynamicContributionPreflight,
+    ) -> Result<Self> {
+        preflight.validate().map_err(|error| anyhow!(error))?;
+        let admission = RuntimeTrustAdmission {
+            schema_version: RUNTIME_DYNAMIC_PREFLIGHT_SCHEMA_VERSION,
+            contribution_id: preflight.id.clone(),
+            source_digest: preflight.source_digest.clone(),
+            evidence: RuntimeTrustAdmissionEvidence::TrustedCode {
+                authority: RuntimeTrustedCodeAuthority::KernelRelease,
+                policy_id: "release:signed-generation-v1".into(),
+            },
+        };
+        admission
+            .validate_for(&preflight)
+            .map_err(|error| anyhow!(error))?;
+        Ok(Self {
+            preflight,
+            admission,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(preflight: RuntimeDynamicContributionPreflight) -> Self {
         let admission = RuntimeTrustAdmission {
@@ -234,6 +256,21 @@ mod tests {
         permit.validate_source_path(source.path()).unwrap();
 
         std::fs::write(source.path().join("manifest.toml"), "v2").unwrap();
+        assert!(permit.validate_source_path(source.path()).is_err());
+    }
+
+    #[test]
+    fn kernel_release_permit_needs_no_operator_profile_grant() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("manifest.toml"), "release-v1").unwrap();
+        let permit = DynamicAdmissionPermit::for_kernel_release(preflight(
+            "extension:omegon-codescan",
+            source.path(),
+        ))
+        .unwrap();
+        permit.validate_source_path(source.path()).unwrap();
+
+        std::fs::write(source.path().join("manifest.toml"), "release-v2").unwrap();
         assert!(permit.validate_source_path(source.path()).is_err());
     }
 }

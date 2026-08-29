@@ -24,6 +24,8 @@ pub(crate) struct InteractiveAgentHost {
     pub(crate) resume_info: Option<crate::setup::ResumeInfo>,
     pub(crate) workspace_state: crate::setup::WorkspaceStartupState,
     pub(crate) runtime_generation: u64,
+    pub(crate) dynamic_contribution_control:
+        crate::contribution_lifecycle::DynamicContributionControl,
 }
 
 pub(crate) fn split_agent(
@@ -40,6 +42,7 @@ pub(crate) fn split_agent(
         resume_info: agent.resume_info,
         workspace_state: agent.workspace_state,
         runtime_generation: 1,
+        dynamic_contribution_control: agent.dynamic_contribution_control,
     };
     let state = InteractiveAgentState {
         bus: agent.bus,

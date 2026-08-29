@@ -1,7 +1,43 @@
 //! Upstream error taxonomy, retry classification, and persistence.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+pub(crate) const MAX_SERVER_RETRY_DELAY_MS: u64 = 120_000;
+
+pub(crate) fn parse_server_retry_delay_ms(
+    retry_after_ms: Option<&str>,
+    retry_after: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<u64> {
+    if let Some(delay_ms) = retry_after_ms
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| value.min(MAX_SERVER_RETRY_DELAY_MS))
+    {
+        return Some(delay_ms);
+    }
+
+    let value = retry_after?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(seconds.saturating_mul(1_000).min(MAX_SERVER_RETRY_DELAY_MS));
+    }
+
+    let deadline = chrono::DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let delay_ms = deadline.signed_duration_since(now).num_milliseconds();
+    (delay_ms > 0).then(|| (delay_ms as u64).min(MAX_SERVER_RETRY_DELAY_MS))
+}
+
+/// Sanitized provider response failure. Raw response headers never cross the
+/// adapter boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+#[error("{message}")]
+pub struct UpstreamResponseFailure {
+    pub(crate) message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) retry_after_ms: Option<u64>,
+}
 
 /// Explicit internal representation of upstream failures.
 ///
@@ -666,6 +702,47 @@ fn is_word_char(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_retry_delay_parses_supported_headers_and_bounds_values() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let future = (now + chrono::Duration::seconds(17)).to_rfc2822();
+        let past = (now - chrono::Duration::seconds(1)).to_rfc2822();
+
+        assert_eq!(
+            parse_server_retry_delay_ms(Some("1250"), None, now),
+            Some(1_250)
+        );
+        assert_eq!(
+            parse_server_retry_delay_ms(Some("1250"), Some("17"), now),
+            Some(1_250),
+            "Retry-After-Ms must take precedence"
+        );
+        assert_eq!(
+            parse_server_retry_delay_ms(None, Some("17"), now),
+            Some(17_000)
+        );
+        assert_eq!(
+            parse_server_retry_delay_ms(None, Some(&future), now),
+            Some(17_000)
+        );
+        assert_eq!(
+            parse_server_retry_delay_ms(Some("invalid"), Some("17"), now),
+            Some(17_000)
+        );
+        assert_eq!(parse_server_retry_delay_ms(None, Some(&past), now), None);
+        assert_eq!(
+            parse_server_retry_delay_ms(Some("invalid"), Some("also-invalid"), now),
+            None
+        );
+        assert_eq!(parse_server_retry_delay_ms(None, None, now), None);
+        assert_eq!(
+            parse_server_retry_delay_ms(Some("999999999"), None, now),
+            Some(MAX_SERVER_RETRY_DELAY_MS)
+        );
+    }
 
     #[test]
     fn context_overflow_detection() {

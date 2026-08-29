@@ -85,8 +85,12 @@ pub enum InterfaceControlRequest {
         path: String,
     },
     StatusView,
+    RuntimeDoctor,
     RuntimeInventoryStatus,
     RuntimeSubstrateRefresh,
+    RuntimeExtensionReplace {
+        name: String,
+    },
     WorkspaceStatusView,
     WorkspaceListView,
     WorkspaceNew {

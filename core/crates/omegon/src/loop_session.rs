@@ -412,12 +412,7 @@ fn compatible_continuity_refs(
     context: &crate::session_current_context::CurrentContextDraftV1,
     route: &crate::loop_driver::LoopRoute,
 ) -> anyhow::Result<Vec<uuid::Uuid>> {
-    let generation = crate::provider_contributions::registry()
-        .get(&route.provider_id)
-        .ok_or_else(|| anyhow::anyhow!("serving provider contribution is absent"))?
-        .owner_generation_id
-        .as_str()
-        .to_string();
+    let generation = route.contribution_generation_id.clone();
     let model_id = crate::providers::model_id_from_spec(&route.serving_model);
     let state = authority.state();
     Ok(context
@@ -652,12 +647,7 @@ impl LoopSemanticFactContract for LoopSemanticFactAdapter {
                     &replay,
                     &preparation,
                 )?;
-            let provider_generation = crate::provider_contributions::registry()
-                .get(&capture.route.provider_id)
-                .ok_or_else(|| anyhow::anyhow!("serving provider contribution is absent"))?
-                .owner_generation_id
-                .as_str()
-                .to_string();
+            let provider_generation = capture.route.contribution_generation_id.clone();
             for continuity_id in &preparation.continuity_refs {
                 view.authorize_continuity(
                     &replay,
@@ -2252,6 +2242,7 @@ mod tests {
             serving_model: "anthropic:claude-sonnet-4-6".into(),
             provider_id: "anthropic".into(),
             schema_dialect: contribution.tools.dialect_name().into(),
+            contribution_generation_id: contribution.owner_generation_id.as_str().into(),
             normalizer_contribution_id: omegon_traits::RuntimeContributionId::new(
                 "system:tool-schema-normalizer",
             )

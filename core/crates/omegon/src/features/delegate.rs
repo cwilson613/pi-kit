@@ -986,7 +986,7 @@ If blocked, say the blocker plainly.\n",
             runtime: child_runtime,
             dangerously_bypass_permissions: self.dangerously_bypass_permissions,
         };
-        let (mut child, _pid) = if self.sandbox {
+        let (mut child, pid) = if self.sandbox {
             match spawn_sandboxed_child_agent(
                 &child_config,
                 &self.cwd,
@@ -1072,6 +1072,7 @@ If blocked, say the blocker plainly.\n",
 
         // Terminate child if still running (timeout path)
         if io_result.is_err() {
+            crate::child_agent::kill_child_process_group(Some(pid));
             let _ = child.kill().await;
         }
 
@@ -1222,7 +1223,6 @@ If blocked, say the blocker plainly.\n",
         let cwd = self.cwd.clone();
         let parent_model = session_model;
         let fail_counter = consecutive_failures;
-        let progress_handle = progress_handle;
         let sandbox = self.sandbox;
         crate::task_spawn::spawn_best_effort_result("delegate-real-task", async move {
             let runner = DelegateRunner::new(cwd, store.clone(), sandbox);
@@ -3975,15 +3975,19 @@ This agent runs in write mode and can modify files.
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn delegate_runner_idle_timeout_kills_quiet_child_after_initial_activity() {
         let temp_dir = TempDir::new().unwrap();
+        let descendant_pid_path = temp_dir.path().join("descendant.pid");
         let child = write_fake_child(
             temp_dir.path(),
             "fake-child-idle-timeout.sh",
             "#!/bin/sh
+sleep 10 </dev/null >/dev/null 2>&1 &
+echo $! > descendant.pid
 echo initial activity >&2
-exec sleep 10
+wait
 ",
         );
         let store = Arc::new(DelegateResultStore::new());
@@ -4026,6 +4030,21 @@ exec sleep 10
 
         assert!(err.contains("Delegate idle timeout"), "{err}");
         assert!(err.contains("no output for 1s"), "{err}");
+        let descendant_pid = std::fs::read_to_string(descendant_pid_path)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        let process_exists = || {
+            // SAFETY: signal 0 only checks whether the recorded child PID exists.
+            (unsafe { libc::kill(descendant_pid, 0) == 0 })
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while process_exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!process_exists(), "quiet descendant survived idle timeout");
         store.update_task_status(
             "delegate_idle_timeout",
             DelegateTaskStatus::Failed {

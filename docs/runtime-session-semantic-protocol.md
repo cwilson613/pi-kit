@@ -297,6 +297,40 @@ field may contain specific source-class evidence or the serving contribution's
 authentication class when more specific evidence is unavailable. This fact is
 not a complete request, response, assistant stream, or provider-history record.
 
+### `route.endpoint_provenance_recorded` v1
+
+Payload:
+
+```text
+lease_id
+endpoint_id
+adapter_id
+inventory_generation
+```
+
+This fact records manifest endpoint provenance without changing
+`route.lease_recorded` v1. The referenced lease must exist. Each lease can have
+at most one endpoint-provenance fact. Built-in contribution routes do not emit
+this fact. A manifest route appends it before provider dispatch.
+
+### `compaction.endpoint_provenance_recorded` v1
+
+Payload:
+
+```text
+compaction_request_id
+endpoint_id
+adapter_id
+inventory_generation
+```
+
+This fact records manifest endpoint provenance for session-idle compaction,
+which does not create a turn route lease. It reserves the next compaction
+request identity and must precede `compaction.request_prepared`. Preparation
+requires this fact for a manifest route and rejects it for other routes. Each
+compaction request can have at most one endpoint provenance fact. This ordering
+prevents a durable manifest request without its required endpoint evidence.
+
 ## Slice-5.1 event vocabulary
 
 Task 5.1 adds the following required v1 facts to authority-backed session

@@ -487,6 +487,7 @@ pub(crate) async fn run_release_coupled(
 
         // Re-read thinking level each turn (can change mid-session via /thinking)
         active_route = route.turn_route().await;
+        route.validate_request_capabilities(&tool_defs)?;
         route.prepare(&active_route, events).await;
         let llm_messages = semantic_facts.current_context_messages(&compatibility_messages)?;
         let semantic_request = if semantic_facts.enabled() {
@@ -1895,7 +1896,8 @@ mod legacy_route_policy_tests {
             },
             LlmEvent::ProviderContinuity { .. }
             | LlmEvent::Done { .. }
-            | LlmEvent::Error { .. } => current,
+            | LlmEvent::Error { .. }
+            | LlmEvent::UpstreamFailure { .. } => current,
         }
     }
 
@@ -2178,6 +2180,12 @@ mod legacy_route_policy_tests {
                         reason: Some(message.clone()),
                     });
                     anyhow::bail!("LLM error: {message}");
+                }
+                LlmEvent::UpstreamFailure { failure } => {
+                    let _ = events.send(AgentEvent::MessageAbort {
+                        reason: Some(failure.message.clone()),
+                    });
+                    return Err(failure.into());
                 }
             }
         }

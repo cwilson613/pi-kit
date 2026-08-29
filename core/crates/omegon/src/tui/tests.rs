@@ -5824,9 +5824,10 @@ fn handled_commands_are_in_commands_table() {
     let mut app = test_app();
     let tx = test_tx();
 
-    let known_names: std::collections::HashSet<&str> = crate::command_registry::BUILTIN_COMMANDS
+    let known_names: std::collections::HashSet<String> = crate::command_registry::BUILTIN_COMMANDS
         .iter()
-        .map(|command| command.name)
+        .map(|command| command.name.to_string())
+        .chain(app.bus_commands.iter().map(|command| command.name.clone()))
         .collect();
 
     // Test a set of plausible undocumented command names
@@ -5836,9 +5837,14 @@ fn handled_commands_are_in_commands_table() {
     ];
 
     for name in undocumented {
-        if known_names.contains(name) {
+        let is_unique_builtin_prefix = crate::command_registry::BUILTIN_COMMANDS
+            .iter()
+            .filter(|command| command.name.starts_with(name))
+            .count()
+            == 1;
+        if known_names.contains(name) || is_unique_builtin_prefix {
             continue;
-        } // skip if it's actually documented
+        }
         let cmd = format!("/{name}");
         let result = app.handle_slash_command(&cmd, &tx);
         // Unknown commands should either be NotACommand (not /-prefixed)
@@ -6105,6 +6111,8 @@ fn skill_event_segment_projects_and_exports_single_line() {
 #[test]
 fn skills_reload_pushes_skill_event_segments() {
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(home.path());
     let skill_dir = dir.path().join(".omegon/skills/reload-event-skill");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
@@ -6337,6 +6345,45 @@ fn runtime_inventory_status_queues_shared_control() {
 }
 
 #[test]
+fn runtime_doctor_aliases_queue_shared_read_only_control() {
+    for command in ["/doctor", "/runtime doctor"] {
+        let mut app = test_app();
+        let (tx, mut rx) = test_tx_with_rx();
+        assert!(matches!(
+            app.handle_slash_command(command, &tx),
+            SlashResult::Handled
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TuiCommand::ExecuteControl {
+                request: crate::operator_commands::InterfaceControlRequest::RuntimeDoctor,
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn runtime_replace_queues_named_extension_control() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+    assert!(matches!(
+        app.handle_slash_command("/runtime replace omegon-codescan", &tx),
+        SlashResult::Handled
+    ));
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(TuiCommand::ExecuteControl {
+            request:
+                crate::operator_commands::InterfaceControlRequest::RuntimeExtensionReplace {
+                    name,
+                },
+            ..
+        }) if name == "omegon-codescan"
+    ));
+}
+
+#[test]
 fn runtime_refresh_aliases_canonicalize() {
     for args in ["refresh", "reload", "restart", "hot-restart"] {
         assert_eq!(
@@ -6559,6 +6606,8 @@ fn extension_refresh_aliases_execute_shared_runtime_refresh() {
 #[test]
 fn runtime_substrate_refresh_reloads_skill_augments_and_advances_generation() {
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _home = ScopedOmegonHomeEnv::set(home.path());
     let skill_dir = dir.path().join(".omegon/skills/runtime-refresh-skill");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(

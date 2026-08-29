@@ -132,9 +132,37 @@ pub(crate) fn validate_generation(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_release_coupled_generation(path: &Path) -> anyhow::Result<()> {
+    validate_generation(path)?;
+    for name in [
+        "share/omegon/content-packs/omegon-shipped/content-pack.toml",
+        "share/omegon/extensions/omegon-codescan/manifest.toml",
+        "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan",
+    ] {
+        let member = path.join(name);
+        if !fs::metadata(&member).is_ok_and(|metadata| metadata.is_file()) {
+            anyhow::bail!("release generation is missing {name}: {}", path.display());
+        }
+    }
+    Ok(())
+}
+
 fn sync_generation(path: &Path) -> anyhow::Result<()> {
-    for name in ["omegon", "omegon-maintain", "install-receipt.json"] {
-        File::open(path.join(name))?.sync_all()?;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let member = entry.path();
+        let metadata = fs::symlink_metadata(&member)?;
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!(
+                "release generation contains a symlink: {}",
+                member.display()
+            );
+        }
+        if metadata.is_dir() {
+            sync_generation(&member)?;
+        } else if metadata.is_file() {
+            File::open(member)?.sync_all()?;
+        }
     }
     sync_directory(path)
 }

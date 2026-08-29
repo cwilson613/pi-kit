@@ -354,10 +354,15 @@ PACK_RELATIVE="share/omegon/content-packs/omegon-shipped"
 if [ ! -f "${TMP}/${PACK_RELATIVE}/content-pack.toml" ]; then
   die "shipped content pack not found in archive — optional content installation is incomplete"
 fi
+CODESCAN_RELATIVE="share/omegon/extensions/omegon-codescan"
+if [ ! -f "${TMP}/${CODESCAN_RELATIVE}/manifest.toml" ] || \
+   [ ! -f "${TMP}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" ]; then
+  die "release-coupled codescan extension not found in archive"
+fi
 
 # ── Validate binary ───────────────────────────────────────────
 
-for REQUIRED_BINARY in "$BINARY" "$MAINTAIN_BINARY"; do
+for REQUIRED_BINARY in "$BINARY" "$MAINTAIN_BINARY" "${CODESCAN_RELATIVE}/target/release/omegon-codescan"; do
   FIRST_BYTES=$(head -c 4 "${TMP}/${REQUIRED_BINARY}" | xxd -p 2>/dev/null || od -A n -t x1 -N 4 "${TMP}/${REQUIRED_BINARY}" | tr -d ' ')
   case "$OS_NAME" in
     darwin)
@@ -423,8 +428,12 @@ mv "${TMP}/${BINARY}.composition-lock.json" "${STAGING_DIR}/${BINARY}.compositio
 mv "${TMP}/${MAINTAIN_BINARY}.composition-lock.json" "${STAGING_DIR}/${MAINTAIN_BINARY}.composition-lock.json"
 mkdir -p "${STAGING_DIR}/share/omegon/content-packs"
 mv "${TMP}/${PACK_RELATIVE}" "${STAGING_DIR}/${PACK_RELATIVE}"
+mkdir -p "${STAGING_DIR}/share/omegon/extensions"
+mv "${TMP}/${CODESCAN_RELATIVE}" "${STAGING_DIR}/${CODESCAN_RELATIVE}"
 chmod +x "${STAGING_DIR}/${BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}" || \
   die "could not make release pair executable"
+chmod +x "${STAGING_DIR}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" || \
+  die "could not make codescan extension executable"
 
 cat > "${STAGING_DIR}/install-receipt.json" <<EOF
 {
@@ -452,6 +461,8 @@ if [ -e "$VERSION_DIR" ] || [ -L "$VERSION_DIR" ]; then
     [ -f "${VERSION_DIR}/${BINARY}.composition-lock.json" ] && \
     [ -f "${VERSION_DIR}/${MAINTAIN_BINARY}.composition-lock.json" ] && \
     [ -f "${VERSION_DIR}/${PACK_RELATIVE}/content-pack.toml" ] && \
+    [ -f "${VERSION_DIR}/${CODESCAN_RELATIVE}/manifest.toml" ] && \
+    [ -x "${VERSION_DIR}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" ] && \
     [ -f "${VERSION_DIR}/install-receipt.json" ] || \
     die "existing release generation is incomplete: ${VERSION_DIR}"
   rm -rf "$STAGING_DIR"

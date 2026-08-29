@@ -17,9 +17,10 @@ use crate::upstream_errors::{
     classify_upstream_error_for_provider, is_context_overflow, is_malformed_history,
 };
 
-const ROUTE_LEASE_SCHEMA_VERSION: u16 = 1;
+const ROUTE_LEASE_SCHEMA_VERSION: u16 = 2;
 const TOOL_SCHEMA_NORMALIZER_ID: &str = "system:tool-schema-normalizer";
 const TOOL_SCHEMA_NORMALIZER_GENERATION: &str = "tool-schema-normalizer:builtin-v1";
+const MANIFEST_CHAT_COMPLETIONS_GENERATION: &str = "provider:manifest-chat-completions:builtin-v1";
 
 fn tool_schema_normalizer_identity() -> (
     omegon_traits::RuntimeContributionId,
@@ -48,6 +49,12 @@ pub(crate) struct ProviderRouteLease {
     pub(crate) fallback_reason: Option<String>,
     pub(crate) contribution_generation_id: String,
     pub(crate) route_policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) endpoint_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) adapter_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) inventory_generation: Option<u64>,
 }
 
 impl ProviderRouteLease {
@@ -69,6 +76,27 @@ impl ProviderRouteLease {
     }
 
     fn validate_current_generation(&self) -> anyhow::Result<()> {
+        if let (Some(endpoint_id), Some(adapter_id), Some(_)) = (
+            self.endpoint_id.as_deref(),
+            self.adapter_id.as_deref(),
+            self.inventory_generation,
+        ) {
+            if endpoint_id.is_empty()
+                || adapter_id != crate::inference_inventory::AdapterId::CHAT_COMPLETIONS
+                || self.contribution_generation_id != MANIFEST_CHAT_COMPLETIONS_GENERATION
+                || self.schema_dialect != "open_ai"
+                || self.fallback_reason.is_some()
+            {
+                anyhow::bail!("manifest provider route lease semantics are invalid");
+            }
+            return Ok(());
+        }
+        if self.endpoint_id.is_some()
+            || self.adapter_id.is_some()
+            || self.inventory_generation.is_some()
+        {
+            anyhow::bail!("manifest provider route lease provenance is incomplete");
+        }
         let contribution = crate::provider_contributions::registry()
             .get(&self.serving_provider_id)
             .ok_or_else(|| anyhow::anyhow!("serving provider contribution is absent"))?;
@@ -165,10 +193,30 @@ impl RouteLeaseOwner<'_> {
     fn record(&self, lease: &ProviderRouteLease) -> anyhow::Result<()> {
         lease.validate_current_generation()?;
         match self {
-            Self::Session { authority, turn_id } => authority
-                .record_route_lease(&recorded_at_now(), lease.for_turn(*turn_id))
-                .map(|_| ())
-                .map_err(|error| anyhow::anyhow!(error.to_string())),
+            Self::Session { authority, turn_id } => {
+                let recorded_at = recorded_at_now();
+                authority
+                    .record_route_lease(&recorded_at, lease.for_turn(*turn_id))
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                if let (Some(endpoint_id), Some(adapter_id), Some(inventory_generation)) = (
+                    lease.endpoint_id.as_ref(),
+                    lease.adapter_id.as_ref(),
+                    lease.inventory_generation,
+                ) {
+                    authority
+                        .record_route_endpoint_provenance(
+                            &recorded_at,
+                            crate::session_authority::RouteEndpointProvenanceRecorded {
+                                lease_id: lease.lease_id,
+                                endpoint_id: endpoint_id.clone(),
+                                adapter_id: adapter_id.clone(),
+                                inventory_generation,
+                            },
+                        )
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                }
+                Ok(())
+            }
             Self::Step(recorder) => recorder.record(lease),
         }
     }
@@ -188,6 +236,7 @@ pub(crate) fn record_loop_route_lease(
         serving_model,
         credential_source_class,
         None,
+        None,
     )
     .map(|_| ())
 }
@@ -199,12 +248,14 @@ fn record_loop_route_lease_for_request(
     serving_model: &str,
     credential_source_class: Option<&str>,
     semantic_request: Option<&crate::loop_driver::LoopModelRequestIdentity>,
+    endpoint_provenance: Option<&crate::bridge::EndpointRouteProvenance>,
 ) -> anyhow::Result<Option<DurableRouteIdentity>> {
     let lease = route_lease(
         selected_model,
         serving_model,
         credential_source_class,
         semantic_request.map(|request| request.request_id),
+        endpoint_provenance,
     )?;
     if let (Some(authority), Some(turn_id)) = (scope.authority.as_ref(), scope.turn_id) {
         RouteLeaseOwner::Session { authority, turn_id }.record(&lease)?;
@@ -256,6 +307,7 @@ pub(crate) fn record_loop_route_lease_for_test(
         serving_model,
         Some("test"),
         Some(request),
+        None,
     )
     .map(|_| ())
 }
@@ -264,6 +316,9 @@ pub(crate) struct ResolvedProviderRoute {
     selected_model: String,
     serving_model: String,
     credential_source_class: String,
+    native_model: String,
+    endpoint_provenance: Option<crate::bridge::EndpointRouteProvenance>,
+    admitted_capabilities: Option<AdmittedModelCapabilities>,
     bridge: Box<dyn LlmBridge>,
 }
 
@@ -271,11 +326,23 @@ struct RoutedBridge {
     selected_model: String,
     serving_model: String,
     credential_source_class: String,
+    native_model: String,
+    endpoint_provenance: Option<crate::bridge::EndpointRouteProvenance>,
+    admitted_capabilities: Option<AdmittedModelCapabilities>,
     inner: Box<dyn LlmBridge>,
 }
 
 #[async_trait::async_trait]
 impl LlmBridge for RoutedBridge {
+    fn validate_request_capabilities(
+        &self,
+        tools: &[omegon_traits::ToolDefinition],
+        options: &StreamOptions,
+    ) -> anyhow::Result<()> {
+        validate_admitted_request(self.admitted_capabilities.as_ref(), tools, options)?;
+        self.inner.validate_request_capabilities(tools, options)
+    }
+
     async fn stream(
         &self,
         system_prompt: &str,
@@ -283,8 +350,11 @@ impl LlmBridge for RoutedBridge {
         tools: &[omegon_traits::ToolDefinition],
         options: &StreamOptions,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<LlmEvent>> {
+        self.validate_request_capabilities(tools, options)?;
+        let mut native_options = options.clone();
+        native_options.model = Some(self.native_model.clone());
         self.inner
-            .stream(system_prompt, messages, tools, options)
+            .stream(system_prompt, messages, tools, &native_options)
             .await
     }
 
@@ -294,6 +364,14 @@ impl LlmBridge for RoutedBridge {
 
     fn selected_model_hint(&self) -> Option<&str> {
         Some(&self.selected_model)
+    }
+
+    fn native_model_hint(&self) -> Option<&str> {
+        Some(&self.native_model)
+    }
+
+    fn endpoint_route_provenance_hint(&self) -> Option<&crate::bridge::EndpointRouteProvenance> {
+        self.endpoint_provenance.as_ref()
     }
 
     fn credential_source_class_hint(&self) -> Option<&str> {
@@ -315,6 +393,9 @@ impl ResolvedProviderRoute {
             selected_model: self.selected_model,
             serving_model: self.serving_model,
             credential_source_class: self.credential_source_class,
+            native_model: self.native_model,
+            endpoint_provenance: self.endpoint_provenance,
+            admitted_capabilities: self.admitted_capabilities,
             inner: self.bridge,
         })
     }
@@ -327,15 +408,20 @@ impl ResolvedProviderRoute {
         tools: &[omegon_traits::ToolDefinition],
         options: &StreamOptions,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<LlmEvent>> {
+        validate_admitted_request(self.admitted_capabilities.as_ref(), tools, options)?;
+        self.bridge.validate_request_capabilities(tools, options)?;
         let lease = route_lease(
             &self.selected_model,
-            &self.serving_model,
+            &self.native_model,
             Some(&self.credential_source_class),
             None,
+            self.endpoint_provenance.as_ref(),
         )?;
         owner.record(&lease)?;
+        let mut native_options = options.clone();
+        native_options.model = Some(self.native_model.clone());
         self.bridge
-            .stream(system_prompt, messages, tools, options)
+            .stream(system_prompt, messages, tools, &native_options)
             .await
     }
 }
@@ -352,10 +438,12 @@ pub(crate) trait ProviderRouteServiceContract: Send + Sync {
     ) -> Option<ResolvedProviderRoute> {
         None
     }
-    async fn resolve_exact(
+    async fn resolve_exact_admitted(
         &self,
         _model_spec: &str,
         _secrets: Option<&omegon_secrets::SecretsManager>,
+        _inventory: &crate::inference_inventory::InventorySnapshot,
+        _required_capabilities: &[String],
     ) -> Option<ResolvedProviderRoute> {
         None
     }
@@ -405,12 +493,70 @@ impl ProviderRouteServiceContract for ProviderRouteService {
         resolve_provider_route(model_spec, secrets, false).await
     }
 
-    async fn resolve_exact(
+    async fn resolve_exact_admitted(
         &self,
         model_spec: &str,
         secrets: Option<&omegon_secrets::SecretsManager>,
+        inventory: &crate::inference_inventory::InventorySnapshot,
+        required_capabilities: &[String],
     ) -> Option<ResolvedProviderRoute> {
-        resolve_provider_route(model_spec, secrets, true).await
+        let offering = match admit_exact_route(inventory, model_spec, required_capabilities) {
+            Ok(offering) => offering,
+            Err(rejection) => {
+                tracing::warn!(
+                    model_spec,
+                    ?rejection,
+                    "exact provider route rejected by active inventory"
+                );
+                return None;
+            }
+        };
+        let endpoint = inventory.endpoints.get(&offering.endpoint.value)?;
+        if !matches!(
+            endpoint.transport.value,
+            crate::inference_inventory::TransportSpec::Managed
+        ) {
+            let plan =
+                match admit_manifest_endpoint_route(inventory, model_spec, required_capabilities) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        tracing::warn!(model_spec, %error, "manifest endpoint route rejected");
+                        return None;
+                    }
+                };
+            let api_key = if let Some(secrets) = secrets {
+                secrets.resolve_async(&plan.secret_ref).await
+            } else {
+                std::env::var(&plan.secret_ref)
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            }?;
+            return Some(construct_manifest_endpoint_route(plan, api_key));
+        }
+        let mut route = resolve_provider_route(model_spec, secrets, true).await?;
+        let provider_id = crate::providers::infer_provider_id(&route.serving_model);
+        let provider_supports_tools = crate::provider_contributions::registry()
+            .get(&provider_id)
+            .is_some_and(|contribution| {
+                matches!(
+                    contribution.tools,
+                    crate::provider_contributions::ProviderToolContract::Supported(_)
+                )
+            });
+        route.admitted_capabilities = Some(AdmittedModelCapabilities {
+            tools: offering_capability_admission(
+                offering,
+                "tools",
+                crate::inference_inventory::EvidenceKind::Declared,
+            ),
+            reasoning: offering_capability_admission(
+                offering,
+                "reasoning",
+                crate::inference_inventory::EvidenceKind::Declared,
+            ),
+            provider_supports_tools,
+        });
+        Some(route)
     }
 
     async fn startup_route(
@@ -443,6 +589,7 @@ impl ProviderRouteServiceContract for ProviderRouteService {
             serving_model: route.serving_model.clone(),
             provider_id: route.provider_id.clone(),
             schema_dialect: route.schema_dialect.clone(),
+            contribution_generation_id: route.contribution_generation_id.clone(),
             normalizer_contribution_id: route.normalizer_contribution_id.clone(),
             normalizer_generation_id: route.normalizer_generation_id.clone(),
         };
@@ -496,14 +643,280 @@ impl ProviderRouteService {
     ) -> Option<ResolvedProviderRoute> {
         resolve_provider_route(model_spec, secrets, false).await
     }
+}
 
-    pub(crate) async fn resolve_exact(
-        self,
-        model_spec: &str,
-        secrets: Option<&omegon_secrets::SecretsManager>,
-    ) -> Option<ResolvedProviderRoute> {
-        resolve_provider_route(model_spec, secrets, true).await
+pub(crate) fn admit_exact_route<'a>(
+    snapshot: &'a crate::inference_inventory::InventorySnapshot,
+    model_spec: &str,
+    required_capabilities: &[String],
+) -> Result<
+    &'a crate::inference_inventory::InferenceOffering,
+    crate::inference_inventory::ExactAdmissionRejection,
+> {
+    use crate::inference_inventory::{CompatibilityRequest, ExactAdmissionRejection, OfferingId};
+
+    let requested_id = OfferingId(crate::inference_runtime::normalize_route_id_for_resolution(
+        model_spec,
+    ));
+    let offering_id = if snapshot.offerings.contains_key(&requested_id) {
+        requested_id
+    } else {
+        let canonical = crate::providers::canonical_model_spec(model_spec);
+        let Some(provider) = crate::providers::infer_provider_id_strict(&canonical) else {
+            return Err(ExactAdmissionRejection::UnknownOffering(OfferingId(
+                canonical,
+            )));
+        };
+        OfferingId(crate::inference_runtime::normalize_route_id_for_resolution(
+            &format!(
+                "{provider}:{}",
+                crate::providers::model_id_from_spec(&canonical)
+            ),
+        ))
+    };
+    let offering = snapshot
+        .offerings
+        .get(&offering_id)
+        .ok_or_else(|| ExactAdmissionRejection::UnknownOffering(offering_id.clone()))?;
+    let interface = snapshot
+        .endpoints
+        .get(&offering.endpoint.value)
+        .map(|endpoint| endpoint.adapter.value.clone())
+        .ok_or_else(|| ExactAdmissionRejection::UnknownOffering(offering_id.clone()))?;
+    let request = CompatibilityRequest {
+        interface,
+        required_capabilities: required_capabilities.iter().cloned().collect(),
+        exact_offering: Some(offering_id),
+        ..Default::default()
+    };
+    snapshot.admit_exact(&request)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapabilityAdmission {
+    Supported,
+    Missing,
+    InsufficientEvidence,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AdmittedModelCapabilities {
+    tools: CapabilityAdmission,
+    reasoning: CapabilityAdmission,
+    provider_supports_tools: bool,
+}
+
+fn offering_capability_admission(
+    offering: &crate::inference_inventory::InferenceOffering,
+    capability: &str,
+    minimum_evidence: crate::inference_inventory::EvidenceKind,
+) -> CapabilityAdmission {
+    match offering.capabilities.get(capability) {
+        Some(value) if value.value && value.evidence >= minimum_evidence => {
+            CapabilityAdmission::Supported
+        }
+        Some(value) if value.value => CapabilityAdmission::InsufficientEvidence,
+        _ => CapabilityAdmission::Missing,
     }
+}
+
+#[derive(Debug, Clone)]
+struct AdmittedManifestEndpointRoute {
+    selected_offering_id: String,
+    selected_provider_id: String,
+    selected_model_id: String,
+    native_model_id: String,
+    endpoint_id: String,
+    inventory_generation: u64,
+    adapter_id: String,
+    base_url: String,
+    secret_ref: String,
+    admitted_capabilities: AdmittedModelCapabilities,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ManifestEndpointAdmissionError {
+    #[error("inventory admission rejected: {0}")]
+    Inventory(String),
+    #[error("manifest endpoint adapter '{0}' is not executable")]
+    UnsupportedAdapter(String),
+    #[error("manifest endpoint transport is not executable for this adapter")]
+    UnsupportedTransport,
+    #[error("manifest endpoint HTTP base URL is invalid")]
+    InvalidBaseUrl,
+    #[error("manifest endpoint HTTP base URL must use HTTPS or a loopback host")]
+    InsecureBaseUrl,
+    #[error("manifest endpoint must declare exactly one bearer-token secret reference")]
+    InvalidSecretConfiguration,
+    #[error("manifest endpoint secret reference must be '{expected}'")]
+    UnboundSecretReference { expected: String },
+    #[error("manifest endpoint adapter, transport, and secret declaration must have one owner")]
+    MixedEndpointOwnership,
+}
+
+fn manifest_endpoint_secret_name(
+    source: crate::inference_inventory::InventorySource,
+    endpoint_id: &str,
+) -> String {
+    use crate::inference_inventory::InventorySource;
+    let source = match source {
+        InventorySource::Embedded => "EMBEDDED",
+        InventorySource::Organization => "ORGANIZATION",
+        InventorySource::User => "USER",
+        InventorySource::Project => "PROJECT",
+        InventorySource::Session => "SESSION",
+        InventorySource::Discovery => "DISCOVERY",
+        InventorySource::Probe => "PROBE",
+    };
+    let encoded_id = endpoint_id
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<String>();
+    format!("OMEGON_{source}_ENDPOINT_{encoded_id}_TOKEN")
+}
+
+fn admit_manifest_endpoint_route(
+    snapshot: &crate::inference_inventory::InventorySnapshot,
+    model_spec: &str,
+    required_capabilities: &[String],
+) -> Result<AdmittedManifestEndpointRoute, ManifestEndpointAdmissionError> {
+    use crate::inference_inventory::{AdapterId, TransportSpec};
+    let offering = admit_exact_route(snapshot, model_spec, required_capabilities)
+        .map_err(|error| ManifestEndpointAdmissionError::Inventory(error.to_string()))?;
+    let endpoint = snapshot
+        .endpoints
+        .get(&offering.endpoint.value)
+        .ok_or(ManifestEndpointAdmissionError::UnsupportedTransport)?;
+    if endpoint.adapter.value.0 != AdapterId::CHAT_COMPLETIONS {
+        return Err(ManifestEndpointAdmissionError::UnsupportedAdapter(
+            endpoint.adapter.value.0.clone(),
+        ));
+    }
+    let TransportSpec::Http { base_url } = &endpoint.transport.value else {
+        return Err(ManifestEndpointAdmissionError::UnsupportedTransport);
+    };
+    let parsed = url::Url::parse(base_url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .filter(|url| {
+            url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+        })
+        .ok_or(ManifestEndpointAdmissionError::InvalidBaseUrl)?;
+    let loopback = match parsed.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    if parsed.scheme() != "https" && !loopback {
+        return Err(ManifestEndpointAdmissionError::InsecureBaseUrl);
+    }
+    let [secret_ref] = endpoint.secret_refs.value.as_slice() else {
+        return Err(ManifestEndpointAdmissionError::InvalidSecretConfiguration);
+    };
+    let owner = endpoint.secret_refs.source;
+    if endpoint.adapter.source != owner || endpoint.transport.source != owner {
+        return Err(ManifestEndpointAdmissionError::MixedEndpointOwnership);
+    }
+    let expected_secret_ref = manifest_endpoint_secret_name(owner, &endpoint.id.0);
+    if secret_ref != &expected_secret_ref {
+        return Err(ManifestEndpointAdmissionError::UnboundSecretReference {
+            expected: expected_secret_ref,
+        });
+    }
+    let (selected_provider_id, selected_model_id) = offering
+        .id
+        .0
+        .split_once(':')
+        .map(|(provider, model)| (provider.to_string(), model.to_string()))
+        .unwrap_or_else(|| (offering.endpoint.value.0.clone(), offering.id.0.clone()));
+    Ok(AdmittedManifestEndpointRoute {
+        selected_offering_id: offering.id.0.clone(),
+        selected_provider_id,
+        selected_model_id,
+        native_model_id: offering.native_model_id.value.clone(),
+        endpoint_id: endpoint.id.0.clone(),
+        inventory_generation: snapshot.generation,
+        adapter_id: endpoint.adapter.value.0.clone(),
+        base_url: parsed.as_str().trim_end_matches('/').to_string(),
+        secret_ref: secret_ref.clone(),
+        admitted_capabilities: AdmittedModelCapabilities {
+            tools: offering_capability_admission(
+                offering,
+                "tools",
+                crate::inference_inventory::EvidenceKind::Declared,
+            ),
+            reasoning: offering_capability_admission(
+                offering,
+                "reasoning",
+                crate::inference_inventory::EvidenceKind::Declared,
+            ),
+            provider_supports_tools: true,
+        },
+    })
+}
+
+fn construct_manifest_endpoint_route(
+    plan: AdmittedManifestEndpointRoute,
+    api_key: String,
+) -> ResolvedProviderRoute {
+    let native_model = format!("{}:{}", plan.selected_provider_id, plan.native_model_id);
+    ResolvedProviderRoute {
+        selected_model: plan.selected_offering_id.clone(),
+        serving_model: plan.selected_offering_id,
+        credential_source_class: "declared_bearer_secret".into(),
+        native_model,
+        endpoint_provenance: Some(crate::bridge::EndpointRouteProvenance {
+            selected_provider_id: plan.selected_provider_id.clone(),
+            endpoint_id: plan.endpoint_id,
+            adapter_id: plan.adapter_id,
+            inventory_generation: plan.inventory_generation,
+            contribution_generation_id: MANIFEST_CHAT_COMPLETIONS_GENERATION.into(),
+            schema_dialect: "open_ai".into(),
+        }),
+        admitted_capabilities: Some(plan.admitted_capabilities),
+        bridge: Box::new(crate::providers::OpenAICompatClient::new_manifest(
+            api_key,
+            plan.base_url,
+            plan.selected_provider_id,
+        )),
+    }
+}
+
+fn validate_capability(capability: CapabilityAdmission, name: &str) -> anyhow::Result<()> {
+    match capability {
+        CapabilityAdmission::Supported => Ok(()),
+        CapabilityAdmission::Missing => {
+            anyhow::bail!("selected offering is missing {name} capability evidence")
+        }
+        CapabilityAdmission::InsufficientEvidence => {
+            anyhow::bail!("selected offering has insufficient {name} capability evidence")
+        }
+    }
+}
+
+fn validate_admitted_request(
+    admitted: Option<&AdmittedModelCapabilities>,
+    tools: &[omegon_traits::ToolDefinition],
+    options: &StreamOptions,
+) -> anyhow::Result<()> {
+    let Some(admitted) = admitted else {
+        return Ok(());
+    };
+    if !tools.is_empty() {
+        if !admitted.provider_supports_tools {
+            anyhow::bail!("serving provider contribution declares tools unsupported");
+        }
+        validate_capability(admitted.tools, "tool")?;
+    }
+    if options.reasoning.is_some() {
+        validate_capability(admitted.reasoning, "reasoning")?;
+    }
+    Ok(())
 }
 
 async fn resolve_provider_route(
@@ -536,8 +949,11 @@ async fn resolve_provider_route(
             }
             return Some(ResolvedProviderRoute {
                 selected_model,
-                serving_model,
+                serving_model: serving_model.clone(),
                 credential_source_class: resolution.credential_source_class,
+                native_model: serving_model.clone(),
+                endpoint_provenance: None,
+                admitted_capabilities: None,
                 bridge: resolution.bridge,
             });
         }
@@ -572,6 +988,7 @@ impl crate::loop_driver::LoopRouteSetupContract for ProviderLoopRouteSetup {
             serving_model: route.serving_model.clone(),
             provider_id: route.provider_id.clone(),
             schema_dialect: route.schema_dialect.clone(),
+            contribution_generation_id: route.contribution_generation_id.clone(),
             normalizer_contribution_id: route.normalizer_contribution_id.clone(),
             normalizer_generation_id: route.normalizer_generation_id.clone(),
             options: StreamOptions::default(),
@@ -596,6 +1013,7 @@ pub(crate) struct LoopRoute {
     pub(crate) serving_model: String,
     pub(crate) provider_id: String,
     pub(crate) schema_dialect: String,
+    pub(crate) contribution_generation_id: String,
     pub(crate) normalizer_contribution_id: omegon_traits::RuntimeContributionId,
     pub(crate) normalizer_generation_id: omegon_traits::RuntimeContributionGenerationId,
     pub(crate) options: StreamOptions,
@@ -659,7 +1077,7 @@ pub(crate) async fn loop_startup_route(
     setup: &crate::loop_driver::LoopRouteSetup,
     policy: &LoopRoutePolicy,
 ) -> LoopRoute {
-    let serving_model = if let Some(serving_model) = setup.serving_model().await {
+    let route_model = if let Some(serving_model) = setup.serving_model().await {
         serving_model
     } else {
         policy
@@ -668,18 +1086,45 @@ pub(crate) async fn loop_startup_route(
             .unwrap_or(&policy.selected_model)
             .clone()
     };
+    let serving_model = bridge
+        .native_model_hint()
+        .unwrap_or(&route_model)
+        .to_string();
     let selected_model = bridge
         .selected_model_hint()
         .unwrap_or(&policy.selected_model)
         .to_string();
-    let provider_id = crate::providers::infer_provider_id(&serving_model);
-    let contribution = crate::provider_contributions::registry()
-        .get(&provider_id)
-        .expect("serving provider contribution must exist");
+    let endpoint_provenance = bridge.endpoint_route_provenance_hint();
+    let provider_id = endpoint_provenance.map_or_else(
+        || crate::providers::infer_provider_id(&serving_model),
+        |provenance| provenance.selected_provider_id.clone(),
+    );
+    let schema_dialect = if let Some(provenance) = endpoint_provenance {
+        provenance.schema_dialect.clone()
+    } else {
+        crate::provider_contributions::registry()
+            .get(&provider_id)
+            .expect("serving provider contribution must exist")
+            .tools
+            .dialect_name()
+            .into()
+    };
+    let contribution_generation_id = endpoint_provenance.map_or_else(
+        || {
+            crate::provider_contributions::registry()
+                .get(&provider_id)
+                .expect("serving provider contribution must exist")
+                .owner_generation_id
+                .as_str()
+                .to_string()
+        },
+        |provenance| provenance.contribution_generation_id.clone(),
+    );
     let (normalizer_contribution_id, normalizer_generation_id) = tool_schema_normalizer_identity();
     LoopRoute {
         provider_id,
-        schema_dialect: contribution.tools.dialect_name().into(),
+        schema_dialect,
+        contribution_generation_id,
         normalizer_contribution_id,
         normalizer_generation_id,
         selected_model,
@@ -711,6 +1156,10 @@ pub(crate) async fn loop_turn_route(
             crate::settings::ThinkingLevel::High => Some("high".to_string()),
         }
     });
+    if bridge.endpoint_route_provenance_hint().is_some() {
+        route.options.model = Some(route.serving_model.clone());
+        return route;
+    }
     route.serving_model = if let Some(serving_model) = setup.serving_model().await {
         serving_model
     } else {
@@ -799,6 +1248,7 @@ pub(crate) async fn compact_loop_route(
     bridge: &dyn LlmBridge,
     request: LoopCompactionRequest<'_>,
 ) -> anyhow::Result<String> {
+    bridge.validate_request_capabilities(&[], request.options)?;
     const MAX_COMPACTION_CHARS: usize = 100_000;
     let (_, _, system) = crate::session_compaction::summary_prompt()?;
     let authority_payload = request
@@ -826,22 +1276,16 @@ pub(crate) async fn compact_loop_route(
         .model
         .as_deref()
         .unwrap_or(request.selected_model);
-    let serving_model = bridge.serving_model_hint().map_or_else(
-        || requested_model.to_string(),
-        |hint| {
-            format!(
-                "{}:{}",
-                crate::providers::infer_provider_id(hint),
-                crate::providers::model_id_from_spec(requested_model)
-            )
-        },
-    );
+    let serving_model = bridge
+        .native_model_hint()
+        .map_or_else(|| requested_model.to_string(), str::to_string);
     if let Some(authority) = request.authority {
         let lease = route_lease(
             request.selected_model,
             &serving_model,
             bridge.credential_source_class_hint(),
             authority.compaction_request_id(),
+            bridge.endpoint_route_provenance_hint(),
         )?;
         let lease_id = if authority.is_idle() {
             None
@@ -869,6 +1313,9 @@ pub(crate) async fn compact_loop_route(
             fallback_reason: lease.fallback_reason,
             contribution_generation_id: lease.contribution_generation_id,
             route_policy: lease.route_policy,
+            endpoint_id: lease.endpoint_id,
+            adapter_id: lease.adapter_id,
+            inventory_generation: lease.inventory_generation,
         })?;
         if authority_input_too_large {
             authority.fail(
@@ -878,12 +1325,14 @@ pub(crate) async fn compact_loop_route(
             anyhow::bail!("Compaction input exceeds provider safety limit");
         }
     } else {
-        record_loop_route_lease(
+        record_loop_route_lease_for_request(
             request.scope,
             request.step_id,
             request.selected_model,
             &serving_model,
             bridge.credential_source_class_hint(),
+            None,
+            bridge.endpoint_route_provenance_hint(),
         )?;
     }
     let mut rx = match bridge
@@ -971,16 +1420,11 @@ pub(crate) async fn dispatch_loop_route(
     bridge: &dyn LlmBridge,
     request: LoopRouteRequest<'_>,
 ) -> anyhow::Result<LoopRouteDispatch> {
-    let serving_model = bridge.serving_model_hint().map_or_else(
-        || request.route.serving_model.clone(),
-        |hint| {
-            format!(
-                "{}:{}",
-                crate::providers::infer_provider_id(hint),
-                crate::providers::model_id_from_spec(&request.route.serving_model)
-            )
-        },
-    );
+    bridge.validate_request_capabilities(request.tools, &request.route.options)?;
+    let serving_model = bridge
+        .native_model_hint()
+        .unwrap_or(&request.route.serving_model)
+        .to_string();
     let durable_route = record_loop_route_lease_for_request(
         request.scope,
         request.step_id,
@@ -988,6 +1432,7 @@ pub(crate) async fn dispatch_loop_route(
         &serving_model,
         bridge.credential_source_class_hint(),
         request.semantic_request,
+        bridge.endpoint_route_provenance_hint(),
     )?;
 
     let mut attempt = 0u32;
@@ -1030,6 +1475,9 @@ pub(crate) async fn dispatch_loop_route(
             },
             Err(error) => error,
         };
+        let server_retry_delay_ms = error
+            .downcast_ref::<crate::upstream_errors::UpstreamResponseFailure>()
+            .and_then(|failure| failure.retry_after_ms);
         let error_message = error.to_string();
         if error_message.starts_with("durable response terminated at transport EOF") {
             return Err(error);
@@ -1048,21 +1496,7 @@ pub(crate) async fn dispatch_loop_route(
         }
 
         let kind_label = class.label();
-        if request.semantic_request.is_none() {
-            let _ = append_upstream_failure_log(&UpstreamFailureLogEntry {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                provider: request.route.provider_id.clone(),
-                model: request.route.serving_model.clone(),
-                failure_kind: kind_label.to_string(),
-                internal_class: kind_label.to_string(),
-                recovery_action: class.recovery_action(),
-                attempt,
-                request_id: None,
-                response_attempt_ordinal: None,
-                delay_ms: delay,
-                message: error_message.clone(),
-            });
-        } else if request.response_facts.is_none() {
+        if request.semantic_request.is_some() && request.response_facts.is_none() {
             anyhow::bail!(
                 "durable response retry requires matching request and authority fact contracts"
             );
@@ -1093,6 +1527,21 @@ pub(crate) async fn dispatch_loop_route(
             );
         let attempt_exhausted = request.max_retries > 0 && attempt >= request.max_retries;
         if attempt_exhausted || rate_limit_exhausted || stall_exhausted || envelope_exhausted {
+            if request.semantic_request.is_none() {
+                let _ = append_upstream_failure_log(&UpstreamFailureLogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    provider: request.route.provider_id.clone(),
+                    model: request.route.serving_model.clone(),
+                    failure_kind: kind_label.to_string(),
+                    internal_class: kind_label.to_string(),
+                    recovery_action: class.recovery_action(),
+                    attempt,
+                    request_id: None,
+                    response_attempt_ordinal: None,
+                    delay_ms: 0,
+                    message: error_message.clone(),
+                });
+            }
             let reason = if rate_limit_exhausted {
                 "session rate-limit exhaustion"
             } else if stall_exhausted {
@@ -1161,6 +1610,34 @@ pub(crate) async fn dispatch_loop_route(
             &request.route.provider_id,
             &request.route.serving_model,
         );
+        let retry_delay = select_retry_delay_ms(
+            retry_delay,
+            server_retry_delay_ms,
+            remaining_retry_envelope_ms(
+                request.max_retries,
+                persistent_overload,
+                transient_kind,
+                elapsed,
+                &request.route.provider_id,
+                &request.route.serving_model,
+                request.route.options.reasoning.as_deref(),
+            ),
+        );
+        if request.semantic_request.is_none() {
+            let _ = append_upstream_failure_log(&UpstreamFailureLogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                provider: request.route.provider_id.clone(),
+                model: request.route.serving_model.clone(),
+                failure_kind: kind_label.to_string(),
+                internal_class: kind_label.to_string(),
+                recovery_action: class.recovery_action(),
+                attempt,
+                request_id: None,
+                response_attempt_ordinal: None,
+                delay_ms: retry_delay,
+                message: error_message.clone(),
+            });
+        }
         if matches!(attempt, 10 | 25 | 50 | 100) || (attempt > 100 && attempt.is_multiple_of(100)) {
             let _ = request.events.send(omegon_traits::AgentEvent::SystemNotification {
                 message: format!(
@@ -1272,6 +1749,39 @@ fn jittered_retry_delay_ms(base_delay_ms: u64, attempt: u32, provider: &str, mod
     attempt.hash(&mut hasher);
     let half = base_delay_ms / 2;
     half.saturating_add(hasher.finish() % base_delay_ms.saturating_sub(half).max(1))
+}
+
+fn select_retry_delay_ms(
+    fallback_delay_ms: u64,
+    server_delay_ms: Option<u64>,
+    remaining_envelope_ms: Option<u64>,
+) -> u64 {
+    let selected = server_delay_ms.unwrap_or(fallback_delay_ms);
+    remaining_envelope_ms.map_or(selected, |remaining| selected.min(remaining.max(1)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remaining_retry_envelope_ms(
+    max_retries: u32,
+    persistent_overload: bool,
+    transient_kind: Option<TransientFailureKind>,
+    elapsed: Duration,
+    provider: &str,
+    model: &str,
+    reasoning: Option<&str>,
+) -> Option<u64> {
+    if max_retries > 0 || persistent_overload {
+        return None;
+    }
+    let envelope = match transient_kind {
+        Some(TransientFailureKind::RateLimited) => Duration::from_secs(120),
+        Some(TransientFailureKind::StalledStream) => {
+            Duration::from_secs(stall_exhaustion_secs(provider, model, reasoning))
+        }
+        Some(_) => Duration::from_secs(600),
+        None => return None,
+    };
+    Some(u64::try_from(envelope.saturating_sub(elapsed).as_millis()).unwrap_or(u64::MAX))
 }
 
 fn transient_retry_envelope_exhausted(
@@ -1483,9 +1993,10 @@ fn stream_idle_phase_after_event(current: StreamIdleState, event: &LlmEvent) -> 
             BoundaryExpectation::Unknown => StreamIdleState::AmbiguousSilent,
             BoundaryExpectation::Terminal => current,
         },
-        LlmEvent::ProviderContinuity { .. } | LlmEvent::Done { .. } | LlmEvent::Error { .. } => {
-            current
-        }
+        LlmEvent::ProviderContinuity { .. }
+        | LlmEvent::Done { .. }
+        | LlmEvent::Error { .. }
+        | LlmEvent::UpstreamFailure { .. } => current,
     }
 }
 
@@ -1955,6 +2466,13 @@ async fn consume_llm_stream_with_policy(
                 });
                 anyhow::bail!("LLM error: {message}");
             }
+            LlmEvent::UpstreamFailure { failure } => {
+                durable.flush(events)?;
+                let _ = events.send(omegon_traits::AgentEvent::MessageAbort {
+                    reason: Some(failure.message.clone()),
+                });
+                return Err(failure.into());
+            }
         }
     }
     durable.flush(events)?;
@@ -2000,7 +2518,38 @@ fn route_lease(
     serving_model: &str,
     credential_source_class: Option<&str>,
     request_id: Option<Uuid>,
+    endpoint_provenance: Option<&crate::bridge::EndpointRouteProvenance>,
 ) -> anyhow::Result<ProviderRouteLease> {
+    if let Some(provenance) = endpoint_provenance {
+        let selected_provider_id = provenance.selected_provider_id.clone();
+        let selected_model_id = selected_model
+            .strip_prefix(&format!("{selected_provider_id}:"))
+            .unwrap_or(selected_model)
+            .to_string();
+        let serving_model_id = serving_model
+            .strip_prefix(&format!("{selected_provider_id}:"))
+            .unwrap_or(serving_model)
+            .to_string();
+        return Ok(ProviderRouteLease {
+            schema_version: ROUTE_LEASE_SCHEMA_VERSION,
+            lease_id: Uuid::new_v4(),
+            request_id: request_id.unwrap_or_else(Uuid::new_v4),
+            selected_provider_id: selected_provider_id.clone(),
+            selected_model_id,
+            serving_provider_id: selected_provider_id,
+            serving_model_id,
+            schema_dialect: provenance.schema_dialect.clone(),
+            credential_source_class: credential_source_class
+                .unwrap_or("bearer_token")
+                .to_string(),
+            fallback_reason: None,
+            contribution_generation_id: provenance.contribution_generation_id.clone(),
+            route_policy: "admitted_manifest_endpoint_v1".into(),
+            endpoint_id: Some(provenance.endpoint_id.clone()),
+            adapter_id: Some(provenance.adapter_id.clone()),
+            inventory_generation: Some(provenance.inventory_generation),
+        });
+    }
     let selected_provider_id = crate::providers::infer_provider_id(selected_model);
     let serving_provider_id = crate::providers::infer_provider_id(serving_model);
     let contribution = crate::provider_contributions::registry()
@@ -2028,6 +2577,9 @@ fn route_lease(
             "selected_provider_only_v1"
         }
         .to_string(),
+        endpoint_id: None,
+        adapter_id: None,
+        inventory_generation: None,
     })
 }
 
@@ -2038,8 +2590,425 @@ fn recorded_at_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn exact_route_admission_rejects_model_absent_from_current_inventory() {
+        let snapshot = crate::inference_inventory::InventorySnapshot::empty();
+        let rejection = admit_exact_route(&snapshot, "anthropic:claude-fable-5", &[])
+            .expect_err("absent exact offering must fail closed");
+        assert!(matches!(
+            rejection,
+            crate::inference_inventory::ExactAdmissionRejection::UnknownOffering(_)
+        ));
+    }
+
+    fn manifest_endpoint_snapshot(adapter: &str) -> crate::inference_inventory::InventorySnapshot {
+        manifest_endpoint_snapshot_at(adapter, "https://inference.internal/v1")
+    }
+
+    fn manifest_endpoint_snapshot_at(
+        adapter: &str,
+        base_url: &str,
+    ) -> crate::inference_inventory::InventorySnapshot {
+        manifest_endpoint_snapshot_with_secret(
+            adapter,
+            base_url,
+            "OMEGON_PROJECT_ENDPOINT_707269766174652D656E64706F696E74_TOKEN",
+        )
+    }
+
+    fn manifest_endpoint_snapshot_with_secret(
+        adapter: &str,
+        base_url: &str,
+        secret_ref: &str,
+    ) -> crate::inference_inventory::InventorySnapshot {
+        use crate::inference_inventory::{
+            AdapterId, EndpointId, EndpointPatch, EvidenceKind, InventoryLayer, InventorySource,
+            Modality, OfferingId, OfferingPatch, TransportSpec,
+        };
+        let mut layer = InventoryLayer::new(InventorySource::Project, EvidenceKind::Declared);
+        layer.endpoints.insert(
+            EndpointId("private-endpoint".into()),
+            EndpointPatch {
+                adapter: Some(AdapterId(adapter.into())),
+                transport: Some(TransportSpec::Http {
+                    base_url: base_url.into(),
+                }),
+                secret_refs: Some(vec![secret_ref.into()]),
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+        layer.offerings.insert(
+            OfferingId("private-chat:stable-chat".into()),
+            OfferingPatch {
+                endpoint: Some(EndpointId("private-endpoint".into())),
+                native_model_id: Some("model-v3".into()),
+                display_name: Some("Stable chat".into()),
+                input_modalities: Some(BTreeSet::from([Modality(Modality::TEXT.into())])),
+                output_modalities: Some(BTreeSet::from([Modality(Modality::TEXT.into())])),
+                capabilities: BTreeMap::from([("tools".into(), true), ("reasoning".into(), true)]),
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+        crate::inference_inventory::InventorySnapshot::build(42, vec![layer]).unwrap()
+    }
+
+    #[test]
+    fn standalone_manifest_offering_is_exactly_admitted_with_native_alias() {
+        let snapshot =
+            manifest_endpoint_snapshot(crate::inference_inventory::AdapterId::CHAT_COMPLETIONS);
+
+        let offering = admit_exact_route(&snapshot, "private-chat:stable-chat", &[]).unwrap();
+
+        assert_eq!(offering.id.0, "private-chat:stable-chat");
+        assert_eq!(offering.native_model_id.value, "model-v3");
+    }
+
+    #[test]
+    fn manifest_endpoint_plan_retains_transport_alias_and_generation() {
+        let snapshot =
+            manifest_endpoint_snapshot(crate::inference_inventory::AdapterId::CHAT_COMPLETIONS);
+
+        let plan =
+            admit_manifest_endpoint_route(&snapshot, "private-chat:stable-chat", &[]).unwrap();
+
+        assert_eq!(plan.selected_offering_id, "private-chat:stable-chat");
+        assert_eq!(plan.selected_provider_id, "private-chat");
+        assert_eq!(plan.selected_model_id, "stable-chat");
+        assert_eq!(plan.native_model_id, "model-v3");
+        assert_eq!(plan.endpoint_id, "private-endpoint");
+        assert_eq!(plan.inventory_generation, 42);
+        assert_eq!(plan.adapter_id, "chat-completions");
+        assert_eq!(plan.base_url, "https://inference.internal/v1");
+        assert_eq!(
+            plan.secret_ref,
+            "OMEGON_PROJECT_ENDPOINT_707269766174652D656E64706F696E74_TOKEN"
+        );
+    }
+
+    #[test]
+    fn unsupported_manifest_adapter_fails_closed_during_plan_admission() {
+        let snapshot = manifest_endpoint_snapshot("unsupported-wire-v7");
+
+        let error = admit_manifest_endpoint_route(&snapshot, "private-chat:stable-chat", &[])
+            .expect_err("unsupported adapter must not produce an execution plan");
+
+        assert!(error.to_string().contains("not executable"));
+    }
+
+    #[test]
+    fn manifest_endpoint_rejects_unbound_secret_and_remote_plaintext_http() {
+        assert_ne!(
+            manifest_endpoint_secret_name(
+                crate::inference_inventory::InventorySource::Project,
+                "corp-prod",
+            ),
+            manifest_endpoint_secret_name(
+                crate::inference_inventory::InventorySource::Project,
+                "corp_prod",
+            )
+        );
+        assert_ne!(
+            manifest_endpoint_secret_name(
+                crate::inference_inventory::InventorySource::Project,
+                "corp-prod",
+            ),
+            manifest_endpoint_secret_name(
+                crate::inference_inventory::InventorySource::User,
+                "corp-prod",
+            )
+        );
+        let unbound = manifest_endpoint_snapshot_with_secret(
+            crate::inference_inventory::AdapterId::CHAT_COMPLETIONS,
+            "https://inference.internal/v1",
+            "ANTHROPIC_API_KEY",
+        );
+        let error = admit_manifest_endpoint_route(&unbound, "private-chat:stable-chat", &[])
+            .expect_err("project endpoint must not claim an unrelated credential");
+        assert!(
+            error
+                .to_string()
+                .contains("OMEGON_PROJECT_ENDPOINT_707269766174652D656E64706F696E74_TOKEN")
+        );
+
+        let plaintext = manifest_endpoint_snapshot_at(
+            crate::inference_inventory::AdapterId::CHAT_COMPLETIONS,
+            "http://inference.internal/v1",
+        );
+        let error = admit_manifest_endpoint_route(&plaintext, "private-chat:stable-chat", &[])
+            .expect_err("remote bearer transport must use TLS");
+        assert!(error.to_string().contains("HTTPS or a loopback host"));
+    }
+
+    #[tokio::test]
+    async fn unsupported_manifest_adapter_fails_before_secret_resolution() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("secret-recipe-ran");
+        let secrets = omegon_secrets::SecretsManager::new(directory.path()).unwrap();
+        secrets
+            .set_recipe(
+                "OMEGON_PROJECT_ENDPOINT_707269766174652D656E64706F696E74_TOKEN",
+                &format!("cmd:touch {}", marker.display()),
+            )
+            .unwrap();
+        let snapshot = manifest_endpoint_snapshot("unsupported-wire-v7");
+
+        let route = ProviderRouteService
+            .resolve_exact_admitted("private-chat:stable-chat", Some(&secrets), &snapshot, &[])
+            .await;
+
+        assert!(route.is_none());
+        assert!(!marker.exists(), "unsupported adapter resolved its secret");
+    }
+
+    #[tokio::test]
+    async fn manifest_endpoint_dispatch_uses_native_model_and_records_provenance() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let expected_len = loop {
+                let mut chunk = [0u8; 4096];
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0, "request closed before headers completed");
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .and_then(|value| value.parse::<usize>().ok())
+                        })
+                        .unwrap();
+                    break header_end + 4 + content_length;
+                }
+            };
+            while request.len() < expected_len {
+                let mut chunk = [0u8; 4096];
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0, "request closed before body completed");
+                request.extend_from_slice(&chunk[..count]);
+            }
+            let body = b"data: {\"choices\":[{\"delta\":{\"content\":\"manifest reply\"},\"finish_reason\":\"stop\"}]}\n\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.write_all(body).await.unwrap();
+            String::from_utf8(request).unwrap()
+        });
+
+        let snapshot = manifest_endpoint_snapshot_at(
+            crate::inference_inventory::AdapterId::CHAT_COMPLETIONS,
+            &base_url,
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let secret_path = directory.path().join("manifest-token");
+        std::fs::write(&secret_path, "manifest-secret").unwrap();
+        let secrets = omegon_secrets::SecretsManager::new(directory.path()).unwrap();
+        secrets
+            .set_recipe(
+                "OMEGON_PROJECT_ENDPOINT_707269766174652D656E64706F696E74_TOKEN",
+                &format!("file:{}", secret_path.display()),
+            )
+            .unwrap();
+        let route = ProviderRouteService
+            .resolve_exact_admitted("private-chat:stable-chat", Some(&secrets), &snapshot, &[])
+            .await
+            .expect("admitted endpoint with a resolvable secret");
+        let lease_path = directory.path().join("leases.jsonl");
+        let recorder = StepRouteLeaseRecorder::at_path(Uuid::new_v4(), lease_path.clone());
+        let lease = route_lease(
+            &route.selected_model,
+            &route.native_model,
+            Some(&route.credential_source_class),
+            None,
+            route.endpoint_provenance.as_ref(),
+        )
+        .unwrap();
+        recorder.record(&lease).unwrap();
+        let bridge = route.into_unleased_bridge();
+        assert_eq!(
+            bridge.selected_model_hint(),
+            Some("private-chat:stable-chat")
+        );
+        assert_eq!(bridge.native_model_hint(), Some("private-chat:model-v3"));
+        let mut events = bridge
+            .stream(
+                "system",
+                &[],
+                &[],
+                &StreamOptions {
+                    model: Some("private-chat:stable-chat".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut reply = None;
+        while let Some(event) = events.recv().await {
+            if let LlmEvent::Done { message, .. } = event {
+                reply = message["text"].as_str().map(str::to_string);
+                break;
+            }
+        }
+        assert_eq!(reply.as_deref(), Some("manifest reply"));
+
+        let request = server.await.unwrap();
+        assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer manifest-secret\r\n")
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["model"], "model-v3");
+
+        let fact: StepRouteLeaseFact =
+            serde_json::from_str(std::fs::read_to_string(lease_path).unwrap().trim()).unwrap();
+        assert_eq!(fact.lease.selected_model_id, "stable-chat");
+        assert_eq!(fact.lease.serving_model_id, "model-v3");
+        assert_eq!(fact.lease.endpoint_id.as_deref(), Some("private-endpoint"));
+        assert_eq!(fact.lease.adapter_id.as_deref(), Some("chat-completions"));
+        assert_eq!(fact.lease.inventory_generation, Some(42));
+    }
+
+    #[test]
+    fn session_manifest_provenance_uses_a_new_fact_without_widening_lease_v1() {
+        let (directory, authority, scope, request) = staged_request();
+        let provenance = crate::bridge::EndpointRouteProvenance {
+            selected_provider_id: "private-chat".into(),
+            endpoint_id: "private-endpoint".into(),
+            adapter_id: "chat-completions".into(),
+            inventory_generation: 42,
+            contribution_generation_id: MANIFEST_CHAT_COMPLETIONS_GENERATION.into(),
+            schema_dialect: "open_ai".into(),
+        };
+        let lease = route_lease(
+            "private-chat:stable-chat",
+            "private-chat:model-v3",
+            Some("declared_bearer_secret"),
+            Some(request.request_id),
+            Some(&provenance),
+        )
+        .unwrap();
+        RouteLeaseOwner::Session {
+            authority: scope.authority.as_ref().unwrap(),
+            turn_id: scope.turn_id.unwrap(),
+        }
+        .record(&lease)
+        .unwrap();
+
+        let state = authority.state();
+        assert_eq!(
+            state.route_endpoint_provenance[&lease.lease_id].endpoint_id,
+            "private-endpoint"
+        );
+        let facts = std::fs::read_to_string(directory.path().join("session.authority.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let lease_fact = facts
+            .iter()
+            .find(|fact| fact["event_type"] == "route.lease_recorded")
+            .unwrap();
+        assert!(lease_fact["payload"].get("endpoint_id").is_none());
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact["event_type"] == "route.endpoint_provenance_recorded")
+        );
+    }
+
+    #[tokio::test]
+    async fn manifest_turn_route_preserves_native_identity_and_host_generation() {
+        let snapshot =
+            manifest_endpoint_snapshot(crate::inference_inventory::AdapterId::CHAT_COMPLETIONS);
+        let plan =
+            admit_manifest_endpoint_route(&snapshot, "private-chat:stable-chat", &[]).unwrap();
+        let bridge =
+            construct_manifest_endpoint_route(plan, "unused-secret".into()).into_unleased_bridge();
+        let setup = loop_route_setup(None, None);
+        let policy = LoopRoutePolicy {
+            selected_model: "private-chat:stable-chat".into(),
+            bridge_model: Some("private-chat:stable-chat".into()),
+            extended_context: false,
+            settings: None,
+        };
+        let startup = loop_startup_route(bridge.as_ref(), &setup, &policy).await;
+        let turn = loop_turn_route(bridge.as_ref(), &setup, &policy, &startup.options).await;
+
+        assert_eq!(turn.selected_model, "private-chat:stable-chat");
+        assert_eq!(turn.serving_model, "private-chat:model-v3");
+        assert_eq!(turn.provider_id, "private-chat");
+        assert_eq!(turn.schema_dialect, "open_ai");
+        assert_eq!(
+            turn.contribution_generation_id,
+            MANIFEST_CHAT_COMPLETIONS_GENERATION
+        );
+        assert_eq!(turn.options.model.as_deref(), Some("private-chat:model-v3"));
+    }
+
+    #[tokio::test]
+    async fn manifest_compaction_uses_native_identity_and_endpoint_evidence() {
+        let bridge = ManifestCompactionBridge {
+            provenance: crate::bridge::EndpointRouteProvenance {
+                selected_provider_id: "private-chat".into(),
+                endpoint_id: "private-endpoint".into(),
+                adapter_id: "chat-completions".into(),
+                inventory_generation: 42,
+                contribution_generation_id: MANIFEST_CHAT_COMPLETIONS_GENERATION.into(),
+                schema_dialect: "open_ai".into(),
+            },
+        };
+        let authority = CapturingCompactionAuthority::default();
+        let scope = crate::invocation_service::InvocationScope::default();
+        let options = StreamOptions {
+            model: Some("private-chat:stable-chat".into()),
+            ..Default::default()
+        };
+
+        let summary = compact_loop_route(
+            &bridge,
+            LoopCompactionRequest {
+                payload: "compact this",
+                options: &options,
+                selected_model: "private-chat:stable-chat",
+                scope: &scope,
+                step_id: Uuid::new_v4(),
+                authority: Some(&authority),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary, "summary");
+        let evidence = authority.evidence.lock().unwrap().clone().unwrap();
+        assert_eq!(evidence.selected_provider_id, "private-chat");
+        assert_eq!(evidence.selected_model_id, "stable-chat");
+        assert_eq!(evidence.serving_provider_id, "private-chat");
+        assert_eq!(evidence.serving_model_id, "model-v3");
+        assert_eq!(
+            evidence.contribution_generation_id,
+            MANIFEST_CHAT_COMPLETIONS_GENERATION
+        );
+        assert_eq!(evidence.endpoint_id.as_deref(), Some("private-endpoint"));
+        assert_eq!(evidence.adapter_id.as_deref(), Some("chat-completions"));
+        assert_eq!(evidence.inventory_generation, Some(42));
+    }
 
     fn loop_route(provider: &str, model: &str) -> LoopRoute {
         let serving_model = format!("{provider}:{model}");
@@ -2053,6 +3022,7 @@ mod tests {
             serving_model: serving_model.clone(),
             provider_id: provider.to_string(),
             schema_dialect: contribution.tools.dialect_name().into(),
+            contribution_generation_id: contribution.owner_generation_id.as_str().into(),
             normalizer_contribution_id,
             normalizer_generation_id,
             options: StreamOptions {
@@ -2063,6 +3033,96 @@ mod tests {
     }
 
     struct CountingBridge(Arc<AtomicUsize>);
+
+    struct ManifestCompactionBridge {
+        provenance: crate::bridge::EndpointRouteProvenance,
+    }
+
+    #[derive(Default)]
+    struct CapturingCompactionAuthority {
+        evidence: std::sync::Mutex<Option<crate::loop_driver::LoopCompactionRouteEvidence>>,
+    }
+
+    impl crate::loop_driver::LoopCompactionAuthority for CapturingCompactionAuthority {
+        fn provider_payload<'a>(&'a self, fallback: &'a str) -> &'a str {
+            fallback
+        }
+
+        fn compaction_request_id(&self) -> Option<Uuid> {
+            Some(Uuid::new_v4())
+        }
+
+        fn is_idle(&self) -> bool {
+            true
+        }
+
+        fn prepare(
+            &self,
+            evidence: crate::loop_driver::LoopCompactionRouteEvidence,
+        ) -> anyhow::Result<()> {
+            *self.evidence.lock().unwrap() = Some(evidence);
+            Ok(())
+        }
+
+        fn commit_done(&self, _summary: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn fail(
+            &self,
+            _outcome: crate::session_authority::CompactionRequestOutcome,
+            _reason: &str,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmBridge for ManifestCompactionBridge {
+        async fn stream(
+            &self,
+            _system_prompt: &str,
+            _messages: &[LlmMessage],
+            _tools: &[omegon_traits::ToolDefinition],
+            _options: &StreamOptions,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<LlmEvent>> {
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            tx.try_send(LlmEvent::TextDelta {
+                delta: "summary".into(),
+            })?;
+            tx.try_send(LlmEvent::Done {
+                message: serde_json::json!({}),
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                provider_telemetry: None,
+            })?;
+            Ok(rx)
+        }
+
+        fn selected_model_hint(&self) -> Option<&str> {
+            Some("private-chat:stable-chat")
+        }
+
+        fn serving_model_hint(&self) -> Option<&str> {
+            Some("private-chat:stable-chat")
+        }
+
+        fn native_model_hint(&self) -> Option<&str> {
+            Some("private-chat:model-v3")
+        }
+
+        fn endpoint_route_provenance_hint(
+            &self,
+        ) -> Option<&crate::bridge::EndpointRouteProvenance> {
+            Some(&self.provenance)
+        }
+
+        fn credential_source_class_hint(&self) -> Option<&str> {
+            Some("declared_bearer_secret")
+        }
+    }
 
     #[async_trait::async_trait]
     impl LlmBridge for CountingBridge {
@@ -2077,6 +3137,108 @@ mod tests {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
             Ok(rx)
         }
+    }
+
+    #[tokio::test]
+    async fn admitted_tool_deficient_route_rejects_before_network_dispatch() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bridge = RoutedBridge {
+            selected_model: "lab:model".into(),
+            serving_model: "lab:model".into(),
+            credential_source_class: "test".into(),
+            native_model: "lab:model".into(),
+            endpoint_provenance: None,
+            admitted_capabilities: Some(AdmittedModelCapabilities {
+                tools: CapabilityAdmission::Missing,
+                reasoning: CapabilityAdmission::Supported,
+                provider_supports_tools: true,
+            }),
+            inner: Box::new(CountingBridge(calls.clone())),
+        };
+        let tools = [omegon_traits::ToolDefinition {
+            name: "read".into(),
+            label: "Read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            capabilities: Vec::new(),
+        }];
+
+        let result = bridge
+            .stream("system", &[], &tools, &StreamOptions::default())
+            .await;
+        let error = match result {
+            Ok(_) => panic!("tool-deficient route reached its transport"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("missing tool capability"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn admitted_reasoning_deficient_route_rejects_before_network_dispatch() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bridge = RoutedBridge {
+            selected_model: "lab:model".into(),
+            serving_model: "lab:model".into(),
+            credential_source_class: "test".into(),
+            native_model: "lab:model".into(),
+            endpoint_provenance: None,
+            admitted_capabilities: Some(AdmittedModelCapabilities {
+                tools: CapabilityAdmission::Supported,
+                reasoning: CapabilityAdmission::Missing,
+                provider_supports_tools: true,
+            }),
+            inner: Box::new(CountingBridge(calls.clone())),
+        };
+        let options = StreamOptions {
+            reasoning: Some("high".into()),
+            ..Default::default()
+        };
+
+        let result = bridge.stream("system", &[], &[], &options).await;
+        let error = match result {
+            Ok(_) => panic!("reasoning-deficient route reached its transport"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("missing reasoning capability"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn provider_tool_contract_remains_stronger_than_offering_evidence() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bridge = RoutedBridge {
+            selected_model: "lab:model".into(),
+            serving_model: "lab:model".into(),
+            credential_source_class: "test".into(),
+            native_model: "lab:model".into(),
+            endpoint_provenance: None,
+            admitted_capabilities: Some(AdmittedModelCapabilities {
+                tools: CapabilityAdmission::Supported,
+                reasoning: CapabilityAdmission::Supported,
+                provider_supports_tools: false,
+            }),
+            inner: Box::new(CountingBridge(calls.clone())),
+        };
+        let tools = [omegon_traits::ToolDefinition {
+            name: "read".into(),
+            label: "Read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            capabilities: Vec::new(),
+        }];
+
+        let result = bridge
+            .stream("system", &[], &tools, &StreamOptions::default())
+            .await;
+
+        assert!(
+            result
+                .expect_err("unsupported provider tool contract reached transport")
+                .to_string()
+                .contains("provider contribution declares tools unsupported")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     fn staged_request() -> (
@@ -2136,6 +3298,7 @@ mod tests {
             serving_model: route.serving_model.clone(),
             provider_id: route.provider_id.clone(),
             schema_dialect: route.schema_dialect.clone(),
+            contribution_generation_id: route.contribution_generation_id.clone(),
             normalizer_contribution_id: route.normalizer_contribution_id.clone(),
             normalizer_generation_id: route.normalizer_generation_id.clone(),
         };
@@ -2171,6 +3334,16 @@ mod tests {
     }
 
     struct RetryAfterPartialBridge {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    struct ServerDirectedRetryBridge {
+        authority: crate::session_authority::SessionAuthorityHandle,
+        request_id: Uuid,
+        attempts: Arc<AtomicUsize>,
+    }
+
+    struct NonRetryableServerDelayBridge {
         attempts: Arc<AtomicUsize>,
     }
 
@@ -2290,6 +3463,74 @@ mod tests {
                 })
                 .unwrap();
             }
+            Ok(rx)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmBridge for ServerDirectedRetryBridge {
+        async fn stream(
+            &self,
+            _system_prompt: &str,
+            _messages: &[LlmMessage],
+            _tools: &[omegon_traits::ToolDefinition],
+            _options: &StreamOptions,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<LlmEvent>> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            if attempt == 0 {
+                tx.try_send(LlmEvent::UpstreamFailure {
+                    failure: crate::upstream_errors::UpstreamResponseFailure {
+                        message: "429 too many requests".into(),
+                        retry_after_ms: Some(17_000),
+                    },
+                })
+                .unwrap();
+            } else {
+                assert!(
+                    self.authority
+                        .state()
+                        .response_attempt_failures
+                        .get(&self.request_id)
+                        .is_some_and(|failures| failures.contains_key(&0)),
+                    "failed-attempt evidence must be durable before retry dispatch"
+                );
+                tx.try_send(LlmEvent::TextDelta {
+                    delta: "recovered".into(),
+                })
+                .unwrap();
+                tx.try_send(LlmEvent::Done {
+                    message: serde_json::json!({}),
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    provider_telemetry: None,
+                })
+                .unwrap();
+            }
+            Ok(rx)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmBridge for NonRetryableServerDelayBridge {
+        async fn stream(
+            &self,
+            _system_prompt: &str,
+            _messages: &[LlmMessage],
+            _tools: &[omegon_traits::ToolDefinition],
+            _options: &StreamOptions,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<LlmEvent>> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.try_send(LlmEvent::UpstreamFailure {
+                failure: crate::upstream_errors::UpstreamResponseFailure {
+                    message: "401 invalid authentication".into(),
+                    retry_after_ms: Some(17_000),
+                },
+            })
+            .unwrap();
             Ok(rx)
         }
     }
@@ -2498,6 +3739,95 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn server_retry_delay_is_scheduled_after_durable_failed_attempt() {
+        let (_directory, authority, scope, request) = staged_request();
+        let response_adapter = crate::loop_session::LoopSemanticFactAdapter::new(&scope);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let bridge = ServerDirectedRetryBridge {
+            authority: authority.clone(),
+            request_id: request.request_id,
+            attempts: attempts.clone(),
+        };
+        let (events, mut observer) = tokio::sync::broadcast::channel(16);
+        let route = loop_route("openai", "gpt-5.4");
+
+        let dispatch = dispatch_loop_route(
+            &bridge,
+            LoopRouteRequest {
+                route: &route,
+                system_prompt: "system",
+                messages: &[],
+                tools: &[],
+                events: &events,
+                max_retries: 2,
+                retry_delay_ms: 1,
+                cancel_keeps_prompt: None,
+                scope: &scope,
+                step_id: request.step_id,
+                semantic_request: Some(&request),
+                response_facts: Some(&response_adapter),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(dispatch.message.text, "recovered");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let retry_delay = std::iter::from_fn(|| observer.try_recv().ok()).find_map(|event| {
+            if let omegon_traits::AgentEvent::ProviderRetry { delay_ms, .. } = event {
+                Some(delay_ms)
+            } else {
+                None
+            }
+        });
+        assert_eq!(retry_delay, Some(17_000));
+    }
+
+    #[tokio::test]
+    async fn server_delay_does_not_make_nonretryable_failure_retryable() {
+        let (_directory, _authority, scope, request) = staged_request();
+        let response_adapter = crate::loop_session::LoopSemanticFactAdapter::new(&scope);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let bridge = NonRetryableServerDelayBridge {
+            attempts: attempts.clone(),
+        };
+        let (events, _) = tokio::sync::broadcast::channel(4);
+        let route = loop_route("openai", "gpt-5.4");
+
+        let result = dispatch_loop_route(
+            &bridge,
+            LoopRouteRequest {
+                route: &route,
+                system_prompt: "system",
+                messages: &[],
+                tools: &[],
+                events: &events,
+                max_retries: 2,
+                retry_delay_ms: 1,
+                cancel_keeps_prompt: None,
+                scope: &scope,
+                step_id: request.step_id,
+                semantic_request: Some(&request),
+                response_facts: Some(&response_adapter),
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn server_retry_delay_falls_back_and_respects_remaining_envelope() {
+        assert_eq!(select_retry_delay_ms(731, None, None), 731);
+        assert_eq!(select_retry_delay_ms(731, Some(17_000), None), 17_000);
+        assert_eq!(
+            select_retry_delay_ms(731, Some(17_000), Some(10_000)),
+            10_000
+        );
+    }
+
     #[test]
     fn retry_failure_taxonomy_is_closed_and_stable() {
         assert_eq!(
@@ -2575,6 +3905,7 @@ mod tests {
             "anthropic:claude-sonnet-4-6",
             Some("test"),
             Some(&request),
+            None,
         )
         .unwrap();
         let response_adapter = crate::loop_session::LoopSemanticFactAdapter::new(&scope);
@@ -2691,6 +4022,7 @@ mod tests {
             "anthropic:claude-sonnet-4-6",
             Some("test"),
             Some(&request),
+            None,
         )
         .unwrap();
         let response_adapter = crate::loop_session::LoopSemanticFactAdapter::new(&scope);
@@ -2789,6 +4121,7 @@ mod tests {
             "anthropic:claude-sonnet-4-6",
             Some("test"),
             Some(&request),
+            None,
         )
         .unwrap();
         let response_adapter = crate::loop_session::LoopSemanticFactAdapter::new(&scope);
@@ -2872,6 +4205,7 @@ mod tests {
             "anthropic:claude-sonnet-4-6",
             Some("test"),
             Some(&request),
+            None,
         )
         .unwrap();
         let response_adapter = crate::loop_session::LoopSemanticFactAdapter::new(&scope);
@@ -2920,6 +4254,7 @@ mod tests {
             "anthropic:claude-sonnet-4-6",
             Some("test"),
             Some(&request),
+            None,
         )
         .unwrap();
         let response_adapter = crate::loop_session::LoopSemanticFactAdapter::new(&scope);
@@ -3026,7 +4361,8 @@ mod tests {
 
     #[test]
     fn lease_preserves_selected_and_serving_route_evidence() {
-        let lease = route_lease("openai-codex:gpt-5.5", "openai:gpt-5.5", None, None).unwrap();
+        let lease =
+            route_lease("openai-codex:gpt-5.5", "openai:gpt-5.5", None, None, None).unwrap();
 
         assert_eq!(lease.selected_provider_id, "openai-codex");
         assert_eq!(lease.serving_provider_id, "openai");
@@ -3053,6 +4389,7 @@ mod tests {
             "anthropic:claude-sonnet-4-6",
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -3069,7 +4406,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let recorder =
             StepRouteLeaseRecorder::at_path(Uuid::new_v4(), dir.path().join("leases.jsonl"));
-        let lease = route_lease("ollama:qwen3:32b", "ollama:qwen3:32b", None, None).unwrap();
+        let lease = route_lease("ollama:qwen3:32b", "ollama:qwen3:32b", None, None, None).unwrap();
 
         recorder.record(&lease).unwrap();
 
@@ -3095,6 +4432,9 @@ mod tests {
             selected_model: "anthropic:claude-sonnet-4-6".into(),
             serving_model: "anthropic:claude-sonnet-4-6".into(),
             credential_source_class: "test".into(),
+            native_model: "anthropic:claude-sonnet-4-6".into(),
+            endpoint_provenance: None,
+            admitted_capabilities: None,
             bridge: Box::new(CountingBridge(dispatches.clone())),
         };
 
@@ -3120,6 +4460,7 @@ mod tests {
         let mut lease = route_lease(
             "anthropic:claude-sonnet-4-6",
             "anthropic:claude-sonnet-4-6",
+            None,
             None,
             None,
         )

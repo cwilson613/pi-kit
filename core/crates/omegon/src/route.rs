@@ -232,8 +232,18 @@ pub fn select_candidate_for_intent(
     intent: &ModelIntent,
     inventory: &crate::routing::ProviderInventory,
 ) -> Option<crate::routing::ProviderCandidate> {
+    select_candidate_for_intent_with_provider_order(intent, inventory, &[])
+}
+
+pub fn select_candidate_for_intent_with_provider_order(
+    intent: &ModelIntent,
+    inventory: &crate::routing::ProviderInventory,
+    provider_order: &[String],
+) -> Option<crate::routing::ProviderCandidate> {
     let req = intent.to_capability_request();
-    crate::routing::route(&req, inventory).into_iter().next()
+    crate::routing::route_with_provider_order(&req, inventory, provider_order)
+        .into_iter()
+        .next()
 }
 
 /// Why the selected model is not the one serving the session.
@@ -889,7 +899,14 @@ impl RouteController {
         new_bridge: Option<Box<dyn LlmBridge>>,
     ) -> anyhow::Result<RouteSnapshot> {
         let model = ModelRouteSpec::try_parse(model)?;
-        let provider = crate::providers::infer_provider_id(model.as_str());
+        let Some(provider) = crate::providers::infer_provider_id_strict(model.as_str()) else {
+            let mut state = self.state.write().await;
+            state.warning = Some(format!(
+                "Model switch to {model} refused: unknown provider or model identity"
+            ));
+            drop(state);
+            return Ok(self.emit_changed().await);
+        };
         crate::auth::trace_auth_store_probe(&provider, "route_switch_model");
         let credential_state = ledger.probe_provider(&provider);
         tracing::info!(model = %model, provider = %provider, credential_state = %credential_state.summary(), "provider route model switch credential probe");
@@ -1073,7 +1090,11 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
     let auth_key = crate::auth::auth_json_key(provider);
     let mut probed_sources = vec!["environment".to_string(), "auth.json".to_string()];
 
-    for key in crate::auth::provider_env_vars(provider) {
+    for key in crate::auth::provider_env_vars(provider)
+        .iter()
+        .copied()
+        .filter(|key| !crate::auth::provider_env_var_is_oauth(provider, key))
+    {
         if std::env::var(key).ok().is_some_and(|v| !v.is_empty()) {
             return CredentialState::Valid {
                 source: CredentialSource::Environment,
@@ -1082,6 +1103,7 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
         }
     }
 
+    let mut expired = None;
     crate::auth::trace_auth_store_probe(auth_key, "route_credential_ledger");
 
     if let Some(path) = crate::auth::auth_json_path()
@@ -1093,15 +1115,16 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
                     match serde_json::from_value::<crate::auth::OAuthCredentials>(entry.clone()) {
                         Ok(creds) => {
                             if creds.cred_type == "oauth" && creds.is_expired() {
-                                return CredentialState::Expired {
+                                expired = Some(CredentialState::Expired {
                                     source: CredentialSource::AuthJson,
                                     refreshable: !creds.refresh.is_empty(),
+                                });
+                            } else {
+                                return CredentialState::Valid {
+                                    source: CredentialSource::AuthJson,
+                                    oauth: creds.cred_type == "oauth",
                                 };
                             }
-                            return CredentialState::Valid {
-                                source: CredentialSource::AuthJson,
-                                oauth: creds.cred_type == "oauth",
-                            };
                         }
                         Err(error) => {
                             return CredentialState::Unreadable {
@@ -1124,18 +1147,32 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
     probed_sources.push("external".to_string());
     if let Some(creds) = crate::auth::read_external_credentials(auth_key) {
         if creds.cred_type == "oauth" && creds.is_expired() {
-            return CredentialState::Expired {
+            expired.get_or_insert(CredentialState::Expired {
                 source: CredentialSource::External,
                 refreshable: !creds.refresh.is_empty(),
+            });
+        } else {
+            return CredentialState::Valid {
+                source: CredentialSource::External,
+                oauth: creds.cred_type == "oauth",
             };
         }
-        return CredentialState::Valid {
-            source: CredentialSource::External,
-            oauth: creds.cred_type == "oauth",
-        };
     }
 
-    CredentialState::Missing { probed_sources }
+    for key in crate::auth::provider_env_vars(provider)
+        .iter()
+        .copied()
+        .filter(|key| crate::auth::provider_env_var_is_oauth(provider, key))
+    {
+        if std::env::var(key).ok().is_some_and(|v| !v.is_empty()) {
+            return CredentialState::Valid {
+                source: CredentialSource::Environment,
+                oauth: true,
+            };
+        }
+    }
+
+    expired.unwrap_or(CredentialState::Missing { probed_sources })
 }
 
 impl Default for RouteController {
@@ -1236,6 +1273,44 @@ mod tests {
         }
     }
 
+    fn with_auth_env<T>(
+        path: &Path,
+        key: &str,
+        value: &str,
+        f: impl FnOnce() -> T + std::panic::UnwindSafe,
+    ) -> T {
+        let _guard = crate::auth::TEST_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let original_path = std::env::var("OMEGON_AUTH_JSON_PATH").ok();
+        let original_value = std::env::var(key).ok();
+        // SAFETY: Tests serialize auth environment mutations and restore them below.
+        unsafe {
+            std::env::set_var("OMEGON_AUTH_JSON_PATH", path);
+            std::env::set_var(key, value);
+        }
+        let result = std::panic::catch_unwind(f);
+        for (name, original) in [
+            ("OMEGON_AUTH_JSON_PATH", original_path),
+            (key, original_value),
+        ] {
+            match original {
+                Some(value) => {
+                    // SAFETY: Protected by TEST_AUTH_ENV_LOCK as above.
+                    unsafe { std::env::set_var(name, value) };
+                }
+                None => {
+                    // SAFETY: Protected by TEST_AUTH_ENV_LOCK as above.
+                    unsafe { std::env::remove_var(name) };
+                }
+            }
+        }
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
     fn ledger(entries: &[(&str, CredentialState)]) -> StubLedger {
         StubLedger(
             entries
@@ -1243,6 +1318,33 @@ mod tests {
                 .map(|(provider, state)| ((*provider).to_string(), state.clone()))
                 .collect(),
         )
+    }
+
+    #[test]
+    fn environment_credentials_preserve_declared_api_key_and_oauth_kinds() {
+        let path = temp_auth_path("environment-credential-kind");
+
+        let api_key = with_auth_env(&path, "OPENAI_API_KEY", "test-api-key", || {
+            probe_provider_credentials("openai")
+        });
+        assert_eq!(
+            api_key,
+            CredentialState::Valid {
+                source: CredentialSource::Environment,
+                oauth: false,
+            }
+        );
+
+        let oauth = with_auth_env(&path, "CHATGPT_OAUTH_TOKEN", "test-oauth", || {
+            probe_provider_credentials("openai-codex")
+        });
+        assert_eq!(
+            oauth,
+            CredentialState::Valid {
+                source: CredentialSource::Environment,
+                oauth: true,
+            }
+        );
     }
 
     #[tokio::test]
@@ -1405,6 +1507,33 @@ mod tests {
             }
         );
         assert!(snapshot.warning.unwrap().contains("refused"));
+    }
+
+    #[tokio::test]
+    async fn switch_model_refuses_unknown_bare_model_without_changing_route() {
+        let controller = RouteController::new(
+            ProviderRoute::Serving {
+                model: "anthropic:claude-fable-5".into(),
+            },
+            Box::new(NullBridge),
+            None,
+        );
+        let snapshot = controller
+            .switch_model(
+                "mystery-model-with-no-catalog-match".into(),
+                &ledger(&[("anthropic", valid())]),
+                Some(Box::new(NullBridge)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot.route,
+            ProviderRoute::Serving {
+                model: "anthropic:claude-fable-5".into()
+            }
+        );
+        let warning = snapshot.warning.expect("unknown model warning");
+        assert!(warning.contains("unknown provider or model"), "{warning}");
     }
 
     #[tokio::test]
@@ -1978,6 +2107,25 @@ mod tests {
         intent.provider_selection = ProviderSelection::Upstream;
         let candidate = select_candidate_for_intent(&intent, &intent_test_inventory()).unwrap();
         assert_ne!(candidate.provider_id, "ollama");
+    }
+
+    #[test]
+    fn select_candidate_for_intent_uses_session_provider_order_for_ties() {
+        let mut inventory = intent_test_inventory();
+        inventory.entries.push(crate::routing::ProviderEntry {
+            provider_id: "openai".into(),
+            capability_grade: crate::routing::CapabilityGradeBand::Max,
+            has_credentials: true,
+            is_reachable: true,
+            models: vec!["gpt-5.4".into()],
+        });
+        let intent = ModelIntent::with_grade(ModelGrade::B);
+        let order = vec!["openai".into(), "anthropic".into()];
+
+        let candidate =
+            select_candidate_for_intent_with_provider_order(&intent, &inventory, &order).unwrap();
+
+        assert_eq!(candidate.provider_id, "openai");
     }
 
     #[tokio::test]

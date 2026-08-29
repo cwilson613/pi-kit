@@ -6,6 +6,7 @@ license.workspace = true
 description = "Code and knowledge indexing for codebase_search — regex AST + BM25 + markdown"
 
 [dependencies]
+omegon-codescan-contracts = { path = "../omegon-codescan-contracts" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

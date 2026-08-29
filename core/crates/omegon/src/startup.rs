@@ -300,25 +300,22 @@ fn probe_hardware() -> ProbeResult {
                 "--format=csv,noheader,nounits",
             ],
             500,
-        ) {
-            if out.status.success() {
-                let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if let Some((name, vram)) = line.split_once(',') {
-                    parts.push(format!("{}, {}MB VRAM", name.trim(), vram.trim()));
-                }
+        ) && out.status.success()
+        {
+            let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Some((name, vram)) = line.split_once(',') {
+                parts.push(format!("{}, {}MB VRAM", name.trim(), vram.trim()));
             }
         }
 
         // RAM via /proc/meminfo (no subprocess needed)
-        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-            if let Some(line) = content.lines().find(|l| l.starts_with("MemTotal:")) {
-                if let Some(kb_str) = line.split_whitespace().nth(1) {
-                    if let Ok(kb) = kb_str.parse::<u64>() {
-                        let gb = kb / (1024 * 1024);
-                        parts.push(format!("{gb}GB"));
-                    }
-                }
-            }
+        if let Ok(content) = std::fs::read_to_string("/proc/meminfo")
+            && let Some(line) = content.lines().find(|l| l.starts_with("MemTotal:"))
+            && let Some(kb_str) = line.split_whitespace().nth(1)
+            && let Ok(kb) = kb_str.parse::<u64>()
+        {
+            let gb = kb / (1024 * 1024);
+            parts.push(format!("{gb}GB"));
         }
     }
 

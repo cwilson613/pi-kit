@@ -227,6 +227,24 @@ pub(crate) struct RouteLeaseRecorded {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct RouteEndpointProvenanceRecorded {
+    pub(crate) lease_id: Uuid,
+    pub(crate) endpoint_id: String,
+    pub(crate) adapter_id: String,
+    pub(crate) inventory_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompactionEndpointProvenanceRecorded {
+    pub(crate) compaction_request_id: Uuid,
+    pub(crate) endpoint_id: String,
+    pub(crate) adapter_id: String,
+    pub(crate) inventory_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct StepStarted {
     pub(crate) step_id: Uuid,
     pub(crate) turn_id: Uuid,
@@ -1035,6 +1053,7 @@ pub(crate) enum SessionFactPayload {
     ContextSourceMaterialized(ContextSourceMaterialized),
     ModelRequestPrepared(ModelRequestPrepared),
     RouteLeaseRecorded(RouteLeaseRecorded),
+    RouteEndpointProvenanceRecorded(RouteEndpointProvenanceRecorded),
     ModelRequestRouteJoined(ModelRequestRouteJoined),
     ModelResponseAttemptFailed(ModelResponseAttemptFailed),
     AssistantContentAppended(AssistantContentAppended),
@@ -1055,6 +1074,7 @@ pub(crate) enum SessionFactPayload {
     TurnClosed(TurnClosed),
     CompactionStarted(CompactionStarted),
     CompactionRequestPrepared(CompactionRequestPrepared),
+    CompactionEndpointProvenanceRecorded(CompactionEndpointProvenanceRecorded),
     CompactionResponseAttemptFailed(CompactionResponseAttemptFailed),
     CompactionRequestClosed(CompactionRequestClosed),
     CompactionSummaryCommitted(CompactionSummaryCommitted),
@@ -1075,6 +1095,7 @@ impl SessionFactPayload {
             Self::ContextSourceMaterialized(_) => "context.source_materialized",
             Self::ModelRequestPrepared(_) => "model.request_prepared",
             Self::RouteLeaseRecorded(_) => "route.lease_recorded",
+            Self::RouteEndpointProvenanceRecorded(_) => "route.endpoint_provenance_recorded",
             Self::ModelRequestRouteJoined(_) => "model.request_route_joined",
             Self::ModelResponseAttemptFailed(_) => "model.response_attempt_failed",
             Self::AssistantContentAppended(_) => "assistant.content_appended",
@@ -1095,6 +1116,9 @@ impl SessionFactPayload {
             Self::TurnClosed(_) => "turn.closed",
             Self::CompactionStarted(_) => "compaction.started",
             Self::CompactionRequestPrepared(_) => "compaction.request_prepared",
+            Self::CompactionEndpointProvenanceRecorded(_) => {
+                "compaction.endpoint_provenance_recorded"
+            }
             Self::CompactionResponseAttemptFailed(_) => "compaction.response_attempt_failed",
             Self::CompactionRequestClosed(_) => "compaction.request_closed",
             Self::CompactionSummaryCommitted(_) => "compaction.summary_committed",
@@ -1115,6 +1139,7 @@ impl SessionFactPayload {
             Self::ContextSourceMaterialized(value) => serde_json::to_value(value),
             Self::ModelRequestPrepared(value) => serde_json::to_value(value),
             Self::RouteLeaseRecorded(value) => serde_json::to_value(value),
+            Self::RouteEndpointProvenanceRecorded(value) => serde_json::to_value(value),
             Self::ModelRequestRouteJoined(value) => serde_json::to_value(value),
             Self::ModelResponseAttemptFailed(value) => serde_json::to_value(value),
             Self::AssistantContentAppended(value) => serde_json::to_value(value),
@@ -1135,6 +1160,7 @@ impl SessionFactPayload {
             Self::TurnClosed(value) => serde_json::to_value(value),
             Self::CompactionStarted(value) => serde_json::to_value(value),
             Self::CompactionRequestPrepared(value) => serde_json::to_value(value),
+            Self::CompactionEndpointProvenanceRecorded(value) => serde_json::to_value(value),
             Self::CompactionResponseAttemptFailed(value) => serde_json::to_value(value),
             Self::CompactionRequestClosed(value) => serde_json::to_value(value),
             Self::CompactionSummaryCommitted(value) => serde_json::to_value(value),
@@ -1272,6 +1298,8 @@ impl SessionFact {
             "route.lease_recorded" => {
                 decode_payload(wire.payload).map(SessionFactPayload::RouteLeaseRecorded)
             }
+            "route.endpoint_provenance_recorded" => decode_payload(wire.payload)
+                .map(SessionFactPayload::RouteEndpointProvenanceRecorded),
             "model.request_route_joined" => {
                 decode_payload(wire.payload).map(SessionFactPayload::ModelRequestRouteJoined)
             }
@@ -1326,6 +1354,8 @@ impl SessionFact {
             "compaction.request_prepared" => {
                 decode_payload(wire.payload).map(SessionFactPayload::CompactionRequestPrepared)
             }
+            "compaction.endpoint_provenance_recorded" => decode_payload(wire.payload)
+                .map(SessionFactPayload::CompactionEndpointProvenanceRecorded),
             "compaction.response_attempt_failed" => decode_payload(wire.payload)
                 .map(SessionFactPayload::CompactionResponseAttemptFailed),
             "compaction.request_closed" => {
@@ -1743,6 +1773,8 @@ pub(crate) struct SessionAuthorityState {
     #[serde(default)]
     pub(crate) route_leases: BTreeMap<Uuid, RouteLeaseRecorded>,
     #[serde(default)]
+    pub(crate) route_endpoint_provenance: BTreeMap<Uuid, RouteEndpointProvenanceRecorded>,
+    #[serde(default)]
     pub(crate) request_route_joins: BTreeMap<Uuid, ModelRequestRouteJoined>,
     #[serde(default)]
     pub(crate) joined_route_leases: BTreeMap<Uuid, Uuid>,
@@ -1782,6 +1814,8 @@ pub(crate) struct SessionAuthorityState {
     pub(crate) compaction_starts: BTreeMap<Uuid, CompactionStarted>,
     #[serde(default)]
     pub(crate) compaction_requests: BTreeMap<Uuid, CompactionRequestState>,
+    #[serde(default)]
+    pub(crate) compaction_endpoint_provenance: BTreeMap<Uuid, CompactionEndpointProvenanceRecorded>,
     #[serde(default)]
     pub(crate) compaction_attempt_failures:
         BTreeMap<Uuid, BTreeMap<u32, CompactionResponseAttemptFailed>>,
@@ -1912,7 +1946,9 @@ impl SessionAuthorityState {
             && !matches!(
                 fact.payload,
                 SessionFactPayload::RouteLeaseRecorded(_)
+                    | SessionFactPayload::RouteEndpointProvenanceRecorded(_)
                     | SessionFactPayload::CompactionRequestPrepared(_)
+                    | SessionFactPayload::CompactionEndpointProvenanceRecorded(_)
                     | SessionFactPayload::CompactionResponseAttemptFailed(_)
                     | SessionFactPayload::CompactionRequestClosed(_)
                     | SessionFactPayload::CompactionSummaryCommitted(_)
@@ -2248,6 +2284,40 @@ impl SessionAuthorityState {
                 self.route_leases.insert(lease.lease_id, lease.clone());
                 Ok(())
             }
+            SessionFactPayload::RouteEndpointProvenanceRecorded(provenance) => {
+                let Some(lease) = self.route_leases.get(&provenance.lease_id) else {
+                    return self.transition_error(
+                        fact.sequence,
+                        "route endpoint provenance has no recorded lease",
+                    );
+                };
+                if lease.route_policy != "admitted_manifest_endpoint_v1" {
+                    return self.transition_error(
+                        fact.sequence,
+                        "route endpoint provenance requires a manifest route lease",
+                    );
+                }
+                if self
+                    .route_endpoint_provenance
+                    .contains_key(&provenance.lease_id)
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "route endpoint provenance is already present",
+                    );
+                }
+                if provenance.endpoint_id.trim().is_empty()
+                    || provenance.adapter_id.trim().is_empty()
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "route endpoint provenance identity is empty",
+                    );
+                }
+                self.route_endpoint_provenance
+                    .insert(provenance.lease_id, provenance.clone());
+                Ok(())
+            }
             SessionFactPayload::ModelRequestRouteJoined(join) => {
                 let Some(active_turn) = self.active_turn.as_ref() else {
                     return self.transition_error(fact.sequence, "there is no active turn");
@@ -2272,6 +2342,14 @@ impl SessionAuthorityState {
                     return self.transition_error(
                         fact.sequence,
                         "route join identity contradicts its lease",
+                    );
+                }
+                if lease.route_policy == "admitted_manifest_endpoint_v1"
+                    && !self.route_endpoint_provenance.contains_key(&join.lease_id)
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "manifest route join is missing endpoint provenance",
                     );
                 }
                 if self.joined_route_leases.contains_key(&join.lease_id)
@@ -3345,6 +3423,20 @@ impl SessionAuthorityState {
                         );
                     }
                 }
+                let manifest_idle = matches!(
+                    &preparation.route,
+                    CompactionRoute::SessionIdle { route_policy, .. }
+                        if route_policy == "admitted_manifest_endpoint_v1"
+                );
+                let has_endpoint_provenance = self
+                    .compaction_endpoint_provenance
+                    .contains_key(&preparation.compaction_request_id);
+                if manifest_idle != has_endpoint_provenance {
+                    return self.transition_error(
+                        fact.sequence,
+                        "idle compaction route contradicts endpoint provenance",
+                    );
+                }
                 if preparation.prompt_template.owner_id.trim().is_empty()
                     || preparation
                         .prompt_template
@@ -3399,6 +3491,43 @@ impl SessionAuthorityState {
                 );
                 Ok(())
             }
+            SessionFactPayload::CompactionEndpointProvenanceRecorded(provenance) => {
+                if self.active_compaction.is_none() {
+                    return self.transition_error(
+                        fact.sequence,
+                        "compaction endpoint provenance has no active compaction",
+                    );
+                }
+                if self
+                    .compaction_requests
+                    .contains_key(&provenance.compaction_request_id)
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "compaction endpoint provenance must precede request preparation",
+                    );
+                }
+                if self
+                    .compaction_endpoint_provenance
+                    .contains_key(&provenance.compaction_request_id)
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "compaction endpoint provenance is already present",
+                    );
+                }
+                if provenance.endpoint_id.trim().is_empty()
+                    || provenance.adapter_id.trim().is_empty()
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "compaction endpoint provenance identity is empty",
+                    );
+                }
+                self.compaction_endpoint_provenance
+                    .insert(provenance.compaction_request_id, provenance.clone());
+                Ok(())
+            }
             SessionFactPayload::CompactionResponseAttemptFailed(failure) => {
                 let Some(CompactionRequestState::Open { preparation }) =
                     self.compaction_requests.get(&failure.compaction_request_id)
@@ -3416,6 +3545,19 @@ impl SessionAuthorityState {
                     return self.transition_error(
                         fact.sequence,
                         "compaction response failure identity is invalid",
+                    );
+                }
+                if matches!(
+                    &preparation.route,
+                    CompactionRoute::SessionIdle { route_policy, .. }
+                        if route_policy == "admitted_manifest_endpoint_v1"
+                ) && !self
+                    .compaction_endpoint_provenance
+                    .contains_key(&failure.compaction_request_id)
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "manifest compaction failure is missing endpoint provenance",
                     );
                 }
                 validate_reason_code(&failure.reason_code)
@@ -3446,6 +3588,19 @@ impl SessionAuthorityState {
                     .compaction_attempt_failures
                     .get(&summary.compaction_request_id)
                     .map_or(0, BTreeMap::len);
+                if matches!(
+                    &preparation.route,
+                    CompactionRoute::SessionIdle { route_policy, .. }
+                        if route_policy == "admitted_manifest_endpoint_v1"
+                ) && !self
+                    .compaction_endpoint_provenance
+                    .contains_key(&summary.compaction_request_id)
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "manifest compaction summary is missing endpoint provenance",
+                    );
+                }
                 if preparation.compaction_id != summary.compaction_id
                     || usize::try_from(summary.response_attempt_ordinal).ok() != Some(next_attempt)
                     || self
@@ -3534,6 +3689,19 @@ impl SessionAuthorityState {
                     return self.transition_error(
                         fact.sequence,
                         "compaction request closure attempt is invalid",
+                    );
+                }
+                if matches!(
+                    &preparation.route,
+                    CompactionRoute::SessionIdle { route_policy, .. }
+                        if route_policy == "admitted_manifest_endpoint_v1"
+                ) && !self
+                    .compaction_endpoint_provenance
+                    .contains_key(&closure.compaction_request_id)
+                {
+                    return self.transition_error(
+                        fact.sequence,
+                        "manifest compaction closure is missing endpoint provenance",
                     );
                 }
                 validate_reason_code(&closure.reason_code)
@@ -4779,6 +4947,24 @@ impl SessionAuthorityHandle {
         self.lock().record_route_lease(recorded_at, lease)
     }
 
+    pub(crate) fn record_route_endpoint_provenance(
+        &self,
+        recorded_at: &str,
+        provenance: RouteEndpointProvenanceRecorded,
+    ) -> Result<bool> {
+        self.lock()
+            .record_route_endpoint_provenance(recorded_at, provenance)
+    }
+
+    pub(crate) fn record_compaction_endpoint_provenance(
+        &self,
+        recorded_at: &str,
+        provenance: CompactionEndpointProvenanceRecorded,
+    ) -> Result<bool> {
+        self.lock()
+            .record_compaction_endpoint_provenance(recorded_at, provenance)
+    }
+
     pub(crate) fn start_step(
         &self,
         command_id: Uuid,
@@ -5376,6 +5562,30 @@ impl SessionAuthority {
             lease.lease_id,
             recorded_at,
             SessionFactPayload::RouteLeaseRecorded(lease),
+        )
+    }
+
+    pub(crate) fn record_route_endpoint_provenance(
+        &mut self,
+        recorded_at: &str,
+        provenance: RouteEndpointProvenanceRecorded,
+    ) -> Result<bool> {
+        self.append(
+            Uuid::new_v4(),
+            recorded_at,
+            SessionFactPayload::RouteEndpointProvenanceRecorded(provenance),
+        )
+    }
+
+    pub(crate) fn record_compaction_endpoint_provenance(
+        &mut self,
+        recorded_at: &str,
+        provenance: CompactionEndpointProvenanceRecorded,
+    ) -> Result<bool> {
+        self.append(
+            Uuid::new_v4(),
+            recorded_at,
+            SessionFactPayload::CompactionEndpointProvenanceRecorded(provenance),
         )
     }
 
@@ -7330,6 +7540,48 @@ mod tests {
         assert_eq!(
             decoded.payload,
             SessionFactPayload::RouteLeaseRecorded(lease)
+        );
+    }
+
+    #[test]
+    fn endpoint_provenance_rejects_non_manifest_route_lease() {
+        let session_id = "route-session";
+        let stream_id = Uuid::new_v4();
+        let prompt_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let lease = route_lease(turn_id);
+        let lease_id = lease.lease_id;
+
+        let error = reconstruct(&[
+            created(session_id, stream_id),
+            admitted(session_id, stream_id, 2, prompt_id, "route me"),
+            started(session_id, stream_id, 3, prompt_id, turn_id),
+            fact(
+                session_id,
+                stream_id,
+                4,
+                SessionFactPayload::RouteLeaseRecorded(lease),
+            ),
+            fact(
+                session_id,
+                stream_id,
+                5,
+                SessionFactPayload::RouteEndpointProvenanceRecorded(
+                    RouteEndpointProvenanceRecorded {
+                        lease_id,
+                        endpoint_id: "private-endpoint".into(),
+                        adapter_id: "chat-completions".into(),
+                        inventory_generation: 42,
+                    },
+                ),
+            ),
+        ])
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires a manifest route lease")
         );
     }
 

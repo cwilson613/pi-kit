@@ -113,6 +113,9 @@ pub fn control_request_from_slash(
             ControlRequest::PermissionTrustRemove { path: path.clone() }
         }
         crate::runtime_commands::CanonicalSlashCommand::StatusView => ControlRequest::StatusView,
+        crate::runtime_commands::CanonicalSlashCommand::RuntimeDoctor => {
+            ControlRequest::RuntimeDoctor
+        }
         crate::runtime_commands::CanonicalSlashCommand::SetRuntimeMode { slim } => {
             ControlRequest::SetRuntimeMode { slim: *slim }
         }
@@ -121,6 +124,9 @@ pub fn control_request_from_slash(
         }
         crate::runtime_commands::CanonicalSlashCommand::RuntimeSubstrateRefresh => {
             ControlRequest::RuntimeSubstrateRefresh
+        }
+        crate::runtime_commands::CanonicalSlashCommand::RuntimeExtensionReplace(name) => {
+            ControlRequest::RuntimeExtensionReplace { name: name.clone() }
         }
         crate::runtime_commands::CanonicalSlashCommand::WorkspaceStatusView => {
             ControlRequest::WorkspaceStatusView
@@ -508,6 +514,8 @@ pub struct HarnessControlContext<'a> {
     pub cwd: &'a Path,
     pub dashboard_handles: &'a crate::runtime_state::RuntimeStateHandles,
     pub route_controller: Option<Arc<crate::route::RouteController>>,
+    pub dynamic_contribution_control:
+        Option<&'a crate::contribution_lifecycle::DynamicContributionControl>,
 }
 
 pub enum ActiveHarnessCommandResult {
@@ -676,6 +684,10 @@ pub async fn execute_harness_control(
         ControlRequest::SetThinking { level } => {
             set_thinking_response(ctx.shared_settings, ctx.cwd, *level).await
         }
+        ControlRequest::RuntimeDoctor => runtime_doctor_response(ctx.dynamic_contribution_control),
+        ControlRequest::RuntimeExtensionReplace { name } => {
+            runtime_extension_replace_response(ctx.dynamic_contribution_control, name).await
+        }
         ControlRequest::ClearModelOverride => {
             let controller = ctx.route_controller.as_ref()?;
             let snapshot = controller.clear_exact_model_override().await;
@@ -699,6 +711,85 @@ pub async fn execute_harness_control(
     })
 }
 
+pub(crate) fn runtime_doctor_response(
+    control: Option<&crate::contribution_lifecycle::DynamicContributionControl>,
+) -> SlashCommandResponse {
+    let Some(control) = control else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("Runtime diagnostics are unavailable on this surface.".into()),
+        };
+    };
+    let health = control.extension_health();
+    if health.is_empty() {
+        return SlashCommandResponse {
+            accepted: true,
+            output: Some("Runtime doctor: no published extension processes.".into()),
+        };
+    }
+
+    let mut lines = vec!["Runtime doctor".to_string()];
+    for extension in health {
+        let pid = extension
+            .pid
+            .map(|pid| format!(" (pid {pid})"))
+            .unwrap_or_default();
+        match extension.state {
+            crate::extensions::ExtensionProcessState::Healthy => {
+                lines.push(format!("- {}: healthy{pid}", extension.name));
+            }
+            crate::extensions::ExtensionProcessState::Replacing => {
+                lines.push(format!(
+                    "- {}: replacement in progress{pid}",
+                    extension.name
+                ));
+            }
+            crate::extensions::ExtensionProcessState::ShuttingDown => {
+                lines.push(format!("- {}: shutting down{pid}", extension.name));
+            }
+            crate::extensions::ExtensionProcessState::Unavailable => {
+                let detail = extension
+                    .detail
+                    .as_deref()
+                    .map(|detail| format!(": {detail}"))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "- {}: unavailable{detail}. Recommended: `/runtime replace {}`",
+                    extension.name, extension.name
+                ));
+            }
+        }
+    }
+    SlashCommandResponse {
+        accepted: true,
+        output: Some(lines.join("\n")),
+    }
+}
+
+pub(crate) async fn runtime_extension_replace_response(
+    control: Option<&crate::contribution_lifecycle::DynamicContributionControl>,
+    name: &str,
+) -> SlashCommandResponse {
+    let Some(control) = control else {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some("Runtime replacement is unavailable on this surface.".into()),
+        };
+    };
+    match control.replace_extension(name).await {
+        Ok(pid) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!(
+                "Replaced extension `{name}` from its admitted snapshot (pid {pid})."
+            )),
+        },
+        Err(error) => SlashCommandResponse {
+            accepted: false,
+            output: Some(format!("Could not replace extension `{name}`: {error}")),
+        },
+    }
+}
+
 pub async fn execute_control(
     ctx: &mut ControlContext<'_>,
     request: ControlRequest,
@@ -711,6 +802,7 @@ pub async fn execute_control(
             cwd: &ctx.agent.cwd,
             dashboard_handles: &ctx.agent.dashboard_handles,
             route_controller: ctx.route_controller.clone(),
+            dynamic_contribution_control: Some(&ctx.agent.dynamic_contribution_control),
         },
         &request,
     )
@@ -721,12 +813,14 @@ pub async fn execute_control(
 
     match request {
         ControlRequest::SetModel { requested_model } => {
+            let inventory = ctx.runtime_state.inference_runtime.snapshot().await;
             set_model_response(
                 ctx.agent,
                 ctx.shared_settings,
                 ctx.bridge,
                 ctx.route_controller.clone(),
                 &requested_model,
+                &inventory,
             )
             .await
         }
@@ -983,9 +1077,13 @@ pub async fn execute_control(
                 ctx.bridge,
                 ctx.login_prompt_tx,
                 ctx.events_tx,
-                ctx.cli,
-                &ctx.agent.cwd,
                 &provider,
+                AuthLoginRouteContext {
+                    cwd: &ctx.agent.cwd,
+                    fallback_model: ctx.cli.model,
+                    inference_runtime: &ctx.runtime_state.inference_runtime,
+                    secrets: &ctx.agent.secrets,
+                },
             )
             .await
         }
@@ -1401,6 +1499,7 @@ pub async fn set_model_response(
     bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
     route_controller: Option<Arc<crate::route::RouteController>>,
     requested_model: &str,
+    inventory: &crate::inference_inventory::InventorySnapshot,
 ) -> SlashCommandResponse {
     let intent_policy = if let Some(controller) = route_controller.as_ref() {
         controller.snapshot().await.intent.to_provider_policy()
@@ -1427,8 +1526,23 @@ pub async fn set_model_response(
         .unwrap_or_else(|| (String::new(), String::new()));
     let new_provider = crate::providers::infer_provider_id(&effective_model);
     if let Some(controller) = route_controller {
+        if let Err(rejection) =
+            crate::provider_route_service::admit_exact_route(inventory, &effective_model, &[])
+        {
+            return SlashCommandResponse {
+                accepted: false,
+                output: Some(format!(
+                    "Model switch to {effective_model} refused by active inventory: {rejection}"
+                )),
+            };
+        }
         let new_bridge = crate::session_execution::boot_execution_binding()
-            .resolve_exact_provider_route(&effective_model, None)
+            .resolve_exact_admitted_provider_route(
+                &effective_model,
+                Some(agent.secrets.as_ref()),
+                inventory,
+                &[],
+            )
             .await
             .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge);
         let snapshot = match controller
@@ -3047,14 +3161,20 @@ pub async fn auth_unlock_response() -> SlashCommandResponse {
     }
 }
 
+pub struct AuthLoginRouteContext<'a> {
+    pub cwd: &'a Path,
+    pub fallback_model: &'a str,
+    pub inference_runtime: &'a crate::inference_runtime::InferenceRuntimeState,
+    pub secrets: &'a std::sync::Arc<omegon_secrets::SecretsManager>,
+}
+
 pub async fn auth_login_response(
     shared_settings: &settings::SharedSettings,
     bridge: &Arc<tokio::sync::RwLock<Box<dyn LlmBridge>>>,
     login_prompt_tx: &std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
     events_tx: &broadcast::Sender<AgentEvent>,
-    cli: &CliRuntimeView<'_>,
-    cwd: &Path,
     provider: &str,
+    route_context: AuthLoginRouteContext<'_>,
 ) -> SlashCommandResponse {
     let provider = provider.trim();
     let provider = if provider.is_empty() {
@@ -3087,9 +3207,11 @@ pub async fn auth_login_response(
         .lock()
         .ok()
         .map(|s| s.model.clone())
-        .unwrap_or_else(|| cli.model.to_string());
-    let cwd_for_profile = cwd.to_path_buf();
+        .unwrap_or_else(|| route_context.fallback_model.to_string());
+    let cwd_for_profile = route_context.cwd.to_path_buf();
     let settings_for_login = shared_settings.clone();
+    let inference_runtime = route_context.inference_runtime.clone();
+    let secrets = route_context.secrets.clone();
     tokio::spawn(async move {
         let progress: auth::LoginProgress = Box::new(move |msg| {
             let _ = progress_tx.send(AgentEvent::SystemNotification {
@@ -3176,8 +3298,14 @@ pub async fn auth_login_response(
             let login_provider_model = providers::default_model_for_provider(&provider_clone)
                 .unwrap_or(model_for_redetect.clone());
             let effective_model = login_provider_model;
+            let inventory = inference_runtime.snapshot().await;
             if let Some(new_bridge) = crate::session_execution::boot_execution_binding()
-                .resolve_exact_provider_route(&effective_model, None)
+                .resolve_exact_admitted_provider_route(
+                    &effective_model,
+                    Some(secrets.as_ref()),
+                    &inventory,
+                    &[],
+                )
                 .await
                 .map(crate::provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
             {
@@ -3640,8 +3768,12 @@ async fn apply_profile_model_intent(
 
     let mut inventory = crate::routing::ProviderInventory::probe();
     inventory.probe_ollama().await;
-    let candidate = crate::route::select_candidate_for_intent(&intent, &inventory)
-        .ok_or_else(|| anyhow::anyhow!("no provider candidate satisfies {}", intent.summary()))?;
+    let candidate = crate::route::select_candidate_for_intent_with_provider_order(
+        &intent,
+        &inventory,
+        &profile.provider_order,
+    )
+    .ok_or_else(|| anyhow::anyhow!("no provider candidate satisfies {}", intent.summary()))?;
     let target = format!("{}:{}", candidate.provider_id, candidate.model_id);
     let bridge = providers::auto_detect_bridge(&target)
         .await
@@ -5560,6 +5692,7 @@ mod tests {
             cwd: temp.path(),
             dashboard_handles: &handles,
             route_controller: None,
+            dynamic_contribution_control: None,
         };
         let (events_tx, _) = broadcast::channel(8);
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -5594,6 +5727,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_doctor_is_read_only_and_unknown_replacement_is_rejected() {
+        let control = crate::contribution_lifecycle::DynamicContributionControl::default();
+        let diagnosis = runtime_doctor_response(Some(&control));
+        assert!(diagnosis.accepted);
+        assert_eq!(
+            diagnosis.output.as_deref(),
+            Some("Runtime doctor: no published extension processes.")
+        );
+
+        let replacement =
+            runtime_extension_replace_response(Some(&control), "missing-extension").await;
+        assert!(!replacement.accepted);
+        assert!(
+            replacement
+                .output
+                .is_some_and(|output| output.contains("not published in this runtime"))
+        );
+    }
+
+    #[tokio::test]
     async fn active_harness_preserves_non_tui_control_surface_on_handoff() {
         let temp = tempfile::tempdir().unwrap();
         let settings = std::sync::Arc::new(std::sync::Mutex::new(settings::Settings::default()));
@@ -5606,6 +5759,7 @@ mod tests {
             cwd: temp.path(),
             dashboard_handles: &handles,
             route_controller: None,
+            dynamic_contribution_control: None,
         };
         let (events_tx, _) = broadcast::channel(8);
 
@@ -5672,6 +5826,7 @@ mod tests {
             cwd: temp.path(),
             dashboard_handles: &handles,
             route_controller: None,
+            dynamic_contribution_control: None,
         };
         let (events_tx, _) = broadcast::channel(8);
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -5719,6 +5874,7 @@ mod tests {
             cwd: temp.path(),
             dashboard_handles: &handles,
             route_controller: None,
+            dynamic_contribution_control: None,
         };
         let (events_tx, _) = broadcast::channel(8);
         let result = execute_active_harness_command(
@@ -6393,6 +6549,7 @@ mod context_compaction_tests {
             },
             runtime_generation: 1,
             git_binding: Default::default(),
+            dynamic_contribution_control: Default::default(),
         }
     }
 

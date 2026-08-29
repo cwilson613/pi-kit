@@ -37,9 +37,12 @@ def load_policy(path: Path = POLICY) -> dict:
         if not isinstance(profile.get("absent_optional"), list):
             raise ValueError(f"{name}: absent_optional inventory is required")
         if name != "maintenance" and (
-            not profile.get("runtime_mode") or not profile.get("surfaces")
+            profile.get("artifact_profile") != "full-product"
+            or profile.get("canonical_entrypoint") != ["omegon"]
+            or not profile.get("runtime_mode")
+            or not profile.get("surfaces")
         ):
-            raise ValueError(f"{name}: runtime mode and surfaces are required")
+            raise ValueError(f"{name}: full-product identity, runtime mode, and surfaces are required")
     return policy
 
 
@@ -71,6 +74,10 @@ def validate_profile(payload: dict, profile: str, row: dict) -> None:
         return
     if payload.get("schema_version") != 1 or payload.get("profile") != profile:
         raise ValueError(f"{profile}: inspection identity is invalid")
+    if payload.get("artifact_profile") != row["artifact_profile"]:
+        raise ValueError(f"{profile}: artifact profile does not match the matrix")
+    if payload.get("canonical_entrypoint") != row["canonical_entrypoint"]:
+        raise ValueError(f"{profile}: canonical entrypoint does not match the matrix")
     if payload.get("runtime_mode") != row["runtime_mode"]:
         raise ValueError(f"{profile}: runtime mode does not match the matrix")
     if payload.get("surfaces") != row["surfaces"]:

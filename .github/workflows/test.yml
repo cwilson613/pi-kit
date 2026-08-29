@@ -13,13 +13,54 @@ jobs:
   rust-build:
     name: Rust build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Build omegon binary
         run: cargo build -p omegon
+      - name: Check shrinking Omegon composition
+        run: |
+          cargo check -p omegon --locked --no-default-features
+          python3 scripts/check_headless_dependency_boundary.py
+      - name: Check task capsule feature boundary
+        run: |
+          cargo check -p omegon --locked --no-default-features --features task-capsule
+          cargo clippy -p omegon --bin omegon --locked --no-default-features --features task-capsule -- -D warnings
+          python3 scripts/check_task_capsule_dependency_boundary.py
+          python3 -m unittest tests/test_task_capsule_dependency_boundary.py
+      - name: Reject unsupported task capsule feature combinations
+        run: |
+          set +e
+          output=$(cargo check -p omegon --locked --no-default-features \
+            --features task-capsule,tui,self-update,local-embeddings 2>&1)
+          status=$?
+          set -e
+          test "$status" -ne 0
+          for message in \
+            "without the tui feature" \
+            "without the self-update feature" \
+            "without the local-embeddings feature"; do
+            case "$output" in
+              *"$message"*) ;;
+              *) printf '%s\n' "$output"; exit 1 ;;
+            esac
+          done
+      - name: Test task capsule contracts
+        run: |
+          for filter in \
+            tests::task_capsule_composition_profile_is_accepted_by_the_cli \
+            runtime_composition::tests::task_capsule_identity_is_compile_derived_and_bounded \
+            update::tests::disabled_self_update_fails_before_processing_release_metadata; do
+            cargo test -p omegon --bin omegon --locked --no-default-features \
+              --features task-capsule "$filter" -- --exact
+          done
+      - name: Build and exercise task capsule release binary
+        run: |
+          CARGO_TARGET_DIR=target/task-capsule cargo build -p omegon --release --locked \
+            --no-default-features --features task-capsule
+          python3 scripts/check_task_capsule_runtime.py target/task-capsule/release/omegon
 
   rust-unit:
     name: Rust unit tests
@@ -164,11 +205,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run codescan domain tests
-        run: cargo test -p omegon-codescan --locked
-      - name: Run managed codescan lifecycle tests serially
+        run: |
+          cargo test -p omegon-codescan-contracts --locked
+          cargo test -p omegon-codescan --locked
+      - name: Run native codescan extension tests
+        run: cargo test --manifest-path extensions/omegon-codescan/Cargo.toml --locked
+      - name: Run host codescan adapter tests
         env:
           OMEGON_NERD_FONT: "1"
-        run: "cargo test -p omegon --bin omegon codescan_service::tests:: --locked -- --test-threads=1 --nocapture"
+        run: |
+          cargo test -p omegon --bin omegon codescan_service::tests:: --locked --no-default-features -- --test-threads=1 --nocapture
+          cargo test -p omegon --bin omegon tools::codebase_search::tests:: --locked --no-default-features -- --test-threads=1 --nocapture
 
   rust-standalone-crates:
     name: Standalone crate tests

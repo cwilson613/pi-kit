@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "core/crates/omegon",
+    "core/crates/omegon-codescan",
+    "core/crates/omegon-codescan-contracts",
     "core/crates/omegon-git",
     "core/crates/omegon-memory",
     "core/crates/omegon-maintenance-contracts",

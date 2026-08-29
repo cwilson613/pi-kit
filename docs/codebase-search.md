@@ -23,12 +23,13 @@ related = ["lsp-integration"]
 ## Overview
 
 The `codebase_search` tool uses tree-sitter and language-specific fallback scanners to create
-structural code chunks. It also indexes project knowledge files. An in-process BM25 index ranks
-concept queries such as "find code about packet fragmentation."
+structural code chunks. It also indexes project knowledge files. A release-coupled native
+extension owns the SQLite cache and BM25 index that rank concept queries such as
+"find code about packet fragmentation."
 
 The tool accepts `query`, `scope`, `max_results`, optional knowledge `tags`, and an optional
 repository-relative `within` prefix. `codebase_index(invalidate)` runs an incremental or full
-index operation. The tools remain declared if the optional managed codescan service cannot start;
+index operation. The tools remain declared if the codescan extension is absent or cannot start;
 calls then return typed unavailable details.
 
 Inspired by ATLAS's PageIndex component (itigges22/ATLAS), which replaced Qdrant vector RAG with
@@ -99,23 +100,27 @@ rolls back to the prior complete index.
 
 ```
 core/crates/omegon-codescan/          Scanners, SQLite cache, indexer, and BM25
+core/crates/omegon-codescan-contracts/
+                                     Versioned request, response, status, and error protocol
+extensions/omegon-codescan/           Native RPC process and serial engine worker
 core/crates/omegon/src/codescan_service.rs
-                                     Managed worker and service contract
+                                     Host binding to the admitted extension handle
 core/crates/omegon/src/tools/codebase_search.rs
                                      Tool validation and result rendering
 ```
 
-One boot-owned serial worker exclusively owns SQLite, scanning, Git HEAD freshness checks, and
-BM25 construction. `codebase_search`, `codebase_index`, and code-context requests use one
-boot-captured managed handle. They do not open the database directly. Managed shutdown drains
-active calls, joins the worker, and then settles the SQLite writer.
+One extension-owned serial worker exclusively owns SQLite, scanning, Git HEAD freshness checks,
+and BM25 construction. `codebase_search`, `codebase_index`, and code-context requests use one
+boot-captured extension RPC handle. The host does not link the engine or open the database.
+Cancellation uses the JSON-RPC request identity. Graceful shutdown cancels active work and joins
+the worker. The host supervisor kills and reaps a non-cooperative process group.
 
 ## Decisions
 
 ### Decision: Two-index SQLite cache (.omegon/codescan.db) with tree-sitter code scanner and markdown/JSON knowledge scanner
 
 **Status:** decided
-**Rationale:** The cache is separate from `facts.db` because it uses file-content invalidation rather than fact decay. The code index uses tree-sitter declaration boundaries with language-specific fallbacks. The knowledge index scans supported project documentation and JSON sources. A HEAD-based fast path skips the file walk when the commit and relevant worktree state are unchanged. Each request performs freshness work on the managed worker; no detached refresh task owns the database.
+**Rationale:** The cache is separate from `facts.db` because it uses file-content invalidation rather than fact decay. The code index uses tree-sitter declaration boundaries with language-specific fallbacks. The knowledge index scans supported project documentation and JSON sources. A HEAD-based fast path skips the file walk when the commit and relevant worktree state are unchanged. Each request performs freshness work on the extension worker; no detached refresh task owns the database.
 
 ## Open Questions
 

@@ -5,6 +5,32 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
 
+#[cfg(unix)]
+pub(crate) fn configure_child_process_group(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+pub(crate) fn configure_child_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+pub(crate) fn kill_child_process_group(pid: Option<u32>) {
+    let Some(pid) = pid
+        .and_then(|pid| i32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+    else {
+        return;
+    };
+    // SAFETY: child agents are spawned as leaders of dedicated process groups.
+    // ESRCH only means the group exited before cancellation reached it.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn kill_child_process_group(_pid: Option<u32>) {}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildAgentRuntimeProfile {
@@ -462,6 +488,7 @@ pub fn spawn_headless_child_agent(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    configure_child_process_group(&mut child);
     for (key, value) in &config.inherited_env {
         child.env(key, value);
     }

@@ -1256,6 +1256,31 @@ async fn worker_loop(
                     let _ = response_tx.send(response);
                     continue;
                 }
+                let dynamic_control = dynamic_contributions.control();
+                let dynamic_response = match &request {
+                    crate::operator_commands::InterfaceControlRequest::RuntimeDoctor => Some(
+                        crate::control_runtime::runtime_doctor_response(Some(&dynamic_control)),
+                    ),
+                    crate::operator_commands::InterfaceControlRequest::RuntimeExtensionReplace {
+                        name,
+                    } => Some(
+                        crate::control_runtime::runtime_extension_replace_response(
+                            Some(&dynamic_control),
+                            name,
+                        )
+                        .await,
+                    ),
+                    _ => None,
+                };
+                if let Some(response) = dynamic_response {
+                    let _ = response_tx.send(WorkerResponse {
+                        text: response.output.unwrap_or_default(),
+                        error: (!response.accepted)
+                            .then(|| "runtime contribution control failed".into()),
+                        cancelled: false,
+                    });
+                    continue;
+                }
                 let handles = crate::runtime_state::RuntimeStateHandles::default();
                 let text = crate::control_runtime::execute_stateless_control(
                     &request,

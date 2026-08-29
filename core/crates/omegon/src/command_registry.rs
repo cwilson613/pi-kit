@@ -664,6 +664,16 @@ pub(crate) const BUILTIN_COMMANDS: &[BuiltinCommandSpec] = &[
         "show harness status (providers, MCP, secrets, routing)",
         &[],
     ),
+    BuiltinCommandSpec::cli_acp_read_only(
+        "doctor",
+        "diagnose runtime contribution health and recommend repairs",
+        &[],
+    ),
+    BuiltinCommandSpec::cli_acp_state_changing(
+        "runtime",
+        "inspect runtime contributions or replace one admitted extension process",
+        &["status", "inventory", "doctor", "replace <extension>"],
+    ),
     BuiltinCommandSpec::cli_read_only(
         "tree",
         "show design tree summary",
@@ -747,6 +757,32 @@ mod tests {
                 command.name
             );
         }
+    }
+
+    #[test]
+    fn doctor_and_runtime_are_shared_discoverable_commands() {
+        let definitions = builtin_command_definitions();
+        let doctor = definitions
+            .iter()
+            .find(|definition| definition.name == "doctor")
+            .expect("/doctor definition");
+        assert!(doctor.availability.tui && doctor.availability.cli && doctor.availability.acp);
+        assert_eq!(
+            doctor.safety.class,
+            omegon_traits::CommandSafetyClass::ReadOnly
+        );
+
+        let runtime = definitions
+            .iter()
+            .find(|definition| definition.name == "runtime")
+            .expect("/runtime definition");
+        assert!(runtime.availability.tui && runtime.availability.cli && runtime.availability.acp);
+        assert!(
+            runtime
+                .subcommands
+                .iter()
+                .any(|subcommand| subcommand == "replace <extension>")
+        );
     }
 
     #[test]

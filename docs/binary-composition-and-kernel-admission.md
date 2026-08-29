@@ -10,7 +10,18 @@ Measured on branch `refactor/minimal-default-binary` on 2026-08-14.
 | Local debug artifact | 236 MiB | not measured separately |
 | Local release artifact | 39 MiB | not measured separately |
 
-The TUI feature accounts for 158 additional unique dependency-tree lines. This is a useful compatibility boundary, but it is not yet a product boundary: the headless artifact still admits the provider stack, control plane, lifecycle engines, web server, plugin/skill management, archive/signature support, and other optional operational domains.
+The table records the historical TUI-only split. The current host keeps `tui` as
+an additive feature and removes the codescan engine from every Omegon feature
+graph. The host retains lightweight, versioned codescan contracts and a typed
+unavailable adapter. SQLite, tree-sitter scanners, indexing, and BM25 run in the
+separately built `omegon-codescan` native extension.
+
+This is a codescan artifact boundary and a useful shrinking source and CI
+boundary. It is not yet a minimal product boundary because the host still admits the provider stack,
+control plane, lifecycle engines, web server, plugin/skill management,
+archive/signature support, and other optional operational domains. Run
+`just check-omegon-matrix` and `just check-omegon-headless-deps` when changing
+feature or dependency topology.
 
 The original assessment found approximately 332 KiB of compile-time source content:
 

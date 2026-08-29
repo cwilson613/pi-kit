@@ -30,7 +30,12 @@ from pathlib import Path
 
 VERSION_RE = re.compile(r'^version = "([^"]+)"', re.MULTILINE)
 RELEASE_BRANCH_RE = re.compile(r"^release/(?P<major>\d+)\.(?P<minor>\d+)$")
-VERSION_STATE_PATHS = ("Cargo.toml", "Cargo.lock", ".omegon/milestones.json")
+VERSION_STATE_PATHS = (
+    "Cargo.toml",
+    "Cargo.lock",
+    "extensions/omegon-codescan/Cargo.lock",
+    ".omegon/milestones.json",
+)
 
 
 class ReleaseBranchError(Exception):
@@ -183,6 +188,7 @@ def create_branch(repo_root: Path) -> None:
     print(f"  git switch main")
     print(f"  # set Cargo.toml version = \"{next_trunk_version(version)}\"")
     print(f"  cargo check --offline   # refresh Cargo.lock")
+    print("  cargo check --offline --manifest-path extensions/omegon-codescan/Cargo.toml")
     print(f"  git commit -am 'chore(release): open {next_trunk_version(version)} on trunk'")
 
 

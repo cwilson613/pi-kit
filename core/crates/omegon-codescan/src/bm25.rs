@@ -4,49 +4,7 @@ use std::collections::HashMap;
 
 use crate::code::CodeChunk;
 use crate::knowledge::KnowledgeChunk;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SearchScope {
-    All,
-    Code,
-    Knowledge,
-}
-
-impl SearchScope {
-    pub fn parse(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "code" => Self::Code,
-            "knowledge" | "docs" => Self::Knowledge,
-            _ => Self::All,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ChunkType {
-    Code,
-    Knowledge,
-}
-
-impl ChunkType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ChunkType::Code => "code",
-            ChunkType::Knowledge => "knowledge",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SearchChunk {
-    pub file: String,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub chunk_type: ChunkType,
-    pub score: f64,
-    pub preview: String,
-    pub label: String,
-}
+pub use omegon_codescan_contracts::{ChunkType, SearchChunk, SearchScope};
 
 pub struct BM25Index {
     code_docs: Vec<(CodeChunk, Vec<String>)>,

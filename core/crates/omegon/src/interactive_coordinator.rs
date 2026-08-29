@@ -178,6 +178,8 @@ pub(crate) struct InteractiveAgentHost {
     pub(crate) workspace_state: setup::WorkspaceStartupState,
     pub(crate) runtime_generation: u64,
     pub(crate) git_binding: crate::git_service::GitBinding,
+    pub(crate) dynamic_contribution_control:
+        crate::contribution_lifecycle::DynamicContributionControl,
 }
 
 pub(crate) struct CliRuntimeView<'a> {
@@ -211,6 +213,7 @@ fn split_interactive_agent(
         workspace_state: agent.workspace_state,
         runtime_generation: 1,
         git_binding: agent.git_binding,
+        dynamic_contribution_control: agent.dynamic_contribution_control,
     };
     let state = InteractiveAgentState {
         bus: agent.bus,

@@ -381,6 +381,7 @@ async fn download_to_path(client: &reqwest::Client, url: &str, path: &Path) -> a
 /// base64-encoded (sigstore/cosign#2059). Older releases shipped the raw PEM
 /// text. Accept either: if the content doesn't begin with a PEM boundary,
 /// attempt one base64 decode and require the result to be PEM.
+#[cfg(feature = "self-update")]
 fn normalize_certificate_pem(content: &str) -> anyhow::Result<String> {
     use base64::Engine;
 
@@ -404,6 +405,7 @@ fn normalize_certificate_pem(content: &str) -> anyhow::Result<String> {
     Ok(decoded)
 }
 
+#[cfg(feature = "self-update")]
 fn verify_archive_signature(
     archive_path: &Path,
     sig_path: &Path,
@@ -425,6 +427,7 @@ fn verify_archive_signature(
     Ok(())
 }
 
+#[cfg(feature = "self-update")]
 fn verify_certificate_identity(cert_pem: &str) -> anyhow::Result<()> {
     use x509_parser::extensions::GeneralName;
     use x509_parser::pem::parse_x509_pem;
@@ -743,6 +746,50 @@ fn extract_release_pair(
     Ok(())
 }
 
+fn extract_release_assets(archive_path: &Path, generation: &Path) -> anyhow::Result<()> {
+    let file = std::fs::File::open(archive_path)?;
+    let gz = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(gz);
+    let codescan_manifest = Path::new("share/omegon/extensions/omegon-codescan/manifest.toml");
+    let codescan_binary =
+        Path::new("share/omegon/extensions/omegon-codescan/target/release/omegon-codescan");
+    let content_manifest = Path::new("share/omegon/content-packs/omegon-shipped/content-pack.toml");
+    let mut extracted = std::collections::HashSet::new();
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let allowed = path == Path::new("omegon.composition-lock.json")
+            || path == Path::new("omegon-maintain.composition-lock.json")
+            || path.starts_with("share/omegon/content-packs/omegon-shipped")
+            || path == codescan_manifest
+            || path == codescan_binary;
+        if !allowed {
+            continue;
+        }
+        if !entry.header().entry_type().is_file() || !extracted.insert(path.clone()) {
+            anyhow::bail!("Downloaded archive contains an invalid release asset");
+        }
+        let destination = generation.join(&path);
+        let parent = destination
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("release asset has no parent"))?;
+        std::fs::create_dir_all(parent)?;
+        let mut output = std::fs::File::create(destination)?;
+        std::io::copy(&mut entry, &mut output)?;
+    }
+
+    for required in [content_manifest, codescan_manifest, codescan_binary] {
+        if !extracted.contains(required) {
+            anyhow::bail!(
+                "Downloaded archive did not contain release asset {}",
+                required.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn validate_release_pair(
     omegon_path: &Path,
     maintenance_path: &Path,
@@ -784,6 +831,20 @@ async fn validate_release_pair(
 /// Download, verify, and replace the current binary, then exec() into it.
 /// Returns the path to the new binary on success (caller does the exec).
 pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> {
+    #[cfg(not(feature = "self-update"))]
+    {
+        let _ = info;
+        anyhow::bail!("self-update support was not compiled into this artifact");
+    }
+
+    #[cfg(feature = "self-update")]
+    {
+        download_and_replace_enabled(info).await
+    }
+}
+
+#[cfg(feature = "self-update")]
+async fn download_and_replace_enabled(info: &UpdateInfo) -> anyhow::Result<PathBuf> {
     if info.download_url.is_empty() {
         anyhow::bail!("No download URL for this platform");
     }
@@ -850,12 +911,14 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
     let archive_path_clone = archive_path.clone();
     let tmp_path_clone = tmp_path.clone();
     let maintenance_tmp_path_clone = maintenance_tmp_path.clone();
+    let candidate_dir_clone = candidate_dir.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         extract_release_pair(
             &archive_path_clone,
             &tmp_path_clone,
             &maintenance_tmp_path_clone,
-        )
+        )?;
+        extract_release_assets(&archive_path_clone, &candidate_dir_clone)
     })
     .await??;
 
@@ -866,6 +929,12 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
         tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).await?;
         tokio::fs::set_permissions(
             &maintenance_tmp_path,
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .await?;
+        tokio::fs::set_permissions(
+            candidate_dir
+                .join("share/omegon/extensions/omegon-codescan/target/release/omegon-codescan"),
             std::fs::Permissions::from_mode(0o755),
         )
         .await?;
@@ -885,7 +954,9 @@ pub async fn download_and_replace(info: &UpdateInfo) -> anyhow::Result<PathBuf> 
         serde_json::to_string_pretty(&receipt)? + "\n",
     )
     .await?;
+    crate::installed_release::validate_release_coupled_generation(&candidate_dir)?;
     let published = layout.publish_generation(&candidate_dir, &info.latest)?;
+    crate::installed_release::validate_release_coupled_generation(&published)?;
     validate_release_pair(
         &published.join("omegon"),
         &published.join("omegon-maintain"),
@@ -1129,6 +1200,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn certificate_identity_requires_repo_workflow_prefix() {
         let cert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
@@ -1139,6 +1211,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn normalize_certificate_pem_accepts_raw_pem() {
         let pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
@@ -1147,6 +1220,7 @@ mod tests {
         assert!(normalized.ends_with("-----END CERTIFICATE-----"));
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn normalize_certificate_pem_decodes_cosign_output() {
         use base64::Engine;
@@ -1156,6 +1230,7 @@ mod tests {
         assert_eq!(normalized, pem.trim());
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn normalize_certificate_pem_rejects_neither_pem_nor_base64() {
         let err =
@@ -1166,6 +1241,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "self-update")]
     #[test]
     fn normalize_certificate_pem_rejects_base64_without_pem_boundary() {
         use base64::Engine;
@@ -1175,6 +1251,27 @@ mod tests {
         assert!(
             err.to_string().contains("does not contain a PEM boundary"),
             "{err}"
+        );
+    }
+
+    #[cfg(not(feature = "self-update"))]
+    #[tokio::test]
+    async fn disabled_self_update_fails_before_processing_release_metadata() {
+        let info = UpdateInfo {
+            current: "0.0.0".into(),
+            latest: "0.0.1".into(),
+            download_url: "https://example.invalid/release.tar.gz".into(),
+            signature_url: "https://example.invalid/release.tar.gz.sig".into(),
+            certificate_url: "https://example.invalid/release.tar.gz.pem".into(),
+            release_notes: String::new(),
+            is_newer: true,
+        };
+        let error = download_and_replace(&info)
+            .await
+            .expect_err("self-update must be unavailable");
+        assert_eq!(
+            error.to_string(),
+            "self-update support was not compiled into this artifact"
         );
     }
 }

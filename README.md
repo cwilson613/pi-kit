@@ -311,14 +311,17 @@ It can read code, store memory, create lifecycle artifacts, and walk an operator
 core/                       Rust workspace
   crates/
     omegon/                 Main binary — TUI, agent loop, tools, web surface
-    omegon-codescan/        Code scanning helpers
-    omegon-extension/       Extension SDK crate
+    omegon-codescan/        Code and knowledge indexing engine
+    omegon-codescan-contracts/
+                            Portable codescan RPC contracts
     omegon-git/             Git and worktree operations
     omegon-memory/          Project memory runtime
     omegon-opsx/            OpenSpec/lifecycle engine
     omegon-secrets/         Secret resolution and redaction
     omegon-traits/          Shared protocol and event types
     omegon-web/             Web and ACP-adjacent surfaces
+extensions/
+  omegon-codescan/          Release-coupled native codescan process
 site/                       Public docs site
 openspec/                   Spec-driven lifecycle artifacts
 docs/                       Durable architecture and design docs

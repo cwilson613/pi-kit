@@ -694,6 +694,26 @@ impl InventorySnapshot {
             .collect()
     }
 
+    pub fn admit_exact(
+        &self,
+        request: &CompatibilityRequest,
+    ) -> Result<&InferenceOffering, ExactAdmissionRejection> {
+        let exact_id = request
+            .exact_offering
+            .as_ref()
+            .ok_or(ExactAdmissionRejection::ExactOfferingRequired)?;
+        let offering = self
+            .offerings
+            .get(exact_id)
+            .ok_or_else(|| ExactAdmissionRejection::UnknownOffering(exact_id.clone()))?;
+        let rejection_reasons = self.rejection_reasons(offering, request);
+        if rejection_reasons.is_empty() {
+            Ok(offering)
+        } else {
+            Err(ExactAdmissionRejection::Incompatible(rejection_reasons))
+        }
+    }
+
     fn rejection_reasons(
         &self,
         offering: &InferenceOffering,
@@ -947,6 +967,31 @@ pub enum RejectionReason {
     MissingGrade(String),
     GradeBelowMinimum(String),
     NotExactOffering,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExactAdmissionRejection {
+    ExactOfferingRequired,
+    UnknownOffering(OfferingId),
+    Incompatible(Vec<RejectionReason>),
+}
+
+impl std::fmt::Display for ExactAdmissionRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExactOfferingRequired => formatter.write_str("an exact offering is required"),
+            Self::UnknownOffering(offering) => {
+                write!(
+                    formatter,
+                    "offering '{}' is absent from the active inventory",
+                    offering.0
+                )
+            }
+            Self::Incompatible(reasons) => {
+                write!(formatter, "offering is not compatible: {reasons:?}")
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1227,6 +1272,87 @@ mod tests {
             ..Default::default()
         };
         assert!(snapshot.compatible_offerings(&request)[0].is_compatible());
+    }
+
+    #[test]
+    fn exact_admission_rejects_absent_offering() {
+        let snapshot = admission_fixture(InventorySource::Project, EvidenceKind::Declared);
+        let request = CompatibilityRequest {
+            exact_offering: Some(OfferingId("lab:missing".into())),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            snapshot.admit_exact(&request),
+            Err(ExactAdmissionRejection::UnknownOffering(OfferingId(
+                "lab:missing".into()
+            )))
+        );
+    }
+
+    #[test]
+    fn exact_admission_rejects_disabled_offering() {
+        let mut layer = layer_with_offering(InventorySource::Project, Modality::TEXT, false);
+        layer
+            .offerings
+            .get_mut(&OfferingId("lab:model".into()))
+            .unwrap()
+            .enabled = Some(false);
+        let snapshot = InventorySnapshot::build(1, vec![layer]).unwrap();
+        let request = CompatibilityRequest {
+            exact_offering: Some(OfferingId("lab:model".into())),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            snapshot.admit_exact(&request),
+            Err(ExactAdmissionRejection::Incompatible(vec![
+                RejectionReason::Disabled
+            ]))
+        );
+    }
+
+    #[test]
+    fn exact_admission_rejects_tool_deficient_offering() {
+        let snapshot = admission_fixture(InventorySource::Project, EvidenceKind::Declared);
+        let request = CompatibilityRequest {
+            exact_offering: Some(OfferingId("lab:model".into())),
+            required_capabilities: ["tools".to_string()].into(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            snapshot.admit_exact(&request),
+            Err(ExactAdmissionRejection::Incompatible(vec![
+                RejectionReason::MissingCapability("tools".into())
+            ]))
+        );
+    }
+
+    #[test]
+    fn exact_admission_distinguishes_insufficient_capability_evidence() {
+        let mut layer = layer_with_offering(InventorySource::Project, Modality::TEXT, false);
+        layer.evidence = EvidenceKind::Declared;
+        layer
+            .offerings
+            .get_mut(&OfferingId("lab:model".into()))
+            .unwrap()
+            .capabilities
+            .insert("tools".into(), true);
+        let snapshot = InventorySnapshot::build(1, vec![layer]).unwrap();
+        let request = CompatibilityRequest {
+            exact_offering: Some(OfferingId("lab:model".into())),
+            required_capabilities: ["tools".to_string()].into(),
+            minimum_evidence: EvidenceKind::Probed,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            snapshot.admit_exact(&request),
+            Err(ExactAdmissionRejection::Incompatible(vec![
+                RejectionReason::InsufficientEvidence("tools".into())
+            ]))
+        );
     }
 
     #[test]

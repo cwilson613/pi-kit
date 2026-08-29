@@ -53,12 +53,14 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
             return;
         }
         tui::TuiCommand::SetModel { model, respond_to } => {
+            let inventory = inference_runtime.snapshot().await;
             let response = control_runtime::set_model_response(
                 agent,
                 shared_settings,
                 bridge,
                 Some(route_controller.clone()),
                 &model,
+                &inventory,
             )
             .await;
             if response.accepted {
@@ -80,6 +82,7 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
                 refresh_model_intent_route(
                     route_controller,
                     inference_runtime,
+                    shared_settings,
                     bridge_model,
                     events_tx,
                 )
@@ -101,6 +104,7 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
                 refresh_model_intent_route(
                     route_controller,
                     inference_runtime,
+                    shared_settings,
                     bridge_model,
                     events_tx,
                 )
@@ -119,6 +123,7 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
                 refresh_model_intent_route(
                     route_controller,
                     inference_runtime,
+                    shared_settings,
                     bridge_model,
                     events_tx,
                 )
@@ -134,6 +139,7 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
             refresh_model_intent_route(
                 route_controller,
                 inference_runtime,
+                shared_settings,
                 bridge_model,
                 events_tx,
             )
@@ -161,11 +167,17 @@ pub(crate) async fn handle(command: tui::TuiCommand, context: ModelCommandContex
 async fn refresh_model_intent_route(
     route_controller: &Arc<route::RouteController>,
     inference_runtime: &inference_runtime::InferenceRuntimeState,
+    shared_settings: &settings::SharedSettings,
     bridge_model: &Arc<Mutex<Option<String>>>,
     events_tx: &broadcast::Sender<AgentEvent>,
 ) {
     let Some(snapshot) =
-        crate::resolve_current_model_intent_route(route_controller, inference_runtime).await
+        crate::resolve_current_model_intent_route(
+            route_controller,
+            inference_runtime,
+            shared_settings,
+        )
+        .await
     else {
         notify(
             events_tx,

@@ -107,6 +107,41 @@ impl DynamicContributionInventory {
         result
     }
 
+    pub(crate) fn admit_kernel_release(
+        &self,
+        candidate: &DiscoveredContributionCandidate,
+    ) -> Result<crate::dynamic_admission::DynamicAdmissionPermit> {
+        let result = crate::dynamic_admission::DynamicAdmissionPermit::for_kernel_release(
+            candidate.preflight.clone(),
+        );
+        match &result {
+            Ok(_) => self.transition(
+                &candidate.preflight.id,
+                DiscoveredContributionState::Admitted,
+                None,
+            ),
+            Err(error) => self.transition(
+                &candidate.preflight.id,
+                DiscoveredContributionState::Rejected,
+                Some(error.to_string()),
+            ),
+        }
+        result
+    }
+
+    pub(crate) fn forget_rejected(&self, id: &RuntimeContributionId) {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("dynamic inventory lock poisoned");
+        if entries
+            .get(id)
+            .is_some_and(|entry| entry.state == DiscoveredContributionState::Rejected)
+        {
+            entries.remove(id);
+        }
+    }
+
     pub(crate) fn ready(&self, id: &RuntimeContributionId) {
         self.transition(id, DiscoveredContributionState::Ready, None);
     }
@@ -217,6 +252,7 @@ impl DynamicContributionInventory {
 pub(crate) struct DynamicContributionGenerationOwner {
     inventory: DynamicContributionInventory,
     extensions: Vec<std::sync::Arc<crate::extensions::ExtensionSupervisor>>,
+    control: DynamicContributionControl,
     mcp: Vec<crate::plugins::mcp::McpSupervisor>,
     published: bool,
     settled: bool,
@@ -234,10 +270,15 @@ impl DynamicContributionGenerationOwner {
         self.inventory.clone()
     }
 
+    pub(crate) fn control(&self) -> DynamicContributionControl {
+        self.control.clone()
+    }
+
     pub(crate) fn own_extension(
         &mut self,
         supervisor: std::sync::Arc<crate::extensions::ExtensionSupervisor>,
     ) {
+        self.control.register(supervisor.clone());
         self.extensions.push(supervisor);
     }
 
@@ -256,6 +297,9 @@ impl DynamicContributionGenerationOwner {
 
     pub(crate) fn absorb_published(&mut self, mut candidate: Self) {
         debug_assert!(candidate.published && !candidate.settled);
+        for supervisor in &candidate.extensions {
+            self.control.register(supervisor.clone());
+        }
         self.extensions.append(&mut candidate.extensions);
         self.mcp.append(&mut candidate.mcp);
         candidate.settled = true;
@@ -300,10 +344,54 @@ impl DynamicContributionGenerationOwner {
             crate::extensions::shutdown_supervisors(&self.extensions, Duration::from_millis(500))
                 .await;
         self.extensions.clear();
+        self.control.clear();
         for supervisor in self.mcp.drain(..) {
             failures.extend(supervisor.shutdown(Duration::from_millis(500)).await);
         }
         failures
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct DynamicContributionControl {
+    extensions: std::sync::Arc<
+        std::sync::Mutex<BTreeMap<String, std::sync::Arc<crate::extensions::ExtensionSupervisor>>>,
+    >,
+}
+
+impl DynamicContributionControl {
+    fn register(&self, supervisor: std::sync::Arc<crate::extensions::ExtensionSupervisor>) {
+        self.extensions
+            .lock()
+            .expect("dynamic contribution control lock poisoned")
+            .insert(supervisor.name().to_string(), supervisor);
+    }
+
+    fn clear(&self) {
+        self.extensions
+            .lock()
+            .expect("dynamic contribution control lock poisoned")
+            .clear();
+    }
+
+    pub(crate) fn extension_health(&self) -> Vec<crate::extensions::ExtensionProcessHealth> {
+        self.extensions
+            .lock()
+            .expect("dynamic contribution control lock poisoned")
+            .values()
+            .map(|supervisor| supervisor.health())
+            .collect()
+    }
+
+    pub(crate) async fn replace_extension(&self, name: &str) -> Result<u32> {
+        let supervisor = self
+            .extensions
+            .lock()
+            .expect("dynamic contribution control lock poisoned")
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("extension '{name}' is not published in this runtime"))?;
+        supervisor.replace().await
     }
 }
 

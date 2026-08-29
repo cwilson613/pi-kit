@@ -37,11 +37,13 @@ pub enum CanonicalSlashCommand {
     PermissionTrustAdd(String),
     PermissionTrustRemove(String),
     StatusView,
+    RuntimeDoctor,
     SetRuntimeMode {
         slim: bool,
     },
     RuntimeInventoryStatus,
     RuntimeSubstrateRefresh,
+    RuntimeExtensionReplace(String),
     RuntimeProcessRestart,
     WorkspaceStatusView,
     WorkspaceListView,
@@ -356,6 +358,13 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
             }
         }
         "status" if args.is_empty() => Some(CanonicalSlashCommand::StatusView),
+        "doctor" if args.is_empty() => Some(CanonicalSlashCommand::RuntimeDoctor),
+        "runtime" if args == "doctor" => Some(CanonicalSlashCommand::RuntimeDoctor),
+        "runtime" if args.starts_with("replace ") => args
+            .strip_prefix("replace ")
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| CanonicalSlashCommand::RuntimeExtensionReplace(name.to_string())),
         "runtime" if matches!(args, "status" | "inventory") => {
             Some(CanonicalSlashCommand::RuntimeInventoryStatus)
         }
@@ -844,5 +853,24 @@ mod variable_command_tests {
     fn variables_parser_rejects_trailing_arguments_for_single_name_commands() {
         assert!(canonical_slash_command("vars", "get ONE TWO").is_none());
         assert!(canonical_slash_command("variables", "delete ONE TWO").is_none());
+    }
+
+    #[test]
+    fn runtime_doctor_aliases_and_replace_are_canonical() {
+        assert_eq!(
+            canonical_slash_command("doctor", ""),
+            Some(CanonicalSlashCommand::RuntimeDoctor)
+        );
+        assert_eq!(
+            canonical_slash_command("runtime", "doctor"),
+            Some(CanonicalSlashCommand::RuntimeDoctor)
+        );
+        assert_eq!(
+            canonical_slash_command("runtime", "replace omegon-codescan"),
+            Some(CanonicalSlashCommand::RuntimeExtensionReplace(
+                "omegon-codescan".into()
+            ))
+        );
+        assert!(canonical_slash_command("runtime", "replace ").is_none());
     }
 }

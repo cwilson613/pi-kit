@@ -125,18 +125,23 @@ pub fn automation_safe_model() -> Option<String> {
 /// Resolve provider credentials from explicit env values and an optional persisted credential.
 /// Precedence is authoritative and testable: non-OAuth env vars > valid persisted/external credentials > OAuth env vars.
 fn resolve_api_key_from_sources(
+    provider_id: &str,
     env_values: &[(&str, Option<String>)],
     persisted: Option<crate::auth::OAuthCredentials>,
 ) -> Option<(String, bool)> {
-    resolve_api_key_from_sources_with_external(env_values, persisted, None)
+    resolve_api_key_from_sources_with_external(provider_id, env_values, persisted, None)
 }
 
 fn resolve_api_key_from_sources_with_external(
+    provider_id: &str,
     env_values: &[(&str, Option<String>)],
     persisted: Option<crate::auth::OAuthCredentials>,
     external: Option<crate::auth::OAuthCredentials>,
 ) -> Option<(String, bool)> {
-    for (key, value) in env_values.iter().filter(|(key, _)| !key.contains("OAUTH")) {
+    for (key, value) in env_values
+        .iter()
+        .filter(|(key, _)| !crate::auth::provider_env_var_is_oauth(provider_id, key))
+    {
         if let Some(val) = value
             && !val.is_empty()
         {
@@ -163,7 +168,10 @@ fn resolve_api_key_from_sources_with_external(
         None => {}
     }
 
-    for (key, value) in env_values.iter().filter(|(key, _)| key.contains("OAUTH")) {
+    for (key, value) in env_values
+        .iter()
+        .filter(|(key, _)| crate::auth::provider_env_var_is_oauth(provider_id, key))
+    {
         if let Some(val) = value
             && !val.is_empty()
         {
@@ -233,7 +241,7 @@ pub fn resolve_api_key_sync(provider: &str) -> Option<(String, bool)> {
         }
     };
 
-    resolve_api_key_from_sources_with_external(&env_values, persisted, external)
+    resolve_api_key_from_sources_with_external(provider, &env_values, persisted, external)
 }
 
 /// Resolve API key from env vars or auth.json (legacy, no refresh).
@@ -292,15 +300,28 @@ pub fn infer_provider_id(model_spec: &str) -> String {
         return head.to_string();
     }
 
-    let lower = trimmed.to_ascii_lowercase();
+    if let Some(provider) = infer_bare_provider_id(trimmed) {
+        return provider;
+    }
+
+    // Unknown model — warn rather than silently route to Anthropic
+    tracing::warn!(
+        "provider_from_model: unrecognized model spec {:?}, defaulting to anthropic",
+        model_spec
+    );
+    "anthropic".to_string()
+}
+
+fn infer_bare_provider_id(model_spec: &str) -> Option<String> {
+    let lower = model_spec.to_ascii_lowercase();
     if lower == "local" {
-        return "ollama".to_string();
+        return Some("ollama".to_string());
     }
     if lower == "deepseek-local" {
-        return "dwarfstar".to_string();
+        return Some("dwarfstar".to_string());
     }
     if lower.starts_with("claude") || matches!(lower.as_str(), "haiku" | "sonnet" | "opus") {
-        return "anthropic".to_string();
+        return Some("anthropic".to_string());
     }
     if lower.starts_with("gpt-")
         || matches!(lower.as_str(), "o1" | "o3" | "o4")
@@ -308,16 +329,16 @@ pub fn infer_provider_id(model_spec: &str) -> String {
         || lower.starts_with("o3-")
         || lower.starts_with("o4-")
     {
-        return "openai".to_string();
+        return Some("openai".to_string());
     }
     if lower.starts_with("codex") {
-        return "openai-codex".to_string();
+        return Some("openai-codex".to_string());
     }
     if lower.starts_with("gemini") {
-        return "google".to_string();
+        return Some("google".to_string());
     }
     if lower.contains('/') {
-        return "openrouter".to_string();
+        return Some("openrouter".to_string());
     }
     // Common open-source models typically run on Ollama
     if lower.starts_with("qwen")
@@ -336,21 +357,15 @@ pub fn infer_provider_id(model_spec: &str) -> String {
         || lower.starts_with("orca")
         || lower.starts_with("vicuna")
     {
-        return "ollama".to_string();
+        return Some("ollama".to_string());
     }
-
-    // Unknown model — warn rather than silently route to Anthropic
-    tracing::warn!(
-        "provider_from_model: unrecognized model spec {:?}, defaulting to anthropic",
-        model_spec
-    );
-    "anthropic".to_string()
+    None
 }
 
 pub fn infer_provider_id_strict(model_spec: &str) -> Option<String> {
     let trimmed = model_spec.trim();
     if trimmed.is_empty() {
-        return Some("anthropic".to_string());
+        return None;
     }
 
     if trimmed.contains(':') {
@@ -361,10 +376,10 @@ pub fn infer_provider_id_strict(model_spec: &str) -> Option<String> {
         if let Some(head) = provider_chain.first().copied() {
             return Some(head.to_string());
         }
-        return None;
+        return infer_bare_provider_id(trimmed);
     }
 
-    Some(infer_provider_id(trimmed))
+    infer_bare_provider_id(trimmed)
 }
 
 fn leading_provider_chain(model_spec: &str) -> Vec<&'static str> {
@@ -526,7 +541,7 @@ fn credential_source_class(provider_id: &str) -> Option<String> {
             .iter()
             .copied()
             .chain(endpoint_refs.iter().map(String::as_str))
-            .filter(|key| key.contains("OAUTH") == oauth)
+            .filter(|key| crate::auth::provider_env_var_is_oauth(provider_id, key) == oauth)
             .any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()))
     };
     if env_value(false) {
@@ -742,6 +757,9 @@ pub async fn quick_completion(
             crate::bridge::LlmEvent::Error { message } => {
                 return Err(anyhow::anyhow!("LLM error: {message}"));
             }
+            crate::bridge::LlmEvent::UpstreamFailure { failure } => {
+                return Err(failure.into());
+            }
             _ => {}
         }
     }
@@ -757,6 +775,24 @@ pub struct QuickCompletionResult {
     pub text: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+}
+
+fn server_retry_delay_ms(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let value = |name: &str| headers.get(name).and_then(|header| header.to_str().ok());
+    crate::upstream_errors::parse_server_retry_delay_ms(
+        value("retry-after-ms"),
+        value("retry-after"),
+        chrono::Utc::now(),
+    )
+}
+
+fn upstream_failure_event(message: String, retry_after_ms: Option<u64>) -> LlmEvent {
+    LlmEvent::UpstreamFailure {
+        failure: crate::upstream_errors::UpstreamResponseFailure {
+            message,
+            retry_after_ms,
+        },
+    }
 }
 
 /// Extract and log rate limit headers from a provider's HTTP response.
@@ -1528,12 +1564,11 @@ impl LlmBridge for AnthropicClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let headers = format!("{:?}", response.headers());
+            let retry_after_ms = server_retry_delay_ms(response.headers());
             let err = response.text().await.unwrap_or_default();
             tracing::error!(
                 %status,
                 error_body = %err,
-                response_headers = %headers,
                 body_size,
                 tool_count,
                 system_len,
@@ -1554,9 +1589,10 @@ impl LlmBridge for AnthropicClient {
                 String::new()
             };
             let _ = tx
-                .send(LlmEvent::Error {
-                    message: format!("Anthropic {status}: {user_msg}{detail}"),
-                })
+                .send(upstream_failure_event(
+                    format!("Anthropic {status}: {user_msg}{detail}"),
+                    retry_after_ms,
+                ))
                 .await;
             return Ok(rx);
         }
@@ -1843,6 +1879,7 @@ pub struct OpenAIClient {
     api_key: String,
     base_url: String,
     endpoint_id: String,
+    request_url: Option<String>,
 }
 
 impl OpenAIClient {
@@ -1853,6 +1890,7 @@ impl OpenAIClient {
             base_url: std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".into()),
             endpoint_id: "openai".into(),
+            request_url: None,
         }
     }
 
@@ -1973,7 +2011,11 @@ impl LlmBridge for OpenAIClient {
 
         let response = self
             .client
-            .post(format!("{}/v1/chat/completions", self.base_url))
+            .post(
+                self.request_url
+                    .clone()
+                    .unwrap_or_else(|| format!("{}/v1/chat/completions", self.base_url)),
+            )
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
             .json(&body)
@@ -1982,6 +2024,7 @@ impl LlmBridge for OpenAIClient {
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after_ms = server_retry_delay_ms(response.headers());
             let err = response.text().await.unwrap_or_default();
             let user_msg = crate::model_registry::ModelRegistry::global()
                 .normalize_openai_error(&self.endpoint_id, status, &err)
@@ -2005,7 +2048,9 @@ impl LlmBridge for OpenAIClient {
                         .unwrap_or_else(|| err.chars().take(200).collect());
                     format!("{} {status}: {fallback}", self.endpoint_id)
                 });
-            let _ = tx.send(LlmEvent::Error { message: user_msg }).await;
+            let _ = tx
+                .send(upstream_failure_event(user_msg, retry_after_ms))
+                .await;
             return Ok(rx);
         }
 
@@ -2290,15 +2335,17 @@ impl LlmBridge for GithubCopilotClient {
                 }
             };
             let status = response.status();
+            let retry_after_ms = server_retry_delay_ms(response.headers());
             let text = response.text().await.unwrap_or_default();
             if !status.is_success() {
                 let _ = tx
-                    .send(LlmEvent::Error {
-                        message: format!(
+                    .send(upstream_failure_event(
+                        format!(
                             "GitHub Copilot {endpoint_path} request failed ({status}): {}",
                             crate::github_copilot::redact_body_for_display(&text)
                         ),
-                    })
+                        retry_after_ms,
+                    ))
                     .await;
                 return;
             }
@@ -2733,6 +2780,7 @@ impl OpenRouterClient {
                 base_url: std::env::var("OPENROUTER_BASE_URL")
                     .unwrap_or_else(|_| "https://openrouter.ai/api".into()),
                 endpoint_id: "openrouter".into(),
+                request_url: None,
             },
         }
     }
@@ -3025,10 +3073,6 @@ impl CodexClient {
     }
 }
 
-fn is_codex_retryable(status: u16) -> bool {
-    matches!(status, 429 | 500 | 502 | 503 | 504 | 520)
-}
-
 fn extract_codex_error_detail(event: &Value) -> String {
     let first_string = [
         "/message",
@@ -3144,89 +3188,63 @@ impl LlmBridge for CodexClient {
         }
 
         let url = format!("{}/codex/responses", self.base_url.trim_end_matches('/'));
-        let max_retries = 3u32;
-        let base_delay = std::time::Duration::from_secs(1);
-        let mut last_error = String::new();
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {jwt_token}"))
+            .header("chatgpt-account-id", &account_id)
+            .header("originator", "omegon")
+            .header("OpenAI-Beta", "responses=experimental")
+            .header("accept", "text/event-stream")
+            .header("content-type", "application/json")
+            .header(
+                "user-agent",
+                format!(
+                    "omegon ({} {}; {})",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    env!("CARGO_PKG_VERSION")
+                ),
+            )
+            .json(&body)
+            .send()
+            .await;
 
-        for attempt in 0..=max_retries {
-            let response = self
-                .client
-                .post(&url)
-                .header("Authorization", format!("Bearer {jwt_token}"))
-                .header("chatgpt-account-id", &account_id)
-                .header("originator", "omegon")
-                .header("OpenAI-Beta", "responses=experimental")
-                .header("accept", "text/event-stream")
-                .header("content-type", "application/json")
-                .header(
-                    "user-agent",
-                    format!(
-                        "omegon ({} {}; {})",
-                        std::env::consts::OS,
-                        std::env::consts::ARCH,
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                )
-                .json(&body)
-                .send()
-                .await;
-
-            match response {
-                Ok(resp) if resp.status().is_success() => {
-                    let provider_telemetry =
-                        parse_rate_limit_snapshot("openai-codex", resp.headers());
-                    log_rate_limit_headers("openai-codex", resp.headers());
-                    let tx_clone = tx.clone();
-                    spawn_provider_stream_task("openai-codex", tx_clone.clone(), async move {
-                        parse_codex_stream(resp, provider_telemetry, &tx_clone).await
-                    });
-                    return Ok(rx);
-                }
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    let err_body = resp.text().await.unwrap_or_default();
-                    let user_msg = serde_json::from_str::<Value>(&err_body)
-                        .ok()
-                        .and_then(|v| {
-                            v["error"]["message"]
-                                .as_str()
-                                .or(v["detail"].as_str())
-                                .map(String::from)
-                        })
-                        .unwrap_or_else(|| err_body.chars().take(200).collect());
-                    if attempt < max_retries && is_codex_retryable(status) {
-                        tokio::time::sleep(base_delay * 2u32.pow(attempt)).await;
-                        last_error = format!("Codex {status}: {user_msg}");
-                        continue;
-                    }
-                    let final_message = enrich_codex_error_message(model, status, &user_msg);
-                    let _ = tx
-                        .send(LlmEvent::Error {
-                            message: final_message,
-                        })
-                        .await;
-                    return Ok(rx);
-                }
-                Err(e) => {
-                    if attempt < max_retries {
-                        tokio::time::sleep(base_delay * 2u32.pow(attempt)).await;
-                        last_error = format!("Network error: {e}");
-                        continue;
-                    }
-                    let _ = tx
-                        .send(LlmEvent::Error {
-                            message: format!("Codex connection failed: {last_error}"),
-                        })
-                        .await;
-                    return Ok(rx);
-                }
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                let provider_telemetry = parse_rate_limit_snapshot("openai-codex", resp.headers());
+                log_rate_limit_headers("openai-codex", resp.headers());
+                let tx_clone = tx.clone();
+                spawn_provider_stream_task("openai-codex", tx_clone.clone(), async move {
+                    parse_codex_stream(resp, provider_telemetry, &tx_clone).await
+                });
+            }
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let retry_after_ms = server_retry_delay_ms(resp.headers());
+                let err_body = resp.text().await.unwrap_or_default();
+                let user_msg = serde_json::from_str::<Value>(&err_body)
+                    .ok()
+                    .and_then(|v| {
+                        v["error"]["message"]
+                            .as_str()
+                            .or(v["detail"].as_str())
+                            .map(String::from)
+                    })
+                    .unwrap_or_else(|| err_body.chars().take(200).collect());
+                let final_message = enrich_codex_error_message(model, status, &user_msg);
+                let _ = tx
+                    .send(upstream_failure_event(final_message, retry_after_ms))
+                    .await;
+            }
+            Err(error) => {
+                let _ = tx
+                    .send(LlmEvent::Error {
+                        message: format!("Codex connection failed: {error}"),
+                    })
+                    .await;
             }
         }
-        let _ = tx
-            .send(LlmEvent::Error {
-                message: format!("Codex failed after retries: {last_error}"),
-            })
-            .await;
         Ok(rx)
     }
 }
@@ -3762,9 +3780,25 @@ impl OpenAICompatClient {
                 api_key,
                 base_url,
                 endpoint_id: provider_id.clone(),
+                request_url: None,
             },
             provider_id,
             default_model,
+        }
+    }
+
+    pub fn new_manifest(api_key: String, base_url: String, endpoint_id: String) -> Self {
+        let request_url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        Self {
+            inner: OpenAIClient {
+                client: reqwest::Client::new(),
+                api_key,
+                base_url,
+                endpoint_id: "openai".into(),
+                request_url: Some(request_url),
+            },
+            provider_id: endpoint_id,
+            default_model: None,
         }
     }
 
@@ -4044,11 +4078,13 @@ impl LlmBridge for OllamaCloudClient {
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after_ms = server_retry_delay_ms(response.headers());
             let err = response.text().await.unwrap_or_default();
             let _ = tx
-                .send(LlmEvent::Error {
-                    message: format!("Ollama Cloud {status}: {err}"),
-                })
+                .send(upstream_failure_event(
+                    format!("Ollama Cloud {status}: {err}"),
+                    retry_after_ms,
+                ))
                 .await;
             return Ok(rx);
         }
@@ -4411,8 +4447,13 @@ impl LlmBridge for AntigravityClient {
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after_ms = server_retry_delay_ms(response.headers());
             let err_body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Antigravity API error ({status}): {err_body}");
+            return Err(crate::upstream_errors::UpstreamResponseFailure {
+                message: format!("Antigravity API error ({status}): {err_body}"),
+                retry_after_ms,
+            }
+            .into());
         }
 
         // Stream SSE events
@@ -4657,6 +4698,57 @@ impl LlmBridge for AntigravityClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copilot_environment_token_metadata_uses_declared_oauth_exchange_kind() {
+        let _guard = crate::auth::TEST_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let keys = crate::auth::provider_env_vars("github-copilot");
+        let originals = keys
+            .iter()
+            .map(|key| (*key, std::env::var(key).ok()))
+            .collect::<Vec<_>>();
+        let original_auth_path = std::env::var("OMEGON_AUTH_JSON_PATH").ok();
+        let temp = tempfile::tempdir().unwrap();
+        // SAFETY: Tests serialize auth environment mutations and restore them below.
+        unsafe {
+            for key in keys {
+                std::env::remove_var(key);
+            }
+            std::env::set_var("GITHUB_COPILOT_TOKEN", "test-copilot-token");
+            std::env::set_var(
+                "OMEGON_AUTH_JSON_PATH",
+                temp.path().join("missing-auth.json"),
+            );
+        }
+
+        let result = std::panic::catch_unwind(|| credential_source_class("github-copilot"));
+        for (key, original) in originals {
+            match original {
+                Some(value) => {
+                    // SAFETY: Protected by TEST_AUTH_ENV_LOCK as above.
+                    unsafe { std::env::set_var(key, value) };
+                }
+                None => {
+                    // SAFETY: Protected by TEST_AUTH_ENV_LOCK as above.
+                    unsafe { std::env::remove_var(key) };
+                }
+            }
+        }
+        match original_auth_path {
+            Some(value) => {
+                // SAFETY: Protected by TEST_AUTH_ENV_LOCK as above.
+                unsafe { std::env::set_var("OMEGON_AUTH_JSON_PATH", value) };
+            }
+            None => {
+                // SAFETY: Protected by TEST_AUTH_ENV_LOCK as above.
+                unsafe { std::env::remove_var("OMEGON_AUTH_JSON_PATH") };
+            }
+        }
+
+        assert_eq!(result.unwrap(), Some("environment_oauth".to_string()));
+    }
 
     #[test]
     fn copilot_model_capability_excludes_non_chat_models() {
@@ -5078,6 +5170,14 @@ mod tests {
     }
 
     #[test]
+    fn infer_provider_id_strict_rejects_unknown_bare_model() {
+        assert_eq!(
+            infer_provider_id_strict("mystery-model-with-no-catalog-match"),
+            None
+        );
+    }
+
+    #[test]
     fn anthropic_build_messages() {
         let messages = vec![LlmMessage::User {
             content: "hello".into(),
@@ -5491,6 +5591,26 @@ mod tests {
     }
 
     #[test]
+    fn tool_parameters_use_serving_provider_contribution_dialect() {
+        let contribution = crate::provider_contributions::registry()
+            .get("openai")
+            .unwrap();
+        assert_eq!(contribution.tools.dialect_name(), "open_ai");
+        let normalized = provider_function_parameters(
+            "openai",
+            &json!({
+                "type": "object",
+                "properties": {"action": {"type": "string"}},
+                "allOf": [{"then": {"required": ["action"]}}]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(normalized["type"], "object");
+        assert!(normalized.get("allOf").is_none());
+    }
+
+    #[test]
     fn build_tools_oauth_remaps_known_names() {
         let tools = vec![
             ToolDefinition {
@@ -5614,6 +5734,7 @@ mod tests {
             expires: u64::MAX,
         };
         let resolved = resolve_api_key_from_sources(
+            "anthropic",
             &[
                 ("ANTHROPIC_OAUTH_TOKEN", Some("oauth-env".into())),
                 ("ANTHROPIC_API_KEY", Some("api-env".into())),
@@ -5632,10 +5753,22 @@ mod tests {
             expires: u64::MAX,
         };
         let resolved = resolve_api_key_from_sources(
+            "openai-codex",
             &[("CHATGPT_OAUTH_TOKEN", Some("oauth-env".into()))],
             Some(persisted),
         );
         assert_eq!(resolved, Some(("persisted-oauth".into(), true)));
+    }
+
+    #[test]
+    fn resolve_api_key_from_sources_uses_declared_copilot_exchange_kind() {
+        let resolved = resolve_api_key_from_sources(
+            "github-copilot",
+            &[("GITHUB_COPILOT_TOKEN", Some("copilot-token".into()))],
+            None,
+        );
+
+        assert_eq!(resolved, Some(("copilot-token".into(), true)));
     }
 
     #[test]
@@ -5646,7 +5779,7 @@ mod tests {
             refresh: "refresh".into(),
             expires: 0,
         };
-        let resolved = resolve_api_key_from_sources(&[], Some(persisted));
+        let resolved = resolve_api_key_from_sources("openai-codex", &[], Some(persisted));
         assert_eq!(resolved, None);
     }
 
@@ -5665,8 +5798,12 @@ mod tests {
             expires: u64::MAX,
         };
 
-        let resolved =
-            resolve_api_key_from_sources_with_external(&[], Some(persisted), Some(external));
+        let resolved = resolve_api_key_from_sources_with_external(
+            "openai-codex",
+            &[],
+            Some(persisted),
+            Some(external),
+        );
 
         assert_eq!(resolved, Some(("fresh-external-oauth".into(), true)));
     }
@@ -6503,19 +6640,6 @@ mod tests {
         let detail = extract_codex_error_detail(&json!({}));
         assert_eq!(detail, "Codex returned an error event without details");
         assert!(!detail.contains("unknown error"));
-    }
-
-    #[test]
-    fn codex_retryable_status_codes() {
-        assert!(is_codex_retryable(429));
-        assert!(is_codex_retryable(500));
-        assert!(is_codex_retryable(502));
-        assert!(is_codex_retryable(503));
-        assert!(is_codex_retryable(504));
-        assert!(is_codex_retryable(520));
-        assert!(!is_codex_retryable(400));
-        assert!(!is_codex_retryable(401));
-        assert!(!is_codex_retryable(200));
     }
 
     #[test]

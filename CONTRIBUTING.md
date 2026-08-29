@@ -402,6 +402,7 @@ Content metadata can request content capabilities or external paths. It cannot g
 | Crate | Purpose |
 |---|---|
 | `omegon` | Main binary: TUI, agent loop, providers, tools, ACP, daemon/control plane |
+| `omegon-codescan-contracts` | Portable codescan request, response, and status types |
 | `omegon-codescan` | Code and knowledge indexing |
 | `omegon-git` | Repository, commit, merge, worktree, and submodule operations |
 | `omegon-memory` | Fact storage, decay, search, injection, and vault synchronization |
@@ -413,6 +414,11 @@ Content metadata can request content capabilities or external paths. It cannot g
 | `omegon-web` | Web search and content extraction |
 | `styrene-work-model` | Provider-neutral work-item contracts |
 | `styrene-work-runtime` | Work-source refresh and immutable aggregate snapshots |
+
+First-party native extensions live under `extensions/`. The release-coupled
+`extensions/omegon-codescan` process owns SQLite, indexing, and BM25. The host
+depends only on `omegon-codescan-contracts`. Run `just test-codescan-extension`
+after changing its protocol, engine, or process lifecycle.
 
 Use focused validation while developing:
 

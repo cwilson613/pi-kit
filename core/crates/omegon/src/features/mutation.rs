@@ -552,7 +552,7 @@ impl MutationFeature {
         if let Some(p) = provider {
             self.trajectory.last_provider = p.to_string();
         }
-        let tools: Vec<ToolCallTrace> = self.trajectory.pending_tools.drain(..).collect();
+        let tools = std::mem::take(&mut self.trajectory.pending_tools);
 
         let is_burn = drift.is_some()
             || (matches!(phase, Some(OodaPhase::Observe) | Some(OodaPhase::Orient))

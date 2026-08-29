@@ -128,21 +128,30 @@ clippy-changed *args:
 check:
     {{cargo}} check --workspace
 
-# Fast compile boundary for the Omegon daemon/headless matrix.
-# Use this first while working on TUI extraction: it skips the default TUI feature graph.
+# Fast compile boundary for the shrinking Omegon composition.
+# Optional domain engines and frontends must be enabled additively.
 check-omegon-headless:
     {{cargo}} check -p omegon --locked --no-default-features
+
+# Compile the bounded-task capsule with its exact additive feature contract.
+check-task-capsule:
+    {{cargo}} check -p omegon --locked --no-default-features --features task-capsule
+    python3 scripts/check_task_capsule_dependency_boundary.py
+
+# Build the capsule separately so it cannot overwrite the full product artifact.
+build-task-capsule:
+    CARGO_TARGET_DIR=target/task-capsule {{cargo}} build -p omegon --release --locked --no-default-features --features task-capsule
 
 # Compatibility compile boundary for the default interactive artifact.
 check-omegon-default:
     {{cargo}} check -p omegon --locked
 
-# Run the two Omegon compile matrices in the signal-first order for TUI extraction.
+# Run the shrinking and full Omegon compile matrices in signal-first order.
 check-omegon-matrix:
     just check-omegon-headless
     just check-omegon-default
 
-# Assert the no-TUI feature matrix has not retained terminal presentation crates.
+# Assert the shrinking graph has not retained optional engine or TUI crates.
 check-omegon-headless-deps:
     python3 scripts/check_headless_dependency_boundary.py
 
@@ -372,9 +381,43 @@ link channel="default":
         --maintain "$MAINTAIN_BINARY"
     just install-skills
     just install-catalog
+    just install-codescan-extension
     just install-default-extensions
 
-# Build and link default first-party extensions when their sibling checkout exists.
+# Build and install the release-coupled codescan native extension for source development.
+install-codescan-extension:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    extension_root="$(pwd)/extensions/omegon-codescan"
+    echo "── Building native extension omegon-codescan ──"
+    cargo build --release --manifest-path "$extension_root/Cargo.toml"
+    destination="$HOME/.omegon/extensions/omegon-codescan"
+    mkdir -p "$HOME/.omegon/extensions"
+    if [ -L "$destination" ] && [ "$(readlink "$destination")" = "$extension_root" ]; then
+        rm "$destination"
+    elif [ -f "$destination/.omegon-release-coupled" ]; then
+        rm -rf "$destination"
+    elif [ -e "$destination" ] || [ -L "$destination" ]; then
+        echo "codescan extension destination already contains an operator-managed install: $destination" >&2
+        echo "remove it explicitly before replacing it with the bundled development extension" >&2
+        exit 1
+    fi
+    staging="$HOME/.omegon/extensions/.omegon-codescan.staging.$$"
+    rm -rf "$staging"
+    mkdir -p "$staging/target/release"
+    cp "$extension_root/manifest.toml" "$staging/manifest.toml"
+    cp "$extension_root/target/release/omegon-codescan" "$staging/target/release/omegon-codescan"
+    touch "$staging/.omegon-release-coupled"
+    mv "$staging" "$destination"
+    echo "✓ native extension omegon-codescan → $destination"
+
+# Validate the codescan engine, portable protocol, and native extension.
+test-codescan-extension:
+    {{cargo}} test -p omegon-codescan-contracts --locked
+    {{cargo}} test -p omegon-codescan --locked
+    {{cargo}} test --manifest-path extensions/omegon-codescan/Cargo.toml --locked
+
+# Build and link optional first-party extensions when their sibling checkout exists.
 # OMEGON_EXTENSIONS_ROOT overrides the conventional ../omegon-extensions path.
 install-default-extensions:
     #!/usr/bin/env bash
@@ -1141,11 +1184,18 @@ package:
     package_target() {
         local TARGET=$1 BINARY_DIR=$2
         local ARCHIVE="omegon-${VERSION}-${TARGET}.tar.gz"
+        local CODESCAN_BINARY="extensions/omegon-codescan/target/${TARGET}/release/omegon-codescan"
+        if [ "$TARGET" = "aarch64-apple-darwin" ] && [ ! -x "$CODESCAN_BINARY" ]; then
+            CODESCAN_BINARY="extensions/omegon-codescan/target/release/omegon-codescan"
+        fi
         for binary in omegon omegon-maintain; do
             [ -x "$BINARY_DIR/$binary" ] || { echo "missing release companion: $BINARY_DIR/$binary" >&2; exit 1; }
             strip "$BINARY_DIR/$binary" 2>/dev/null || llvm-strip "$BINARY_DIR/$binary" 2>/dev/null || true
         done
-        python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "${DIST}/${ARCHIVE}"
+        [ -x "$CODESCAN_BINARY" ] || { echo "missing codescan extension: $CODESCAN_BINARY" >&2; exit 1; }
+        python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "${DIST}/${ARCHIVE}" \
+            --codescan-binary "$CODESCAN_BINARY" \
+            --codescan-manifest extensions/omegon-codescan/manifest.toml
         shasum -a 256 "${DIST}/${ARCHIVE}" >> "${DIST}/checksums.sha256"
         echo "  ${ARCHIVE} ($(du -h "${DIST}/${ARCHIVE}" | cut -f1))"
     }

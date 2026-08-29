@@ -80,7 +80,7 @@ jobs:
           printf '#!/bin/sh\necho omegon-maintain fixture\n' > "$FIXTURE_DIR/omegon-maintain"
           chmod 0755 "$FIXTURE_DIR/omegon" "$FIXTURE_DIR/omegon-maintain"
           python3 scripts/content_pack_manifest.py --check
-          python3 scripts/package_release.py --binary-dir "$FIXTURE_DIR" --output "$ARCHIVE"
+          python3 scripts/package_release.py --binary-dir "$FIXTURE_DIR" --output "$ARCHIVE" --without-codescan
           python3 scripts/release_manifest.py generate-package \
             --archive "$ARCHIVE" \
             --tag "$RELEASE_TAG" \
@@ -229,6 +229,16 @@ jobs:
             cargo build --manifest-path extensions/omegon-browser/Cargo.toml --release --target ${{ matrix.target }}
           fi
 
+      - name: Build omegon-codescan extension
+        env:
+          RUSTFLAGS: ${{ matrix.static && '-C target-feature=+crt-static' || '' }}
+        run: |
+          if [ "${{ matrix.zigbuild }}" = "true" ]; then
+            cargo zigbuild --manifest-path extensions/omegon-codescan/Cargo.toml --release --target ${{ matrix.target }}
+          else
+            cargo build --manifest-path extensions/omegon-codescan/Cargo.toml --release --target ${{ matrix.target }}
+          fi
+
       - name: Strip binary
         run: |
           BINARY="target/${{ matrix.target }}/release/omegon"
@@ -246,6 +256,14 @@ jobs:
               llvm-strip "$EXT_BINARY"
             elif command -v strip >/dev/null 2>&1; then
               strip "$EXT_BINARY" 2>/dev/null || true
+            fi
+          fi
+          CODESCAN_EXT_BINARY="extensions/omegon-codescan/target/${{ matrix.target }}/release/omegon-codescan"
+          if [ -f "$CODESCAN_EXT_BINARY" ]; then
+            if command -v llvm-strip >/dev/null 2>&1; then
+              llvm-strip "$CODESCAN_EXT_BINARY"
+            elif command -v strip >/dev/null 2>&1; then
+              strip "$CODESCAN_EXT_BINARY" 2>/dev/null || true
             fi
           fi
 
@@ -270,7 +288,7 @@ jobs:
         if: runner.os == 'macOS' && env.APPLE_SIGNING_CERT_B64 != '' && env.APPLE_CODESIGN_IDENTITY != ''
         run: |
           set -euo pipefail
-          for BINARY in target/${{ matrix.target }}/release/omegon target/${{ matrix.target }}/release/omegon-maintain; do
+          for BINARY in target/${{ matrix.target }}/release/omegon target/${{ matrix.target }}/release/omegon-maintain extensions/omegon-codescan/target/${{ matrix.target }}/release/omegon-codescan; do
             codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "$BINARY"
             codesign --verify --deep --strict --verbose=2 "$BINARY"
           done
@@ -281,7 +299,7 @@ jobs:
           set -euo pipefail
           PACKAGE_DIR="$RUNNER_TEMP/omegon-${{ matrix.target }}-notary"
           mkdir -p "$PACKAGE_DIR"
-          cp target/${{ matrix.target }}/release/omegon target/${{ matrix.target }}/release/omegon-maintain "$PACKAGE_DIR/"
+          cp target/${{ matrix.target }}/release/omegon target/${{ matrix.target }}/release/omegon-maintain extensions/omegon-codescan/target/${{ matrix.target }}/release/omegon-codescan "$PACKAGE_DIR/"
           NOTARY_ZIP="$RUNNER_TEMP/omegon-${{ matrix.target }}-notary.zip"
           KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
           echo "$APPLE_API_KEY_P8_B64" | base64 --decode > "$KEY_PATH"
@@ -315,7 +333,9 @@ jobs:
           BINARY_DIR="target/${{ matrix.target }}/release"
           chmod 0755 "$BINARY_DIR/omegon" "$BINARY_DIR/omegon-maintain"
           python3 scripts/content_pack_manifest.py --check
-          python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "$ARCHIVE"
+          python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "$ARCHIVE" \
+            --codescan-binary "extensions/omegon-codescan/target/${{ matrix.target }}/release/omegon-codescan" \
+            --codescan-manifest extensions/omegon-codescan/manifest.toml
           EXT_ARCHIVE="omegon-browser-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
           EXT_BINARY="extensions/omegon-browser/target/${{ matrix.target }}/release/omegon-browser"
           EXT_PACKAGE="$RUNNER_TEMP/omegon-browser-package"
@@ -388,6 +408,9 @@ jobs:
       - name: Build omegon-browser extension
         run: cargo zigbuild --manifest-path extensions/omegon-browser/Cargo.toml --release --target aarch64-unknown-linux-gnu
 
+      - name: Build omegon-codescan extension
+        run: cargo zigbuild --manifest-path extensions/omegon-codescan/Cargo.toml --release --target aarch64-unknown-linux-gnu
+
       - name: Strip binary
         run: |
           BINARY="target/aarch64-unknown-linux-gnu/release/omegon"
@@ -405,6 +428,12 @@ jobs:
           elif command -v strip >/dev/null 2>&1; then
             strip "$EXT_BINARY" 2>/dev/null || true
           fi
+          CODESCAN_EXT_BINARY="extensions/omegon-codescan/target/aarch64-unknown-linux-gnu/release/omegon-codescan"
+          if command -v llvm-strip >/dev/null 2>&1; then
+            llvm-strip "$CODESCAN_EXT_BINARY"
+          elif command -v strip >/dev/null 2>&1; then
+            strip "$CODESCAN_EXT_BINARY" 2>/dev/null || true
+          fi
 
       - name: Create archive
         run: |
@@ -413,7 +442,9 @@ jobs:
           BINARY_DIR="target/aarch64-unknown-linux-gnu/release"
           chmod 0755 "$BINARY_DIR/omegon" "$BINARY_DIR/omegon-maintain"
           python3 scripts/content_pack_manifest.py --check
-          python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "$ARCHIVE"
+          python3 scripts/package_release.py --binary-dir "$BINARY_DIR" --output "$ARCHIVE" \
+            --codescan-binary extensions/omegon-codescan/target/aarch64-unknown-linux-gnu/release/omegon-codescan \
+            --codescan-manifest extensions/omegon-codescan/manifest.toml
           EXT_ARCHIVE="omegon-browser-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
           EXT_BINARY="extensions/omegon-browser/target/aarch64-unknown-linux-gnu/release/omegon-browser"
           EXT_PACKAGE="$RUNNER_TEMP/omegon-browser-package"

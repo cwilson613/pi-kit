@@ -526,6 +526,18 @@ Scroll transcript:
                 }
             }
 
+            "doctor" => {
+                let command = canonical_slash_command("doctor", "")
+                    .expect("/doctor is a canonical command");
+                let request = crate::operator_commands::control_request_from_slash_command(&command)
+                    .expect("/doctor has a control request");
+                let _ = tx.try_send(TuiCommand::ExecuteControl {
+                    request,
+                    respond_to: None,
+                });
+                SlashResult::Handled
+            }
+
             "runtime" => {
                 if args.trim().is_empty() {
                     self.open_extension_runtime_menu();

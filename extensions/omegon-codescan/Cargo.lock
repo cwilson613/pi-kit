@@ -429,7 +429,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "omegon-codescan"
-version = "0.29.0-dev"
+version = "0.29.0-nightly.20260829"
 dependencies = [
  "anyhow",
  "git2",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "omegon-codescan-contracts"
-version = "0.29.0-dev"
+version = "0.29.0-nightly.20260829"
 dependencies = [
  "serde",
 ]

@@ -46,6 +46,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Native extension snapshots now admit release-sized executables within the existing aggregate size bound, and Nix source filtering retains the Python scripts required to install package metadata.
+
 - Profile component, extension, and MQTT mutations now persist to the actual selected named project or user profile instead of creating a lower-precedence legacy project profile. Built-in profiles require an explicit writable target.
 
 - Headless delegate and cleave timeout/cancellation paths now terminate the complete owned Unix process group instead of only the immediate child process, preventing quiet descendants from surviving agent cleanup.

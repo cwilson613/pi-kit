@@ -312,6 +312,25 @@ async fn every_first_party_native_extension_passes_the_host_handshake() {
 }
 
 #[cfg(unix)]
+#[test]
+fn contribution_snapshot_accepts_a_release_sized_native_binary() {
+    let source = tempfile::tempdir().unwrap();
+    let binary = std::fs::File::create(source.path().join("extension")).unwrap();
+    binary.set_len(17 * 1024 * 1024).unwrap();
+    let directory = std::fs::File::open(source.path()).unwrap();
+
+    let snapshot = crate::contribution_loading::snapshot_contribution_directory(&directory)
+        .expect("release-sized native extension should fit the aggregate snapshot limit");
+
+    assert_eq!(
+        std::fs::metadata(snapshot.path().join("extension"))
+            .unwrap()
+            .len(),
+        17 * 1024 * 1024
+    );
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn incompatible_fixture_matrix_is_refused_before_publication() {
     let _env_guard = crate::test_support::env::lock_async().await;

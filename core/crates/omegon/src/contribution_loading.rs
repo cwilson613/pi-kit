@@ -6,6 +6,8 @@ use omegon_maintenance_contracts::{
     AuthorityKey, ContributionAdmissionGuard, ContributionKind, ContributionMutationGuard,
 };
 
+const MAX_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
+
 #[cfg(unix)]
 type FileMode = libc::mode_t;
 #[cfg(not(unix))]
@@ -1173,12 +1175,12 @@ fn copy_source_tree(
             )?;
             child.sync_all()?;
         } else if mode & libc::S_IFMT == libc::S_IFREG {
-            let bytes = read_file_at(source, &raw_name, 16 * 1024 * 1024)?
+            let bytes = read_file_at(source, &raw_name, MAX_SNAPSHOT_BYTES)?
                 .ok_or_else(|| anyhow::anyhow!("skill source file disappeared"))?;
             *total_bytes = total_bytes
                 .checked_add(bytes.len() as u64)
                 .ok_or_else(|| anyhow::anyhow!("skill bundle size overflow"))?;
-            if *total_bytes > 128 * 1024 * 1024 {
+            if *total_bytes > MAX_SNAPSHOT_BYTES as u64 {
                 anyhow::bail!("skill bundle exceeds the total size limit");
             }
             let executable = mode & 0o111 != 0;

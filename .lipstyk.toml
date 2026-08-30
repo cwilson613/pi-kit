@@ -53,4 +53,4 @@ weight = 0.3
 # Downweight — test files use .unwrap() extensively (idiomatic), and
 # --exclude-tests doesn't catch #[cfg(test)] mod tests; in separate
 # files. Non-test .unwrap() is flagged by clippy.
-weight = 0.5
+weight = 0.3

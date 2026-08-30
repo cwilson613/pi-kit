@@ -48,6 +48,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- Unix terminal hangup now exits through the supervisor-owned terminal-loss boundary instead of racing a queued quit command, ensuring active turns settle as `revoked/terminal_lost`. The real PTY acceptance uses an admitted loopback inference route and waits for an in-flight provider request before detachment.
+
 - Native-extension readiness now reserves part of short startup deadlines for mandatory tool discovery when optional initialization metadata times out, and timeout diagnostics include child process state and bounded stderr context.
 
 - Native extension snapshots now admit release-sized executables within the existing aggregate size bound, and Nix source filtering retains the package scripts and declared content assets required during installation.

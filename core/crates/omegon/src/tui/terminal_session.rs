@@ -146,6 +146,14 @@ pub(super) struct TerminationSignals {
     quit: tokio::signal::unix::Signal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TerminationSignal {
+    Interrupt,
+    Terminate,
+    Hangup,
+    Quit,
+}
+
 impl TerminationSignals {
     pub(super) fn new() -> io::Result<Self> {
         #[cfg(unix)]
@@ -165,20 +173,22 @@ impl TerminationSignals {
         }
     }
 
-    pub(super) async fn recv(&mut self) -> io::Result<()> {
+    pub(super) async fn recv(&mut self) -> io::Result<TerminationSignal> {
         #[cfg(unix)]
         {
             tokio::select! {
-                result = tokio::signal::ctrl_c() => result,
-                _ = self.terminate.recv() => Ok(()),
-                _ = self.hangup.recv() => Ok(()),
-                _ = self.quit.recv() => Ok(()),
+                result = tokio::signal::ctrl_c() => result.map(|_| TerminationSignal::Interrupt),
+                _ = self.terminate.recv() => Ok(TerminationSignal::Terminate),
+                _ = self.hangup.recv() => Ok(TerminationSignal::Hangup),
+                _ = self.quit.recv() => Ok(TerminationSignal::Quit),
             }
         }
 
         #[cfg(not(unix))]
         {
-            tokio::signal::ctrl_c().await
+            tokio::signal::ctrl_c()
+                .await
+                .map(|_| TerminationSignal::Interrupt)
         }
     }
 }

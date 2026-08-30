@@ -8119,11 +8119,14 @@ pub async fn run_tui(
         };
         tokio::select! {
             signal = termination_signals.recv() => {
-                signal?;
-                // Terminal restoration alone must not leave the coordinator
-                // running headless while IPC/other sender clones keep the
-                // command channel open.
-                let _ = command_tx.send(TuiCommand::Quit { confirmed: true }).await;
+                let signal = signal?;
+                if signal == terminal_session::TerminationSignal::Hangup {
+                    tracing::error!(
+                        ?signal,
+                        boundary = "terminal_input_lost",
+                        "terminal input boundary lost; returning control to the runtime supervisor"
+                    );
+                }
                 break;
             }
             event = events_rx.recv() => {

@@ -22,6 +22,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 struct HoldingProvider {
     address: String,
     stop: Arc<AtomicBool>,
+    request_started: Arc<AtomicBool>,
     accept_thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -34,14 +35,21 @@ impl HoldingProvider {
         let address = format!("http://{}", listener.local_addr()?);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let request_started = Arc::new(AtomicBool::new(false));
+        let thread_request_started = Arc::clone(&request_started);
         let accept_thread = thread::spawn(move || {
             let mut connections = Vec::new();
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let connection_stop = Arc::clone(&thread_stop);
+                        let connection_request_started = Arc::clone(&thread_request_started);
                         connections.push(thread::spawn(move || {
-                            let _ = serve_provider_connection(stream, &connection_stop);
+                            let _ = serve_provider_connection(
+                                stream,
+                                &connection_stop,
+                                &connection_request_started,
+                            );
                         }));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -57,6 +65,7 @@ impl HoldingProvider {
         Ok(Self {
             address,
             stop,
+            request_started,
             accept_thread: Some(accept_thread),
         })
     }
@@ -71,7 +80,11 @@ impl Drop for HoldingProvider {
     }
 }
 
-fn serve_provider_connection(mut stream: TcpStream, stop: &AtomicBool) -> Result<()> {
+fn serve_provider_connection(
+    mut stream: TcpStream,
+    stop: &AtomicBool,
+    request_started: &AtomicBool,
+) -> Result<()> {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .context("bound fixture request read")?;
@@ -91,14 +104,15 @@ fn serve_provider_connection(mut stream: TcpStream, stop: &AtomicBool) -> Result
     if request_line.starts_with("GET /api/tags ") {
         write_json_response(
             &mut stream,
-            r#"{"models":[{"name":"acceptance:latest","model":"acceptance:latest"}]}"#,
+            r#"{"models":[{"name":"gpt-5.4","model":"gpt-5.4"}]}"#,
         )?;
     } else if request_line.starts_with("GET /v1/models ") {
         write_json_response(
             &mut stream,
-            r#"{"data":[{"id":"acceptance:latest","object":"model"}]}"#,
+            r#"{"data":[{"id":"gpt-5.4","object":"model"}]}"#,
         )?;
     } else if request_line.starts_with("POST /v1/chat/completions ") {
+        request_started.store(true, Ordering::Release);
         stream.write_all(
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
         )?;
@@ -139,6 +153,31 @@ impl PtyOmegon {
         fs::create_dir_all(&project_config).context("create isolated project config")?;
         fs::write(project_config.join("profile.json"), "{}\n")
             .context("disable first-run interaction")?;
+        fs::write(
+            project_config.join("inference.toml"),
+            format!(
+                r#"schema_version = 1
+[[endpoints]]
+id = "acceptance"
+adapter = "chat-completions"
+secret_refs = ["OMEGON_PROJECT_ENDPOINT_616363657074616E6365_TOKEN"]
+[endpoints.transport]
+kind = "http"
+base_url = "{}/v1"
+[[offerings]]
+id = "openai:gpt-5.4"
+endpoint = "acceptance"
+native_model_id = "gpt-5.4"
+input_modalities = ["text"]
+output_modalities = ["text"]
+[offerings.capabilities]
+tools = true
+reasoning = true
+"#,
+                provider.address
+            ),
+        )
+        .context("write isolated inference route")?;
         let omegon_home = root.path().join("omegon-home");
         fs::create_dir_all(&omegon_home).context("create isolated Omegon home")?;
         let log = root.path().join("omegon.log");
@@ -154,7 +193,7 @@ impl PtyOmegon {
             "--cwd",
             workspace.to_str().context("workspace path is not UTF-8")?,
             "--model",
-            "openai:gpt-4o",
+            "openai:gpt-5.4",
             "--no-splash",
             "--fresh",
             "--log-level",
@@ -169,7 +208,10 @@ impl PtyOmegon {
         command.env("OMEGON_HOME", &omegon_home);
         command.env("OMEGON_CHILD", "1");
         command.env("OPENAI_API_KEY", "acceptance-local-only");
-        command.env("OPENAI_BASE_URL", &provider.address);
+        command.env(
+            "OMEGON_PROJECT_ENDPOINT_616363657074616E6365_TOKEN",
+            "acceptance-local-only",
+        );
         command.env("OMEGON_NERD_FONT", "1");
         command.env("NO_COLOR", "1");
 
@@ -236,6 +278,18 @@ impl PtyOmegon {
             )
         })
         .with_context(|| format!("authority event {event_type} was not persisted"))
+    }
+
+    fn wait_for_provider_request(&mut self, provider: &HoldingProvider) -> Result<()> {
+        let mut output = Vec::new();
+        wait_until(STARTUP_DEADLINE, || {
+            if let Some(status) = self.child.try_wait()? {
+                bail!("Omegon exited before provider dispatch: {status}");
+            }
+            self.drain_pty(&mut output)?;
+            Ok(provider.request_started.load(Ordering::Acquire))
+        })
+        .context("fixture provider did not receive the active model request")
     }
 
     fn drain_pty(&self, output: &mut Vec<u8>) -> Result<()> {
@@ -328,18 +382,31 @@ fn real_terminal_detachment_terminalizes_idle_and_active_sessions() -> Result<()
         idle.retained_session_count()? >= 1,
         "idle terminal loss must retain a session snapshot"
     );
-    assert_last_boundary(&idle.log_text()?)?;
+    assert_last_boundary(&idle.log_text()?).context("idle terminal-loss boundary")?;
 
     let mut active = PtyOmegon::spawn(Some("remain active until terminal loss"), &provider)?;
     active.wait_for_authority_event("turn.started")?;
+    active
+        .wait_for_provider_request(&provider)
+        .with_context(|| {
+            format!(
+                "active request log:\n{}",
+                active.log_text().unwrap_or_else(|error| error.to_string())
+            )
+        })?;
     let active_status = active.detach_and_wait()?;
     assert!(
         active_status.success(),
         "active terminalization: {active_status}; log:\n{}",
         active.log_text()?
     );
-    assert_last_boundary(&active.log_text()?)?;
-    assert_generation_scoped_revocation(&active.retained_authority()?)?;
+    assert_last_boundary(&active.log_text()?).context("active terminal-loss boundary")?;
+    assert_generation_scoped_revocation(&active.retained_authority()?).with_context(|| {
+        format!(
+            "active terminal-loss log:\n{}",
+            active.log_text().unwrap_or_else(|error| error.to_string())
+        )
+    })?;
     assert!(
         active.retained_session_count()? >= 1,
         "active terminal loss must retain a session snapshot"
@@ -356,7 +423,9 @@ fn assert_last_boundary(log: &str) -> Result<()> {
         && log.contains("terminal_input_lost"))
         || log.contains("TUI terminated at the terminal boundary");
     if !acquired || !loss_observed {
-        bail!("terminal-loss log did not retain the last completed boundary");
+        bail!(
+            "terminal-loss log did not retain the last completed boundary: acquired={acquired}, loss_observed={loss_observed}; log:\n{log}"
+        );
     }
     Ok(())
 }

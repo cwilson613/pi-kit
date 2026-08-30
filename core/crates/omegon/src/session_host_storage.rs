@@ -210,7 +210,7 @@ struct ObservationRecordV1 {
     arguments_ref: ContentRef,
     cwd: PathBuf,
     result: ObservationResultV1,
-    origin: String,
+    origin: omegon_traits::ToolExecutionOrigin,
     observed_at: String,
     legacy_compatibility_import: bool,
 }
@@ -343,6 +343,9 @@ fn append_observation_internal(
     observation: &OperatorToolObservation,
     legacy_import: bool,
 ) -> Result<()> {
+    let mut bounded_observation = observation.clone();
+    bounded_observation.bound_in_place();
+    let observation = &bounded_observation;
     ensure_parent(&binding.snapshot)?;
     let path = observations_path(&binding.snapshot);
     let records = read_observations(binding)?;
@@ -396,7 +399,7 @@ fn append_observation_internal(
             exit_code: observation.exit_code,
             duration_ms: observation.duration_ms,
         },
-        origin: observation.origin.clone(),
+        origin: observation.origin,
         observed_at: now(),
         legacy_compatibility_import: legacy_import,
     };
@@ -1262,7 +1265,7 @@ mod tests {
             is_error: false,
             exit_code: 0,
             duration_ms: 1,
-            origin: "test".into(),
+            origin: omegon_traits::ToolExecutionOrigin::Agent,
         }
     }
 

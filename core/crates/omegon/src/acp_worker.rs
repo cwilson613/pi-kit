@@ -123,6 +123,7 @@ pub enum WorkerEvent {
     ToolStart {
         id: String,
         name: String,
+        execution_origin: omegon_traits::ToolExecutionOrigin,
         /// Raw input arguments to the tool (forwarded as ACP ToolCall.raw_input
         /// so clients can render call metadata, not just the bare tool name).
         args: Option<serde_json::Value>,
@@ -711,13 +712,18 @@ async fn worker_loop(
                             omegon_traits::AgentEvent::ThinkingChunk { text, .. } => {
                                 Some(WorkerEvent::ThinkingChunk(text))
                             }
-                            omegon_traits::AgentEvent::ToolStart { id, name, args, .. } => {
-                                Some(WorkerEvent::ToolStart {
-                                    id,
-                                    name,
-                                    args: if args.is_null() { None } else { Some(args) },
-                                })
-                            }
+                            omegon_traits::AgentEvent::ToolStart {
+                                id,
+                                name,
+                                args,
+                                execution_origin,
+                                ..
+                            } => Some(WorkerEvent::ToolStart {
+                                id,
+                                name,
+                                execution_origin,
+                                args: if args.is_null() { None } else { Some(args) },
+                            }),
                             omegon_traits::AgentEvent::ToolEnd {
                                 id,
                                 result,
@@ -728,7 +734,7 @@ async fn worker_loop(
                                 success: !is_error,
                                 details: result.details,
                             }),
-                            omegon_traits::AgentEvent::ToolUpdate { id, partial } => {
+                            omegon_traits::AgentEvent::ToolUpdate { id, partial, .. } => {
                                 if partial.tail.is_empty() {
                                     None
                                 } else {

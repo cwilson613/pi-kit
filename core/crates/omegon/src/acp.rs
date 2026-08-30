@@ -1617,7 +1617,12 @@ impl OmegonAcpAgent {
                                 .await;
                             }
                         }
-                        Ok(WorkerEvent::ToolStart { id, name, args }) => {
+                        Ok(WorkerEvent::ToolStart {
+                            id,
+                            name,
+                            execution_origin,
+                            args,
+                        }) => {
                             if is_plan_tool(&name) {
                                 native_plan_tool_ids.insert(id);
                                 continue;
@@ -1631,6 +1636,7 @@ impl OmegonAcpAgent {
                                 AcpConversationEvent::ToolStart {
                                     id: id.clone(),
                                     name: name.clone(),
+                                    execution_origin,
                                     args_summary: surface_args_summary,
                                     detail_args: surface_detail_args,
                                 },

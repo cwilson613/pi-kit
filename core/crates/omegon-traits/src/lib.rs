@@ -1479,6 +1479,8 @@ pub enum IpcEventPayload {
         name: String,
         #[serde(default)]
         provenance: ToolProvenance,
+        #[serde(default, skip_serializing_if = "ToolExecutionOrigin::is_agent")]
+        execution_origin: ToolExecutionOrigin,
         /// Serialized tool arguments. May be large; clients may truncate for display.
         args: Value,
     },
@@ -1494,6 +1496,8 @@ pub enum IpcEventPayload {
     ToolUpdated {
         id: String,
         partial: PartialToolResult,
+        #[serde(default, skip_serializing_if = "ToolExecutionOrigin::is_agent")]
+        execution_origin: ToolExecutionOrigin,
     },
 
     #[serde(rename = "tool.ended")]
@@ -1502,6 +1506,8 @@ pub enum IpcEventPayload {
         name: String,
         #[serde(default)]
         provenance: ToolProvenance,
+        #[serde(default, skip_serializing_if = "ToolExecutionOrigin::is_agent")]
+        execution_origin: ToolExecutionOrigin,
         is_error: bool,
         /// Human-readable summary of the result for display purposes.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -2539,6 +2545,30 @@ pub enum ToolProvenance {
     },
 }
 
+/// Authorship boundary for a tool execution. This is distinct from
+/// [`ToolProvenance`], which identifies the implementation that supplied the
+/// tool rather than who initiated the execution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionOrigin {
+    #[default]
+    Agent,
+    BangShell,
+}
+
+impl ToolExecutionOrigin {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::BangShell => "bang_shell",
+        }
+    }
+
+    pub const fn is_agent(&self) -> bool {
+        matches!(self, Self::Agent)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait Feature: Send + Sync {
@@ -3210,10 +3240,12 @@ pub enum AgentEvent {
         name: String,
         args: Value,
         provenance: ToolProvenance,
+        execution_origin: ToolExecutionOrigin,
     },
     ToolUpdate {
         id: String,
         partial: PartialToolResult,
+        execution_origin: ToolExecutionOrigin,
     },
     ToolEnd {
         id: String,
@@ -3221,6 +3253,7 @@ pub enum AgentEvent {
         result: ToolResult,
         is_error: bool,
         provenance: ToolProvenance,
+        execution_origin: ToolExecutionOrigin,
     },
     /// Managed background work reached success or failure. Runtime coordinators
     /// may use this to resume a pending task without operator mediation.
@@ -3842,12 +3875,45 @@ mod tests {
             id: "call-1".into(),
             name: "bash".into(),
             provenance: ToolProvenance::BuiltIn,
+            execution_origin: ToolExecutionOrigin::BangShell,
             is_error: false,
             summary: Some("exit 0".into()),
         };
         let raw = rmp_serde::to_vec_named(&ev).unwrap();
         let decoded: IpcEventPayload = rmp_serde::from_slice(&raw).unwrap();
         assert_eq!(decoded, ev);
+    }
+
+    #[test]
+    fn ipc_tool_origin_defaults_for_legacy_payloads_and_serializes_when_operator_run() {
+        let legacy = serde_json::json!({
+            "name": "tool.ended",
+            "data": {
+                "id": "call-1",
+                "name": "bash",
+                "provenance": {"kind": "built_in"},
+                "is_error": false,
+                "summary": null
+            }
+        });
+        let decoded: IpcEventPayload = serde_json::from_value(legacy).unwrap();
+        assert!(matches!(
+            decoded,
+            IpcEventPayload::ToolEnded {
+                execution_origin: ToolExecutionOrigin::Agent,
+                ..
+            }
+        ));
+
+        let operator = IpcEventPayload::ToolStarted {
+            id: "opaque".into(),
+            name: "bash".into(),
+            provenance: ToolProvenance::BuiltIn,
+            execution_origin: ToolExecutionOrigin::BangShell,
+            args: serde_json::json!({"command":"pwd"}),
+        };
+        let value = serde_json::to_value(operator).unwrap();
+        assert_eq!(value["data"]["execution_origin"], "bang_shell");
     }
 
     #[test]

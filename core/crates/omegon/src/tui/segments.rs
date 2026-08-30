@@ -1267,6 +1267,8 @@ pub fn format_duration_compact(ms: u64) -> String {
 /// never blocking construction.
 #[derive(Debug, Clone, Default)]
 pub struct SegmentMeta {
+    /// Authorship boundary for tool execution; agent is the compatibility default.
+    pub execution_origin: omegon_traits::ToolExecutionOrigin,
     /// Wall-clock time this segment was created.
     pub timestamp: Option<std::time::SystemTime>,
     /// Provider that generated this content (e.g. "anthropic", "ollama").
@@ -1726,7 +1728,7 @@ impl<'a> ProjectConversationSegment<'a> for Segment {
             }
             SegmentContent::TurnSeparator => ConversationSegmentKind::Separator,
         };
-        ConversationSegmentProjection::new(kind)
+        ConversationSegmentProjection::new(kind).with_execution_origin(self.meta.execution_origin)
     }
 }
 

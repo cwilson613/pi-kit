@@ -61,4 +61,4 @@ Update session snapshot conversion rather than directly serializing `AgentMessag
 
 ## Validation
 
-Focused tests cover canonical projection, decay, provider-shape repair, session round-trip, event provenance, and live/completed renderer parity. Final gates are `cargo test -p omegon --locked`, `just lint`, `just test-rust`, and `just link`.
+Focused tests cover canonical projection, decay, provider-shape repair, session round-trip, event provenance, and live/completed renderer parity. Final gates are `cargo test -p omegon --locked`, `just lint`, and `just test-rust`. Installation is unnecessary because validation does not depend on installed launchers or assets.

@@ -884,7 +884,7 @@ impl Feature for AuditLog {
 
             BusEvent::AgentEventEmitted { event } => {
                 let event_kind = agent_event_kind(event);
-                if let omegon_traits::AgentEvent::ToolUpdate { id, partial } = event.as_ref() {
+                if let omegon_traits::AgentEvent::ToolUpdate { id, partial, .. } = event.as_ref() {
                     let stats = self.tool_updates.entry(id.clone()).or_default();
                     stats.count = stats.count.saturating_add(1);
                     if partial.progress.heartbeat {
@@ -898,6 +898,36 @@ impl Feature for AuditLog {
                     }
                     stats.last_update_ms = Some(ts);
                     stats.max_tail_chars = stats.max_tail_chars.max(partial.tail.chars().count());
+                }
+                let tool_origin = match event.as_ref() {
+                    omegon_traits::AgentEvent::ToolStart {
+                        id,
+                        execution_origin,
+                        ..
+                    }
+                    | omegon_traits::AgentEvent::ToolUpdate {
+                        id,
+                        execution_origin,
+                        ..
+                    }
+                    | omegon_traits::AgentEvent::ToolEnd {
+                        id,
+                        execution_origin,
+                        ..
+                    } => Some((id, execution_origin)),
+                    _ => None,
+                };
+                if let Some((id, execution_origin)) = tool_origin {
+                    self.append(&AuditEntry {
+                        ts,
+                        session: session.clone(),
+                        kind: "tool_execution_origin".into(),
+                        data: serde_json::json!({
+                            "id": id,
+                            "execution_origin": execution_origin,
+                            "lifecycle": event_kind,
+                        }),
+                    });
                 }
                 if semantic_backed_agent_event(event) {
                     return vec![];

@@ -122,6 +122,21 @@ jobs:
           OMEGON_NERD_FONT: "1"
         run: cargo test -p omegon --tests -- --nocapture
 
+  unix-terminal-detachment:
+    name: Unix terminal detachment acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run real PTY terminal-loss acceptance
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: cargo test -p omegon --test terminal_detachment_pty --locked real_terminal_detachment_terminalizes_idle_and_active_sessions -- --ignored --exact --test-threads=1 --nocapture
+
   session-recovery-campaign:
     name: Session recovery campaign (${{ matrix.os }})
     strategy:

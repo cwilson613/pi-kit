@@ -300,6 +300,7 @@ impl App {
                 name,
                 args,
                 provenance,
+                execution_origin,
             } => {
                 self.working_verb = spinner::next_verb();
                 self.instrument_panel.tool_started(&name);
@@ -374,10 +375,10 @@ impl App {
                 self.conversation.push_tool_start_with_expanded(
                     &id,
                     &name,
-                    provenance,
+                    (provenance, execution_origin),
                     args_summary.as_deref(),
                     detail_args.as_deref(),
-                    id.starts_with("shell-"),
+                    execution_origin == omegon_traits::ToolExecutionOrigin::BangShell,
                 );
                 self.conversation.stamp_meta(self.current_meta());
                 self.tool_calls += 1;
@@ -455,6 +456,7 @@ impl App {
                 result,
                 is_error,
                 provenance,
+                execution_origin: _,
             } => {
                 // Tool execution can mutate repository state (commit, checkout,
                 // merge, delegated worktrees). Refresh the branch affordance at
@@ -985,7 +987,11 @@ impl App {
                     _ => {}
                 }
             }
-            AgentEvent::ToolUpdate { id, partial } => {
+            AgentEvent::ToolUpdate {
+                id,
+                partial,
+                execution_origin: _,
+            } => {
                 // Stash the latest streaming partial onto the matching
                 // open tool card. The conversation segment renderer
                 // picks it up via `live_partial` and displays the live

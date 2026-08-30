@@ -67,6 +67,11 @@ pub struct AcpConversationSegment {
     pub sigil: String,
     pub emphasis: String,
     pub tool_category: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "omegon_traits::ToolExecutionOrigin::is_agent"
+    )]
+    pub execution_origin: omegon_traits::ToolExecutionOrigin,
     pub complete: bool,
     pub surface: AcpSegmentSurface,
     pub kind: AcpConversationSegmentKind,
@@ -159,6 +164,7 @@ impl AcpConversationSegment {
                 .presentation
                 .tool_category
                 .map(|kind| tool_category_name(kind).to_string()),
+            execution_origin: projection.execution_origin,
             complete: segment_complete(&projection.kind),
             surface: AcpSegmentSurface::from_model(&model),
             kind,
@@ -352,6 +358,7 @@ pub enum AcpConversationEvent {
     ToolStart {
         id: String,
         name: String,
+        execution_origin: omegon_traits::ToolExecutionOrigin,
         args_summary: Option<String>,
         detail_args: Option<String>,
     },
@@ -395,6 +402,7 @@ struct ToolSurfaceState {
     sequence: u64,
     revision: u64,
     name: String,
+    execution_origin: omegon_traits::ToolExecutionOrigin,
     args_summary: Option<String>,
     detail_args: Option<String>,
     output: String,
@@ -433,9 +441,17 @@ impl AcpConversationSurfaceAdapter {
             AcpConversationEvent::ToolStart {
                 id,
                 name,
+                execution_origin,
                 args_summary,
                 detail_args,
-            } => vec![self.ingest_tool_start(id, name, args_summary, detail_args, policy, &redact)],
+            } => vec![self.ingest_tool_start(
+                id,
+                name,
+                execution_origin,
+                (args_summary, detail_args),
+                policy,
+                &redact,
+            )],
             AcpConversationEvent::ToolOutput { id, text } => self
                 .ingest_tool_output(id, text, policy, &redact)
                 .into_iter()
@@ -564,8 +580,8 @@ impl AcpConversationSurfaceAdapter {
         &mut self,
         id: String,
         name: String,
-        args_summary: Option<String>,
-        detail_args: Option<String>,
+        execution_origin: omegon_traits::ToolExecutionOrigin,
+        args: (Option<String>, Option<String>),
         policy: SurfaceRedaction,
         redact: &F,
     ) -> AcpSurfaceUpdate
@@ -580,8 +596,9 @@ impl AcpConversationSurfaceAdapter {
                 sequence: identity.sequence,
                 revision: 0,
                 name,
-                args_summary,
-                detail_args,
+                execution_origin,
+                args_summary: args.0,
+                detail_args: args.1,
                 output: String::new(),
                 success: None,
                 complete: false,
@@ -659,7 +676,8 @@ impl AcpConversationSurfaceAdapter {
                     complete: state.complete,
                     expanded: false,
                 },
-            ));
+            ))
+            .with_execution_origin(state.execution_origin);
         let identity = self.identity_for(state.segment_id.clone(), state.sequence, state.revision);
         Some(AcpSurfaceUpdate {
             segment: AcpConversationSegment::from_projection(identity, &projection, policy, redact),
@@ -767,11 +785,16 @@ mod tests {
             AcpConversationEvent::ToolStart {
                 id: "runtime-tool-id".into(),
                 name: "bash".into(),
+                execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
                 args_summary: Some("echo SECRET".into()),
                 detail_args: Some("TOKEN=SECRET cargo check".into()),
             },
             SurfaceRedaction::ExternalClient,
             redact_secret,
+        );
+        assert_eq!(
+            start[0].segment.execution_origin,
+            omegon_traits::ToolExecutionOrigin::BangShell
         );
         let output = adapter.ingest(
             AcpConversationEvent::ToolOutput {

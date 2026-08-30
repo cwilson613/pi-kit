@@ -659,6 +659,34 @@ pub(crate) fn strip_terminal_noise(input: &str) -> String {
     result
 }
 
+/// Remove all terminal controls, including SGR, before output enters model or
+/// persistence text. Presentation renderers use `strip_terminal_noise` instead
+/// so supported SGR can remain visible to the operator.
+pub(crate) fn strip_terminal_controls(input: &str) -> String {
+    let input = strip_terminal_noise(input);
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            } else if chars.peek().is_some_and(|next| ('@'..='_').contains(next)) {
+                chars.next();
+            }
+            continue;
+        }
+        if !ch.is_control() || matches!(ch, '\n' | '\r' | '\t') {
+            output.push(ch);
+        }
+    }
+    output
+}
+
 // Output compression moved to tools/output_filter.rs
 
 struct Truncated {

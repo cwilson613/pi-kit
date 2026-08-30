@@ -158,6 +158,92 @@ pub struct ToolCardRenderProps<'a> {
     pub pinned: bool,
 }
 
+fn sanitize_terminal_output(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\x1b' {
+            if !ch.is_control() || matches!(ch, '\n' | '\r' | '\t') {
+                output.push(ch);
+            }
+            continue;
+        }
+
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                let mut sequence = String::from("\x1b[");
+                let mut final_byte = None;
+                for next in chars.by_ref() {
+                    sequence.push(next);
+                    if ('@'..='~').contains(&next) {
+                        final_byte = Some(next);
+                        break;
+                    }
+                }
+                if final_byte == Some('m') {
+                    output.push_str(&sequence);
+                }
+            }
+            Some(']') | Some('P' | '^' | '_' | 'X') => {
+                chars.next();
+                let mut previous = '\0';
+                for next in chars.by_ref() {
+                    if next == '\x07' || (previous == '\x1b' && next == '\\') {
+                        break;
+                    }
+                    previous = next;
+                }
+            }
+            Some(next) if ('@'..='_').contains(&next) => {
+                chars.next();
+            }
+            _ => {}
+        }
+    }
+    output
+}
+
+pub(crate) fn terminal_output_lines<'a>(
+    output: &str,
+    bg: Color,
+    theme: &dyn Theme,
+) -> Vec<Line<'a>> {
+    use ansi_to_tui::IntoText as _;
+
+    let sanitized = sanitize_terminal_output(output);
+    if let Ok(text) = sanitized.as_str().into_text() {
+        return text
+            .lines
+            .into_iter()
+            .map(|line| {
+                Line::from(
+                    line.spans
+                        .into_iter()
+                        .map(|mut span| {
+                            span.style = span.style.bg(bg);
+                            if span.style.fg.is_none() {
+                                span.style = span.style.fg(theme.muted());
+                            }
+                            span
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+    }
+
+    sanitized
+        .lines()
+        .map(|line| {
+            Line::from(Span::styled(
+                strip_terminal_control(line),
+                Style::default().fg(theme.muted()).bg(bg),
+            ))
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_tool_live_progress_section(
     lines: &mut Vec<Line<'_>>,
@@ -230,40 +316,9 @@ pub(crate) fn append_tool_live_progress_section(
         let take = tail_lines.len().min(tail_budget);
         let start = tail_lines.len().saturating_sub(take);
         let visible_tail: String = tail_lines[start..].join("\n");
-        let has_ansi = visible_tail.contains('\x1b');
-        let tail_style = Style::default().fg(theme.muted()).bg(bg);
-
-        if has_ansi {
-            use ansi_to_tui::IntoText as _;
-            if let Ok(text) = visible_tail.into_text() {
-                for line in text.lines {
-                    let spans: Vec<Span<'_>> = line
-                        .spans
-                        .into_iter()
-                        .map(|mut s| {
-                            s.style = s.style.bg(bg);
-                            if s.style.fg.is_none() {
-                                s.style = s.style.fg(theme.muted());
-                            }
-                            s
-                        })
-                        .collect();
-                    lines.push(Line::from(spans));
-                    live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
-                }
-            } else {
-                for line in &tail_lines[start..] {
-                    let stripped = strip_terminal_control(line);
-                    lines.push(Line::from(Span::styled(stripped, tail_style)));
-                    live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
-                }
-            }
-        } else {
-            for line in &tail_lines[start..] {
-                let stripped: String = line.chars().filter(|c| !c.is_control()).collect();
-                lines.push(Line::from(Span::styled(stripped, tail_style)));
-                live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
-            }
+        for line in terminal_output_lines(&visible_tail, bg, theme) {
+            lines.push(line);
+            live_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
         }
     }
 }
@@ -329,30 +384,28 @@ pub(crate) fn append_generic_result_section(
         let show = result_lines.len().min(max_lines);
         let display_text = result_lines[..show].join("\n");
 
-        if name == "bash" && !is_error && display_text.contains('\x1b') {
-            use ansi_to_tui::IntoText as _;
-            let sanitized = strip_terminal_control(&display_text);
-            let parsed = display_text
-                .into_text()
-                .or_else(|_| sanitized.as_str().into_text());
-            if let Ok(text) = parsed {
-                for line in text.lines {
-                    let spans = line
-                        .spans
-                        .into_iter()
-                        .map(|mut span| {
-                            span.style = span.style.bg(bg);
-                            if span.style.fg.is_none() {
-                                span.style = span.style.fg(t.muted());
-                            }
-                            span
-                        })
-                        .collect::<Vec<_>>();
-                    lines.push(Line::from(spans));
-                    result_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
-                }
-                return;
+        if name == "bash" {
+            for line in terminal_output_lines(&display_text, bg, t) {
+                lines.push(line);
+                result_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
             }
+            if result_lines.len() > show {
+                let hint = if expanded {
+                    format!("  ── {} lines ── Tab to collapse", result_lines.len())
+                } else {
+                    format!(
+                        "  ── {} more lines ── {}",
+                        result_lines.len() - show,
+                        expand_hint_cell().text
+                    )
+                };
+                lines.push(Line::from(Span::styled(
+                    hint,
+                    Style::default().fg(t.accent_muted()).bg(bg),
+                )));
+                result_row_fills.push((lines.len().saturating_sub(1) as u16, bg));
+            }
+            return;
         }
 
         // Try syntax highlighting based on file extension from args
@@ -1449,6 +1502,30 @@ mod tests {
             "result should render: {rendered}"
         );
         assert!(!fills.is_empty());
+    }
+
+    #[test]
+    fn terminal_output_helper_is_safe_neutral_and_identical_for_live_and_complete() {
+        let theme = crate::tui::theme::Alpharius;
+        let bg = Color::Reset;
+        let output = "plain \x1b[31mred\x1b[0m\x1b]0;hidden\x07 end\x1b[broken";
+        let live = terminal_output_lines(output, bg, &theme);
+        let complete = terminal_output_lines(output, bg, &theme);
+        assert_eq!(live, complete);
+        let rendered = live
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(!rendered.contains('\x1b'));
+        assert!(!rendered.contains("hidden"));
+        assert!(rendered.contains("plain red end"));
+        assert!(
+            live.iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| span.style.fg == Some(Color::Red))
+        );
+        assert_eq!(live[0].spans[0].style.fg, Some(theme.muted()));
     }
 
     #[test]

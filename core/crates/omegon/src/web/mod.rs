@@ -764,11 +764,13 @@ impl WebState {
                 name,
                 args,
                 provenance,
+                execution_origin,
             } => {
                 let redacted_args = self.redact_web_value(args);
                 if let Some(existing) = tools.iter_mut().find(|tool| tool.id == *id) {
                     existing.name = name.clone();
                     existing.provenance = provenance.clone();
+                    existing.execution_origin = *execution_origin;
                     existing.status = "running".to_string();
                     existing.args = redacted_args;
                     existing.output_tail = None;
@@ -781,6 +783,7 @@ impl WebState {
                         id: id.clone(),
                         name: name.clone(),
                         provenance: provenance.clone(),
+                        execution_origin: *execution_origin,
                         status: "running".to_string(),
                         args: redacted_args,
                         output_tail: None,
@@ -791,8 +794,13 @@ impl WebState {
                     });
                 }
             }
-            AgentEvent::ToolUpdate { id, partial } => {
+            AgentEvent::ToolUpdate {
+                id,
+                partial,
+                execution_origin,
+            } => {
                 if let Some(tool) = tools.iter_mut().rev().find(|tool| tool.id == *id) {
+                    tool.execution_origin = *execution_origin;
                     if !partial.tail.is_empty() {
                         tool.output_tail = Some(self.redact_web_text(&partial.tail));
                     }
@@ -806,6 +814,7 @@ impl WebState {
                 result,
                 is_error,
                 provenance,
+                execution_origin,
             } => {
                 let summary = result
                     .content
@@ -816,6 +825,7 @@ impl WebState {
                 if let Some(tool) = tools.iter_mut().rev().find(|tool| tool.id == *id) {
                     tool.name = name.clone();
                     tool.provenance = provenance.clone();
+                    tool.execution_origin = *execution_origin;
                     tool.status = if *is_error { "failed" } else { "completed" }.to_string();
                     tool.result_summary = summary;
                     tool.is_error = *is_error;
@@ -824,6 +834,7 @@ impl WebState {
                         id: id.clone(),
                         name: name.clone(),
                         provenance: provenance.clone(),
+                        execution_origin: *execution_origin,
                         status: if *is_error { "failed" } else { "completed" }.to_string(),
                         args: serde_json::Value::Null,
                         output_tail: None,
@@ -2665,10 +2676,12 @@ mod tests {
             id: "tool-1".into(),
             name: "bash".into(),
             provenance: omegon_traits::ToolProvenance::BuiltIn,
+            execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
             args: serde_json::json!({"command":"pwd"}),
         });
         state.fold_conversation_event(&omegon_traits::AgentEvent::ToolUpdate {
             id: "tool-1".into(),
+            execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
             partial: omegon_traits::PartialToolResult {
                 tail: "workspace".into(),
                 progress: omegon_traits::ToolProgress {
@@ -2683,6 +2696,7 @@ mod tests {
             id: "tool-1".into(),
             name: "bash".into(),
             provenance: omegon_traits::ToolProvenance::BuiltIn,
+            execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
             result: omegon_traits::ToolResult {
                 content: vec![omegon_traits::ContentBlock::Text {
                     text: "done".into(),
@@ -2719,10 +2733,12 @@ mod tests {
             id: "tool-secret".into(),
             name: "bash".into(),
             provenance: omegon_traits::ToolProvenance::BuiltIn,
+            execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
             args: serde_json::json!({"command":"curl -H 'Authorization: Bearer super-secret-token'"}),
         });
         state.fold_conversation_event(&omegon_traits::AgentEvent::ToolUpdate {
             id: "tool-secret".into(),
+            execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
             partial: omegon_traits::PartialToolResult {
                 tail: "using super-secret-token".into(),
                 progress: omegon_traits::ToolProgress::default(),
@@ -2733,6 +2749,7 @@ mod tests {
             id: "tool-secret".into(),
             name: "bash".into(),
             provenance: omegon_traits::ToolProvenance::BuiltIn,
+            execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
             result: omegon_traits::ToolResult {
                 content: vec![omegon_traits::ContentBlock::Text {
                     text: "result contained super-secret-token".into(),
@@ -2760,6 +2777,7 @@ mod tests {
                 id: format!("tool-{idx}"),
                 name: "bash".into(),
                 provenance: omegon_traits::ToolProvenance::BuiltIn,
+                execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
                 args: serde_json::json!({}),
             });
         }

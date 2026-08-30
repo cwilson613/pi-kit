@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Operator `!` shell executions now persist as bounded, provenance-bearing conversation observations and remain visible to subsequent and restored model turns without fabricated assistant tool calls. TUI, ACP, WebSocket, IPC, and audit projections carry explicit `bang_shell` origin, while live and completed Bash output share sanitized ANSI-aware terminal rendering instead of Bash-source highlighting.
+
 - Distribution composition now has one target-specific machine-readable policy for release archives, direct installs, Homebrew, Nix, OCI, and retained unsupported npm scaffolding. Release and package manifests carry additive host-profile, composition-class, `core:*` inventory, and SDK-extension posture metadata; Nix and OCI explicitly report host-only codescan absence.
 
 - Rust test recipes now select Omegon's canonical Nerd Font glyph set explicitly, matching CI and preventing terminal-dependent TUI snapshot failures in local landing gates.
@@ -45,6 +47,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 - Extracted domains in the composition matrix must now declare machine-checked kernel absence, additive restoration, and accumulated full-product evidence. The policy rejects missing or aliased rows, service and extension identity mismatches, retained absence after restoration, and extensions dropped from the full product.
 
 ### Fixed
+
+- Unix terminal hangup now exits through the supervisor-owned terminal-loss boundary instead of racing a queued quit command, ensuring active turns settle as `revoked/terminal_lost`. The real PTY acceptance uses an admitted loopback inference route and waits for an in-flight provider request before detachment.
+
+- Native-extension readiness now reserves part of short startup deadlines for mandatory tool discovery when optional initialization metadata times out, and timeout diagnostics include child process state and bounded stderr context.
 
 - Native extension snapshots now admit release-sized executables within the existing aggregate size bound, and Nix source filtering retains the package scripts and declared content assets required during installation.
 

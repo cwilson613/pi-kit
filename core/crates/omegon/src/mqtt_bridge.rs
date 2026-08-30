@@ -152,15 +152,22 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
             name,
             args,
             provenance,
+            execution_origin,
         } => Some(IpcEventPayload::ToolStarted {
             id: id.clone(),
             name: name.clone(),
             provenance: provenance.clone(),
+            execution_origin: *execution_origin,
             args: args.clone(),
         }),
-        AgentEvent::ToolUpdate { id, partial } => Some(IpcEventPayload::ToolUpdated {
+        AgentEvent::ToolUpdate {
+            id,
+            partial,
+            execution_origin,
+        } => Some(IpcEventPayload::ToolUpdated {
             id: id.clone(),
             partial: partial.clone(),
+            execution_origin: *execution_origin,
         }),
         AgentEvent::BackgroundOperationCompleted { .. } => None,
         AgentEvent::ToolEnd {
@@ -169,6 +176,7 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
             result,
             is_error,
             provenance,
+            execution_origin,
         } => {
             let summary: String = result
                 .content
@@ -183,6 +191,7 @@ fn project_event(ev: &AgentEvent) -> Option<IpcEventPayload> {
                 id: id.clone(),
                 name: name.clone(),
                 provenance: provenance.clone(),
+                execution_origin: *execution_origin,
                 is_error: *is_error,
                 summary: if summary.is_empty() {
                     None

@@ -2327,6 +2327,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             name,
             args,
             provenance,
+            execution_origin,
         } => json!({
             "type": "tool_start",
             "event_name": "tool.started",
@@ -2334,9 +2335,14 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             "name": name,
             "tool_name": name,
             "provenance": provenance,
+            "execution_origin": execution_origin,
             "args": args,
         }),
-        AgentEvent::ToolUpdate { id, partial } => {
+        AgentEvent::ToolUpdate {
+            id,
+            partial,
+            execution_origin,
+        } => {
             // Surface the typed shape so the dashboard can render live
             // tail + progress instead of guessing from raw text. Heartbeats
             // arrive with `tail` empty and `heartbeat: true` — consumers can
@@ -2349,6 +2355,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
                 "partial": escape_html(&partial.tail),
                 "heartbeat": partial.progress.heartbeat,
                 "elapsed_ms": partial.progress.elapsed_ms,
+                "execution_origin": execution_origin,
             });
             if let Some(phase) = &partial.progress.phase {
                 payload["phase"] = json!(phase);
@@ -2381,6 +2388,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
             result,
             is_error,
             provenance,
+            execution_origin,
         } => {
             // Serialize ALL content blocks, not just the first
             let texts: Vec<&str> = result.content.iter().filter_map(|c| c.as_text()).collect();
@@ -2392,6 +2400,7 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
                 "name": name,
                 "tool_name": name,
                 "provenance": provenance,
+                "execution_origin": execution_origin,
                 "result": escape_html(&result_text),
                 "is_error": is_error,
                 "block_count": result.content.len(),
@@ -3201,6 +3210,7 @@ mod tests {
             id: "tc1".into(),
             name: "bash".into(),
             provenance: omegon_traits::ToolProvenance::BuiltIn,
+            execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
             result: omegon_traits::ToolResult {
                 content: vec![
                     omegon_traits::ContentBlock::Text {
@@ -3215,6 +3225,7 @@ mod tests {
             is_error: false,
         };
         let json = serialize_agent_event(&event);
+        assert_eq!(json["execution_origin"], "bang_shell");
         assert_eq!(json["type"], "tool_end");
         assert_eq!(json["event_name"], "tool.ended");
         let result = json["result"].as_str().unwrap();
@@ -3405,16 +3416,19 @@ mod tests {
                 id: "1".into(),
                 name: "read".into(),
                 provenance: omegon_traits::ToolProvenance::BuiltIn,
+                execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
                 args: serde_json::json!({}),
             },
             AgentEvent::ToolUpdate {
                 id: "1".into(),
+                execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
                 partial: omegon_traits::PartialToolResult::content("partial", 100),
             },
             AgentEvent::ToolEnd {
                 id: "1".into(),
                 name: "read".into(),
                 provenance: omegon_traits::ToolProvenance::BuiltIn,
+                execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
                 result: omegon_traits::ToolResult {
                     content: vec![omegon_traits::ContentBlock::Text { text: "ok".into() }],
                     details: serde_json::json!(null),

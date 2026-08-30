@@ -17,6 +17,9 @@ import tarfile
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import package_release
+
 TARGETS = (
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -30,10 +33,25 @@ PACKAGE_EXECUTABLES = ("omegon", "omegon-maintain")
 RESIDENT_LOCKS = tuple(f"{name}.composition-lock.json" for name in PACKAGE_EXECUTABLES)
 CONTENT_PREFIX = "share/omegon/content-packs/omegon-shipped/"
 CONTENT_MANIFEST = f"{CONTENT_PREFIX}content-pack.toml"
-CODESCAN_PREFIX = "share/omegon/extensions/omegon-codescan/"
-CODESCAN_MANIFEST = f"{CODESCAN_PREFIX}manifest.toml"
-CODESCAN_EXECUTABLE = f"{CODESCAN_PREFIX}target/release/omegon-codescan"
+CODESCAN_PREFIX = package_release.CODESCAN_PREFIX
+CODESCAN_MANIFEST = package_release.CODESCAN_MANIFEST
+CODESCAN_EXECUTABLE = package_release.CODESCAN_EXECUTABLE
+CODESCAN_COMPONENT_LOCK = package_release.CODESCAN_COMPONENT_LOCK
 DOMAIN_PREFIX = b"omegon-maint-v1\0"
+FULL_PRODUCT_COMPOSITION = {
+    "host_profile": "full-product",
+    "composition_class": "full-product",
+    "core_components": [
+        {"component_id": "core:codescan", "wire_manifest_id": "omegon-codescan"}
+    ],
+    "sdk_extension_posture": "operator-managed",
+}
+HOST_ONLY_COMPOSITION = {
+    "host_profile": "full-product",
+    "composition_class": "host-only",
+    "core_components": [],
+    "sdk_extension_posture": "operator-managed",
+}
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_BYTES = 1024 * 1024 * 1024
 MAX_AGGREGATE_BYTES = 4 * 1024 * 1024 * 1024
@@ -84,6 +102,7 @@ def build_manifest(
     checksums_path: Path,
     repo: str,
     commit: str,
+    package_manifest_dir: Path | None = None,
 ) -> dict[str, Any]:
     version = tag.removeprefix("v")
     channel = infer_channel(tag)
@@ -96,16 +115,34 @@ def build_manifest(
             continue
         asset = assets[target]
         filename = asset["filename"]
+        component_evidence: dict[str, Any] = {}
+        if package_manifest_dir is not None:
+            package_path = package_manifest_dir / f"{filename}.manifest.json"
+            if not package_path.is_file():
+                raise ValueError(f"Release asset lacks package manifest: {filename}")
+            package_manifest = json.loads(package_path.read_text())
+            validate_product_component_evidence(package_manifest)
+            if (
+                package_manifest.get("archive_digest") != asset["sha256"]
+                or package_manifest.get("target") != target
+                or package_manifest.get("archive_filename") != filename
+            ):
+                raise ValueError(f"Release asset and package manifest disagree: {filename}")
+            component_evidence = {
+                "product_component_locks": package_manifest["product_component_locks"]
+            }
         manifest_assets.append(
             {
                 **asset,
+                **FULL_PRODUCT_COMPOSITION,
+                **component_evidence,
                 "url": f"{release_base}/{filename}",
                 "signature_url": f"{release_base}/{filename}.sig",
                 "certificate_url": f"{release_base}/{filename}.pem",
             }
         )
 
-    return {
+    result = {
         "version": version,
         "tag": tag,
         "channel": channel,
@@ -116,6 +153,7 @@ def build_manifest(
         "third_party_notices_url": f"{release_base}/THIRD_PARTY_NOTICES.md",
         "assets": manifest_assets,
     }
+    return result
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
@@ -161,7 +199,7 @@ def build_package_manifest(
                 member.name in PACKAGE_EXECUTABLES
                 or member.name in RESIDENT_LOCKS
                 or member.name.startswith(CONTENT_PREFIX)
-                or member.name in (CODESCAN_MANIFEST, CODESCAN_EXECUTABLE)
+                or member.name in (CODESCAN_MANIFEST, CODESCAN_EXECUTABLE, CODESCAN_COMPONENT_LOCK)
             )
             if not member.isfile() or not allowed or member.name in seen:
                 raise ValueError(f"Invalid package archive member: {member.name}")
@@ -193,13 +231,30 @@ def build_package_manifest(
                 }
             )
             seen.add(member.name)
-    if not set(PACKAGE_EXECUTABLES + RESIDENT_LOCKS).issubset(seen) or CONTENT_MANIFEST not in seen:
-        raise ValueError("Package archive must contain both root executables, resident locks, and the content-pack manifest")
+    required = set(PACKAGE_EXECUTABLES + RESIDENT_LOCKS)
+    if not required.issubset(seen) or CONTENT_MANIFEST not in seen:
+        raise ValueError(
+            "Package archive must contain both root executables, resident locks, and the content-pack manifest"
+        )
+    codescan_members = set(package_release.CODESCAN_MEMBERS)
+    if seen & codescan_members not in (set(), codescan_members):
+        raise ValueError("Package archive must contain both codescan sidecar members or neither")
+    package_composition = (
+        FULL_PRODUCT_COMPOSITION if codescan_members <= seen else HOST_ONLY_COMPOSITION
+    )
     members.sort(key=lambda member: member["path"])
 
     archive_digest = sha256_file(archive)
     git_ref = f"refs/tags/{tag}"
     member_by_path = {member["path"]: member for member in members}
+    product_component_locks = []
+    if package_composition is FULL_PRODUCT_COMPOSITION:
+        with tarfile.open(archive, mode="r:gz") as package:
+            stream = package.extractfile(CODESCAN_COMPONENT_LOCK)
+            if stream is None:
+                raise ValueError("Full-product package lacks codescan component evidence")
+            component_lock = json.load(stream)
+        product_component_locks = [component_lock]
     composition_locks = [
         {
             "artifact_digest": member_by_path[executable]["digest"],
@@ -227,11 +282,13 @@ def build_package_manifest(
             "targets": [target],
         }
     )
-    return {
+    result = {
         "archive_digest": archive_digest,
         "archive_filename": archive.name,
         "commit": commit,
+        **package_composition,
         "composition_locks": composition_locks,
+        "product_component_locks": product_component_locks,
         "git_ref": git_ref,
         "issuer": "https://token.actions.githubusercontent.com",
         "members": members,
@@ -244,6 +301,54 @@ def build_package_manifest(
         "version": version,
         "workflow_identity": f"https://github.com/{repo}/.github/workflows/release.yml@{git_ref}",
     }
+    validate_product_component_evidence(result)
+    return result
+
+
+def validate_product_component_evidence(manifest: dict[str, Any]) -> None:
+    components = manifest.get("product_component_locks")
+    if manifest.get("composition_class") != "full-product":
+        if components:
+            raise ValueError("Host-only package cannot claim product-component ownership")
+        return
+    if not isinstance(components, list) or len(components) != 1:
+        raise ValueError("Full-product package requires exactly one product-component lock")
+    component = components[0]
+    members = {member["path"]: member for member in manifest.get("members", [])}
+    workflow = manifest.get("workflow_identity")
+    expected = {
+        "component_id": "core:codescan",
+        "wire_manifest_id": "omegon-codescan",
+        "manifest_path": CODESCAN_MANIFEST,
+        "executable_path": CODESCAN_EXECUTABLE,
+        "target": manifest.get("target"),
+        "protocol_minimum": 1,
+        "protocol_maximum": 1,
+        "protocol_version": 1,
+        "fallback": "typed_unavailable",
+        "schema_version": 1,
+    }
+    if any(component.get(key) != value for key, value in expected.items()):
+        raise ValueError("Product-component lock identity, target, protocol, or fallback is invalid")
+    manifest_member = members.get(CODESCAN_MANIFEST)
+    executable_member = members.get(CODESCAN_EXECUTABLE)
+    lock_member = members.get(CODESCAN_COMPONENT_LOCK)
+    if not manifest_member or not executable_member or not lock_member:
+        raise ValueError("Product-component lock is not backed by exact package members")
+    if component.get("manifest_digest") != manifest_member.get("digest"):
+        raise ValueError("Product-component manifest digest does not match package inventory")
+    if component.get("executable_digest") != executable_member.get("digest"):
+        raise ValueError("Product-component executable digest does not match package inventory")
+    canonical_lock = package_release.canonical_json(component)
+    if hashlib.sha256(canonical_lock).hexdigest() != lock_member.get("digest"):
+        raise ValueError("Product-component lock member differs from signed component evidence")
+    signing = component.get("signing_identity")
+    if not isinstance(signing, dict) or signing != {
+        "issuer": manifest.get("issuer"),
+        "verification": "required",
+        "workflow_identity": workflow,
+    }:
+        raise ValueError("Product-component signing authority does not match package authority")
 
 
 def write_canonical_json(path: Path, data: dict[str, Any]) -> None:
@@ -326,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
     generate.add_argument("--output", type=Path, required=True)
     generate.add_argument("--repo", required=True)
     generate.add_argument("--commit", required=True)
+    generate.add_argument("--package-manifest-dir", type=Path)
 
     package = subparsers.add_parser(
         "generate-package", help="Generate a canonical PackageManifestV1"
@@ -350,6 +456,7 @@ def main(argv: list[str] | None = None) -> int:
                 checksums_path=args.checksums,
                 repo=args.repo,
                 commit=args.commit,
+                package_manifest_dir=args.package_manifest_dir,
             )
             write_json(args.output, manifest)
         elif args.command == "generate-package":

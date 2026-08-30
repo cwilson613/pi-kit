@@ -1340,6 +1340,10 @@ pub struct Profile {
     /// existing behavior: installed enabled extensions are considered loadable.
     #[serde(default, skip_serializing_if = "ProfileExtensions::is_empty")]
     pub extensions: ProfileExtensions,
+    /// Release-coupled product component activation requests. Runtime admission
+    /// consumes the separately resolved policy in later composition stages.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub components: BTreeMap<String, crate::component_policy::ComponentSwitch>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1617,7 +1621,13 @@ impl Profile {
         }
         let mut profile = self.clone();
         profile.normalize_permissions();
+        profile.migrate_legacy_codescan_deny();
         let json = serde_json::to_string_pretty(&profile)?;
+        crate::component_policy::parse_profile_json(
+            path,
+            &json,
+            &crate::component_policy::ComponentCatalog::product_v1(),
+        )?;
         crate::filelock::atomic_write_locked(path, json.as_bytes())?;
         tracing::debug!(path = %path.display(), label, "profile saved");
         Ok(())
@@ -1758,6 +1768,24 @@ impl Profile {
         self.permissions
             .trusted_directory_grants
             .retain(|grant| dirs.iter().any(|dir| dir.eq_ignore_ascii_case(&grant.path)));
+    }
+
+    fn migrate_legacy_codescan_deny(&mut self) {
+        let had_legacy_deny = self
+            .extensions
+            .disabled
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("omegon-codescan"));
+        if !had_legacy_deny {
+            return;
+        }
+        self.extensions
+            .disabled
+            .retain(|name| !name.eq_ignore_ascii_case("omegon-codescan"));
+        self.components.insert(
+            "core:codescan".into(),
+            crate::component_policy::ComponentSwitch { enabled: false },
+        );
     }
 
     /// Apply profile to settings (called at startup).
@@ -2240,9 +2268,16 @@ impl ProfileRegistry {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let Ok(profile) = serde_json::from_str::<Profile>(&content) else {
-                tracing::warn!(path = %path.display(), "profile registry entry could not be parsed");
-                continue;
+            let profile = match crate::component_policy::parse_profile_json(
+                &path,
+                &content,
+                &crate::component_policy::ComponentCatalog::product_v1(),
+            ) {
+                Ok(profile) => profile,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "profile registry entry could not be validated");
+                    continue;
+                }
             };
             self.entries.push(ProfileRegistryEntry {
                 id: stem.to_string(),
@@ -2267,8 +2302,16 @@ impl ProfileRegistry {
         let Ok(content) = std::fs::read_to_string(&path) else {
             return;
         };
-        let Ok(profile) = serde_json::from_str::<Profile>(&content) else {
-            return;
+        let profile = match crate::component_policy::parse_profile_json(
+            &path,
+            &content,
+            &crate::component_policy::ComponentCatalog::product_v1(),
+        ) {
+            Ok(profile) => profile,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "legacy profile could not be validated");
+                return;
+            }
         };
         self.entries.push(ProfileRegistryEntry {
             id: id.into(),

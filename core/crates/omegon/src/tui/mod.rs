@@ -9004,6 +9004,22 @@ mod slash_command_parsing_tests {
             canonical_slash_command("profile", "mqtt"),
             Some(CanonicalSlashCommand::ProfileSetMqtt(None))
         );
+        assert_eq!(
+            canonical_slash_command("profile", "component enable core:codescan"),
+            Some(CanonicalSlashCommand::ProfileComponentEnable(
+                "core:codescan".into()
+            ))
+        );
+        assert_eq!(
+            canonical_slash_command("profile", "component disable core:codescan"),
+            Some(CanonicalSlashCommand::ProfileComponentDisable(
+                "core:codescan".into()
+            ))
+        );
+        assert_eq!(
+            canonical_slash_command("profile", "components view"),
+            Some(CanonicalSlashCommand::ProfileComponentsView)
+        );
     }
 
     #[test]

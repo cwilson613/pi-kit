@@ -4,8 +4,9 @@
 /// sessions. Stored as JSON at `~/.omegon/profile.json` (global) or
 /// `.omegon/profile.json` (project-level).
 ///
-/// This schema validates the structure; rpkl evaluates it at load time
-/// without changing the on-disk JSON format.
+/// This maintained schema describes editor-facing profile vocabulary. The Rust
+/// profile parser remains runtime authority and validates against the active
+/// product component catalog.
 module Profile
 
 /// Model reference — provider:modelId pair.
@@ -51,6 +52,14 @@ class Permissions {
   /// per-operation confirmation. Paths are expanded at runtime (~ → $HOME).
   trustedDirectories: Listing<String>?
 }
+
+/// Activation request for a release-coupled core product component.
+class ComponentSwitch {
+  enabled: Boolean
+}
+
+/// Stable selectors currently accepted by the maintained profile schema.
+components: Mapping<("core:codescan"|"core:*"), ComponentSwitch>?
 
 /// Unified operator permission policy.
 permissions: Permissions?

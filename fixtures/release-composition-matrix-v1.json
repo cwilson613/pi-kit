@@ -1,5 +1,127 @@
 {
   "schema_version": 1,
+  "extracted_domains": {
+    "codescan": {
+      "service_identity": "service:codescan",
+      "extension_identity": "omegon-codescan",
+      "kernel_absence": {
+        "row": "kernel-only",
+        "evidence": {
+          "typed_unavailable": "service:codescan"
+        }
+      },
+      "additive_restoration": {
+        "row": "kernel+codescan",
+        "evidence": {
+          "restores": "service:codescan",
+          "extensions": "omegon-codescan"
+        }
+      },
+      "accumulated_product": {
+        "row": "full-product",
+        "evidence": {
+          "restores": "service:codescan",
+          "extensions": "omegon-codescan"
+        }
+      }
+    }
+  },
+  "artifact_rows": {
+    "kernel-only": {
+      "artifact_profile": "kernel-host-v1",
+      "installation_identity": "kernel-only-v1",
+      "cargo": {
+        "package": "omegon",
+        "bin": "omegon-kernel-host",
+        "default_features": false,
+        "features": ["kernel-host"]
+      },
+      "paths": ["source", "linked", "release"],
+      "extensions": [],
+      "restores": [],
+      "typed_unavailable": ["service:codescan"],
+      "probe": "core-read",
+      "positive_boundary": {
+        "dependency_roots": [
+          "anyhow",
+          "clap",
+          "omegon-codescan-contracts",
+          "omegon-native-extension-host",
+          "serde",
+          "serde_json",
+          "tokio",
+          "tokio-util"
+        ],
+        "resident_capabilities": [
+          "system:constitutional-kernel",
+          "system:default-loop",
+          "system:host-effects",
+          "feature:codescan-adapter"
+        ]
+      }
+    },
+    "kernel+codescan": {
+      "artifact_profile": "kernel-host-v1",
+      "host_artifact": "kernel-only",
+      "installation_identity": "kernel-plus-codescan-v1",
+      "paths": ["source", "linked", "release"],
+      "extensions": ["omegon-codescan"],
+      "restores": ["service:codescan"],
+      "typed_unavailable": [],
+      "probe": "codescan-search"
+    },
+    "full-product": {
+      "artifact_profile": "full-product",
+      "installation_identity": "full-product-v1",
+      "cargo": {
+        "package": "omegon",
+        "default_features": true,
+        "features": []
+      },
+      "paths": ["source", "linked", "release"],
+      "extensions": ["omegon-codescan"],
+      "restores": ["service:codescan"],
+      "typed_unavailable": [],
+      "probe": "product-inspect"
+    }
+  },
+  "distribution_policy": {
+    "schema_version": 1,
+    "core_component_catalog": {
+      "core:codescan": {
+        "wire_manifest_id": "omegon-codescan"
+      }
+    },
+    "rows": [
+      {"distribution": "release-archive", "target": "aarch64-apple-darwin", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "release-archive", "target": "x86_64-apple-darwin", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "release-archive", "target": "aarch64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "release-archive", "target": "x86_64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "release-archive", "target": "x86_64-unknown-linux-musl", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "direct-installer", "target": "aarch64-apple-darwin", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "direct-installer", "target": "x86_64-apple-darwin", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "direct-installer", "target": "aarch64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "direct-installer", "target": "x86_64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "direct-installer", "target": "x86_64-unknown-linux-musl", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "homebrew", "target": "aarch64-apple-darwin", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "homebrew", "target": "x86_64-apple-darwin", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "homebrew", "target": "aarch64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "homebrew", "target": "x86_64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "full-product", "core_components": ["core:codescan"], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}},
+      {"distribution": "nix", "target": "aarch64-apple-darwin", "host_profile": "full-product", "composition_class": "host-only", "core_components": [], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}, "non_parity": {"kind": "host-only-component-absence", "missing_core_components": ["core:codescan"], "capability_differences": [{"capability": "service:codescan", "status": "unavailable", "operator_message": "The Nix package omits packaged codescan; install and manage an SDK extension separately."}]}},
+      {"distribution": "nix", "target": "x86_64-apple-darwin", "host_profile": "full-product", "composition_class": "host-only", "core_components": [], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}, "non_parity": {"kind": "host-only-component-absence", "missing_core_components": ["core:codescan"], "capability_differences": [{"capability": "service:codescan", "status": "unavailable", "operator_message": "The Nix package omits packaged codescan; install and manage an SDK extension separately."}]}},
+      {"distribution": "nix", "target": "aarch64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "host-only", "core_components": [], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}, "non_parity": {"kind": "host-only-component-absence", "missing_core_components": ["core:codescan"], "capability_differences": [{"capability": "service:codescan", "status": "unavailable", "operator_message": "The Nix package omits packaged codescan; install and manage an SDK extension separately."}]}},
+      {"distribution": "nix", "target": "x86_64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "host-only", "core_components": [], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}, "non_parity": {"kind": "host-only-component-absence", "missing_core_components": ["core:codescan"], "capability_differences": [{"capability": "service:codescan", "status": "unavailable", "operator_message": "The Nix package omits packaged codescan; install and manage an SDK extension separately."}]}},
+      {"distribution": "oci", "target": "aarch64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "host-only", "core_components": [], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}, "non_parity": {"kind": "host-only-component-absence", "missing_core_components": ["core:codescan"], "capability_differences": [{"capability": "service:codescan", "status": "unavailable", "operator_message": "The OCI image omits packaged codescan; provide an operator-managed extension through the documented sidecar volume pattern."}]}},
+      {"distribution": "oci", "target": "x86_64-unknown-linux-gnu", "host_profile": "full-product", "composition_class": "host-only", "core_components": [], "sdk_extensions": {"posture": "operator-managed", "core_self_promotion": "forbidden"}, "non_parity": {"kind": "host-only-component-absence", "missing_core_components": ["core:codescan"], "capability_differences": [{"capability": "service:codescan", "status": "unavailable", "operator_message": "The OCI image omits packaged codescan; provide an operator-managed extension through the documented sidecar volume pattern."}]}}
+    ],
+    "unsupported": {
+      "npm": {
+        "status": "unsupported",
+        "retained_scaffolding": true,
+        "reason": "Legacy Rust launcher packages remain in core/npm but are not built or published by current release automation."
+      }
+    }
+  },
   "profiles": {
     "maintenance": {
       "executable": "omegon-maintain",
@@ -14,7 +136,7 @@
       "runtime_mode": "tui",
       "surfaces": ["agent-loop", "tui"],
       "absent_optional": [],
-      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
+      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan-adapter", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
     },
     "headless": {
       "executable": "omegon",
@@ -24,7 +146,7 @@
       "runtime_mode": "headless",
       "surfaces": ["agent-loop", "bounded-task"],
       "absent_optional": ["tui"],
-      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
+      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan-adapter", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
     },
     "daemon": {
       "executable": "omegon",
@@ -34,7 +156,7 @@
       "runtime_mode": "daemon",
       "surfaces": ["agent-loop", "control-plane"],
       "absent_optional": ["tui"],
-      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
+      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan-adapter", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
     },
     "full": {
       "executable": "omegon",
@@ -44,7 +166,7 @@
       "runtime_mode": "full",
       "surfaces": ["agent-loop", "bounded-task", "control-plane", "tui"],
       "absent_optional": [],
-      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
+      "resident_capabilities": ["system:constitutional-kernel", "system:default-loop", "system:host-effects", "feature:codescan-adapter", "feature:context-compaction", "feature:git", "feature:lifecycle", "feature:memory"]
     }
   }
 }

@@ -1,5 +1,112 @@
 {
   "schema_version": 1,
+  "artifact_rows": {
+    "kernel-only": {
+      "host_binary_size_bytes": {
+        "targets": {
+          "aarch64-apple-darwin": {"baseline": 1283040, "max_delta": 262144},
+          "x86_64-apple-darwin": {"baseline": 6815744, "max_delta": 3145728},
+          "aarch64-unknown-linux-gnu": {"baseline": 6291456, "max_delta": 3145728},
+          "x86_64-unknown-linux-gnu": {"baseline": 7340032, "max_delta": 3145728},
+          "x86_64-unknown-linux-musl": {"baseline": 7340032, "max_delta": 3145728}
+        }
+      },
+      "sidecar_binary_size_bytes": {
+        "targets": {
+          "aarch64-apple-darwin": {"baseline": 0, "max_delta": 0},
+          "x86_64-apple-darwin": {"baseline": 0, "max_delta": 0},
+          "aarch64-unknown-linux-gnu": {"baseline": 0, "max_delta": 0},
+          "x86_64-unknown-linux-gnu": {"baseline": 0, "max_delta": 0},
+          "x86_64-unknown-linux-musl": {"baseline": 0, "max_delta": 0}
+        }
+      },
+      "aggregate_installed_size_bytes": {
+        "targets": {
+          "aarch64-apple-darwin": {"baseline": 1283040, "max_delta": 262144},
+          "x86_64-apple-darwin": {"baseline": 6815744, "max_delta": 3145728},
+          "aarch64-unknown-linux-gnu": {"baseline": 6291456, "max_delta": 3145728},
+          "x86_64-unknown-linux-gnu": {"baseline": 7340032, "max_delta": 3145728},
+          "x86_64-unknown-linux-musl": {"baseline": 7340032, "max_delta": 3145728}
+        }
+      },
+      "dependency_count": {"baseline": 70, "max_delta": 2},
+      "startup_task_count": {"baseline": 0, "max_delta": 0},
+      "external_process_count": {"baseline": 0, "max_delta": 0},
+      "model_schema_tokens": {"baseline": 0, "max_delta": 0},
+      "resident_capability_count": {"baseline": 4, "max_delta": 0},
+      "callable_capability_count": {"baseline": 3, "max_delta": 0}
+    },
+    "kernel+codescan": {
+      "host_binary_size_bytes": {
+        "targets": {
+          "aarch64-apple-darwin": {"baseline": 1283040, "max_delta": 262144},
+          "x86_64-apple-darwin": {"baseline": 6815744, "max_delta": 3145728},
+          "aarch64-unknown-linux-gnu": {"baseline": 6291456, "max_delta": 3145728},
+          "x86_64-unknown-linux-gnu": {"baseline": 7340032, "max_delta": 3145728},
+          "x86_64-unknown-linux-musl": {"baseline": 7340032, "max_delta": 3145728}
+        }
+      },
+      "sidecar_binary_size_bytes": {
+        "targets": {
+          "aarch64-apple-darwin": {"baseline": 14595984, "max_delta": 1048576},
+          "x86_64-apple-darwin": {"baseline": 16777216, "max_delta": 8388608},
+          "aarch64-unknown-linux-gnu": {"baseline": 15728640, "max_delta": 8388608},
+          "x86_64-unknown-linux-gnu": {"baseline": 17825792, "max_delta": 8388608},
+          "x86_64-unknown-linux-musl": {"baseline": 17825792, "max_delta": 8388608}
+        }
+      },
+      "aggregate_installed_size_bytes": {
+        "targets": {
+          "aarch64-apple-darwin": {"baseline": 15879278, "max_delta": 1310720},
+          "x86_64-apple-darwin": {"baseline": 23592960, "max_delta": 11534336},
+          "aarch64-unknown-linux-gnu": {"baseline": 22020096, "max_delta": 11534336},
+          "x86_64-unknown-linux-gnu": {"baseline": 25165824, "max_delta": 11534336},
+          "x86_64-unknown-linux-musl": {"baseline": 25165824, "max_delta": 11534336}
+        }
+      },
+      "dependency_count": {"baseline": 182, "max_delta": 4},
+      "startup_task_count": {"baseline": 0, "max_delta": 0},
+      "external_process_count": {"baseline": 1, "max_delta": 0},
+      "model_schema_tokens": {"baseline": 0, "max_delta": 0},
+      "resident_capability_count": {"baseline": 4, "max_delta": 0},
+      "callable_capability_count": {"baseline": 3, "max_delta": 0}
+    },
+    "full-product": {
+      "host_binary_size_bytes": {
+        "targets": {
+          "aarch64-apple-darwin": {"baseline": 40199744, "max_delta": 2097152},
+          "x86_64-apple-darwin": {"baseline": 46766544, "max_delta": 5767168},
+          "aarch64-unknown-linux-gnu": {"baseline": 44632312, "max_delta": 5767168},
+          "x86_64-unknown-linux-gnu": {"baseline": 51623248, "max_delta": 5767168},
+          "x86_64-unknown-linux-musl": {"baseline": 49442816, "max_delta": 5767168}
+        }
+      },
+      "sidecar_binary_size_bytes": {
+        "targets": {
+          "aarch64-apple-darwin": {"baseline": 14595984, "max_delta": 1048576},
+          "x86_64-apple-darwin": {"baseline": 16777216, "max_delta": 8388608},
+          "aarch64-unknown-linux-gnu": {"baseline": 15728640, "max_delta": 8388608},
+          "x86_64-unknown-linux-gnu": {"baseline": 17825792, "max_delta": 8388608},
+          "x86_64-unknown-linux-musl": {"baseline": 17825792, "max_delta": 8388608}
+        }
+      },
+      "aggregate_installed_size_bytes": {
+        "targets": {
+          "aarch64-apple-darwin": {"baseline": 54795982, "max_delta": 3145728},
+          "x86_64-apple-darwin": {"baseline": 63543760, "max_delta": 14155776},
+          "aarch64-unknown-linux-gnu": {"baseline": 60360952, "max_delta": 14155776},
+          "x86_64-unknown-linux-gnu": {"baseline": 69449040, "max_delta": 14155776},
+          "x86_64-unknown-linux-musl": {"baseline": 67268608, "max_delta": 14155776}
+        }
+      },
+      "dependency_count": {"baseline": 676, "max_delta": 6},
+      "startup_task_count": {"baseline": 4, "max_delta": 1},
+      "external_process_count": {"baseline": 1, "max_delta": 0},
+      "model_schema_tokens": {"baseline": 8019, "max_delta": 128},
+      "resident_capability_count": {"baseline": 8, "max_delta": 0},
+      "callable_capability_count": {"baseline": 64, "max_delta": 1}
+    }
+  },
   "profiles": {
     "maintenance": {
       "dependency_count": {"baseline": 156, "max_delta": 1},

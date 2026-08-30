@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -26,6 +27,10 @@ EXPECTED_DOMAINS = {
 }
 
 
+def load_matrix() -> dict:
+    return tomllib.loads(MATRIX.read_text())
+
+
 def require_marker(entry: dict[str, str], label: str, errors: list[str]) -> None:
     path = ROOT / entry["path"]
     if not path.is_file():
@@ -46,8 +51,15 @@ def require_test(entry: dict[str, str], label: str, errors: list[str]) -> None:
 
 
 def main() -> int:
-    matrix = tomllib.loads(MATRIX.read_text())
+    matrix = load_matrix()
     errors: list[str] = []
+    test_command_prefix = matrix.get("test_command_prefix")
+    if (
+        not isinstance(test_command_prefix, list)
+        or not test_command_prefix
+        or not all(isinstance(argument, str) and argument for argument in test_command_prefix)
+    ):
+        errors.append("matrix test_command_prefix must be a non-empty string array")
     domains = matrix.get("domains", [])
     ids = [domain.get("id") for domain in domains]
     if set(ids) != EXPECTED_DOMAINS or len(ids) != len(EXPECTED_DOMAINS):
@@ -91,6 +103,16 @@ def main() -> int:
 
     if errors:
         raise SystemExit("\n".join(errors))
+    tests = {
+        (entry["test"], entry.get("ignored", False))
+        for domain in domains
+        for entry in (domain["absence"], domain["degradation"])
+    }
+    for test, ignored in sorted(tests):
+        command = [*test_command_prefix, test]
+        if ignored:
+            command.extend(["--", "--ignored"])
+        subprocess.run(command, cwd=ROOT, check=True)
     print(f"Optional-domain proof matrix clean: {len(domains)} domains checked.")
     return 0
 

@@ -9,6 +9,7 @@ use omegon_codescan_contracts::{
     CodescanErrorCodeV1, CodescanOperationV1, CodescanOutcomeV1, CodescanRequestV1,
     CodescanResponseV1, CodescanStatusV1, SearchResponseV1,
 };
+use omegon_extension::SDK_CONTRACT_VERSION;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -94,9 +95,11 @@ async fn serve() -> anyhow::Result<()> {
                     "initialize" => {
                         write_message(&mut stdout, &rpc_result(id_value, json!({
                             "protocol_version": 2,
+                            "sdk_contract_version": SDK_CONTRACT_VERSION,
                             "extension_info": {
                                 "name": EXTENSION_NAME,
                                 "version": env!("CARGO_PKG_VERSION"),
+                                "sdk_version": SDK_CONTRACT_VERSION,
                                 "codescan_protocol_version": CODESCAN_PROTOCOL_VERSION
                             },
                             "capabilities": {"tools": false, "codescan": true},
@@ -198,15 +201,61 @@ fn run_engine(
         }
     };
 
+    #[cfg(feature = "conformance-hooks")]
+    let conformance = std::env::var_os("OMEGON_CODESCAN_CONFORMANCE_DIR").map(PathBuf::from);
+
     while let Ok(job) = jobs.recv() {
+        #[cfg(feature = "conformance-hooks")]
+        let conformance_armed = conformance.as_ref().is_some_and(|directory| {
+            wait_at_conformance_barrier(directory, job.request_id, &job.cancelled)
+        });
         let outcome = execute_operation(&workspace, &mut cache, job.request.operation, || {
             job.cancelled.load(Ordering::Acquire)
         });
+        #[cfg(feature = "conformance-hooks")]
+        if conformance_armed
+            && let Some(directory) = &conformance
+        {
+            let code = match &outcome {
+                CodescanOutcomeV1::Error { error, .. } => serde_json::to_value(error.code)
+                    .unwrap_or_else(|_| Value::String("serialization_failed".into())),
+                CodescanOutcomeV1::Ok { .. } => Value::String("ok".into()),
+            };
+            let _ = std::fs::write(
+                directory.join("outcome.json"),
+                serde_json::to_vec(&json!({"request_id": job.request_id, "code": code}))
+                    .unwrap_or_default(),
+            );
+        }
         let _ = replies.send(EngineReply {
             request_id: job.request_id,
             outcome,
         });
     }
+}
+
+#[cfg(feature = "conformance-hooks")]
+fn wait_at_conformance_barrier(
+    directory: &Path,
+    request_id: u64,
+    cancelled: &AtomicBool,
+) -> bool {
+    if !directory.join("arm").is_file() {
+        return false;
+    }
+    let _ = std::fs::remove_file(directory.join("outcome.json"));
+    if std::fs::write(
+        directory.join("started.json"),
+        serde_json::to_vec(&json!({"request_id": request_id})).unwrap_or_default(),
+    )
+    .is_err()
+    {
+        return false;
+    }
+    while !cancelled.load(Ordering::Acquire) && directory.join("arm").is_file() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    true
 }
 
 fn execute_operation(

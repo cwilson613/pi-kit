@@ -4,6 +4,7 @@ pub mod actions;
 pub mod activity;
 pub mod command;
 pub mod command_menu;
+pub mod component;
 pub mod conversation;
 pub mod dashboard;
 pub mod diagnostics;

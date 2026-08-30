@@ -9,9 +9,10 @@ import { snippet } from "../../lib/snippets";
   <h2>Quick Install (Recommended)</h2>
   <pre><code>{snippet("install.quick_install")}</code></pre>
   <p>
-    Downloads the latest signed release pair and shipped content pack for your platform
-    (macOS arm64/x86_64, Linux x86_64/aarch64), verifies the SHA-256 checksum, and installs
-    to <code>/usr/local/bin</code> by default.
+    Downloads the latest signed release pair, shipped content pack, and product component
+    <code>core:codescan</code> for your platform (macOS arm64/x86_64, Linux x86_64/aarch64).
+    It verifies the SHA-256 checksum and installs the full product to <code>/usr/local/bin</code>
+    by default.
   </p>
 
   <h3>Options</h3>
@@ -50,12 +51,26 @@ import { snippet } from "../../lib/snippets";
     <li>Pre-built <code>omegon</code> and <code>omegon-maintain</code> companions for macOS and Linux</li>
     <li>Resident composition locks for both executables, bound by the signed package manifest</li>
     <li>The versioned <code>omegon-shipped</code> content pack under <code>share/omegon/content-packs/</code></li>
+    <li>Signed product component <code>core:codescan</code> under <code>share/omegon/extensions/</code></li>
     <li>SHA-256 checksums</li>
     <li><a href="https://www.sigstore.dev/">Sigstore cosign</a> signatures (keyless)</li>
     <li>CycloneDX SBOM</li>
     <li>GitHub Attestations (build provenance)</li>
     <li>Installer/update metadata used by <code>/update</code> for verification before install</li>
   </ul>
+
+  <h2>Nix and OCI Composition</h2>
+  <p>
+    Nix packages and Nix-built OCI images currently contain the default compiled host but no
+    product-component binaries. These distributions are host-only, not full-product equivalents.
+    Codescan is unavailable as <code>service:codescan</code> until the operator installs and manages
+    a compatible SDK extension. OCI deployments can provide that extension through an init container
+    and the shared <code>OMEGON_HOME</code> volume.
+  </p>
+  <p>
+    Legacy npm package files remain in the source tree, but npm is not a supported installation or
+    publication channel.
+  </p>
 
   <h3>Verify a Download</h3>
   <pre><code>{snippet("verify.release_verify")}</code></pre>

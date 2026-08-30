@@ -12,6 +12,14 @@ compile_error!("the task-capsule artifact must be built without the tui feature"
 compile_error!("the task-capsule artifact must be built without the self-update feature");
 #[cfg(all(feature = "task-capsule", feature = "local-embeddings"))]
 compile_error!("the task-capsule artifact must be built without the local-embeddings feature");
+#[cfg(all(feature = "kernel-host", feature = "task-capsule"))]
+compile_error!("the kernel-host and task-capsule artifact identities are mutually exclusive");
+#[cfg(all(feature = "kernel-host", feature = "tui"))]
+compile_error!("the kernel-host artifact must be built without the tui feature");
+#[cfg(all(feature = "kernel-host", feature = "self-update"))]
+compile_error!("the kernel-host artifact must be built without the self-update feature");
+#[cfg(all(feature = "kernel-host", feature = "local-embeddings"))]
+compile_error!("the kernel-host artifact must be built without the local-embeddings feature");
 
 use crate::conversation::PlanAction;
 #[cfg(any(feature = "tui", test))]
@@ -130,6 +138,7 @@ mod catalog;
 mod checkpoint;
 mod child_agent;
 mod codescan_service;
+pub mod component_policy;
 mod content_pack;
 mod context_compaction_service;
 mod contribution_loading;
@@ -567,9 +576,11 @@ enum Commands {
     CompositionInspect {
         #[arg(
             long,
-            value_parser = ["task-capsule", "interactive", "headless", "daemon", "full"]
+            value_parser = ["kernel", "task-capsule", "interactive", "headless", "daemon", "full"]
         )]
         profile: String,
+        #[arg(long, value_parser = ["core-read", "codescan-search", "product-inspect"])]
+        probe: Option<String>,
     },
 
     /// Run a persistent local daemon/control-plane for long-lived agents and supervisors.
@@ -1373,8 +1384,35 @@ pub fn startup_elapsed_ms() -> u64 {
         .unwrap_or(0)
 }
 
-async fn run_composition_inspection(cli: &Cli, profile: &str) -> anyhow::Result<()> {
+async fn run_composition_inspection(
+    cli: &Cli,
+    profile: &str,
+    probe: Option<&str>,
+) -> anyhow::Result<()> {
     let runtime_mode = runtime_composition::validated_runtime_mode(profile)?;
+    if profile == "kernel" {
+        let mut kernel = setup::setup_kernel_composition(&cli.cwd).await?;
+        let mut inspection =
+            runtime_composition::inspect_runtime_composition(profile, &kernel.bus)?;
+        inspection.external_processes = runtime_composition::external_process_inventory(
+            kernel.dynamic_control.extension_health(),
+        );
+        if let Some(probe) = probe {
+            inspection.functional_probe = Some(
+                runtime_composition::execute_composition_probe(probe, &cli.cwd, &kernel.bus)
+                    .await?,
+            );
+        }
+        let dynamic_failures = kernel.dynamic_contributions.shutdown().await;
+        let managed_report = kernel.bus.shutdown_managed_services().await;
+        if !dynamic_failures.is_empty() || !managed_report.all_resources_settled() {
+            anyhow::bail!(
+                "kernel composition cleanup failed: dynamic={dynamic_failures:?}; managed={managed_report:?}"
+            );
+        }
+        println!("{}", serde_json::to_string(&inspection)?);
+        return Ok(());
+    }
     let settings = settings::shared(&cli.model);
     let mut agent = setup::AgentSetup::new_with_safety_and_mode(
         &cli.cwd,
@@ -1384,7 +1422,15 @@ async fn run_composition_inspection(cli: &Cli, profile: &str) -> anyhow::Result<
         runtime_mode,
     )
     .await?;
-    let inspection = runtime_composition::inspect_runtime_composition(profile, &agent.bus)?;
+    let mut inspection = runtime_composition::inspect_runtime_composition(profile, &agent.bus)?;
+    inspection.external_processes = runtime_composition::external_process_inventory(
+        agent.dynamic_contribution_control.extension_health(),
+    );
+    if let Some(probe) = probe {
+        inspection.functional_probe = Some(
+            runtime_composition::execute_composition_probe(probe, &cli.cwd, &agent.bus).await?,
+        );
+    }
     let dynamic_failures = agent.dynamic_contributions.shutdown().await;
     let managed_report = agent.bus.shutdown_managed_services().await;
     if !dynamic_failures.is_empty() || !managed_report.all_resources_settled() {
@@ -1516,9 +1562,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        Some(Commands::CompositionInspect { ref profile }) => {
-            run_composition_inspection(&cli, profile).await
-        }
+        Some(Commands::CompositionInspect {
+            ref profile,
+            ref probe,
+        }) => run_composition_inspection(&cli, profile, probe.as_deref()).await,
         Some(Commands::Plugin { ref action }) => {
             match action {
                 PluginAction::Install { uri } => {
@@ -10679,6 +10726,10 @@ mod tests {
                 admission: crate::workspace::types::AdmissionOutcome::GrantedMutable,
             },
             dynamic_contributions: Default::default(),
+            component_policy: Default::default(),
+            component_dependency_policy:
+                crate::contribution_graph::apply_component_dependency_policy([], [], [], [])
+                    .unwrap(),
             dynamic_contribution_control: Default::default(),
             extension_widgets: vec![],
             extension_metadata: Default::default(),
@@ -10890,7 +10941,7 @@ mod tests {
                 .unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::CompositionInspect { profile }) if profile == "task-capsule"
+            Some(Commands::CompositionInspect { profile, .. }) if profile == "task-capsule"
         ));
     }
 
@@ -12123,6 +12174,25 @@ mod tests {
             ),
             RemoteBuiltinPolicy::Allow
         );
+    }
+
+    #[test]
+    fn remote_profile_component_commands_use_shared_registry_policy() {
+        for command in [
+            crate::runtime_commands::CanonicalSlashCommand::ProfileComponentsView,
+            crate::runtime_commands::CanonicalSlashCommand::ProfileComponentEnable(
+                "core:codescan".into(),
+            ),
+            crate::runtime_commands::CanonicalSlashCommand::ProfileComponentDisable(
+                "core:codescan".into(),
+            ),
+        ] {
+            assert_eq!(
+                remote_builtin_policy("profile", &command),
+                RemoteBuiltinPolicy::Allow
+            );
+            assert!(control_runtime::control_request_from_slash(&command).is_some());
+        }
     }
 
     #[test]

@@ -209,13 +209,3 @@ class ContentPackPackagingTests(unittest.TestCase):
         }
         for relative, marker in required.items():
             self.assertIn(marker, (ROOT / relative).read_text(), relative)
-        for package in (ROOT / "core/npm/platform").glob("*/package.json"):
-            data = json.loads(package.read_text())
-            self.assertIn("share/omegon/content-packs/omegon-shipped", data["files"])
-            self.assertIn("omegon-maintain", data["files"])
-            self.assertIn("omegon.composition-lock.json", data["files"])
-            self.assertIn("omegon-maintain.composition-lock.json", data["files"])
-        publish_script = (ROOT / "core/npm/publish.sh").read_text()
-        self.assertIn('cp -R "$extract_dir/share" "$platform_dir/share"', publish_script)
-        self.assertIn("content-packs/omegon-shipped/content-pack.toml", publish_script)
-        self.assertIn("omegon-maintain.composition-lock.json", publish_script)

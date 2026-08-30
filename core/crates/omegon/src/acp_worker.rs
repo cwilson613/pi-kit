@@ -1701,75 +1701,32 @@ async fn handle_control_request(
         }
 
         "profile_mqtt" => {
-            let mut profile = crate::settings::Profile::load(cwd);
-            match args {
-                "on" | "enable" | "true" => profile.integrations.mqtt.enabled = Some(true),
-                "off" | "disable" | "false" => profile.integrations.mqtt.enabled = Some(false),
-                "" | "status" => {
-                    return match profile.integrations.mqtt.enabled {
-                        Some(true) => "MQTT bridge profile default: enabled".into(),
-                        Some(false) => "MQTT bridge profile default: disabled".into(),
-                        None => "MQTT bridge profile default: unset (disabled by default)".into(),
-                    };
-                }
+            let enabled = match args {
+                "on" | "enable" | "true" => Some(true),
+                "off" | "disable" | "false" => Some(false),
+                "" | "status" => None,
                 _ => return "Usage: profile_mqtt [on|off|status]".into(),
-            }
-            match profile.save(cwd) {
-                Ok(()) => {
-                    "MQTT bridge profile default updated. Takes effect on next startup.".into()
-                }
-                Err(e) => format!("failed to save profile: {e}"),
-            }
+            };
+            workspace_response_text(
+                crate::control_runtime::profile_set_mqtt_response(cwd, enabled).await,
+            )
         }
 
         "profile_extension_allow" | "profile_extension_deny" => {
             if args.is_empty() {
                 return format!("Usage: {cmd} <name>");
             }
-            let mut profile = crate::settings::Profile::load(cwd);
-            let name = args.to_string();
-            if cmd == "profile_extension_allow" {
-                profile
-                    .extensions
-                    .disabled
-                    .retain(|v| !v.eq_ignore_ascii_case(&name));
-                if !profile
-                    .extensions
-                    .enabled
-                    .iter()
-                    .any(|v| v.eq_ignore_ascii_case(&name))
-                {
-                    profile.extensions.enabled.push(name);
-                }
+            let response = if cmd == "profile_extension_allow" {
+                crate::control_runtime::profile_extension_allow_response(cwd, args).await
             } else {
-                profile
-                    .extensions
-                    .enabled
-                    .retain(|v| !v.eq_ignore_ascii_case(&name));
-                if !profile
-                    .extensions
-                    .disabled
-                    .iter()
-                    .any(|v| v.eq_ignore_ascii_case(&name))
-                {
-                    profile.extensions.disabled.push(name);
-                }
-            }
-            match profile.save(cwd) {
-                Ok(()) => "Extension profile policy updated. Takes effect on next startup.".into(),
-                Err(e) => format!("failed to save profile: {e}"),
-            }
+                crate::control_runtime::profile_extension_deny_response(cwd, args).await
+            };
+            workspace_response_text(response)
         }
 
-        "profile_extension_clear" => {
-            let mut profile = crate::settings::Profile::load(cwd);
-            profile.extensions.enabled.clear();
-            profile.extensions.disabled.clear();
-            match profile.save(cwd) {
-                Ok(()) => "Extension profile policy cleared.".into(),
-                Err(e) => format!("failed to save profile: {e}"),
-            }
-        }
+        "profile_extension_clear" => workspace_response_text(
+            crate::control_runtime::profile_extension_clear_response(cwd).await,
+        ),
 
         "profile_persona" | "profile_tone" => {
             let mut profile = crate::settings::Profile::load(cwd);

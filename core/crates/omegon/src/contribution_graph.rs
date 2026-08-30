@@ -10,6 +10,7 @@ use omegon_traits::{
     RuntimeInvocationBinding, RuntimeInvocationBindingRole, RuntimeInvocationKind,
     RuntimeProtocolRange,
 };
+use serde::Serialize;
 
 type BindingKey = (RuntimeInvocationKind, String);
 type BindingClaim = (
@@ -50,6 +51,70 @@ pub(crate) struct RuntimeCandidateGraph {
     pub dependency_edges: BTreeMap<RuntimeContributionId, BTreeSet<RuntimeContributionId>>,
     pub activation_waves: Vec<Vec<RuntimeContributionId>>,
     pub negotiated_protocols: BTreeMap<RuntimeContributionId, u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ComponentDependencyOmission {
+    pub dependent: RuntimeContributionId,
+    pub dependency: RuntimeContributionId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ComponentDependencyPolicyPlan {
+    pub omitted: Vec<RuntimeContributionId>,
+    pub dependency_omissions: Vec<ComponentDependencyOmission>,
+}
+
+pub(crate) fn apply_component_dependency_policy(
+    available: impl IntoIterator<Item = RuntimeContributionId>,
+    denied: impl IntoIterator<Item = RuntimeContributionId>,
+    non_disableable: impl IntoIterator<Item = RuntimeContributionId>,
+    required_dependencies: impl IntoIterator<Item = (RuntimeContributionId, RuntimeContributionId)>,
+) -> anyhow::Result<ComponentDependencyPolicyPlan> {
+    let available = available.into_iter().collect::<BTreeSet<_>>();
+    let non_disableable = non_disableable.into_iter().collect::<BTreeSet<_>>();
+    let dependencies = required_dependencies.into_iter().collect::<BTreeSet<_>>();
+    let mut omitted = denied
+        .into_iter()
+        .filter(|id| available.contains(id))
+        .collect::<BTreeSet<_>>();
+    let mut dependency_omissions = BTreeSet::new();
+
+    loop {
+        let mut changed = false;
+        for (dependent, dependency) in &dependencies {
+            if !available.contains(dependent)
+                || omitted.contains(dependent)
+                || !omitted.contains(dependency)
+            {
+                continue;
+            }
+            if non_disableable.contains(dependent) {
+                anyhow::bail!(
+                    "contradictory component configuration: non-disableable contribution {} requires denied contribution {}",
+                    dependent.as_str(),
+                    dependency.as_str()
+                );
+            }
+            omitted.insert(dependent.clone());
+            dependency_omissions.insert((dependent.clone(), dependency.clone()));
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    Ok(ComponentDependencyPolicyPlan {
+        omitted: omitted.into_iter().collect(),
+        dependency_omissions: dependency_omissions
+            .into_iter()
+            .map(|(dependent, dependency)| ComponentDependencyOmission {
+                dependent,
+                dependency,
+            })
+            .collect(),
+    })
 }
 
 pub(crate) fn build_candidate_graph(mut request: CandidateGraphRequest) -> CandidateGraphBuild {
@@ -941,6 +1006,43 @@ mod tests {
         assert!(rejected.graph.is_none());
         assert!(codes(&rejected).contains("graph:optional_dependency_unavailable"));
         assert!(codes(&rejected).contains("graph:missing_dependency"));
+    }
+
+    #[test]
+    fn component_policy_omits_optional_dependents_deterministically() {
+        let codescan = RuntimeContributionId::new("extension:omegon-codescan").unwrap();
+        let optional = RuntimeContributionId::new("feature:codescan-context").unwrap();
+        let plan = apply_component_dependency_policy(
+            [optional.clone(), codescan.clone()],
+            [codescan.clone()],
+            [],
+            [(optional.clone(), codescan.clone())],
+        )
+        .unwrap();
+
+        assert_eq!(plan.omitted, vec![codescan, optional.clone()]);
+        assert_eq!(plan.dependency_omissions.len(), 1);
+        assert_eq!(plan.dependency_omissions[0].dependent, optional);
+    }
+
+    #[test]
+    fn component_policy_rejects_non_disableable_required_dependent() {
+        let codescan = RuntimeContributionId::new("extension:omegon-codescan").unwrap();
+        let required = RuntimeContributionId::new("system:required-search-owner").unwrap();
+        let error = apply_component_dependency_policy(
+            [required.clone(), codescan.clone()],
+            [codescan.clone()],
+            [required.clone()],
+            [(required.clone(), codescan)],
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("contradictory component configuration")
+        );
+        assert!(error.to_string().contains(required.as_str()));
     }
 
     #[test]

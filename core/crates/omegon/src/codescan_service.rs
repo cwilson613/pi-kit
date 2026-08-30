@@ -17,6 +17,7 @@ pub(crate) const CODESCAN_CAPABILITY: &str = "service:codescan";
 
 #[derive(Debug)]
 pub(crate) enum CodescanCallError {
+    Disabled(crate::component_policy::ComponentPolicyDecision),
     Unavailable,
     InvalidResponse,
     Operation(CodescanErrorV1),
@@ -25,6 +26,7 @@ pub(crate) enum CodescanCallError {
 impl CodescanCallError {
     pub(crate) fn code(&self) -> &'static str {
         match self {
+            Self::Disabled(_) => "service:disabled",
             Self::Unavailable => "service:unavailable",
             Self::InvalidResponse => "service:invalid_response",
             Self::Operation(error) => match error.code {
@@ -39,11 +41,25 @@ impl CodescanCallError {
             },
         }
     }
+
+    pub(crate) fn disabled_evidence(
+        &self,
+    ) -> Option<&crate::component_policy::ComponentPolicyDecision> {
+        match self {
+            Self::Disabled(decision) => Some(decision),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for CodescanCallError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Disabled(decision) => write!(
+                formatter,
+                "codescan component {} is disabled by policy",
+                decision.component_id
+            ),
             Self::Unavailable => formatter.write_str("codescan extension is unavailable"),
             Self::InvalidResponse => {
                 formatter.write_str("codescan extension returned an invalid response")
@@ -55,6 +71,10 @@ impl std::fmt::Display for CodescanCallError {
 
 #[async_trait]
 pub(crate) trait CodescanClient: Send + Sync {
+    fn process_provenance(&self) -> Option<crate::extensions::ExtensionProcessProvenance> {
+        None
+    }
+
     async fn execute(
         &self,
         operation: CodescanOperationV1,
@@ -68,6 +88,10 @@ struct ExtensionCodescanClient {
 
 #[async_trait]
 impl CodescanClient for ExtensionCodescanClient {
+    fn process_provenance(&self) -> Option<crate::extensions::ExtensionProcessProvenance> {
+        Some(self.handle.process_provenance())
+    }
+
     async fn execute(
         &self,
         operation: CodescanOperationV1,
@@ -115,9 +139,22 @@ impl CodescanClient for ExtensionCodescanClient {
 #[derive(Clone, Default)]
 pub(crate) struct CodescanBinding {
     client: Arc<OnceLock<Option<Arc<dyn CodescanClient>>>>,
+    disabled: Option<Arc<crate::component_policy::ComponentPolicyDecision>>,
 }
 
 impl CodescanBinding {
+    pub(crate) fn from_component_decision(
+        decision: Option<&crate::component_policy::ComponentPolicyDecision>,
+    ) -> Self {
+        Self {
+            client: Arc::default(),
+            disabled: decision
+                .filter(|decision| !decision.enabled)
+                .cloned()
+                .map(Arc::new),
+        }
+    }
+
     pub(crate) fn capture(
         &self,
         handle: Option<crate::extensions::ExtensionPollingHandle>,
@@ -134,12 +171,24 @@ impl CodescanBinding {
         operation: CodescanOperationV1,
         cancellation: CancellationToken,
     ) -> Result<CodescanResponseV1, CodescanCallError> {
+        if let Some(decision) = &self.disabled {
+            return Err(CodescanCallError::Disabled((**decision).clone()));
+        }
         let client = self
             .client
             .get()
             .and_then(Clone::clone)
             .ok_or(CodescanCallError::Unavailable)?;
         client.execute(operation, cancellation).await
+    }
+
+    pub(crate) fn process_provenance(
+        &self,
+    ) -> Option<crate::extensions::ExtensionProcessProvenance> {
+        self.client
+            .get()
+            .and_then(Option::as_ref)
+            .and_then(|client| client.process_provenance())
     }
 
     #[cfg(test)]
@@ -175,6 +224,57 @@ impl Feature for CodescanFeature {
         omegon_traits::ToolProvider::tools(&self.provider)
     }
 
+    fn runtime_tool_surfaces(&self, tool_name: &str) -> Option<Vec<omegon_traits::RuntimeSurface>> {
+        matches!(
+            tool_name,
+            crate::tool_registry::codescan::CODEBASE_SEARCH
+                | crate::tool_registry::codescan::CODEBASE_INDEX
+        )
+        .then(|| {
+            vec![
+                omegon_traits::RuntimeSurface::Model,
+                omegon_traits::RuntimeSurface::Cli,
+                omegon_traits::RuntimeSurface::Acp,
+            ]
+        })
+    }
+
+    fn runtime_tool_policy(&self, tool_name: &str) -> Option<omegon_traits::RuntimeToolPolicy> {
+        use omegon_traits::{
+            RuntimeDeduplication, RuntimeEffect, RuntimeExecutionPolicy, RuntimeIdempotency,
+            RuntimeParallelism, RuntimePrincipalClass, RuntimeRetryClass, RuntimeTimeoutClass,
+            RuntimeToolPolicy, RuntimeTransactionBehavior,
+        };
+
+        matches!(
+            tool_name,
+            crate::tool_registry::codescan::CODEBASE_SEARCH
+                | crate::tool_registry::codescan::CODEBASE_INDEX
+        )
+        .then(|| RuntimeToolPolicy {
+            effects: vec![
+                RuntimeEffect::FilesystemRead,
+                RuntimeEffect::ProcessSpawn,
+                RuntimeEffect::NetworkAccess,
+                RuntimeEffect::SecretDelivery,
+            ],
+            execution: RuntimeExecutionPolicy {
+                principals: vec![
+                    RuntimePrincipalClass::Model,
+                    RuntimePrincipalClass::Operator,
+                ],
+                timeout_class: RuntimeTimeoutClass::Interactive,
+                retry_class: RuntimeRetryClass::Never,
+                idempotency: RuntimeIdempotency::NonIdempotent,
+                deduplication: RuntimeDeduplication::Unsupported,
+                parallelism: RuntimeParallelism::Serial,
+                transaction: RuntimeTransactionBehavior::None,
+                mutation_fence: None,
+                max_attempts: None,
+            },
+        })
+    }
+
     async fn execute(
         &self,
         tool_name: &str,
@@ -190,6 +290,18 @@ impl Feature for CodescanFeature {
 mod tests {
     use super::*;
 
+    fn disabled_codescan_decision() -> crate::component_policy::ComponentPolicyDecision {
+        crate::component_policy::ComponentPolicyDecision {
+            component_id: "core:codescan".into(),
+            enabled: false,
+            evidence: vec![],
+            determining_source: crate::component_policy::ComponentPolicySource::SelectedProfile {
+                profile: "compliance".into(),
+                path: "/repo/.omegon/profiles/compliance.json".into(),
+            },
+        }
+    }
+
     #[tokio::test]
     async fn absent_extension_is_typed_unavailable() {
         let error = CodescanBinding::default()
@@ -202,5 +314,27 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), "service:unavailable");
+    }
+
+    #[tokio::test]
+    async fn policy_disabled_extension_is_distinct_from_unavailable() {
+        let binding = CodescanBinding::from_component_decision(Some(&disabled_codescan_decision()));
+        let error = binding
+            .execute(
+                CodescanOperationV1::Index(omegon_codescan_contracts::IndexRequestV1 {
+                    invalidate: false,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), "service:disabled");
+        let evidence = error.disabled_evidence().expect("typed disabled evidence");
+        assert_eq!(evidence.component_id, "core:codescan");
+        assert!(matches!(
+            evidence.determining_source,
+            crate::component_policy::ComponentPolicySource::SelectedProfile { .. }
+        ));
     }
 }

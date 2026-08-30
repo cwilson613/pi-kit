@@ -1,6 +1,7 @@
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "release_status.py"
@@ -34,6 +35,12 @@ class ReleaseStatusTests(unittest.TestCase):
         from scripts.release_status import detect_signing_status
 
         self.assertEqual(detect_signing_status("Identifier=omegon\n"), "unsigned")
+
+    def test_missing_codesign_is_unsigned(self) -> None:
+        from scripts.release_status import read_codesign_output
+
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError):
+            self.assertEqual(read_codesign_output(Path("/missing/omegon")), "")
 
     def test_cli_prints_status(self) -> None:
         result = subprocess.run(

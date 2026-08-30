@@ -63,6 +63,16 @@ jobs:
           python3 omegon/scripts/verify_homebrew_formula.py \
             --formula homebrew-tap/Formula/omegon.rb
 
+      - name: Smoke native Homebrew archive installation semantics
+        run: |
+          VERSION=${{ steps.release.outputs.version }}
+          TARGET=x86_64-unknown-linux-gnu
+          ARCHIVE="omegon-${VERSION}-${TARGET}.tar.gz"
+          curl -fsSL "https://github.com/styrene-lab/omegon/releases/download/v${VERSION}/${ARCHIVE}" -o "$ARCHIVE"
+          python3 omegon/scripts/smoke_distribution_runtime.py homebrew \
+            --archive "$ARCHIVE" \
+            --target "$TARGET"
+
       - name: Commit and push to tap
         run: |
           cd homebrew-tap

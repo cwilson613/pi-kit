@@ -37,6 +37,10 @@ const RESIDENT_LOCKS: &[&str] = &[
     "omegon-maintain.composition-lock.json",
 ];
 const CONTENT_MANIFEST: &str = "share/omegon/content-packs/omegon-shipped/content-pack.toml";
+const CODESCAN_MANIFEST: &str = "share/omegon/extensions/omegon-codescan/manifest.toml";
+const CODESCAN_EXECUTABLE: &str =
+    "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan";
+const CODESCAN_COMPONENT_LOCK: &str = "share/omegon/components/core-codescan.lock.json";
 const LEGACY_FIXTURE_TAG: &str = "v0.29.0-dev-fixture.1";
 const LEGACY_FIXTURE_ARCHIVE_DIGEST: &str =
     "77b590261b59f46d00abdb9f617e5bd460b0900a08263aefc69af94b4c9f4528";
@@ -172,6 +176,14 @@ fn verify_release_inner(
         started,
         deadline,
     )?;
+    verify_product_component_lock(
+        archive_file
+            .try_clone()
+            .map_err(|error| VerificationError::new("release_archive_invalid", error))?,
+        &manifest,
+        started,
+        deadline,
+    )?;
     archive_file
         .seek(SeekFrom::Start(0))
         .map_err(|error| VerificationError::new("release_archive_invalid", error))?;
@@ -201,6 +213,97 @@ fn verify_release_inner(
         "signature_verification": "verified",
         "trust_root": "sigstore-production-embedded",
     }))
+}
+
+fn verify_product_component_lock(
+    file: File,
+    manifest: &PackageManifestV1,
+    started: Instant,
+    deadline: Duration,
+) -> Result<(), VerificationError> {
+    if manifest.product_component_locks.is_empty() {
+        if is_pinned_legacy_fixture(manifest) {
+            return Ok(());
+        }
+        return Err(VerificationError::new(
+            "release_component_lock_invalid",
+            "full-product manifest lacks required product-component evidence",
+        ));
+    }
+    let inventory = manifest.core_components.as_deref().unwrap_or_default();
+    if manifest.host_profile.as_deref() != Some("full-product")
+        || manifest.composition_class.as_deref() != Some("full-product")
+        || inventory.len() != 1
+        || inventory[0].component_id != "core:codescan"
+        || inventory[0].wire_manifest_id != "omegon-codescan"
+        || manifest.product_component_locks.len() != 1
+    {
+        return Err(VerificationError::new(
+            "release_component_lock_invalid",
+            "full-product manifest does not declare the exact product-component inventory",
+        ));
+    }
+    let lock = &manifest.product_component_locks[0];
+    let members = manifest
+        .members
+        .iter()
+        .map(|member| (member.path.as_str(), member))
+        .collect::<BTreeMap<_, _>>();
+    if lock.schema_version != 1
+        || lock.component_id != "core:codescan"
+        || lock.wire_manifest_id != "omegon-codescan"
+        || lock.manifest_path != CODESCAN_MANIFEST
+        || lock.executable_path != CODESCAN_EXECUTABLE
+        || lock.target != manifest.target
+        || lock.protocol_minimum != 1
+        || lock.protocol_maximum != 1
+        || lock.protocol_version != 1
+        || lock.fallback != "typed_unavailable"
+        || lock.signing_identity.issuer != manifest.issuer
+        || lock.signing_identity.workflow_identity != manifest.workflow_identity
+        || lock.signing_identity.verification != "required"
+        || members
+            .get(CODESCAN_MANIFEST)
+            .is_none_or(|member| member.digest != lock.manifest_digest)
+        || members
+            .get(CODESCAN_EXECUTABLE)
+            .is_none_or(|member| member.digest != lock.executable_digest)
+    {
+        return Err(VerificationError::new(
+            "release_component_lock_invalid",
+            "product-component evidence does not match signed package inventory",
+        ));
+    }
+    let expected = canonical_json(&manifest.product_component_locks[0])
+        .map_err(|error| VerificationError::new("release_component_lock_invalid", error))?;
+    let decoder = GzDecoder::new(BufReader::new(file));
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive
+        .entries()
+        .map_err(|error| VerificationError::new("release_archive_invalid", error))?
+    {
+        check_deadline(started, deadline)?;
+        let mut entry =
+            entry.map_err(|error| VerificationError::new("release_archive_invalid", error))?;
+        if entry.path().ok().as_deref() != Some(Path::new(CODESCAN_COMPONENT_LOCK)) {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        entry
+            .read_to_end(&mut bytes)
+            .map_err(|error| VerificationError::new("release_component_lock_invalid", error))?;
+        if bytes != expected {
+            return Err(VerificationError::new(
+                "release_component_lock_invalid",
+                "archive component lock does not equal signed product-component evidence",
+            ));
+        }
+        return Ok(());
+    }
+    Err(VerificationError::new(
+        "release_component_lock_invalid",
+        "archive lacks the signed product-component lock",
+    ))
 }
 
 fn verify_compiled_policy(
@@ -252,6 +355,9 @@ fn verify_compiled_policy(
             path if ALLOWED_METADATA.contains(&path) && member.mode == 0o644 => {}
             path if path.starts_with("share/omegon/content-packs/omegon-shipped/")
                 && member.mode == 0o644 => {}
+            CODESCAN_MANIFEST if member.mode == 0o644 => {}
+            CODESCAN_EXECUTABLE if member.mode == 0o755 => {}
+            CODESCAN_COMPONENT_LOCK if member.mode == 0o644 => {}
             _ => {
                 return Err(VerificationError::new(
                     "release_policy_mismatch",
@@ -481,19 +587,15 @@ fn verify_resident_locks(
 
 fn validate_exact_resident_set(lock: &ResidentCompositionLockV1) -> Result<(), VerificationError> {
     let expected: BTreeSet<&str> = match lock.executable_identity.as_str() {
-        "omegon" => [
-            "system:constitutional-kernel",
-            "system:default-loop",
-            "system:host-effects",
-            "feature:codescan",
-            "feature:context-compaction",
-            "feature:git",
-            "feature:lifecycle",
-            "feature:memory",
-        ]
-        .into_iter()
-        .collect(),
-        "omegon-maintain" => ["system:maintenance-kernel"].into_iter().collect(),
+        "omegon" => omegon_maintenance_contracts::OMEGON_REQUIRED_RESIDENT_IDENTITIES
+            .iter()
+            .chain(omegon_maintenance_contracts::OMEGON_OPTIONAL_RESIDENT_IDENTITIES)
+            .copied()
+            .collect(),
+        "omegon-maintain" => omegon_maintenance_contracts::OMEGON_MAINTAIN_RESIDENT_IDENTITIES
+            .iter()
+            .copied()
+            .collect(),
         _ => {
             return Err(VerificationError::new(
                 "release_composition_lock_invalid",
@@ -1301,6 +1403,32 @@ mod tests {
         let mut malformed = manifest;
         malformed.composition_locks[0].resident_lock_path = Some("arbitrary.json".into());
         assert!(validate_exact_package_lock_set(&malformed).is_err());
+    }
+
+    #[test]
+    fn modern_full_product_manifest_requires_product_component_lock() {
+        let (_directory, archive, manifest_path, _bundle) = production_fixture();
+        let mut manifest: PackageManifestV1 =
+            parse_record(&std::fs::read(manifest_path).unwrap()).unwrap();
+        manifest.tag = "v1.2.3".into();
+        manifest.host_profile = Some("full-product".into());
+        manifest.composition_class = Some("full-product".into());
+        manifest.core_components = Some(vec![
+            omegon_maintenance_contracts::ProductComponentInventoryV1 {
+                component_id: "core:codescan".into(),
+                wire_manifest_id: "omegon-codescan".into(),
+            },
+        ]);
+        manifest.product_component_locks.clear();
+
+        let error = verify_product_component_lock(
+            File::open(archive).unwrap(),
+            &manifest,
+            Instant::now(),
+            Duration::from_secs(5),
+        )
+        .expect_err("full-product inventory requires signed component evidence");
+        assert_eq!(error.code, "release_component_lock_invalid");
     }
 
     #[test]

@@ -48,7 +48,11 @@ def forbidden_packages(output: str, forbidden: list[str]) -> dict[str, list[str]
 
 def main() -> int:
     checks = [
-        ("shrinking", cargo_tree("--no-default-features"), SHRINKING_FORBIDDEN),
+        (
+            "shrinking",
+            cargo_tree("--no-default-features", "--features", "product"),
+            SHRINKING_FORBIDDEN,
+        ),
         ("all-features host", cargo_tree("--all-features"), HOST_FORBIDDEN),
     ]
     for label, result, forbidden in checks:

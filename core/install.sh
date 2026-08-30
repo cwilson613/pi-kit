@@ -14,6 +14,9 @@
 #   INSTALL_DIR   — installation directory (default: /usr/local/bin)
 #   VERSION       — specific version to install (default: latest)
 #   NO_COLOR      — disable colored output (set to any value)
+# Test-only local archive seam (both variables are required together):
+#   OMEGON_INSTALL_ARCHIVE    — absolute path to a release archive
+#   OMEGON_INSTALL_CHECKSUMS  — absolute path to its checksums.sha256
 #
 # Manual download:
 #   https://github.com/styrene-lab/omegon/releases
@@ -38,6 +41,8 @@ GITHUB_API="https://api.github.com/repos/${REPO}"
 TMP=""
 NO_CONFIRM=false
 RECEIPT_DIR="${HOME}/.config/omegon"
+LOCAL_ARCHIVE="${OMEGON_INSTALL_ARCHIVE:-}"
+LOCAL_CHECKSUMS="${OMEGON_INSTALL_CHECKSUMS:-}"
 
 # ── Parse arguments ───────────────────────────────────────────
 
@@ -98,7 +103,16 @@ trap cleanup EXIT INT TERM
 
 # ── Preflight checks ─────────────────────────────────────────
 
-command -v curl >/dev/null 2>&1 || die "curl is required but not found"
+if [ -n "$LOCAL_ARCHIVE" ] || [ -n "$LOCAL_CHECKSUMS" ]; then
+  [ -n "$LOCAL_ARCHIVE" ] && [ -n "$LOCAL_CHECKSUMS" ] ||
+    die "OMEGON_INSTALL_ARCHIVE and OMEGON_INSTALL_CHECKSUMS must be supplied together"
+  [ "${LOCAL_ARCHIVE#/}" != "$LOCAL_ARCHIVE" ] && [ -f "$LOCAL_ARCHIVE" ] ||
+    die "OMEGON_INSTALL_ARCHIVE must name an absolute local file"
+  [ "${LOCAL_CHECKSUMS#/}" != "$LOCAL_CHECKSUMS" ] && [ -f "$LOCAL_CHECKSUMS" ] ||
+    die "OMEGON_INSTALL_CHECKSUMS must name an absolute local file"
+else
+  command -v curl >/dev/null 2>&1 || die "curl is required but not found"
+fi
 command -v tar >/dev/null 2>&1 || die "tar is required but not found"
 
 if command -v sha256sum >/dev/null 2>&1; then
@@ -108,6 +122,90 @@ elif command -v shasum >/dev/null 2>&1; then
 else
   die "sha256sum or shasum is required for checksum verification"
 fi
+
+json_string_field() {
+  json_file="$1"
+  json_key="$2"
+  sed -n 's/.*"'"$json_key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json_file" | head -1
+}
+
+json_number_field() {
+  json_file="$1"
+  json_key="$2"
+  sed -n 's/.*"'"$json_key"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$json_file" | head -1
+}
+
+validate_resident_lock() {
+  generation="$1"
+  executable="$2"
+  identity="$3"
+  lock="${generation}/${executable}.composition-lock.json"
+  [ "$(json_number_field "$lock" schema_version)" = "1" ] &&
+    [ "$(json_string_field "$lock" executable_identity)" = "$identity" ] &&
+    [ "$(json_string_field "$lock" executable_digest)" = "$(sha256 "${generation}/${executable}")" ] &&
+    [ "$(json_string_field "$lock" target)" = "$PLATFORM" ] &&
+    [ "$(json_number_field "$lock" protocol_minimum)" = "1" ] &&
+    [ "$(json_string_field "$lock" issuer)" = "https://token.actions.githubusercontent.com" ] &&
+    [ "$(json_string_field "$lock" verification)" = "required" ] ||
+    die "resident composition lock is invalid for ${identity}"
+  case "$(json_string_field "$lock" workflow_identity)" in
+    https://github.com/styrene-lab/omegon/.github/workflows/release.yml@refs/tags/v*) ;;
+    *) die "resident composition lock signing identity is invalid for ${identity}" ;;
+  esac
+}
+
+validate_product_component() {
+  generation="$1"
+  lock="${generation}/${COMPONENT_LOCK_RELATIVE}"
+  manifest="${generation}/${CODESCAN_RELATIVE}/manifest.toml"
+  executable="${generation}/${CODESCAN_RELATIVE}/target/release/omegon-codescan"
+  [ "$(json_number_field "$lock" schema_version)" = "1" ] &&
+    [ "$(json_string_field "$lock" component_id)" = "core:codescan" ] &&
+    [ "$(json_string_field "$lock" wire_manifest_id)" = "omegon-codescan" ] &&
+    [ "$(json_string_field "$lock" manifest_path)" = "${CODESCAN_RELATIVE}/manifest.toml" ] &&
+    [ "$(json_string_field "$lock" manifest_digest)" = "$(sha256 "$manifest")" ] &&
+    [ "$(json_string_field "$lock" executable_path)" = "${CODESCAN_RELATIVE}/target/release/omegon-codescan" ] &&
+    [ "$(json_string_field "$lock" executable_digest)" = "$(sha256 "$executable")" ] &&
+    [ "$(json_string_field "$lock" target)" = "$PLATFORM" ] &&
+    [ "$(json_number_field "$lock" protocol_minimum)" = "1" ] &&
+    [ "$(json_number_field "$lock" protocol_maximum)" = "1" ] &&
+    [ "$(json_number_field "$lock" protocol_version)" = "1" ] &&
+    [ "$(json_string_field "$lock" fallback)" = "typed_unavailable" ] &&
+    [ "$(json_string_field "$lock" issuer)" = "https://token.actions.githubusercontent.com" ] &&
+    [ "$(json_string_field "$lock" verification)" = "required" ] ||
+    die "release-coupled codescan component lock is invalid"
+  case "$(json_string_field "$lock" workflow_identity)" in
+    https://github.com/styrene-lab/omegon/.github/workflows/release.yml@refs/tags/v*) ;;
+    *) die "release-coupled codescan signing identity is invalid" ;;
+  esac
+}
+
+validate_full_generation() {
+  generation="$1"
+  expected_version="$2"
+  [ -d "$generation" ] && [ ! -L "$generation" ] ||
+    die "release generation is not an immutable directory: ${generation}"
+  for executable in "$BINARY" "$MAINTAIN_BINARY" "${CODESCAN_RELATIVE}/target/release/omegon-codescan"; do
+    [ -x "${generation}/${executable}" ] ||
+      die "release generation executable is missing: ${executable}"
+  done
+  for member in \
+    "${BINARY}.composition-lock.json" \
+    "${MAINTAIN_BINARY}.composition-lock.json" \
+    "${PACK_RELATIVE}/content-pack.toml" \
+    "${CODESCAN_RELATIVE}/manifest.toml" \
+    "$COMPONENT_LOCK_RELATIVE" \
+    "install-receipt.json"; do
+    [ -f "${generation}/${member}" ] ||
+      die "release generation member is missing: ${member}"
+  done
+  [ "$(json_string_field "${generation}/install-receipt.json" version)" = "$expected_version" ] &&
+    [ "$(json_string_field "${generation}/install-receipt.json" layout)" = "versioned-current-v1" ] ||
+    die "release generation receipt is invalid: ${generation}"
+  validate_resident_lock "$generation" "$BINARY" "omegon"
+  validate_resident_lock "$generation" "$MAINTAIN_BINARY" "omegon-maintain"
+  validate_product_component "$generation"
+}
 
 # ── Platform detection ────────────────────────────────────────
 
@@ -159,6 +257,9 @@ echo ""
 
 # ── Version resolution ────────────────────────────────────────
 
+if [ -z "$VERSION" ] && [ -n "$LOCAL_ARCHIVE" ]; then
+  die "VERSION is required with OMEGON_INSTALL_ARCHIVE"
+fi
 if [ -z "$VERSION" ]; then
   case "$CHANNEL" in
     stable)
@@ -200,6 +301,19 @@ VERSION_NUM=$(echo "$VERSION" | sed 's/^v//')
 
 # Construct the archive name to match release assets
 ARCHIVE="${BINARY}-${VERSION_NUM}-${PLATFORM}.tar.gz"
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  ARCHIVE=$(basename "$LOCAL_ARCHIVE")
+  case "$ARCHIVE" in
+    *-aarch64-apple-darwin.tar.gz) PLATFORM="aarch64-apple-darwin" ;;
+    *-x86_64-apple-darwin.tar.gz) PLATFORM="x86_64-apple-darwin" ;;
+    *-aarch64-unknown-linux-gnu.tar.gz) PLATFORM="aarch64-unknown-linux-gnu" ;;
+    *-x86_64-unknown-linux-gnu.tar.gz) PLATFORM="x86_64-unknown-linux-gnu" ;;
+    *-x86_64-unknown-linux-musl.tar.gz) PLATFORM="x86_64-unknown-linux-musl" ;;
+    *) die "local release archive filename does not identify a supported target" ;;
+  esac
+  [ "$ARCHIVE" = "${BINARY}-${VERSION_NUM}-${PLATFORM}.tar.gz" ] ||
+    die "local release archive filename does not match VERSION and target"
+fi
 
 # ── Installation plan ─────────────────────────────────────────
 
@@ -253,10 +367,14 @@ CHECKSUMS_URL="${BASE_URL}/${CHECKSUMS}"
 
 TMP=$(mktemp -d) || die "could not create temporary directory"
 
-step "Downloading ${ARCHIVE}..."
-
-HTTP_CODE=$(curl -fSL -w '%{http_code}' -o "${TMP}/${ARCHIVE}" "$ARCHIVE_URL" 2>/dev/null) || true
-if [ ! -f "${TMP}/${ARCHIVE}" ] || [ "$HTTP_CODE" = "404" ]; then
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  step "Loading local ${ARCHIVE}..."
+  cp "$LOCAL_ARCHIVE" "${TMP}/${ARCHIVE}" || die "could not stage local release archive"
+else
+  step "Downloading ${ARCHIVE}..."
+  HTTP_CODE=$(curl -fSL -w '%{http_code}' -o "${TMP}/${ARCHIVE}" "$ARCHIVE_URL" 2>/dev/null) || true
+fi
+if [ -z "$LOCAL_ARCHIVE" ] && { [ ! -f "${TMP}/${ARCHIVE}" ] || [ "$HTTP_CODE" = "404" ]; }; then
   # Fallback: if musl target not available, try gnu
   if [ -n "${TARGET_FALLBACK:-}" ]; then
     step "Static (musl) build not available, falling back to gnu..."
@@ -286,7 +404,15 @@ ok "Downloaded $(dimtext "${ARCHIVE_SIZE} bytes")"
 
 step "Verifying checksum..."
 
-if curl -fsSL -o "${TMP}/${CHECKSUMS}" "$CHECKSUMS_URL" 2>/dev/null; then
+if [ -n "$LOCAL_CHECKSUMS" ]; then
+  cp "$LOCAL_CHECKSUMS" "${TMP}/${CHECKSUMS}" || die "could not stage local checksums"
+  CHECKSUM_AVAILABLE=true
+elif curl -fsSL -o "${TMP}/${CHECKSUMS}" "$CHECKSUMS_URL" 2>/dev/null; then
+  CHECKSUM_AVAILABLE=true
+else
+  CHECKSUM_AVAILABLE=false
+fi
+if [ "$CHECKSUM_AVAILABLE" = true ]; then
   EXPECTED=$(grep "${ARCHIVE}" "${TMP}/${CHECKSUMS}" | cut -d' ' -f1)
 
   if [ -z "$EXPECTED" ]; then
@@ -313,7 +439,9 @@ fi
 
 # ── Signature verification (optional — requires cosign) ──────
 
-if command -v cosign >/dev/null 2>&1; then
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  step "Local archive seam preserves checksum and package validation; signature download skipped"
+elif command -v cosign >/dev/null 2>&1; then
   SIG_URL="${BASE_URL}/${ARCHIVE}.sig"
   PEM_URL="${BASE_URL}/${ARCHIVE}.pem"
   if curl -fsSL -o "${TMP}/${ARCHIVE}.sig" "$SIG_URL" 2>/dev/null && \
@@ -355,8 +483,10 @@ if [ ! -f "${TMP}/${PACK_RELATIVE}/content-pack.toml" ]; then
   die "shipped content pack not found in archive — optional content installation is incomplete"
 fi
 CODESCAN_RELATIVE="share/omegon/extensions/omegon-codescan"
+COMPONENT_LOCK_RELATIVE="share/omegon/components/core-codescan.lock.json"
 if [ ! -f "${TMP}/${CODESCAN_RELATIVE}/manifest.toml" ] || \
-   [ ! -f "${TMP}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" ]; then
+   [ ! -f "${TMP}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" ] || \
+   [ ! -f "${TMP}/${COMPONENT_LOCK_RELATIVE}" ]; then
   die "release-coupled codescan extension not found in archive"
 fi
 
@@ -430,6 +560,8 @@ mkdir -p "${STAGING_DIR}/share/omegon/content-packs"
 mv "${TMP}/${PACK_RELATIVE}" "${STAGING_DIR}/${PACK_RELATIVE}"
 mkdir -p "${STAGING_DIR}/share/omegon/extensions"
 mv "${TMP}/${CODESCAN_RELATIVE}" "${STAGING_DIR}/${CODESCAN_RELATIVE}"
+mkdir -p "${STAGING_DIR}/share/omegon/components"
+mv "${TMP}/${COMPONENT_LOCK_RELATIVE}" "${STAGING_DIR}/${COMPONENT_LOCK_RELATIVE}"
 chmod +x "${STAGING_DIR}/${BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}" || \
   die "could not make release pair executable"
 chmod +x "${STAGING_DIR}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" || \
@@ -453,18 +585,12 @@ cat > "${STAGING_DIR}/install-receipt.json" <<EOF
 }
 EOF
 
+validate_full_generation "$STAGING_DIR" "$VERSION"
+
 # Flush the complete candidate before publishing its immutable directory.
 sync
 if [ -e "$VERSION_DIR" ] || [ -L "$VERSION_DIR" ]; then
-  [ -x "${VERSION_DIR}/${BINARY}" ] && \
-    [ -x "${VERSION_DIR}/${MAINTAIN_BINARY}" ] && \
-    [ -f "${VERSION_DIR}/${BINARY}.composition-lock.json" ] && \
-    [ -f "${VERSION_DIR}/${MAINTAIN_BINARY}.composition-lock.json" ] && \
-    [ -f "${VERSION_DIR}/${PACK_RELATIVE}/content-pack.toml" ] && \
-    [ -f "${VERSION_DIR}/${CODESCAN_RELATIVE}/manifest.toml" ] && \
-    [ -x "${VERSION_DIR}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" ] && \
-    [ -f "${VERSION_DIR}/install-receipt.json" ] || \
-    die "existing release generation is incomplete: ${VERSION_DIR}"
+  validate_full_generation "$VERSION_DIR" "$VERSION"
   rm -rf "$STAGING_DIR"
 else
   mv "$STAGING_DIR" "$VERSION_DIR" || die "could not publish release generation"
@@ -517,6 +643,8 @@ if [ ! -L "$CURRENT_LINK" ] && [ -L "$INSTALL_TARGET" ]; then
     fi
     [ -f "${OLD_DIR}/install-receipt.json" ] || \
       die "prior release generation has no receipt"
+    OLD_VERSION=$(json_string_field "${OLD_DIR}/install-receipt.json" version)
+    validate_full_generation "$OLD_DIR" "$OLD_VERSION"
     atomic_link "$OLD_DIR" "$CURRENT_LINK"
     atomic_link "${CURRENT_LINK}/${BINARY}" "$INSTALL_TARGET"
     atomic_link "${CURRENT_LINK}/${BINARY}" "$OM_TARGET"

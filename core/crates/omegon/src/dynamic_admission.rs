@@ -75,6 +75,10 @@ pub(crate) struct DynamicAdmissionPermit {
 }
 
 impl DynamicAdmissionPermit {
+    pub(crate) fn source_digest(&self) -> &str {
+        &self.preflight.source_digest
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         self.admission
             .validate_for(&self.preflight)

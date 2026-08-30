@@ -39,7 +39,7 @@ boundary used by runtime edges.
 |---|---|---|---|
 | Plans/work | No-resource in-process service | Session plans remain usable; repository work is empty or source-locally degraded. | Not applicable: command syntax, durable contracts, and wire shapes did not change. |
 | Behavior policy | No-resource in-process service | Ordinary turns and host recovery remain active; advisory policy output is omitted. | Not applicable: this is internal advisory loop policy with no public syntax or schema change. |
-| Codescan | Managed in-process service | Search tools stay declared with typed unavailability; unrelated context continues. | Public code-search availability guidance. |
+| Codescan | Release-coupled native extension | Search tools stay declared with typed unavailability when the extension is absent or fails. | Public code-search availability guidance. |
 | Lifecycle/OpenSpec | Managed in-process service | Lifecycle tools report typed unavailability; unrelated EventBus work continues. | Public OpenSpec availability guidance. |
 | Memory | Managed in-process service | Durable memory context is omitted; tools and status report typed unavailability; the session continues. | Public memory availability guidance. |
 | Context/compaction | Managed in-process service | Ordinary context and turns continue; managed planning reports typed unavailability. | Public compaction availability guidance. |

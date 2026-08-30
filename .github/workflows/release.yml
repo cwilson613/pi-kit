@@ -78,9 +78,13 @@ jobs:
           mkdir -p "$FIXTURE_DIR"
           printf '#!/bin/sh\necho omegon fixture\n' > "$FIXTURE_DIR/omegon"
           printf '#!/bin/sh\necho omegon-maintain fixture\n' > "$FIXTURE_DIR/omegon-maintain"
-          chmod 0755 "$FIXTURE_DIR/omegon" "$FIXTURE_DIR/omegon-maintain"
+          printf '#!/bin/sh\necho omegon-codescan fixture\n' > "$FIXTURE_DIR/omegon-codescan"
+          printf 'schema_version = 1\nname = "omegon-codescan"\nversion = "1"\nprotocol_min = 1\nprotocol_max = 1\nbinary = "target/release/omegon-codescan"\n' > "$FIXTURE_DIR/codescan-manifest.toml"
+          chmod 0755 "$FIXTURE_DIR/omegon" "$FIXTURE_DIR/omegon-maintain" "$FIXTURE_DIR/omegon-codescan"
           python3 scripts/content_pack_manifest.py --check
-          python3 scripts/package_release.py --binary-dir "$FIXTURE_DIR" --output "$ARCHIVE" --without-codescan
+          python3 scripts/package_release.py --binary-dir "$FIXTURE_DIR" --output "$ARCHIVE" \
+            --codescan-binary "$FIXTURE_DIR/omegon-codescan" \
+            --codescan-manifest "$FIXTURE_DIR/codescan-manifest.toml"
           python3 scripts/release_manifest.py generate-package \
             --archive "$ARCHIVE" \
             --tag "$RELEASE_TAG" \
@@ -359,6 +363,13 @@ jobs:
             --target "${{ matrix.target }}"
           python3 scripts/check_composition_authority.py
 
+      - name: Smoke direct installer from the local release archive
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          python3 scripts/smoke_distribution_runtime.py direct-installer \
+            --archive "$ARCHIVE" \
+            --target "${{ matrix.target }}"
+
       - name: Generate SHA256 checksum
         run: |
           if command -v sha256sum >/dev/null 2>&1; then
@@ -613,14 +624,6 @@ jobs:
       - name: Generate release manifest
         run: |
           COMMIT=$(git rev-parse HEAD)
-          python3 scripts/release_manifest.py generate \
-            --tag "${RELEASE_TAG}" \
-            --checksums artifacts/checksums.sha256 \
-            --output artifacts/release-manifest.json \
-            --repo "${{ github.repository }}" \
-            --commit "$COMMIT"
-          cat artifacts/release-manifest.json
-
           for target in aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
             archive="artifacts/omegon-${RELEASE_TAG#v}-${target}.tar.gz"
             test -f "$archive" || continue
@@ -632,6 +635,15 @@ jobs:
               --repo "${{ github.repository }}" \
               --commit "$COMMIT"
           done
+
+          python3 scripts/release_manifest.py generate \
+            --tag "${RELEASE_TAG}" \
+            --checksums artifacts/checksums.sha256 \
+            --package-manifest-dir artifacts \
+            --output artifacts/release-manifest.json \
+            --repo "${{ github.repository }}" \
+            --commit "$COMMIT"
+          cat artifacts/release-manifest.json
 
       - name: Install Rust toolchain (for cargo-cyclonedx)
         if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
@@ -807,11 +819,34 @@ jobs:
       - name: Authenticate to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push ${{ matrix.image }}
+      - name: Build and load ${{ matrix.image }}
         run: |
           set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
-          echo "Building and pushing ${{ matrix.image }}:${VERSION}..."
+          nix run .#${{ matrix.image }}.copyToDockerDaemon --accept-flake-config
+
+      - name: Smoke host-only OCI composition
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          IMAGE_NAME=$(nix eval --raw .#${{ matrix.image }}.imageName --accept-flake-config)
+          IMAGE="${IMAGE_NAME}:${VERSION}"
+          test "$(docker inspect --format '{{ index .Config.Labels "sh.styrene.omegon.artifact-profile" }}' "$IMAGE")" = full-product
+          test "$(docker inspect --format '{{ index .Config.Labels "sh.styrene.omegon.composition-class" }}' "$IMAGE")" = host-only
+          test -z "$(docker inspect --format '{{ index .Config.Labels "sh.styrene.omegon.core-components" }}' "$IMAGE")"
+          docker run --rm "$IMAGE" sh -lc \
+            'mkdir -p /tmp/omegon-home && HOME=/tmp/omegon-home OMEGON_HOME=/tmp/omegon-home/.omegon omegon composition-inspect --profile full --probe codescan-search --cwd /workspace' \
+            > "$RUNNER_TEMP/oci-host-payload.json"
+          printf '%s\n' '{"schema_version":1,"distribution":"oci","host_profile":"full-product","composition_class":"host-only","core_components":[]}' \
+            > "$RUNNER_TEMP/oci-distribution-profile.json"
+          python3 scripts/smoke_distribution_runtime.py oci-host \
+            --payload "$RUNNER_TEMP/oci-host-payload.json" \
+            --metadata "$RUNNER_TEMP/oci-distribution-profile.json"
+
+      - name: Push ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
           nix run .#${{ matrix.image }}.copyToRegistry --accept-flake-config
           echo "Pushed ${{ matrix.image }}:${VERSION} to ghcr.io"
 

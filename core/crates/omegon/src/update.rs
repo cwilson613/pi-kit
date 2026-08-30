@@ -754,6 +754,9 @@ fn extract_release_assets(archive_path: &Path, generation: &Path) -> anyhow::Res
     let codescan_binary =
         Path::new("share/omegon/extensions/omegon-codescan/target/release/omegon-codescan");
     let content_manifest = Path::new("share/omegon/content-packs/omegon-shipped/content-pack.toml");
+    let component_lock = Path::new("share/omegon/components/core-codescan.lock.json");
+    let omegon_lock = Path::new("omegon.composition-lock.json");
+    let maintenance_lock = Path::new("omegon-maintain.composition-lock.json");
     let mut extracted = std::collections::HashSet::new();
 
     for entry in archive.entries()? {
@@ -763,7 +766,8 @@ fn extract_release_assets(archive_path: &Path, generation: &Path) -> anyhow::Res
             || path == Path::new("omegon-maintain.composition-lock.json")
             || path.starts_with("share/omegon/content-packs/omegon-shipped")
             || path == codescan_manifest
-            || path == codescan_binary;
+            || path == codescan_binary
+            || path == component_lock;
         if !allowed {
             continue;
         }
@@ -779,7 +783,14 @@ fn extract_release_assets(archive_path: &Path, generation: &Path) -> anyhow::Res
         std::io::copy(&mut entry, &mut output)?;
     }
 
-    for required in [content_manifest, codescan_manifest, codescan_binary] {
+    for required in [
+        omegon_lock,
+        maintenance_lock,
+        content_manifest,
+        codescan_manifest,
+        codescan_binary,
+        component_lock,
+    ] {
         if !extracted.contains(required) {
             anyhow::bail!(
                 "Downloaded archive did not contain release asset {}",
@@ -1118,6 +1129,39 @@ mod tests {
                 .to_string()
                 .contains("complete release companion pair")
         );
+    }
+
+    #[test]
+    fn archive_asset_extraction_rejects_missing_resident_locks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archive_path = temp.path().join("release.tar.gz");
+        let archive_file = std::fs::File::create(&archive_path).expect("archive");
+        let encoder = flate2::write::GzEncoder::new(archive_file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for name in [
+            "share/omegon/content-packs/omegon-shipped/content-pack.toml",
+            "share/omegon/extensions/omegon-codescan/manifest.toml",
+            "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan",
+            "share/omegon/components/core-codescan.lock.json",
+        ] {
+            let bytes = b"fixture";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, name, &bytes[..])
+                .expect("archive member");
+        }
+        archive
+            .into_inner()
+            .expect("finish archive")
+            .finish()
+            .expect("gzip");
+
+        let error = extract_release_assets(&archive_path, &temp.path().join("candidate"))
+            .expect_err("resident locks are required update evidence");
+        assert!(error.to_string().contains("composition-lock"), "{error}");
     }
 
     #[test]

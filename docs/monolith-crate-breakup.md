@@ -50,7 +50,7 @@ artifact-name changes.
 Produce a supported deployment artifact built with:
 
 ```bash
-cargo build --release -p omegon --no-default-features
+cargo build --release -p omegon --bin omegon --no-default-features --features product
 ```
 
 The artifact must retain daemon/control functionality while excluding terminal
@@ -61,7 +61,7 @@ is explicitly decided.
 ### Proposed work order
 
 1. **Keep the boundary continuously healthy**
-   - Add a CI compile lane for `cargo check -p omegon --no-default-features`.
+   - Add a CI compile lane for `cargo check -p omegon --bin omegon --no-default-features --features product`.
    - Add a focused headless test lane for daemon, control, web, ACP/IPC, and
      shutdown behavior; do not run TUI snapshots in that matrix.
    - Add a dependency assertion that the no-default-features graph excludes

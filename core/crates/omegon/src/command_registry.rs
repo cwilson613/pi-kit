@@ -408,6 +408,9 @@ pub(crate) const BUILTIN_COMMANDS: &[BuiltinCommandSpec] = &[
             "apply",
             "mqtt",
             "extension",
+            "component enable <selector>",
+            "component disable <selector>",
+            "components view",
             "persona",
             "tone",
         ],
@@ -783,6 +786,33 @@ mod tests {
                 .iter()
                 .any(|subcommand| subcommand == "replace <extension>")
         );
+    }
+
+    #[test]
+    fn profile_component_commands_have_tui_cli_acp_parity() {
+        let definitions = builtin_command_definitions();
+        let profile = definitions
+            .iter()
+            .find(|definition| definition.name == "profile")
+            .expect("/profile definition");
+
+        assert!(profile.availability.tui);
+        assert!(profile.availability.cli);
+        assert!(profile.availability.acp);
+        for command in [
+            "component enable <selector>",
+            "component disable <selector>",
+            "components view",
+        ] {
+            assert!(
+                profile
+                    .subcommands
+                    .iter()
+                    .any(|candidate| candidate == command),
+                "missing shared profile subcommand {command}: {:?}",
+                profile.subcommands
+            );
+        }
     }
 
     #[test]

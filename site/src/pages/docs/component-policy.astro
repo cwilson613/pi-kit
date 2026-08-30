@@ -1,0 +1,69 @@
+---
+import Docs from "../../layouts/Docs.astro";
+---
+<Docs title="Core Component Policy" description="Control release-coupled component activation without weakening package integrity.">
+  <h1>Core Component Policy</h1>
+  <p>
+    Core component policy controls runtime activation for packaged product components. The initial
+    disableable component is <code>core:codescan</code>. Disablement does not uninstall or rewrite it.
+  </p>
+
+  <h2>Selected profile</h2>
+  <p>Add a <code>components</code> map to the selected project or user profile JSON:</p>
+  <pre><code>{`{
+  "components": {
+    "core:codescan": { "enabled": false }
+  }
+}`}</code></pre>
+  <p>
+    An omitted entry uses the product composition default. An explicit enable cannot override a
+    user-local or propagated deny. Profile changes apply after restart and do not alter the active
+    session generation.
+  </p>
+  <pre><code>/profile components view
+/profile component disable core:codescan
+/profile component enable core:codescan</code></pre>
+
+  <h2>User-local deny floor</h2>
+  <p>Create <code>OMEGON_HOME/component-policy.json</code> to deny components across selected profiles:</p>
+  <pre><code>{`{
+  "schemaVersion": 1,
+  "components": {
+    "core:*": { "enabled": false }
+  }
+}`}</code></pre>
+  <p>
+    This file is deny-only. Remove an entry to remove its deny. <code>core:*</code> selects all
+    release-declared disableable components. It cannot disable the constitutional kernel, default
+    loop, host effects, or maintenance recovery capability.
+  </p>
+
+  <h2>Strict validation</h2>
+  <p>
+    Omegon rejects unknown fields, invalid value types, malformed selectors, unknown exact IDs,
+    unsupported schema versions, and non-disableable targets. Errors include the source path and
+    invalid field or selector. Validation completes before discovery, readiness checks, or spawn.
+  </p>
+
+  <h2>Runtime behavior</h2>
+  <p>
+    A denied component remains packaged but does not start, index, or mutate its database. Its tools
+    are removed from the model-callable schema. Direct CLI, ACP, and tool invocation returns
+    <code>service:disabled</code>, <code>core:codescan</code>, and exact policy-source provenance.
+  </p>
+
+  <h2>Migration and extensions</h2>
+  <p>
+    A legacy <code>extensions.disabled</code> entry for <code>omegon-codescan</code> still denies the
+    component. A canonical profile save migrates only that entry and preserves unrelated extension
+    policy. <code>/extension enable|disable</code> controls operator-managed SDK extension state. It
+    does not change product component policy.
+  </p>
+
+  <h2>Package and update integrity</h2>
+  <p>
+    Runtime denial never weakens archive inventory, signed member digests, resident locks, atomic
+    generation activation, or rollback validation. Missing or corrupt required codescan files still
+    fail package and update validation when <code>core:codescan</code> is denied.
+  </p>
+</Docs>

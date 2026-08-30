@@ -10,6 +10,36 @@ on:
     branches: [main]
 
 jobs:
+  python-release-policy:
+    name: Python release policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test composition and release policy
+        run: python3 scripts/test_release_policy.py
+      - name: Check distribution smoke entry point
+        run: python3 scripts/smoke_distribution_runtime.py --help
+
+  nix-host-distribution-smoke:
+    name: Nix host-only distribution smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Build and exercise the packaged Nix host
+        run: |
+          nix build .#omegon --accept-flake-config
+          python3 scripts/smoke_distribution_runtime.py nix-host \
+            --binary "$(readlink -f result/bin/omegon)" \
+            --metadata result/share/omegon/distribution-profile.json
+
   rust-build:
     name: Rust build
     runs-on: ubuntu-latest
@@ -22,8 +52,12 @@ jobs:
         run: cargo build -p omegon
       - name: Check shrinking Omegon composition
         run: |
-          cargo check -p omegon --locked --no-default-features
+          cargo check -p omegon --bin omegon --locked --no-default-features --features product
           python3 scripts/check_headless_dependency_boundary.py
+      - name: Check kernel host dependency boundary
+        run: |
+          cargo check -p omegon --bin omegon-kernel-host --locked --no-default-features --features kernel-host
+          python3 scripts/check_kernel_dependency_boundary.py
       - name: Check task capsule feature boundary
         run: |
           cargo check -p omegon --locked --no-default-features --features task-capsule
@@ -214,8 +248,53 @@ jobs:
         env:
           OMEGON_NERD_FONT: "1"
         run: |
-          cargo test -p omegon --bin omegon codescan_service::tests:: --locked --no-default-features -- --test-threads=1 --nocapture
-          cargo test -p omegon --bin omegon tools::codebase_search::tests:: --locked --no-default-features -- --test-threads=1 --nocapture
+          cargo test -p omegon --bin omegon codescan_service::tests:: --locked --no-default-features --features product -- --test-threads=1 --nocapture
+          cargo test -p omegon --bin omegon tools::codebase_search::tests:: --locked --no-default-features --features product -- --test-threads=1 --nocapture
+
+  native-extension-conformance:
+    name: Native extension conformance campaign
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build first-party native extensions
+        run: |
+          cargo build --release --manifest-path extensions/omegon-browser/Cargo.toml --locked
+          cargo build --release --manifest-path extensions/omegon-codescan/Cargo.toml --features conformance-hooks --locked
+          cargo build --release --manifest-path extensions/omegon-tdd-savepoint/Cargo.toml --locked
+      - name: Run deterministic host conformance fixtures
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: cargo test -p omegon extensions::conformance_tests --locked -- --test-threads=1 --nocapture
+      - name: Run first-party handshake campaign
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: cargo test -p omegon extensions::conformance_tests::every_first_party_native_extension_passes_the_host_handshake --locked -- --ignored --exact --test-threads=1 --nocapture
+      - name: Run release-coupled codescan acceptance
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: |
+          cargo test -p omegon setup::tests::release_coupled_codescan_traverses_discovery_and_host_binding --locked -- --ignored --exact --test-threads=1 --nocapture
+          cargo test -p omegon setup::tests::release_codescan_can_be_enabled_on_restart_without_reinstall --locked -- --ignored --exact --test-threads=1 --nocapture
+
+  additive-composition-ladder:
+    name: Additive composition ladder
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run artifact compositions and enforce aggregate budgets
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: python3 scripts/check_composition_matrix.py --artifact-ladder --cargo-profile release
 
   rust-standalone-crates:
     name: Standalone crate tests

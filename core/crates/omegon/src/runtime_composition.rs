@@ -8,17 +8,6 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-const NORMAL_RESIDENT_CONTRIBUTIONS: &[&str] = &[
-    "system:constitutional-kernel",
-    "system:default-loop",
-    "system:host-effects",
-    "feature:codescan-adapter",
-    "feature:context-compaction",
-    "feature:git",
-    "feature:lifecycle",
-    "feature:memory",
-];
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CompositionInspectionV1 {
     pub(crate) schema_version: u32,
@@ -32,12 +21,22 @@ pub(crate) struct CompositionInspectionV1 {
     pub(crate) model_schema: CountedOwnersV1,
     pub(crate) resident_capabilities: Vec<String>,
     pub(crate) callable_capabilities: Vec<String>,
+    pub(crate) external_processes: Vec<ExternalProcessV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) functional_probe: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CountedOwnersV1 {
     pub(crate) count: usize,
     pub(crate) owners: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ExternalProcessV1 {
+    pub(crate) owner: String,
+    pub(crate) state: String,
+    pub(crate) pid: Option<u32>,
 }
 
 pub(crate) fn inspect_runtime_composition(
@@ -57,7 +56,9 @@ pub(crate) fn inspect_runtime_composition(
         *schema_owners.entry(owner.clone()).or_default() += tokens;
     }
     let mut startup_owners = bus.active_startup_resource_owners();
-    startup_owners.insert("system:inference-discovery".to_string(), 1);
+    if profile != "kernel" {
+        startup_owners.insert("system:inference-discovery".to_string(), 1);
+    }
 
     Ok(CompositionInspectionV1 {
         schema_version: 1,
@@ -78,16 +79,170 @@ pub(crate) fn inspect_runtime_composition(
             count: schema_owners.values().sum(),
             owners: schema_owners,
         },
-        resident_capabilities: NORMAL_RESIDENT_CONTRIBUTIONS
-            .iter()
-            .map(|identity| (*identity).to_string())
-            .collect(),
+        resident_capabilities: resident_capabilities(profile),
         callable_capabilities,
+        external_processes: Vec::new(),
+        functional_probe: None,
     })
 }
 
+pub(crate) fn external_process_inventory(
+    health: Vec<crate::extensions::ExtensionProcessHealth>,
+) -> Vec<ExternalProcessV1> {
+    let mut processes = health
+        .into_iter()
+        .map(|process| ExternalProcessV1 {
+            owner: process.name,
+            state: match process.state {
+                crate::extensions::ExtensionProcessState::Healthy => "healthy",
+                crate::extensions::ExtensionProcessState::Unavailable => "unavailable",
+                crate::extensions::ExtensionProcessState::Replacing => "replacing",
+                crate::extensions::ExtensionProcessState::ShuttingDown => "shutting_down",
+            }
+            .to_string(),
+            pid: process.pid,
+        })
+        .collect::<Vec<_>>();
+    processes.sort_by(|left, right| left.owner.cmp(&right.owner));
+    processes
+}
+
+pub(crate) async fn execute_composition_probe(
+    probe: &str,
+    cwd: &std::path::Path,
+    bus: &crate::bus::EventBus,
+) -> anyhow::Result<serde_json::Value> {
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    match probe {
+        "core-read" => {
+            let fixture = cwd.join("composition-probe.txt");
+            let result = bus
+                .execute_tool(
+                    "read",
+                    "composition-core-read",
+                    serde_json::json!({"path": fixture}),
+                    cancellation.clone(),
+                )
+                .await?;
+            let rendered = serde_json::to_string(&result.content)?;
+            if !rendered.contains("omegon-composition-core-probe") {
+                anyhow::bail!("kernel core-read probe did not return the fixture marker");
+            }
+            let absence = bus
+                .execute_tool(
+                    "codebase_search",
+                    "composition-codescan-absence",
+                    serde_json::json!({"query": "omegon-composition-core-probe"}),
+                    cancellation,
+                )
+                .await?;
+            if absence
+                .details
+                .get("code")
+                .and_then(serde_json::Value::as_str)
+                != Some("service:unavailable")
+            {
+                anyhow::bail!("kernel-only codescan contract was not typed unavailable");
+            }
+            Ok(serde_json::json!({
+                "name": probe,
+                "status": "ok",
+                "codescan": "service:unavailable"
+            }))
+        }
+        "codescan-search" => {
+            let indexed = bus
+                .execute_tool(
+                    "codebase_index",
+                    "composition-codescan-index",
+                    serde_json::json!({"invalidate": true}),
+                    cancellation.clone(),
+                )
+                .await?;
+            if indexed.details["code"] == "service:disabled" {
+                let direct = bus
+                    .execute_tool(
+                        "codebase_search",
+                        "composition-codescan-disabled",
+                        serde_json::json!({"query": "omegon_composition_codescan_probe"}),
+                        cancellation,
+                    )
+                    .await?;
+                if direct.details["code"] != "service:disabled" {
+                    anyhow::bail!("codescan direct invocation did not preserve disabled state");
+                }
+                return Ok(serde_json::json!({
+                    "name": probe,
+                    "status": "disabled",
+                    "code": direct.details["code"],
+                    "component_id": direct.details["component_id"],
+                    "determining_policy_source": direct.details["determining_policy_source"],
+                }));
+            }
+            if indexed.details["code"] == "service:unavailable" {
+                return Ok(serde_json::json!({
+                    "name": probe,
+                    "status": "unavailable",
+                    "code": "service:unavailable",
+                    "component_id": "core:codescan",
+                }));
+            }
+            let result = bus
+                .execute_tool(
+                    "codebase_search",
+                    "composition-codescan-search",
+                    serde_json::json!({
+                        "query": "omegon_composition_codescan_probe",
+                        "scope": "code",
+                        "max_results": 5
+                    }),
+                    cancellation,
+                )
+                .await?;
+            if !result.details["results"]
+                .as_array()
+                .is_some_and(|results| !results.is_empty())
+            {
+                anyhow::bail!("additive codescan probe did not restore search");
+            }
+            Ok(serde_json::json!({
+                "name": probe,
+                "status": "ok",
+                "component_id": "core:codescan",
+                "wire_manifest_id": crate::codescan_service::CODESCAN_EXTENSION,
+                "service_id": omegon_codescan_contracts::CODESCAN_SERVICE_ID,
+                "protocol_version": omegon_codescan_contracts::CODESCAN_PROTOCOL_VERSION,
+                "service_provenance": result.details["service_provenance"]
+            }))
+        }
+        "product-inspect" => Ok(serde_json::json!({"name": probe, "status": "ok"})),
+        _ => anyhow::bail!("unknown composition probe: {probe}"),
+    }
+}
+
+fn resident_capabilities(profile: &str) -> Vec<String> {
+    if profile == "kernel" {
+        return [
+            "system:constitutional-kernel",
+            "system:default-loop",
+            "system:host-effects",
+            "feature:codescan-adapter",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    }
+    omegon_maintenance_contracts::OMEGON_REQUIRED_RESIDENT_IDENTITIES
+        .iter()
+        .chain(omegon_maintenance_contracts::OMEGON_OPTIONAL_RESIDENT_IDENTITIES)
+        .map(|identity| (*identity).to_string())
+        .collect()
+}
+
 pub(crate) const fn compiled_artifact_profile() -> &'static str {
-    if cfg!(feature = "task-capsule") {
+    if cfg!(feature = "kernel-host") {
+        "kernel-host-v1"
+    } else if cfg!(feature = "task-capsule") {
         "task-capsule-v0"
     } else if cfg!(all(
         feature = "tui",
@@ -119,12 +274,16 @@ pub(crate) fn validated_runtime_mode(profile: &str) -> anyhow::Result<&'static s
 fn validated_profile_state(
     profile: &str,
 ) -> anyhow::Result<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
-    if cfg!(feature = "task-capsule") {
+    if cfg!(feature = "kernel-host") {
+        if profile != "kernel" {
+            anyhow::bail!("composition profile '{profile}' is incompatible with kernel-host-v1");
+        }
+    } else if cfg!(feature = "task-capsule") {
         if profile != "task-capsule" {
             anyhow::bail!("composition profile '{profile}' is incompatible with task-capsule-v0");
         }
-    } else if profile == "task-capsule" {
-        anyhow::bail!("task-capsule composition requires the task-capsule artifact feature");
+    } else if matches!(profile, "kernel" | "task-capsule") {
+        anyhow::bail!("{profile} composition requires its matching artifact feature");
     }
     if !cfg!(feature = "tui") && matches!(profile, "interactive" | "full") {
         anyhow::bail!("composition profile '{profile}' requires the tui feature");
@@ -136,6 +295,20 @@ fn profile_state(
     profile: &str,
 ) -> anyhow::Result<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
     match profile {
+        "kernel" => Ok((
+            "kernel",
+            vec!["agent-loop", "bounded-task"],
+            vec![
+                "context-compaction",
+                "git",
+                "lifecycle",
+                "memory",
+                "provider-clients",
+                "shipped-content",
+                "tui",
+                "self-update",
+            ],
+        )),
         "task-capsule" => Ok((
             "bounded-task",
             vec!["agent-loop", "bounded-task"],
@@ -280,6 +453,17 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "kernel-host")]
+    #[test]
+    fn kernel_identity_is_compile_derived_and_exclusive() {
+        assert_eq!(compiled_artifact_profile(), "kernel-host-v1");
+        assert_eq!(canonical_entrypoint(), ["omegon"]);
+        assert!(validated_profile_state("kernel").is_ok());
+        for incompatible in ["task-capsule", "interactive", "headless", "daemon", "full"] {
+            assert!(validated_profile_state(incompatible).is_err());
+        }
+    }
+
     #[cfg(all(
         feature = "tui",
         feature = "self-update",
@@ -298,6 +482,7 @@ mod tests {
 
     #[cfg(all(
         not(feature = "task-capsule"),
+        not(feature = "kernel-host"),
         not(feature = "tui"),
         not(feature = "self-update")
     ))]

@@ -93,13 +93,17 @@ def verify_formula(formula: Path, archive_dir: Path | None = None) -> None:
                     f"Homebrew archive checksum mismatch for {target}: "
                     f"expected {expected_sha}, got {actual_sha}"
                 )
-            build_package_manifest(
+            package_manifest = build_package_manifest(
                 archive=archive,
                 tag=f"v{version}",
                 target=target,
                 repo=REPOSITORY,
                 commit="0" * 40,
             )
+            if package_manifest["composition_class"] != "full-product" or package_manifest[
+                "core_components"
+            ] != [{"component_id": "core:codescan", "wire_manifest_id": "omegon-codescan"}]:
+                raise ValueError(f"Homebrew archive for {target} does not contain core:codescan")
 
 
 def main() -> int:
@@ -114,7 +118,7 @@ def main() -> int:
         return 1
     print(
         "Homebrew formula archives contain and install the verified Omegon "
-        "companions, resident locks, and content pack."
+        "companions, resident locks, content pack, and core:codescan component."
     )
     return 0
 

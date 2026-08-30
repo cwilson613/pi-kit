@@ -4796,6 +4796,10 @@ mod extension_metadata_tests {
             "ACP worker is not initialized"
         );
         assert_eq!(
+            agent.handle_slash_command("/profile components view").await,
+            "ACP worker is not initialized"
+        );
+        assert_eq!(
             agent
                 .handle_slash_command("/profile open built-in:built-in-default")
                 .await,

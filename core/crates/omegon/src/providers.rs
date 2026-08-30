@@ -5442,6 +5442,28 @@ mod tests {
     }
 
     #[test]
+    fn provider_matrix_keeps_operator_observation_as_user_evidence_without_tool_pairs() {
+        let evidence = LlmMessage::User {
+            content: "[Operator-executed tool observation]\nCommand: false\nExit code: 7".into(),
+            images: vec![],
+        };
+
+        let anthropic = AnthropicClient::build_messages(std::slice::from_ref(&evidence));
+        assert_eq!(anthropic[0]["role"], "user");
+        assert!(anthropic[0].get("tool_use_id").is_none());
+
+        let openai = OpenAIClient::build_wire_messages("system", std::slice::from_ref(&evidence));
+        assert_eq!(openai[1]["role"], "user");
+        assert!(openai[1].get("tool_calls").is_none());
+        assert!(openai[1].get("tool_call_id").is_none());
+
+        let gemini = AntigravityClient::build_contents(&[evidence]);
+        assert_eq!(gemini[0]["role"], "user");
+        assert!(gemini[0]["parts"][0].get("functionCall").is_none());
+        assert!(gemini[0]["parts"][0].get("functionResponse").is_none());
+    }
+
+    #[test]
     fn error_message_extraction_from_api_json() {
         // Simulate what happens when Anthropic returns a 400 error
         let raw_body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.1.tool_use.input: Input should be a valid dictionary"},"request_id":"req_abc123"}"#;

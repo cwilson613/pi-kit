@@ -82,6 +82,7 @@ struct ProcessHandles {
     child: tokio::process::Child,
     stdin: tokio::process::ChildStdin,
     reader: BufReader<tokio::process::ChildStdout>,
+    recent_stderr: Arc<std::sync::Mutex<String>>,
     next_id: u64,
 }
 
@@ -90,12 +91,32 @@ impl ProcessHandles {
         child: tokio::process::Child,
         stdin: tokio::process::ChildStdin,
         stdout: tokio::process::ChildStdout,
+        recent_stderr: Arc<std::sync::Mutex<String>>,
     ) -> Self {
         Self {
             child,
             stdin,
             reader: BufReader::new(stdout),
+            recent_stderr,
             next_id: 1,
+        }
+    }
+
+    fn diagnostic(&mut self) -> String {
+        let process = match self.child.try_wait() {
+            Ok(Some(status)) => format!("process exited with {status}"),
+            Ok(None) => "process still running".to_string(),
+            Err(error) => format!("process status unavailable: {error}"),
+        };
+        let stderr = self
+            .recent_stderr
+            .lock()
+            .map(|stderr| stderr.trim().to_string())
+            .unwrap_or_else(|_| "<stderr lock poisoned>".to_string());
+        if stderr.is_empty() {
+            format!("{process}; stderr: none")
+        } else {
+            format!("{process}; stderr: {stderr}")
         }
     }
 
@@ -535,10 +556,14 @@ pub async fn shutdown_supervisors(
 async fn handshake(handles: &mut ProcessHandles, spec: &LaunchSpec) -> Result<ExtensionHandshake> {
     let manifest = &spec.manifest;
     let name = &manifest.extension.name;
-    let deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_millis(manifest.startup.timeout_ms.max(1));
+    let started = tokio::time::Instant::now();
+    let startup_budget = std::time::Duration::from_millis(manifest.startup.timeout_ms.max(1));
+    let deadline = started + startup_budget;
+    let initialize_budget = (startup_budget / 2)
+        .max(std::time::Duration::from_millis(1))
+        .min(std::time::Duration::from_secs(2));
     let metadata = match tokio::time::timeout_at(
-        deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(2)),
+        deadline.min(started + initialize_budget),
         handles.rpc_call(spec, "initialize", json!({})),
     )
     .await
@@ -629,16 +654,16 @@ async fn timed_handshake_call(
     method: &str,
     params: Value,
 ) -> Result<Value> {
-    tokio::time::timeout_at(deadline, handles.rpc_call(spec, method, params))
-        .await
-        .map_err(|_| {
-            anyhow!(
-                "extension '{}' readiness timed out during {} after {}ms",
-                spec.manifest.extension.name,
-                method,
-                spec.manifest.startup.timeout_ms.max(1)
-            )
-        })?
+    match tokio::time::timeout_at(deadline, handles.rpc_call(spec, method, params)).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!(
+            "extension '{}' readiness timed out during {} after {}ms ({})",
+            spec.manifest.extension.name,
+            method,
+            spec.manifest.startup.timeout_ms.max(1),
+            handles.diagnostic(),
+        )),
+    }
 }
 
 async fn spawn_process(spec: &LaunchSpec) -> Result<ProcessHandles> {
@@ -676,12 +701,17 @@ async fn spawn_process(spec: &LaunchSpec) -> Result<ProcessHandles> {
                 .spawn()?
         }
     };
+    let recent_stderr = Arc::new(std::sync::Mutex::new(String::new()));
     if let Some(stderr) = child.stderr.take() {
-        drain_stderr(manifest.extension.name.clone(), stderr);
+        drain_stderr(
+            manifest.extension.name.clone(),
+            stderr,
+            recent_stderr.clone(),
+        );
     }
     let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
-    Ok(ProcessHandles::new(child, stdin, stdout))
+    Ok(ProcessHandles::new(child, stdin, stdout, recent_stderr))
 }
 
 fn clean_command(
@@ -810,7 +840,11 @@ fn kill_process_group(pid: Option<u32>) {
 #[cfg(not(unix))]
 fn kill_process_group(_pid: Option<u32>) {}
 
-fn drain_stderr(name: String, stderr: tokio::process::ChildStderr) {
+fn drain_stderr(
+    name: String,
+    stderr: tokio::process::ChildStderr,
+    recent_stderr: Arc<std::sync::Mutex<String>>,
+) {
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr);
         let mut line = String::new();
@@ -819,6 +853,7 @@ fn drain_stderr(name: String, stderr: tokio::process::ChildStderr) {
             match reader.read_line(&mut line).await {
                 Ok(0) => break,
                 Ok(_) if !line.trim_end().is_empty() => {
+                    record_recent_stderr(&recent_stderr, &line);
                     tracing::debug!(extension = %name, message = line.trim_end(), "extension stderr");
                 }
                 Ok(_) => {}
@@ -829,6 +864,21 @@ fn drain_stderr(name: String, stderr: tokio::process::ChildStderr) {
             }
         }
     });
+}
+
+fn record_recent_stderr(recent_stderr: &std::sync::Mutex<String>, line: &str) {
+    if let Ok(mut recent) = recent_stderr.lock() {
+        recent.push_str(line);
+        if recent.len() > 4096 {
+            let excess = recent.len() - 4096;
+            let split = recent
+                .char_indices()
+                .map(|(index, _)| index)
+                .find(|index| *index >= excess)
+                .unwrap_or(recent.len());
+            recent.drain(..split);
+        }
+    }
 }
 
 async fn write_json(stdin: &mut tokio::process::ChildStdin, value: &Value) -> Result<()> {
@@ -918,6 +968,82 @@ mod tests {
                     .iter()
                     .any(|word| name.contains(word))
             );
+        }
+    }
+
+    #[test]
+    fn recent_stderr_is_bounded_at_character_boundaries() {
+        let recent = std::sync::Mutex::new(String::new());
+        record_recent_stderr(&recent, &"x".repeat(4095));
+        record_recent_stderr(&recent, "é");
+
+        let recent = recent.into_inner().unwrap();
+        assert!(recent.len() <= 4096);
+        assert!(recent.ends_with('é'));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn legacy_extension_can_use_remaining_readiness_budget_after_initialize_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let extension_dir = std::env::temp_dir().join(format!(
+            "omegon-host-readiness-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&extension_dir).unwrap();
+        let script = extension_dir.join("fixture.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *get_tools*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":[]}' ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let manifest = toml::from_str(
+            r#"
+[extension]
+name = "legacy-readiness-fixture"
+version = "0.1.0"
+[runtime]
+type = "native"
+binary = "fixture.sh"
+[startup]
+timeout_ms = 200
+"#,
+        )
+        .unwrap();
+        let spec = LaunchSpec {
+            manifest,
+            extension_dir: extension_dir.clone(),
+            project_root: None,
+            resolved_config: Map::new(),
+            resolved_secrets: Vec::new(),
+            source_digest: "fixture".to_string(),
+            notification_tx: None,
+            host_request_handler: None,
+            readiness_validator: None,
+        };
+
+        let launched = ExtensionSupervisor::launch(spec).await;
+        if let Ok((supervisor, _)) = &launched {
+            supervisor
+                .shutdown(std::time::Duration::from_millis(100))
+                .await
+                .unwrap();
+        }
+        std::fs::remove_dir_all(extension_dir).unwrap();
+        if let Err(error) = launched {
+            panic!("{error:#}");
         }
     }
 }

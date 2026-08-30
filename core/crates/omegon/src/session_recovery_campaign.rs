@@ -1452,7 +1452,7 @@ fn exercise_host_record_scenario(scenario: &Scenario) -> DispositionV1 {
         is_error: false,
         exit_code: 0,
         duration_ms: 0,
-        origin: "campaign".into(),
+        origin: omegon_traits::ToolExecutionOrigin::Agent,
     };
     let stem = snapshot.file_stem().unwrap().to_string_lossy();
     let catalog = snapshot.with_file_name(format!("{stem}.catalog.v1.json"));
@@ -1738,7 +1738,7 @@ fn missing_catalog_and_observation_existence_evidence_fail_closed() {
             is_error: false,
             exit_code: 0,
             duration_ms: 0,
-            origin: "campaign".into(),
+            origin: omegon_traits::ToolExecutionOrigin::Agent,
         },
     )
     .unwrap();

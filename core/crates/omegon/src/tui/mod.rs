@@ -805,6 +805,7 @@ impl App {
     /// Snapshot current model/provider state into a SegmentMeta.
     fn current_meta(&self) -> segments::SegmentMeta {
         segments::SegmentMeta {
+            execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
             timestamp: Some(std::time::SystemTime::now()),
             provider: Some(self.footer_data.model_provider.clone()),
             model_id: Some(self.footer_data.model_id.clone()),
@@ -7729,6 +7730,10 @@ pub async fn run_tui(
     settings: crate::settings::SharedSettings,
 ) -> io::Result<()> {
     let terminal_guard = terminal_session::TerminalSessionGuard::new();
+    // Register process-terminal signals once, before terminal acquisition.
+    // Recreating these listeners inside each loop iteration leaves SIGHUP gaps
+    // where controlling-terminal loss can apply the default fatal action.
+    let mut termination_signals = terminal_session::TerminationSignals::new()?;
     enable_raw_mode()?;
     terminal_guard.mark_raw();
 
@@ -7928,6 +7933,10 @@ pub async fn run_tui(
 
     let mut scheduler = TuiFrameScheduler::new(std::time::Instant::now());
     let mut terminal_input = terminal_input::TerminalInputPump::spawn(interrupt_tx);
+    tracing::info!(
+        boundary = "terminal_input_acquired",
+        "terminal input boundary acquired"
+    );
     let mut runtime_trace = runtime_trace::TuiRuntimeTrace::new(config.debug_tui);
 
     loop {
@@ -8109,7 +8118,7 @@ pub async fn run_tui(
                 .min(Duration::from_millis(16))
         };
         tokio::select! {
-            signal = terminal_session::termination_signal() => {
+            signal = termination_signals.recv() => {
                 signal?;
                 // Terminal restoration alone must not leave the coordinator
                 // running headless while IPC/other sender clones keep the

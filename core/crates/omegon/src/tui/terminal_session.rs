@@ -137,25 +137,49 @@ fn restore_snapshot(modes: TerminalModes) {
     let _ = stdout.flush();
 }
 
-pub(super) async fn termination_signal() -> io::Result<()> {
+pub(super) struct TerminationSignals {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
+    terminate: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    hangup: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    quit: tokio::signal::unix::Signal,
+}
 
-        let mut terminate = signal(SignalKind::terminate())?;
-        let mut hangup = signal(SignalKind::hangup())?;
-        let mut quit = signal(SignalKind::quit())?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result,
-            _ = terminate.recv() => Ok(()),
-            _ = hangup.recv() => Ok(()),
-            _ = quit.recv() => Ok(()),
+impl TerminationSignals {
+    pub(super) fn new() -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            Ok(Self {
+                terminate: signal(SignalKind::terminate())?,
+                hangup: signal(SignalKind::hangup())?,
+                quit: signal(SignalKind::quit())?,
+            })
+        }
+
+        #[cfg(not(unix))]
+        {
+            Ok(Self {})
         }
     }
 
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await
+    pub(super) async fn recv(&mut self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                result = tokio::signal::ctrl_c() => result,
+                _ = self.terminate.recv() => Ok(()),
+                _ = self.hangup.recv() => Ok(()),
+                _ = self.quit.recv() => Ok(()),
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await
+        }
     }
 }
 

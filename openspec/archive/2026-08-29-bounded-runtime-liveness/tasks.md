@@ -29,6 +29,6 @@ Dependencies: group 1 before groups 2–3; groups 2–3 before group 4.
 ## 4. Integration and verification
 <!-- specs: runtime-liveness/terminal-loss, runtime-liveness/process-terminalization -->
 
-- [ ] 4.1 Add opt-in PTY coverage for real terminal detachment.
+- [x] 4.1 Add opt-in PTY coverage for real terminal detachment.
 - [x] 4.2 Run focused tests, `just test-crate omegon`, and `just clippy-changed`.
 - [x] 4.3 Reconcile scenario evidence and archive only after merged verification.

@@ -86,7 +86,8 @@ OMEGON_FIXTURE_MARKER = "{}"
 
 [startup]
 ping_method = "fixture/status"
-timeout_ms = 2000
+# Includes /usr/bin/env and interpreter startup on supported macOS hosts.
+timeout_ms = 5000
 
 [config.fixture_value]
 type = "string"

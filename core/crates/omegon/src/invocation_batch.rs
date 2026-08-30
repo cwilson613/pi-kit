@@ -130,6 +130,7 @@ async fn execute_tool_invocation(
             name: visible_tool_name.into(),
             args: visible_args.clone(),
             provenance: provenance.clone(),
+            execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
         });
     }
     let sink_events = events.clone();
@@ -138,6 +139,7 @@ async fn execute_tool_invocation(
         let _ = sink_events.send(AgentEvent::ToolUpdate {
             id: sink_call_id.clone(),
             partial,
+            execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
         });
     });
     let context = invocations.tool_execution_context();
@@ -331,6 +333,7 @@ fn publish_tool_end(
         result,
         is_error,
         provenance,
+        execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
     });
 }
 
@@ -692,6 +695,7 @@ async fn dispatch_edit_batch(
             name: call.name.clone(),
             args: call.arguments.clone(),
             provenance: bus.tool_provenance(&call.name),
+            execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
         });
     }
 
@@ -779,6 +783,7 @@ fn emit_tool_end(
         },
         is_error,
         provenance: bus.tool_provenance(&call.name),
+        execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
     });
 }
 

@@ -56,6 +56,7 @@ where
     TText: AsRef<str>,
 {
     pub presentation: SegmentPresentation,
+    pub execution_origin: omegon_traits::ToolExecutionOrigin,
     pub kind: ConversationSegmentKind<TText, TPath>,
 }
 
@@ -121,8 +122,14 @@ where
         let tool_category = kind.tool_category();
         Self {
             presentation: presentation_for_role(kind.role(), tool_category),
+            execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
             kind,
         }
+    }
+
+    pub fn with_execution_origin(mut self, origin: omegon_traits::ToolExecutionOrigin) -> Self {
+        self.execution_origin = origin;
+        self
     }
 
     pub fn role(&self) -> SegmentRole {
@@ -210,9 +217,18 @@ where
                 },
             },
             ConversationSegmentKind::Tool(tool) => SegmentPresentationModel {
-                producer: SegmentProducer::Tool {
-                    name: tool.name.as_ref(),
-                    category: tool_category_for_name(tool.name.as_ref()),
+                producer: if self.execution_origin == omegon_traits::ToolExecutionOrigin::BangShell
+                {
+                    SegmentProducer::OperatorTool {
+                        name: tool.name.as_ref(),
+                        category: tool_category_for_name(tool.name.as_ref()),
+                        origin: self.execution_origin,
+                    }
+                } else {
+                    SegmentProducer::Tool {
+                        name: tool.name.as_ref(),
+                        category: tool_category_for_name(tool.name.as_ref()),
+                    }
                 },
                 state: if tool.is_error {
                     SegmentState::Failed
@@ -442,6 +458,11 @@ pub enum SegmentProducer<'a> {
     Tool {
         name: &'a str,
         category: ToolCategory,
+    },
+    OperatorTool {
+        name: &'a str,
+        category: ToolCategory,
+        origin: omegon_traits::ToolExecutionOrigin,
     },
     Skill {
         active_ref: &'a str,
@@ -1352,5 +1373,32 @@ mod tests {
         assert_eq!(bash.presentation_model().state, SegmentState::Running);
         assert_eq!(edit.presentation_model().content.form, ContentForm::Diff);
         assert_eq!(edit.presentation_model().state, SegmentState::Completed);
+    }
+
+    #[test]
+    fn operator_shell_tool_projection_preserves_explicit_producer_origin() {
+        let projection = ConversationSegmentProjection::<&str>::new(ConversationSegmentKind::Tool(
+            ToolSegment {
+                id: "opaque-id",
+                name: "bash",
+                args_summary: Some("git status"),
+                detail_args: Some("git status"),
+                result_summary: Some("clean"),
+                detail_result: Some("clean"),
+                is_error: false,
+                complete: true,
+                expanded: false,
+            },
+        ))
+        .with_execution_origin(omegon_traits::ToolExecutionOrigin::BangShell);
+
+        assert_eq!(
+            projection.presentation_model().producer,
+            SegmentProducer::OperatorTool {
+                name: "bash",
+                category: ToolCategory::CommandExec,
+                origin: omegon_traits::ToolExecutionOrigin::BangShell,
+            }
+        );
     }
 }

@@ -5739,6 +5739,7 @@ fn build_tui_secret_readiness_snapshot(
                     name: "bash".to_string(),
                     args: serde_json::json!({ "command": command }),
                     provenance: omegon_traits::ToolProvenance::BuiltIn,
+                    execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
                 });
 
                 tokio::spawn(async move {
@@ -5752,6 +5753,7 @@ fn build_tui_secret_readiness_snapshot(
                         let _ = events_sink.send(AgentEvent::ToolUpdate {
                             id: id_sink.clone(),
                             partial,
+                            execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
                         });
                     });
 
@@ -5786,21 +5788,12 @@ fn build_tui_secret_readiness_snapshot(
                         ),
                     };
 
-                    // Close the card with the final result.
-                    let _ = events.send(AgentEvent::ToolEnd {
-                        id: id.clone(),
-                        name: "bash".to_string(),
-                        result: tool_result.clone(),
-                        is_error,
-                        provenance: omegon_traits::ToolProvenance::BuiltIn,
-                    });
-
                     let exit_code = tool_result
                         .details
                         .get("exitCode")
                         .and_then(|value| value.as_i64())
                         .unwrap_or(if is_error { -1 } else { 0 });
-                    let observation = crate::conversation::OperatorToolObservation {
+                    let mut observation = crate::conversation::OperatorToolObservation {
                         execution_id: id.clone(),
                         tool_name: "bash".to_string(),
                         arguments: serde_json::json!({ "command": command }),
@@ -5809,8 +5802,9 @@ fn build_tui_secret_readiness_snapshot(
                         is_error,
                         exit_code,
                         duration_ms: started_at.elapsed().as_millis() as u64,
-                        origin: "bang_shell".to_string(),
+                        origin: omegon_traits::ToolExecutionOrigin::BangShell,
                     };
+                    observation.bound_in_place();
                     let (committed_tx, committed_rx) = tokio::sync::oneshot::channel();
                     if completion_tx
                         .send(operator_commands::OperatorCommand::OperatorShellCompleted {
@@ -5824,6 +5818,17 @@ fn build_tui_secret_readiness_snapshot(
                     } else if committed_rx.await.is_err() {
                         tracing::warn!(execution_id = %id, "operator shell observation commit was not acknowledged");
                     }
+
+                    // Visible completion follows the owner commit acknowledgment,
+                    // so a prompt submitted after this event observes the evidence.
+                    let _ = events.send(AgentEvent::ToolEnd {
+                        id: id.clone(),
+                        name: "bash".to_string(),
+                        result: tool_result.clone(),
+                        is_error,
+                        provenance: omegon_traits::ToolProvenance::BuiltIn,
+                        execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
+                    });
 
                     // Honour control-API callers only after the canonical
                     // observation commit has been acknowledged.
@@ -7574,7 +7579,8 @@ fn build_tui_secret_readiness_snapshot(
             Some(agent.session_id.as_str()),
         ) {
             Ok(path) => {
-                eprintln!(
+                let _ = writeln!(
+                    io::stderr(),
                     "Session saved: {}\nResume this session with: omegon --resume {}\nOr from inside Omegon: /resume {}",
                     agent.session_id,
                     agent.session_id,

@@ -265,23 +265,28 @@ fn surface_stream_event(
             name,
             args,
             provenance,
+            execution_origin,
         } => {
             let args = state.redact_web_value(&args);
             WebSurfaceStreamEnvelope::default_session(
                 revision,
                 "tool_started",
                 Some("instruments"),
-                json!({ "id": id, "name": name, "args": args, "provenance": provenance }),
+                json!({ "id": id, "name": name, "args": args, "provenance": provenance, "execution_origin": execution_origin }),
             )
         }
-        AgentEvent::ToolUpdate { id, partial } => {
+        AgentEvent::ToolUpdate {
+            id,
+            partial,
+            execution_origin,
+        } => {
             let mut partial = partial;
             partial.tail = state.redact_web_text(&partial.tail);
             WebSurfaceStreamEnvelope::default_session(
                 revision,
                 "tool_updated",
                 Some("instruments"),
-                json!({ "id": id, "partial": partial }),
+                json!({ "id": id, "partial": partial, "execution_origin": execution_origin }),
             )
         }
         AgentEvent::ToolEnd {
@@ -289,12 +294,13 @@ fn surface_stream_event(
             name,
             is_error,
             provenance,
+            execution_origin,
             ..
         } => WebSurfaceStreamEnvelope::default_session(
             revision,
             "tool_completed",
             Some("instruments"),
-            json!({ "id": id, "name": name, "is_error": is_error, "provenance": provenance }),
+            json!({ "id": id, "name": name, "is_error": is_error, "provenance": provenance, "execution_origin": execution_origin }),
         ),
         AgentEvent::PermissionRequest {
             tool_name,
@@ -542,6 +548,7 @@ mod tests {
                 id: "t1".into(),
                 name: "bash".into(),
                 provenance: omegon_traits::ToolProvenance::BuiltIn,
+                execution_origin: omegon_traits::ToolExecutionOrigin::BangShell,
                 args: serde_json::json!({"command":"pwd"}),
             },
         ))
@@ -551,6 +558,7 @@ mod tests {
         assert_eq!(value["type"], "tool_started");
         assert_eq!(value["surface"], "instruments");
         assert_eq!(value["payload"]["id"], "t1");
+        assert_eq!(value["payload"]["execution_origin"], "bang_shell");
     }
 
     #[test]
@@ -563,6 +571,7 @@ mod tests {
                 id: "t-secret".into(),
                 name: "bash".into(),
                 provenance: omegon_traits::ToolProvenance::BuiltIn,
+                execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
                 args: serde_json::json!({"command":"echo super-secret-token"}),
             },
         ))
@@ -572,6 +581,7 @@ mod tests {
             2,
             AgentEvent::ToolUpdate {
                 id: "t-secret".into(),
+                execution_origin: omegon_traits::ToolExecutionOrigin::Agent,
                 partial: omegon_traits::PartialToolResult {
                     tail: "tail super-secret-token".into(),
                     progress: omegon_traits::ToolProgress::default(),

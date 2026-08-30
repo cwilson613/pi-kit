@@ -585,7 +585,10 @@ impl ConversationView {
         self.push_tool_start_with_expanded(
             id,
             name,
-            omegon_traits::ToolProvenance::BuiltIn,
+            (
+                omegon_traits::ToolProvenance::BuiltIn,
+                omegon_traits::ToolExecutionOrigin::Agent,
+            ),
             args_summary,
             detail_args,
             false,
@@ -596,7 +599,10 @@ impl ConversationView {
         &mut self,
         id: &str,
         name: &str,
-        provenance: omegon_traits::ToolProvenance,
+        provenance: (
+            omegon_traits::ToolProvenance,
+            omegon_traits::ToolExecutionOrigin,
+        ),
         args_summary: Option<&str>,
         detail_args: Option<&str>,
         expanded_by_default: bool,
@@ -614,7 +620,8 @@ impl ConversationView {
             return;
         }
 
-        let mut seg = Segment::tool_card_with_provenance(id, name, provenance);
+        let mut seg = Segment::tool_card_with_provenance(id, name, provenance.0);
+        seg.meta.execution_origin = provenance.1;
         if let SegmentContent::ToolCard {
             args_summary: ref mut a,
             detail_args: ref mut d,
@@ -956,7 +963,9 @@ impl ConversationView {
     /// when model/provider info is available from the harness).
     pub fn stamp_meta(&mut self, meta: SegmentMeta) {
         if let Some(seg) = self.segments.last_mut() {
+            let execution_origin = seg.meta.execution_origin;
             seg.meta = meta;
+            seg.meta.execution_origin = execution_origin;
         }
     }
 
@@ -2351,7 +2360,10 @@ mod tests {
         cv.push_tool_start_with_expanded(
             "t1",
             "bash",
-            omegon_traits::ToolProvenance::BuiltIn,
+            (
+                omegon_traits::ToolProvenance::BuiltIn,
+                omegon_traits::ToolExecutionOrigin::Agent,
+            ),
             Some("ls"),
             Some("ls"),
             true,

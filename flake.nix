@@ -60,6 +60,7 @@
             || builtins.match ".*\\.html$" path != null
             || builtins.match ".*\\.js$" path != null
             || builtins.match ".*\\.py$" path != null
+            || builtins.match ".*\\.txt$" path != null
             || builtins.match ".*\\.tar\\.gz$" path != null;
         };
 

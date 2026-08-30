@@ -514,9 +514,44 @@ pub struct PackageManifestV1 {
     pub target: String,
     pub archive_filename: String,
     pub archive_digest: AuthorityKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_components: Option<Vec<ProductComponentInventoryV1>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk_extension_posture: Option<String>,
     pub members: Vec<PackageMemberV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composition_locks: Vec<ArtifactCompositionLockV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub product_component_locks: Vec<ProductComponentLockV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductComponentInventoryV1 {
+    pub component_id: String,
+    pub wire_manifest_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductComponentLockV1 {
+    pub schema_version: u32,
+    pub component_id: String,
+    pub wire_manifest_id: String,
+    pub manifest_path: String,
+    pub manifest_digest: AuthorityKey,
+    pub executable_path: String,
+    pub executable_digest: AuthorityKey,
+    pub target: String,
+    pub protocol_minimum: u32,
+    pub protocol_maximum: u32,
+    pub protocol_version: u32,
+    pub fallback: String,
+    pub signing_identity: SigningIdentityV1,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -568,6 +603,22 @@ pub struct ResidentContributionLockV1 {
     pub fallback: String,
     pub state: String,
 }
+
+pub const OMEGON_REQUIRED_RESIDENT_IDENTITIES: &[&str] = &[
+    "system:constitutional-kernel",
+    "system:default-loop",
+    "system:host-effects",
+];
+
+pub const OMEGON_OPTIONAL_RESIDENT_IDENTITIES: &[&str] = &[
+    "feature:codescan-adapter",
+    "feature:context-compaction",
+    "feature:git",
+    "feature:lifecycle",
+    "feature:memory",
+];
+
+pub const OMEGON_MAINTAIN_RESIDENT_IDENTITIES: &[&str] = &["system:maintenance-kernel"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1459,6 +1510,90 @@ impl_record!(
             return Err(ContractError::InvalidValue(
                 "package manifest must contain both executables".into(),
             ));
+        }
+        match (
+            value.host_profile.as_deref(),
+            value.composition_class.as_deref(),
+            value.core_components.as_deref(),
+            value.sdk_extension_posture.as_deref(),
+        ) {
+            (None, None, None, None) => {}
+            (
+                Some("full-product"),
+                Some("full-product"),
+                Some(components),
+                Some("operator-managed"),
+            ) if components
+                == [ProductComponentInventoryV1 {
+                    component_id: "core:codescan".into(),
+                    wire_manifest_id: "omegon-codescan".into(),
+                }] => {}
+            (Some("full-product"), Some("host-only"), Some([]), Some("operator-managed")) => {}
+            _ => {
+                return Err(ContractError::InvalidValue(
+                    "package distribution composition is incomplete or noncanonical".into(),
+                ));
+            }
+        }
+        let has_codescan_manifest = value
+            .members
+            .iter()
+            .any(|member| member.path == "share/omegon/extensions/omegon-codescan/manifest.toml");
+        let has_codescan_executable = value.members.iter().any(|member| {
+            member.path == "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan"
+        });
+        if has_codescan_manifest != has_codescan_executable
+            || matches!(value.composition_class.as_deref(), Some("full-product"))
+                != (has_codescan_manifest && has_codescan_executable)
+        {
+            return Err(ContractError::InvalidValue(
+                "package core-component inventory does not match its members".into(),
+            ));
+        }
+        match value.composition_class.as_deref() {
+            Some("full-product") => {
+                let [component] = value.product_component_locks.as_slice() else {
+                    return Err(ContractError::InvalidValue(
+                        "full-product package requires exactly one product-component lock".into(),
+                    ));
+                };
+                let members = value
+                    .members
+                    .iter()
+                    .map(|member| (member.path.as_str(), member))
+                    .collect::<BTreeMap<_, _>>();
+                let manifest = members.get(component.manifest_path.as_str());
+                let executable = members.get(component.executable_path.as_str());
+                if component.schema_version != SCHEMA_VERSION
+                    || component.component_id != "core:codescan"
+                    || component.wire_manifest_id != "omegon-codescan"
+                    || component.manifest_path
+                        != "share/omegon/extensions/omegon-codescan/manifest.toml"
+                    || component.executable_path
+                        != "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan"
+                    || manifest.is_none_or(|member| member.digest != component.manifest_digest)
+                    || executable.is_none_or(|member| member.digest != component.executable_digest)
+                    || component.target != value.target
+                    || component.protocol_minimum != 1
+                    || component.protocol_maximum != 1
+                    || component.protocol_version != 1
+                    || component.fallback != "typed_unavailable"
+                    || component.signing_identity.issuer != value.issuer
+                    || component.signing_identity.workflow_identity != value.workflow_identity
+                    || component.signing_identity.verification != "required"
+                {
+                    return Err(ContractError::InvalidValue(
+                        "product-component evidence is incomplete, substituted, or self-promoted"
+                            .into(),
+                    ));
+                }
+            }
+            Some("host-only") if !value.product_component_locks.is_empty() => {
+                return Err(ContractError::InvalidValue(
+                    "host-only package cannot own product-component evidence".into(),
+                ));
+            }
+            _ => {}
         }
         for lock in &value.composition_locks {
             if lock.identity.trim().is_empty()

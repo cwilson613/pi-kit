@@ -70,8 +70,7 @@
             openssl.dev
             sqlite
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.darwin.apple_sdk.frameworks.Security
-            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+            pkgs.apple-sdk
           ];
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -98,6 +97,9 @@
             python3 scripts/package_release.py --binary-dir $out/bin \
               --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget} \
               --lock-dir $out/share/omegon/composition
+            cat > $out/share/omegon/distribution-profile.json <<'EOF'
+            {"schema_version":1,"distribution":"nix","host_profile":"full-product","composition_class":"host-only","core_components":[]}
+            EOF
           '';
         });
 

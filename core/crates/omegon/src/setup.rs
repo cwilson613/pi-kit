@@ -120,6 +120,11 @@ pub struct AgentSetup {
     /// Process-local diagnostic and one-shot replacement controls for the published generation.
     pub(crate) dynamic_contribution_control:
         crate::contribution_lifecycle::DynamicContributionControl,
+    /// Effective component activation policy captured for this boot generation.
+    pub(crate) component_policy: crate::component_policy::ResolvedComponentPolicy,
+    /// Deterministic contribution omissions implied by the captured policy.
+    pub(crate) component_dependency_policy:
+        crate::contribution_graph::ComponentDependencyPolicyPlan,
     /// Extension widgets discovered during setup — passed to TUI for rendering.
     pub extension_widgets: Vec<crate::extensions::ExtensionTabWidget>,
     /// Extension deployment metadata discovered during startup.
@@ -497,6 +502,10 @@ impl AgentSetup {
     ) -> anyhow::Result<Self> {
         let cwd = std::fs::canonicalize(cwd)?;
         let is_child = std::env::var("OMEGON_CHILD").is_ok();
+        let omegon_home = crate::paths::omegon_home()?;
+        let component_policy =
+            crate::component_policy::resolve_product_boot_policy(&cwd, &omegon_home)?;
+        let component_dependency_policy = product_component_dependency_plan(&component_policy)?;
 
         // ─── Secrets manager ────────────────────────────────────────────
         let secrets_dir = crate::paths::omegon_home().unwrap_or_else(|_| cwd.join(".omegon"));
@@ -853,11 +862,19 @@ impl AgentSetup {
         bus.register(Box::new(cleave_feature));
 
         // ─── Codescan (codebase_search / codebase_index) ──────────────
-        let codescan_binding = crate::codescan_service::CodescanBinding::default();
+        let codescan_decision = component_policy.component("core:codescan");
+        let codescan_binding =
+            crate::codescan_service::CodescanBinding::from_component_decision(codescan_decision);
         bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
             project_root.clone(),
             codescan_binding.clone(),
         )));
+        if codescan_decision.is_some_and(|decision| !decision.enabled) {
+            bus.set_policy_denied_tools([
+                crate::tool_registry::codescan::CODEBASE_SEARCH,
+                crate::tool_registry::codescan::CODEBASE_INDEX,
+            ]);
+        }
         // ─── Delegate (subagent system) ─────────────────────────────────
         let agents = crate::features::delegate::scan_agents(&cwd);
         let mut delegate_feature = features::delegate::DelegateFeature::new_with_safety(
@@ -1058,12 +1075,14 @@ impl AgentSetup {
             extension_metadata,
             extension_rpc_handles,
             admission: extension_admission,
-        } = match discover_and_register_extensions(
+            discovery_attempts: _,
+        } = match discover_and_register_extensions_with_policy(
             &cwd,
             &project_root,
             &mut bus,
             std::sync::Arc::clone(&secrets),
             dynamic_inventory.clone(),
+            &component_policy,
         )
         .await
         {
@@ -1795,6 +1814,8 @@ impl AgentSetup {
             initial_harness_status: initial_harness_status.clone(),
             dynamic_contributions,
             dynamic_contribution_control,
+            component_policy,
+            component_dependency_policy,
             extension_widgets,
             extension_metadata,
             extension_rpc_handles,
@@ -2176,6 +2197,90 @@ struct DiscoveredExtensions {
     extension_rpc_handles:
         std::collections::BTreeMap<String, crate::extensions::ExtensionPollingHandle>,
     admission: Option<crate::contribution_loading::GuardedContributionDirectory>,
+    discovery_attempts: Vec<String>,
+}
+
+pub(crate) struct KernelCompositionSetup {
+    pub(crate) bus: crate::bus::EventBus,
+    pub(crate) dynamic_contributions:
+        crate::contribution_lifecycle::DynamicContributionGenerationOwner,
+    pub(crate) dynamic_control: crate::contribution_lifecycle::DynamicContributionControl,
+    pub(crate) component_policy: crate::component_policy::ResolvedComponentPolicy,
+    pub(crate) component_dependency_policy:
+        crate::contribution_graph::ComponentDependencyPolicyPlan,
+    _extension_admission: Option<crate::contribution_loading::GuardedContributionDirectory>,
+}
+
+pub(crate) async fn setup_kernel_composition(cwd: &Path) -> anyhow::Result<KernelCompositionSetup> {
+    let project_root = find_project_root(cwd);
+    let home = crate::paths::omegon_home()?;
+    let component_policy = crate::component_policy::resolve_product_boot_policy(cwd, &home)?;
+    let component_dependency_policy = product_component_dependency_plan(&component_policy)?;
+    let mut bus = crate::bus::EventBus::new();
+    bus.set_project_root(project_root.clone());
+    let codescan_decision = component_policy.component("core:codescan");
+    let codescan_binding =
+        crate::codescan_service::CodescanBinding::from_component_decision(codescan_decision);
+    bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
+        project_root.clone(),
+        codescan_binding.clone(),
+    )));
+    if codescan_decision.is_some_and(|decision| !decision.enabled) {
+        bus.set_policy_denied_tools([
+            crate::tool_registry::codescan::CODEBASE_SEARCH,
+            crate::tool_registry::codescan::CODEBASE_INDEX,
+        ]);
+    }
+    bus.register(Box::new(crate::features::adapter::ToolAdapter::new(
+        "core-tools",
+        Box::new(crate::tools::CoreTools::with_git(
+            cwd.to_path_buf(),
+            crate::git_service::GitBinding::default(),
+        )),
+    )));
+    bus.register_internal_tool(crate::tool_registry::core::TRUST_DIRECTORY, "core-tools");
+
+    let inventory = crate::contribution_lifecycle::DynamicContributionInventory::default();
+    let secrets = std::sync::Arc::new(omegon_secrets::SecretsManager::new(&home.join("secrets"))?);
+    let DiscoveredExtensions {
+        extension_supervisors,
+        extension_rpc_handles,
+        admission,
+        ..
+    } = discover_and_register_extensions_with_policy(
+        cwd,
+        &project_root,
+        &mut bus,
+        secrets,
+        inventory.clone(),
+        &component_policy,
+    )
+    .await?;
+    let mut dynamic_contributions =
+        crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(inventory);
+    for supervisor in extension_supervisors {
+        dynamic_contributions.own_extension(supervisor);
+    }
+    dynamic_contributions.stage();
+    if let Err(error) = bus.try_finalize_managed().await {
+        let cleanup = dynamic_contributions.reject(error.to_string()).await;
+        return Err(error.context(format!("kernel candidate cleanup: {cleanup:?}")));
+    }
+    dynamic_contributions.publish();
+    codescan_binding.capture(
+        extension_rpc_handles
+            .get(crate::codescan_service::CODESCAN_EXTENSION)
+            .cloned(),
+    )?;
+    let dynamic_control = dynamic_contributions.control();
+    Ok(KernelCompositionSetup {
+        bus,
+        dynamic_contributions,
+        dynamic_control,
+        component_policy,
+        component_dependency_policy,
+        _extension_admission: admission,
+    })
 }
 
 impl DiscoveredExtensions {
@@ -2190,6 +2295,7 @@ impl DiscoveredExtensions {
             extension_metadata: Default::default(),
             extension_rpc_handles: Default::default(),
             admission: None,
+            discovery_attempts: Vec::new(),
         }
     }
 }
@@ -2200,6 +2306,40 @@ async fn discover_and_register_extensions(
     bus: &mut crate::bus::EventBus,
     secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
     inventory: crate::contribution_lifecycle::DynamicContributionInventory,
+) -> anyhow::Result<DiscoveredExtensions> {
+    let home = crate::paths::omegon_home()?;
+    let policy = crate::component_policy::resolve_product_boot_policy(cwd, &home)?;
+    product_component_dependency_plan(&policy)?;
+    discover_and_register_extensions_with_policy(
+        cwd,
+        project_root,
+        bus,
+        secrets,
+        inventory,
+        &policy,
+    )
+    .await
+}
+
+fn product_component_dependency_plan(
+    policy: &crate::component_policy::ResolvedComponentPolicy,
+) -> anyhow::Result<crate::contribution_graph::ComponentDependencyPolicyPlan> {
+    let codescan = omegon_traits::RuntimeContributionId::new("extension:omegon-codescan")
+        .expect("product codescan contribution id is valid");
+    let denied = policy
+        .component("core:codescan")
+        .is_some_and(|decision| !decision.enabled)
+        .then_some(codescan.clone());
+    crate::contribution_graph::apply_component_dependency_policy([codescan], denied, [], [])
+}
+
+async fn discover_and_register_extensions_with_policy(
+    cwd: &Path,
+    project_root: &Path,
+    bus: &mut crate::bus::EventBus,
+    secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
+    component_policy: &crate::component_policy::ResolvedComponentPolicy,
 ) -> anyhow::Result<DiscoveredExtensions> {
     let home = crate::paths::omegon_home()?;
     let ext_dir = home.join("extensions");
@@ -2226,8 +2366,14 @@ async fn discover_and_register_extensions(
     let mut extension_metadata = std::collections::BTreeMap::new();
     let mut extension_rpc_handles = std::collections::BTreeMap::new();
     let mut candidates = Vec::new();
+    let codescan_enabled = component_policy
+        .component("core:codescan")
+        .is_none_or(|decision| decision.enabled);
     let mut operator_codescan_present = false;
-    let release_codescan_dir = release_coupled_codescan_dir();
+    let release_codescan_dir = codescan_enabled
+        .then(release_coupled_codescan_dir)
+        .flatten();
+    let mut discovery_attempts = Vec::new();
     let mut raw_names = match admission.as_ref() {
         Some(admission) => admission.entry_names(10_000)?,
         None => Vec::new(),
@@ -2245,6 +2391,13 @@ async fn discover_and_register_extensions(
         let Ok(ext_name) = std::str::from_utf8(&raw_name) else {
             continue;
         };
+        if ext_name == crate::codescan_service::CODESCAN_EXTENSION && !codescan_enabled {
+            tracing::info!(
+                component = "core:codescan",
+                "release-coupled component omitted by boot policy"
+            );
+            continue;
+        }
         if !profile
             .extensions
             .permits(ext_name, &env_enabled, &env_disabled)
@@ -2252,6 +2405,7 @@ async fn discover_and_register_extensions(
             tracing::debug!(extension = ext_name, "extension skipped by profile policy");
             continue;
         }
+        discovery_attempts.push(ext_name.to_string());
         let Some(directory) = admission.open_child_directory(&raw_name)? else {
             continue;
         };
@@ -2463,10 +2617,11 @@ async fn discover_and_register_extensions(
         extension_metadata,
         extension_rpc_handles,
         admission,
+        discovery_attempts,
     })
 }
 
-fn release_coupled_codescan_dir() -> Option<PathBuf> {
+pub(crate) fn release_coupled_codescan_dir() -> Option<PathBuf> {
     let executable = std::env::current_exe().ok()?;
     let executable = std::fs::canonicalize(executable).ok()?;
     let binary_dir = executable.parent()?;
@@ -2476,10 +2631,14 @@ fn release_coupled_codescan_dir() -> Option<PathBuf> {
     ]
     .into_iter()
     .find_map(|directory| {
-        directory
+        let directory = directory
             .is_dir()
             .then(|| std::fs::canonicalize(directory).ok())
-            .flatten()
+            .flatten()?;
+        let generation = directory.ancestors().nth(4)?;
+        crate::installed_release::validate_product_component(generation)
+            .is_ok()
+            .then_some(directory)
     })
 }
 
@@ -2849,14 +3008,29 @@ mod tests {
         assert!(capture < readiness_status && readiness_status < publish);
     }
 
-    struct ExtensionEnvGuard(Option<std::ffi::OsString>);
+    struct ExtensionEnvGuard {
+        omegon_home: Option<std::ffi::OsString>,
+        user_home: Option<std::ffi::OsString>,
+        child_component_denies: Option<std::ffi::OsString>,
+    }
 
     impl ExtensionEnvGuard {
         fn isolate(home: &Path) -> Self {
-            let previous = std::env::var_os("OMEGON_HOME");
+            let omegon_home = std::env::var_os("OMEGON_HOME");
+            let user_home = std::env::var_os("HOME");
+            let child_component_denies =
+                std::env::var_os(crate::component_policy::CHILD_COMPONENT_DENIES_ENV);
             // SAFETY: guarded extension tests hold the shared environment lock.
-            unsafe { std::env::set_var("OMEGON_HOME", home) };
-            Self(previous)
+            unsafe {
+                std::env::set_var("OMEGON_HOME", home);
+                std::env::set_var("HOME", home);
+                std::env::remove_var(crate::component_policy::CHILD_COMPONENT_DENIES_ENV);
+            }
+            Self {
+                omegon_home,
+                user_home,
+                child_component_denies,
+            }
         }
     }
 
@@ -2864,13 +3038,618 @@ mod tests {
         fn drop(&mut self) {
             // SAFETY: guarded extension tests hold the shared environment lock.
             unsafe {
-                if let Some(previous) = self.0.take() {
+                if let Some(previous) = self.omegon_home.take() {
                     std::env::set_var("OMEGON_HOME", previous);
                 } else {
                     std::env::remove_var("OMEGON_HOME");
                 }
+                if let Some(previous) = self.user_home.take() {
+                    std::env::set_var("HOME", previous);
+                } else {
+                    std::env::remove_var("HOME");
+                }
+                if let Some(previous) = self.child_component_denies.take() {
+                    std::env::set_var(
+                        crate::component_policy::CHILD_COMPONENT_DENIES_ENV,
+                        previous,
+                    );
+                } else {
+                    std::env::remove_var(crate::component_policy::CHILD_COMPONENT_DENIES_ENV);
+                }
             }
         }
+    }
+
+    #[cfg(unix)]
+    struct ReleaseCodescanFixture {
+        directory: PathBuf,
+        lock: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl ReleaseCodescanFixture {
+        fn install() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            let executable = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+            let directory = executable
+                .parent()
+                .unwrap()
+                .join("share/omegon/extensions/omegon-codescan");
+            assert!(
+                !directory.exists(),
+                "refusing to replace existing release-coupled fixture at {}",
+                directory.display()
+            );
+
+            let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+            let source = repository.join("extensions/omegon-codescan");
+            let source_binary = source.join("target/release/omegon-codescan");
+            assert!(
+                source_binary.is_file(),
+                "build the real codescan extension before running this ignored test: {}",
+                source_binary.display()
+            );
+            let binary = directory.join("target/release/omegon-codescan");
+            std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            std::fs::copy(
+                source.join("manifest.toml"),
+                directory.join("manifest.toml"),
+            )
+            .unwrap();
+            std::fs::copy(source_binary, &binary).unwrap();
+            let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&binary, permissions).unwrap();
+            use sha2::{Digest, Sha256};
+            let manifest = directory.join("manifest.toml");
+            let lock = directory
+                .ancestors()
+                .nth(4)
+                .unwrap()
+                .join("share/omegon/components/core-codescan.lock.json");
+            std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+            let evidence = omegon_maintenance_contracts::ProductComponentLockV1 {
+                schema_version: 1,
+                component_id: "core:codescan".into(),
+                wire_manifest_id: "omegon-codescan".into(),
+                manifest_path: "share/omegon/extensions/omegon-codescan/manifest.toml".into(),
+                manifest_digest: omegon_maintenance_contracts::AuthorityKey::from_bytes(
+                    Sha256::digest(std::fs::read(&manifest).unwrap()).into(),
+                ),
+                executable_path:
+                    "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan"
+                        .into(),
+                executable_digest: omegon_maintenance_contracts::AuthorityKey::from_bytes(
+                    Sha256::digest(std::fs::read(&binary).unwrap()).into(),
+                ),
+                target: crate::installed_release::compiled_target().into(),
+                protocol_minimum: 1,
+                protocol_maximum: 1,
+                protocol_version: 1,
+                fallback: "typed_unavailable".into(),
+                signing_identity: omegon_maintenance_contracts::SigningIdentityV1 {
+                    issuer: "https://token.actions.githubusercontent.com".into(),
+                    workflow_identity: "https://github.com/styrene-lab/omegon/.github/workflows/release.yml@refs/tags/vtest".into(),
+                    verification: "required".into(),
+                },
+            };
+            std::fs::write(
+                &lock,
+                omegon_maintenance_contracts::canonical_json(&evidence).unwrap(),
+            )
+            .unwrap();
+            Self { directory, lock }
+        }
+
+        fn enable_conformance_barrier(&self, control: &Path) {
+            use std::io::Write;
+
+            let mut manifest = std::fs::OpenOptions::new()
+                .append(true)
+                .open(self.directory.join("manifest.toml"))
+                .unwrap();
+            writeln!(
+                manifest,
+                "\n[runtime.env]\nOMEGON_CODESCAN_CONFORMANCE_DIR = {:?}",
+                control.display().to_string()
+            )
+            .unwrap();
+            let mut evidence: omegon_maintenance_contracts::ProductComponentLockV1 =
+                serde_json::from_slice(&std::fs::read(&self.lock).unwrap()).unwrap();
+            use sha2::{Digest, Sha256};
+            evidence.manifest_digest = omegon_maintenance_contracts::AuthorityKey::from_bytes(
+                Sha256::digest(std::fs::read(self.directory.join("manifest.toml")).unwrap()).into(),
+            );
+            std::fs::write(
+                &self.lock,
+                omegon_maintenance_contracts::canonical_json(&evidence).unwrap(),
+            )
+            .unwrap();
+        }
+
+        fn remove(&mut self) {
+            if self.directory.exists() {
+                std::fs::remove_dir_all(&self.directory).unwrap();
+            }
+            if self.lock.exists() {
+                std::fs::remove_file(&self.lock).unwrap();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ReleaseCodescanFixture {
+        fn drop(&mut self) {
+            self.remove();
+        }
+    }
+
+    #[cfg(unix)]
+    fn directory_snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        fn visit(root: &Path, directory: &Path, files: &mut Vec<(PathBuf, Vec<u8>)>) {
+            if !directory.is_dir() {
+                return;
+            }
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    files.push((
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        std::fs::read(path).unwrap(),
+                    ));
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        visit(root, root, &mut files);
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_json(path: &Path) -> serde_json::Value {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match std::fs::read(path) {
+                    Ok(bytes) => return serde_json::from_slice(&bytes).unwrap(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    Err(error) => panic!("could not read {}: {error}", path.display()),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {}", path.display()))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "slow: requires the release-built omegon-codescan process"]
+    async fn release_coupled_codescan_traverses_discovery_and_host_binding() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = ExtensionEnvGuard::isolate(home.path());
+        unsafe {
+            std::env::remove_var("OMEGON_CHILD_ENABLED_EXTENSIONS");
+            std::env::remove_var("OMEGON_CHILD_DISABLED_EXTENSIONS");
+        }
+        std::fs::write(
+            project.path().join("acceptance_fixture.rs"),
+            "pub fn release_discovery_acceptance_needle() -> bool { true }",
+        )
+        .unwrap();
+        let mut release = ReleaseCodescanFixture::install();
+        let cancellation_control = home.path().join("codescan-conformance");
+        std::fs::create_dir_all(&cancellation_control).unwrap();
+        release.enable_conformance_barrier(&cancellation_control);
+
+        let binding = crate::codescan_service::CodescanBinding::default();
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
+            project.path().to_path_buf(),
+            binding.clone(),
+        )));
+        let inventory = crate::contribution_lifecycle::DynamicContributionInventory::default();
+        let secrets =
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(home.path()).unwrap());
+        let mut discovered = discover_and_register_extensions(
+            project.path(),
+            project.path(),
+            &mut bus,
+            secrets,
+            inventory.clone(),
+        )
+        .await
+        .unwrap();
+
+        let metadata = &discovered.extension_metadata[crate::codescan_service::CODESCAN_EXTENSION];
+        assert_eq!(
+            metadata["extension_info"]["name"], "omegon-codescan",
+            "{metadata}"
+        );
+        assert_eq!(metadata["capabilities"]["codescan"], true);
+        assert_eq!(metadata["sdk_compatibility"]["status"], "supported");
+        let handle = discovered
+            .extension_rpc_handles
+            .get(crate::codescan_service::CODESCAN_EXTENSION)
+            .cloned()
+            .expect("release discovery must expose the codescan RPC handle");
+        binding.capture(Some(handle)).unwrap();
+
+        let mut owner = crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(
+            inventory.clone(),
+        );
+        for supervisor in discovered.extension_supervisors.drain(..) {
+            owner.own_extension(supervisor);
+        }
+        owner.stage();
+        bus.try_finalize_managed().await.unwrap();
+        owner.publish();
+        let evidence = inventory.evidence();
+        assert_eq!(evidence.len(), 1, "{evidence:?}");
+        assert_eq!(
+            evidence[0].state,
+            crate::contribution_lifecycle::DiscoveredContributionState::Published
+        );
+
+        let indexed = bus
+            .execute_tool(
+                "codebase_index",
+                "codescan-acceptance-index",
+                serde_json::json!({"invalidate": true}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(indexed.details["code_chunks"].as_u64().unwrap() > 0);
+        let searched = bus
+            .execute_tool(
+                "codebase_search",
+                "codescan-acceptance-search",
+                serde_json::json!({
+                    "query": "release_discovery_acceptance_needle",
+                    "scope": "code",
+                    "max_results": 5
+                }),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            searched.details["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|result| result["file"] == "acceptance_fixture.rs"),
+            "{searched:?}"
+        );
+        assert_eq!(
+            searched.details["service_provenance"]["extension"],
+            "omegon-codescan"
+        );
+        assert_eq!(
+            searched.details["service_provenance"]["source_digest"],
+            evidence[0].candidate.preflight.source_digest
+        );
+        assert!(searched.details["service_provenance"]["pid"].is_u64());
+        assert_eq!(
+            bus.tool_provenance("codebase_search"),
+            omegon_traits::ToolProvenance::BuiltIn
+        );
+
+        let database_root = project.path().join(".omegon");
+        let before_cancel = directory_snapshot(&database_root);
+        std::fs::write(cancellation_control.join("arm"), b"").unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancellation = binding.execute(
+            omegon_codescan_contracts::CodescanOperationV1::Index(
+                omegon_codescan_contracts::IndexRequestV1 { invalidate: true },
+            ),
+            cancel.clone(),
+        );
+        tokio::pin!(cancellation);
+        let started_path = cancellation_control.join("started.json");
+        let started = tokio::select! {
+            result = &mut cancellation => panic!("codescan request ended before worker barrier: {result:?}"),
+            started = wait_for_json(&started_path) => started,
+        };
+        cancel.cancel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), &mut cancellation)
+            .await
+            .expect("host cancellation did not settle")
+            .unwrap_err();
+        assert_eq!(error.code(), "request:cancelled");
+        let outcome_path = cancellation_control.join("outcome.json");
+        let outcome = wait_for_json(&outcome_path).await;
+        assert_eq!(outcome["request_id"], started["request_id"]);
+        assert_eq!(outcome["code"], "cancelled");
+        assert_eq!(directory_snapshot(&database_root), before_cancel);
+        std::fs::remove_file(cancellation_control.join("arm")).unwrap();
+        let status = discovered.extension_rpc_handles[crate::codescan_service::CODESCAN_EXTENSION]
+            .rpc_call(
+                omegon_codescan_contracts::CODESCAN_STATUS_METHOD,
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status["ready"], true);
+
+        assert!(owner.shutdown().await.is_empty());
+        let report = bus.shutdown_managed_services().await;
+        assert!(report.all_resources_settled(), "{report:?}");
+        drop(discovered);
+        release.remove();
+
+        let absent_binding = crate::codescan_service::CodescanBinding::default();
+        let mut absent_bus = crate::bus::EventBus::new();
+        absent_bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
+            project.path().to_path_buf(),
+            absent_binding.clone(),
+        )));
+        let absent_inventory =
+            crate::contribution_lifecycle::DynamicContributionInventory::default();
+        let absent = discover_and_register_extensions(
+            project.path(),
+            project.path(),
+            &mut absent_bus,
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(home.path()).unwrap()),
+            absent_inventory,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !absent
+                .extension_rpc_handles
+                .contains_key(crate::codescan_service::CODESCAN_EXTENSION)
+        );
+        absent_binding.capture(None).unwrap();
+        absent_bus.try_finalize_managed().await.unwrap();
+        let unavailable = absent_bus
+            .execute_tool(
+                "codebase_search",
+                "codescan-acceptance-absent",
+                serde_json::json!({"query": "anything"}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unavailable.details["available"], false);
+        assert_eq!(unavailable.details["code"], "service:unavailable");
+        assert!(absent_bus.has_registered_tool("codebase_index"));
+        let report = absent_bus.shutdown_managed_services().await;
+        assert!(report.all_resources_settled(), "{report:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "slow: requires the release-built omegon-codescan process"]
+    async fn release_codescan_can_be_enabled_on_restart_without_reinstall() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = ExtensionEnvGuard::isolate(home.path());
+        unsafe {
+            std::env::remove_var("OMEGON_CHILD_ENABLED_EXTENSIONS");
+            std::env::remove_var("OMEGON_CHILD_DISABLED_EXTENSIONS");
+        }
+        std::fs::create_dir_all(project.path().join(".omegon")).unwrap();
+        std::fs::write(
+            project.path().join(".omegon/profile.json"),
+            r#"{"components":{"core:codescan":{"enabled":false}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.path().join("restart_fixture.rs"),
+            "pub fn codescan_restart_without_reinstall_needle() -> bool { true }",
+        )
+        .unwrap();
+        let mut release = ReleaseCodescanFixture::install();
+        let packaged_before = directory_snapshot(&release.directory);
+
+        let mut denied = setup_kernel_composition(project.path()).await.unwrap();
+        assert_eq!(denied.component_dependency_policy.omitted.len(), 1);
+        assert!(denied.bus.has_registered_tool("codebase_search"));
+        assert!(
+            denied
+                .bus
+                .tool_definitions()
+                .iter()
+                .all(|definition| definition.name != "codebase_search")
+        );
+        let disabled = denied
+            .bus
+            .execute_tool(
+                "codebase_search",
+                "restart-disabled",
+                serde_json::json!({"query": "anything"}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disabled.details["code"], "service:disabled");
+        assert!(denied.dynamic_contributions.shutdown().await.is_empty());
+        let report = denied.bus.shutdown_managed_services().await;
+        assert!(report.all_resources_settled(), "{report:?}");
+        assert_eq!(directory_snapshot(&release.directory), packaged_before);
+
+        std::fs::write(
+            project.path().join(".omegon/profile.json"),
+            r#"{"components":{"core:codescan":{"enabled":true}}}"#,
+        )
+        .unwrap();
+        let mut enabled = setup_kernel_composition(project.path()).await.unwrap();
+        assert_eq!(directory_snapshot(&release.directory), packaged_before);
+        let indexed = enabled
+            .bus
+            .execute_tool(
+                "codebase_index",
+                "restart-index",
+                serde_json::json!({"invalidate": true}),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(indexed.details["code_chunks"].as_u64().unwrap() > 0);
+        let searched = enabled
+            .bus
+            .execute_tool(
+                "codebase_search",
+                "restart-search",
+                serde_json::json!({
+                    "query": "codescan_restart_without_reinstall_needle",
+                    "scope": "code",
+                    "max_results": 5
+                }),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            searched.details["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|result| result["file"] == "restart_fixture.rs")
+        );
+        assert!(enabled.dynamic_contributions.shutdown().await.is_empty());
+        let report = enabled.bus.shutdown_managed_services().await;
+        assert!(report.all_resources_settled(), "{report:?}");
+        release.remove();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn denied_release_codescan_does_not_probe_spawn_or_mutate_workspace() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let _env = ExtensionEnvGuard::isolate(home.path());
+        unsafe {
+            std::env::remove_var("OMEGON_CHILD_ENABLED_EXTENSIONS");
+            std::env::remove_var("OMEGON_CHILD_DISABLED_EXTENSIONS");
+            std::env::remove_var(crate::component_policy::CHILD_COMPONENT_DENIES_ENV);
+        }
+        std::fs::create_dir_all(project.path().join(".omegon")).unwrap();
+        std::fs::write(
+            project.path().join(".omegon/profile.json"),
+            r#"{"components":{"core:codescan":{"enabled":false}}}"#,
+        )
+        .unwrap();
+        std::fs::write(project.path().join("fixture.txt"), b"unchanged").unwrap();
+
+        let executable = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let release_dir = executable
+            .parent()
+            .unwrap()
+            .join("share/omegon/extensions/omegon-codescan");
+        assert!(!release_dir.exists());
+        let launch_marker = home.path().join("codescan-process-started");
+        let binary = release_dir.join("target/release/omegon-codescan");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(
+            release_dir.join("manifest.toml"),
+            include_bytes!("../../../../extensions/omegon-codescan/manifest.toml"),
+        )
+        .unwrap();
+        std::fs::write(
+            &binary,
+            format!("#!/bin/sh\ntouch {:?}\nexit 1\n", launch_marker),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&binary, permissions).unwrap();
+        let mut release = ReleaseCodescanFixture {
+            lock: release_dir.join("nonexistent-component-lock.json"),
+            directory: release_dir,
+        };
+
+        let generic = home.path().join("extensions/unrelated-extension");
+        std::fs::create_dir_all(&generic).unwrap();
+        std::fs::write(generic.join("manifest.toml"), b"not valid toml").unwrap();
+        let before = directory_snapshot(project.path());
+        let policy =
+            crate::component_policy::resolve_product_boot_policy(project.path(), home.path())
+                .unwrap();
+        let binding = crate::codescan_service::CodescanBinding::from_component_decision(
+            policy.component("core:codescan"),
+        );
+        let mut bus = crate::bus::EventBus::new();
+        bus.register(Box::new(crate::codescan_service::CodescanFeature::new(
+            project.path().to_path_buf(),
+            binding.clone(),
+        )));
+        bus.set_policy_denied_tools(["codebase_search", "codebase_index"]);
+        let inventory = crate::contribution_lifecycle::DynamicContributionInventory::default();
+        let discovered = discover_and_register_extensions_with_policy(
+            project.path(),
+            project.path(),
+            &mut bus,
+            std::sync::Arc::new(omegon_secrets::SecretsManager::new(home.path()).unwrap()),
+            inventory,
+            &policy,
+        )
+        .await
+        .unwrap();
+
+        assert!(discovered.extension_supervisors.is_empty());
+        assert!(discovered.extension_rpc_handles.is_empty());
+        assert_eq!(discovered.discovery_attempts, vec!["unrelated-extension"]);
+        assert_eq!(directory_snapshot(project.path()), before);
+        assert!(
+            !launch_marker.exists(),
+            "denied codescan process was spawned"
+        );
+        assert!(generic.join("manifest.toml").is_file());
+        binding.capture(None).unwrap();
+        bus.try_finalize_managed().await.unwrap();
+        assert!(bus.tool_definitions().iter().all(|definition| {
+            !matches!(
+                definition.name.as_str(),
+                "codebase_search" | "codebase_index"
+            )
+        }));
+        assert!(bus.has_registered_tool("codebase_search"));
+        assert!(bus.has_registered_tool("codebase_index"));
+        for (index, surface) in [
+            omegon_traits::RuntimeSurface::Cli,
+            omegon_traits::RuntimeSurface::Acp,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let result = bus
+                .invoke_tool(
+                    "codebase_search",
+                    &format!("disabled-codescan-direct-{index}"),
+                    serde_json::json!({"query": "anything"}),
+                    tokio_util::sync::CancellationToken::new(),
+                    crate::invocation_service::InvocationScope {
+                        principal: "operator".into(),
+                        principal_class: omegon_traits::RuntimePrincipalClass::Operator,
+                        surface,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.details["code"], "service:disabled");
+            assert_eq!(result.details["component_id"], "core:codescan");
+            assert_eq!(
+                result.details["determining_policy_source"]["kind"],
+                "selected-profile"
+            );
+        }
+        let report = bus.shutdown_managed_services().await;
+        assert!(report.all_resources_settled(), "{report:?}");
+        release.remove();
     }
 
     fn with_auth_env_lock<T>(f: impl FnOnce() -> T + std::panic::UnwindSafe) -> T {

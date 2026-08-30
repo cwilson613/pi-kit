@@ -208,6 +208,9 @@ let
           "org.opencontainers.image.source" = "https://github.com/styrene-lab/omegon";
           "sh.styrene.omegon.domain" = domain.name;
           "sh.styrene.omegon.foundations" = builtins.concatStringsSep "," foundationNames;
+          "sh.styrene.omegon.artifact-profile" = "full-product";
+          "sh.styrene.omegon.composition-class" = "host-only";
+          "sh.styrene.omegon.core-components" = "";
         };
       };
 

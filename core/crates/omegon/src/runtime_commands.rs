@@ -29,6 +29,9 @@ pub enum CanonicalSlashCommand {
     ProfileExtensionAllow(String),
     ProfileExtensionDeny(String),
     ProfileExtensionClear,
+    ProfileComponentEnable(String),
+    ProfileComponentDisable(String),
+    ProfileComponentsView,
     ProfileSetPersona(Option<String>),
     ProfileSetTone(Option<String>),
     AutomationView,
@@ -262,6 +265,19 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
         "profile" if args == "extensions clear" || args == "extension clear" => {
             Some(CanonicalSlashCommand::ProfileExtensionClear)
         }
+        "profile" if args == "components view" => {
+            Some(CanonicalSlashCommand::ProfileComponentsView)
+        }
+        "profile" if args.starts_with("component enable ") => args
+            .strip_prefix("component enable ")
+            .map(str::trim)
+            .filter(|selector| !selector.is_empty())
+            .map(|selector| CanonicalSlashCommand::ProfileComponentEnable(selector.to_string())),
+        "profile" if args.starts_with("component disable ") => args
+            .strip_prefix("component disable ")
+            .map(str::trim)
+            .filter(|selector| !selector.is_empty())
+            .map(|selector| CanonicalSlashCommand::ProfileComponentDisable(selector.to_string())),
         "profile" => {
             if let Some(name) = args
                 .strip_prefix("extension allow ")
@@ -872,5 +888,27 @@ mod variable_command_tests {
             ))
         );
         assert!(canonical_slash_command("runtime", "replace ").is_none());
+    }
+
+    #[test]
+    fn profile_component_commands_are_canonical() {
+        assert_eq!(
+            canonical_slash_command("profile", "component enable core:codescan"),
+            Some(CanonicalSlashCommand::ProfileComponentEnable(
+                "core:codescan".into()
+            ))
+        );
+        assert_eq!(
+            canonical_slash_command("profile", "component disable core:codescan"),
+            Some(CanonicalSlashCommand::ProfileComponentDisable(
+                "core:codescan".into()
+            ))
+        );
+        assert_eq!(
+            canonical_slash_command("profile", "components view"),
+            Some(CanonicalSlashCommand::ProfileComponentsView)
+        );
+        assert!(canonical_slash_command("profile", "component enable").is_none());
+        assert!(canonical_slash_command("profile", "components disable core:codescan").is_none());
     }
 }

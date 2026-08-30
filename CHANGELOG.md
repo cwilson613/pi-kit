@@ -18,6 +18,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Distribution composition now has one target-specific machine-readable policy for release archives, direct installs, Homebrew, Nix, OCI, and retained unsupported npm scaffolding. Release and package manifests carry additive host-profile, composition-class, `core:*` inventory, and SDK-extension posture metadata; Nix and OCI explicitly report host-only codescan absence.
+
+- Rust test recipes now select Omegon's canonical Nerd Font glyph set explicitly, matching CI and preventing terminal-dependent TUI snapshot failures in local landing gates.
+
+- Native-extension manifests, SDK compatibility, JSON-RPC transport, handshake, process-group cleanup, health, replacement, and shutdown now live in the dependency-clean `omegon-native-extension-host` crate. The full product retains admission, secrets/config resolution, host actions, tool-result mapping, widgets, voice/vox, and persisted-state policy through compatibility adapters.
+
 - Exact model routes now fail closed against the active inference inventory before startup, login, or operator bridge replacement. Unknown and disabled offerings are rejected without changing the active route, admitted offerings without tool capability evidence reject tool-bearing requests before network dispatch, and configured provider order deterministically breaks ties without overriding eligibility or capability scores.
 
 - Environment credential provenance now uses each provider's declared variable-level authentication semantics. Credential ledgers and route metadata distinguish API keys from OAuth and token-exchange credentials without inferring the kind from variable names.
@@ -28,15 +34,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 - Admitted manifest HTTP endpoints using the `chat-completions` adapter can now construct an OpenAI-compatible bridge from their declared base URL and endpoint-bound bearer-token secret. Remote endpoints require HTTPS, while loopback endpoints can use HTTP. Transport sends the admitted native model ID. Sessionless leases and a new session endpoint-provenance fact preserve endpoint, adapter, inventory generation, credential class, and host adapter generation without changing `route.lease_recorded` v1. Unsupported adapters fail before secret resolution or network dispatch.
 
-- Extracted codescan from every Omegon binary into a release-coupled native extension. The host links only versioned portable contracts, retains stable code-search tool and context schemas, propagates RPC cancellation, and reports typed unavailability when the extension is absent. Installer and self-update generations now activate and roll back the matching sidecar atomically, while CI rejects the indexing engine from every Omegon feature graph.
+- Extracted codescan from every Omegon binary into a release-coupled native extension. The host links only versioned portable contracts, retains stable code-search tool and context schemas, propagates RPC cancellation, and reports typed unavailability when the extension is absent. Direct install, self-update, switch, and rollback now validate and select one complete host, resident-lock, content, receipt, and digest-bound sidecar generation atomically; failed candidates preserve the callable prior generation and never claim or clean up operator-managed SDK extensions. CI rejects the indexing engine from every Omegon feature graph.
+
+- Composition evidence now identifies the codescan host adapter separately from its native sidecar. Release validation enforces the exact sidecar archive inventory, optional-domain checks execute their referenced contracts, and pull requests run the consolidated Python release-policy suite.
+
+- Full-product packages now include a canonical `core:codescan` component lock that binds wire identity, manifest and executable digests, target, protocol, fallback, and release workflow authority. Signed package and release manifests, archive verification, installer and update staging, and runtime admission consume the same evidence; substitution and SDK self-promotion fail closed while profile disablement remains distinct from local unavailability.
+
+- The additive composition ladder now measures and enforces owner-attributed aggregate budgets for `kernel-only`, `kernel+codescan`, and `full-product`. Target-specific policy covers host, sidecar, and installed bytes; explicit bounded policy covers dependency closures, startup tasks, external processes, model-schema tokens, and resident and callable capabilities. The ladder reuses its built artifacts and isolated installs instead of rebuilding them for budget collection.
+
+- Extracted domains in the composition matrix must now declare machine-checked kernel absence, additive restoration, and accumulated full-product evidence. The policy rejects missing or aliased rows, service and extension identity mismatches, retained absence after restoration, and extensions dropped from the full product.
 
 ### Fixed
+
+- Profile component, extension, and MQTT mutations now persist to the actual selected named project or user profile instead of creating a lower-precedence legacy project profile. Built-in profiles require an explicit writable target.
 
 - Headless delegate and cleave timeout/cancellation paths now terminate the complete owned Unix process group instead of only the immediate child process, preventing quiet descendants from surviving agent cleanup.
 
 - Fixed interactive startup after managed services are published by binding the boot-published model-budget feature to the resolved provider route without replacing or synchronously re-finalizing the active contribution graph.
 
 ### Added
+
+- Added executable distribution smokes for the offline direct installer, Homebrew formula layout, Nix host package, and OCI images. Full-product lanes reuse packaged codescan index/search, provenance, policy-disablement, rollback, and cleanup acceptance; host-only lanes require exact metadata, typed `service:unavailable`, and zero component processes before publication. Release policy also rejects npm scaffolding from publication outputs.
+- Added the stage-1 typed core-component policy contract. Profiles can request `core:codescan` activation, `OMEGON_HOME/component-policy.json` and propagated child policy provide monotonic denies with provenance, and canonical profile saves migrate the legacy codescan extension deny without changing unrelated extension rules. Runtime startup enforcement remains deferred.
+- Enforced boot-resolved core-component policy before release-coupled codescan discovery and process startup. Denied codescan now performs no snapshot, preflight, spawn, readiness, index, or database work; setup retains deterministic policy and dependency-omission evidence while unrelated generic extension candidates remain eligible.
+- Disabled codescan now remains registered for stable direct CLI and ACP invocation while its tools are omitted from model schemas. Direct calls return typed `service:disabled` evidence with `core:codescan` and the determining policy source; absence remains `service:unavailable`, and a later allowed boot reuses the unchanged packaged sidecar without reinstalling it.
+- Added shared `/profile component enable|disable <selector>` and `/profile components view` commands for TUI, CLI remote execution, and ACP. Component status output preserves policy provenance and distinguishes packaged, policy-disabled, absent, incompatible, failed, quarantined, and healthy states without inferring unobserved runtime health.
+- Added installed full-product component-policy acceptance using one real extracted release archive. Default policy performs packaged codescan index/search and complete process cleanup; an explicit deny preserves package manifests, member digests, resident locks, and rollback validity while excluding model-callable tools and returning exact `service:disabled` provenance. Package validation still rejects missing required codescan content under denial.
+
+- Added the first executable additive artifact ladder. The same-package `omegon-kernel-host` target is a physically reduced `kernel-host-v1` whose selected graph has exactly eight direct normal/build roots and excludes product domains; policy compares the complete declared root set with Cargo metadata. Its workspace-bounded core probe verifies typed codescan absence. The `kernel+codescan` installation reuses byte-identical host binaries, adds only the release-layout sidecar, restores real index/search through `omegon-native-extension-host`, reports admitted process provenance and health, and shuts the sidecar down deterministically.
+
+- Added a host-backed native-extension conformance campaign with deterministic protocol, readiness, invocation, cancellation, crash, restart-budget, replacement, and process-tree fixtures. Every checked-in native extension now advertises the supported SDK contract and passes the shared real-process handshake, while a separate release-coupled codescan acceptance row proves production discovery, indexing/search, generation provenance, cleanup, and typed absence.
 
 - Added the source-built `task-capsule-v0` artifact profile for bounded `omegon run` execution. Its dedicated build disables default features, rejects TUI, self-update, and local-embedding composition, reports compile-derived artifact identity, and enforces dependency absence for presentation, codescan engine, Sigstore, and X.509 parsing packages. V0 does not add a published archive, update channel, or container image.
 

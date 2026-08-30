@@ -100,6 +100,94 @@ fn every_authority_record_has_a_canonical_fixture() {
 }
 
 #[test]
+fn package_manifest_distribution_composition_is_additive_and_typed() {
+    let legacy = include_bytes!("fixtures/package-manifest-v1.json");
+    assert!(parse_record::<PackageManifestV1>(legacy).is_ok());
+    let encode = |value: &serde_json::Value| {
+        let mut bytes = serde_json::to_vec(value).unwrap();
+        bytes.push(b'\n');
+        bytes
+    };
+
+    let mut value: serde_json::Value = serde_json::from_slice(legacy).unwrap();
+    value["host_profile"] = serde_json::json!("full-product");
+    value["composition_class"] = serde_json::json!("full-product");
+    value["core_components"] = serde_json::json!([{
+        "component_id": "core:codescan",
+        "wire_manifest_id": "omegon-codescan"
+    }]);
+    value["sdk_extension_posture"] = serde_json::json!("operator-managed");
+    assert!(parse_record::<PackageManifestV1>(&encode(&value)).is_err());
+    value["members"].as_array_mut().unwrap().extend([
+        serde_json::json!({
+            "digest": ZERO_KEY,
+            "mode": 420,
+            "path": "share/omegon/extensions/omegon-codescan/manifest.toml",
+            "size": 1
+        }),
+        serde_json::json!({
+            "digest": ZERO_KEY,
+            "mode": 493,
+            "path": "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan",
+            "size": 1
+        }),
+        serde_json::json!({
+            "digest": ZERO_KEY,
+            "mode": 420,
+            "path": "share/omegon/components/core-codescan.lock.json",
+            "size": 1
+        }),
+    ]);
+    value["product_component_locks"] = serde_json::json!([{
+        "schema_version": 1,
+        "component_id": "core:codescan",
+        "wire_manifest_id": "omegon-codescan",
+        "manifest_path": "share/omegon/extensions/omegon-codescan/manifest.toml",
+        "manifest_digest": ZERO_KEY,
+        "executable_path": "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan",
+        "executable_digest": ZERO_KEY,
+        "target": "x86_64-unknown-linux-gnu",
+        "protocol_minimum": 1,
+        "protocol_maximum": 1,
+        "protocol_version": 1,
+        "fallback": "typed_unavailable",
+        "signing_identity": {
+            "issuer": "https://token.actions.githubusercontent.com",
+            "workflow_identity": "https://github.com/styrene-lab/omegon/.github/workflows/release.yml@refs/tags/v0.29.0-dev",
+            "verification": "required"
+        }
+    }]);
+    let parsed = parse_record::<PackageManifestV1>(&encode(&value));
+    assert!(
+        parsed.is_ok(),
+        "typed package manifest rejected: {parsed:?}"
+    );
+
+    value["core_components"][0]["component_id"] = serde_json::json!("sdk:self-promoted");
+    assert!(parse_record::<PackageManifestV1>(&encode(&value)).is_err());
+}
+
+#[test]
+fn full_product_package_requires_independent_codescan_evidence() {
+    let fixture = include_bytes!("fixtures/package-manifest-v1.json");
+    let mut value: serde_json::Value = serde_json::from_slice(fixture).unwrap();
+    value["host_profile"] = serde_json::json!("full-product");
+    value["composition_class"] = serde_json::json!("full-product");
+    value["core_components"] = serde_json::json!([{
+        "component_id": "core:codescan",
+        "wire_manifest_id": "omegon-codescan"
+    }]);
+    value["sdk_extension_posture"] = serde_json::json!("operator-managed");
+    value["members"].as_array_mut().unwrap().extend([
+        serde_json::json!({"digest": ZERO_KEY, "mode": 420, "path": "share/omegon/extensions/omegon-codescan/manifest.toml", "size": 1}),
+        serde_json::json!({"digest": ZERO_KEY, "mode": 493, "path": "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan", "size": 1}),
+    ]);
+    let mut bytes = serde_json::to_vec(&value).unwrap();
+    bytes.push(b'\n');
+    assert!(parse_record::<PackageManifestV1>(&bytes).is_err());
+}
+
+#[test]
 fn result_wire_fixture_is_bounded_and_stable() {
     for bytes in [
         include_bytes!("fixtures/result-v1.json").as_slice(),

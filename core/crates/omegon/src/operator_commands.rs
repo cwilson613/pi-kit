@@ -67,6 +67,13 @@ pub enum InterfaceControlRequest {
         name: String,
     },
     ProfileExtensionClear,
+    ProfileComponentEnable {
+        selector: String,
+    },
+    ProfileComponentDisable {
+        selector: String,
+    },
+    ProfileComponentsView,
     ProfileSetPersona {
         name: Option<String>,
     },

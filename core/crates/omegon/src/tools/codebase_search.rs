@@ -49,18 +49,34 @@ impl CodescanProvider {
         Ok(Some(rel.to_path_buf()))
     }
 
-    fn unavailable_result(&self, code: &str) -> ToolResult {
+    fn unavailable_result(&self, error: &crate::codescan_service::CodescanCallError) -> ToolResult {
+        let code = error.code();
+        let disabled = error.disabled_evidence();
+        let text = disabled.map_or_else(
+            || "Codescan is unavailable for this workspace.".to_string(),
+            |decision| {
+                format!(
+                    "Codescan component {} is disabled by policy.",
+                    decision.component_id
+                )
+            },
+        );
         ToolResult {
-            content: vec![ContentBlock::Text {
-                text: "Codescan is unavailable for this workspace.".into(),
-            }],
+            content: vec![ContentBlock::Text { text }],
             details: json!({
                 "available": false,
                 "code": code,
                 "service": "service:codescan",
+                "component_id": disabled.map(|decision| decision.component_id.as_str()),
+                "component_state": disabled.map(|_| "disabled-by-policy"),
+                "determining_policy_source": disabled.map(|decision| &decision.determining_source),
                 "root": self.repo_path.display().to_string(),
             }),
         }
+    }
+
+    fn process_provenance(&self) -> Value {
+        serde_json::to_value(self.codescan.process_provenance()).unwrap_or(Value::Null)
     }
 
     async fn execute_search(
@@ -109,9 +125,12 @@ impl CodescanProvider {
             ),
             Ok(_) => anyhow::bail!("codescan returned an unexpected search response"),
             Err(error)
-                if matches!(error.code(), "service:unavailable" | "service:incompatible") =>
+                if matches!(
+                    error.code(),
+                    "service:disabled" | "service:unavailable" | "service:incompatible"
+                ) =>
             {
-                return Ok(self.unavailable_result(error.code()));
+                return Ok(self.unavailable_result(&error));
             }
             Err(error) => anyhow::bail!("codescan search failed: {error}"),
         };
@@ -129,7 +148,7 @@ impl CodescanProvider {
                             .unwrap_or_else(|| ".".into())
                     ),
                 }],
-                details: json!({"results": [], "query": query, "scope": scope_str, "within": within.as_ref().map(|p| p.display().to_string()), "root": self.repo_path.display().to_string()}),
+                details: json!({"results": [], "query": query, "scope": scope_str, "within": within.as_ref().map(|p| p.display().to_string()), "root": self.repo_path.display().to_string(), "service_provenance": self.process_provenance()}),
             });
         }
 
@@ -180,6 +199,7 @@ impl CodescanProvider {
                 "scope": scope_str,
                 "within": within.as_ref().map(|p| p.display().to_string()),
                 "root": self.repo_path.display().to_string(),
+                "service_provenance": self.process_provenance(),
                 "indexed_code_chunks": indexed_code_chunks,
                 "indexed_knowledge_chunks": indexed_knowledge_chunks,
                 "results": results.iter().map(|r| json!({
@@ -212,9 +232,12 @@ impl CodescanProvider {
             Ok(CodescanResponseV1::Index(stats)) => stats,
             Ok(_) => anyhow::bail!("codescan returned an unexpected index response"),
             Err(error)
-                if matches!(error.code(), "service:unavailable" | "service:incompatible") =>
+                if matches!(
+                    error.code(),
+                    "service:disabled" | "service:unavailable" | "service:incompatible"
+                ) =>
             {
-                return Ok(self.unavailable_result(error.code()));
+                return Ok(self.unavailable_result(&error));
             }
             Err(error) => anyhow::bail!("codescan index failed: {error}"),
         };
@@ -245,6 +268,7 @@ impl CodescanProvider {
                 "code_chunks": stats.code_chunks,
                 "knowledge_chunks": stats.knowledge_chunks,
                 "duration_ms": stats.duration_ms,
+                "service_provenance": self.process_provenance(),
             }),
         })
     }
@@ -382,6 +406,22 @@ mod tests {
         )
     }
 
+    fn disabled_provider(path: PathBuf) -> CodescanProvider {
+        let decision = crate::component_policy::ComponentPolicyDecision {
+            component_id: "core:codescan".into(),
+            enabled: false,
+            evidence: vec![],
+            determining_source: crate::component_policy::ComponentPolicySource::SelectedProfile {
+                profile: "compliance".into(),
+                path: "/repo/.omegon/profiles/compliance.json".into(),
+            },
+        };
+        CodescanProvider::new(
+            path,
+            CodescanBinding::from_component_decision(Some(&decision)),
+        )
+    }
+
     #[tokio::test]
     async fn tool_definitions_have_correct_names() {
         let dir = tempfile::tempdir().unwrap();
@@ -498,5 +538,34 @@ mod tests {
             .unwrap();
         assert_eq!(result.details["available"], false);
         assert_eq!(result.details["code"], "service:unavailable");
+    }
+
+    #[tokio::test]
+    async fn disabled_service_keeps_direct_contract_and_returns_policy_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = disabled_provider(dir.path().to_path_buf());
+        assert_eq!(provider.tools().len(), 2);
+
+        for (tool, args) in [
+            ("codebase_search", json!({"query": "anything"})),
+            ("codebase_index", json!({})),
+        ] {
+            let result = provider
+                .execute(tool, "disabled", args, CancellationToken::new())
+                .await
+                .unwrap();
+            assert_eq!(result.details["available"], false);
+            assert_eq!(result.details["code"], "service:disabled");
+            assert_eq!(result.details["component_id"], "core:codescan");
+            assert_eq!(result.details["component_state"], "disabled-by-policy");
+            assert_eq!(
+                result.details["determining_policy_source"]["kind"],
+                "selected-profile"
+            );
+            assert_eq!(
+                result.details["determining_policy_source"]["profile"],
+                "compliance"
+            );
+        }
     }
 }

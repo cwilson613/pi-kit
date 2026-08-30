@@ -146,6 +146,12 @@ fn container_child_args_and_env(
             config.runtime.skills.join(","),
         ));
     }
+    if let Some(policy) = &config.runtime.component_deny {
+        env.push((
+            crate::component_policy::CHILD_COMPONENT_DENIES_ENV.into(),
+            policy.to_env_json(),
+        ));
+    }
 
     (agent_args, env)
 }

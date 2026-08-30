@@ -85,6 +85,8 @@ import { snippet } from "../../lib/snippets";
       <tr><td><code>/migrate [source]</code></td><td>Import from other tools: <code>auto</code>, <code>claude-code</code>, <code>codex</code>, <code>cursor</code>, <code>aider</code>.</td></tr>
       <tr><td><code>/checkin</code></td><td>Triage what needs attention now — open designs, active changes, recent issues.</td></tr>
       <tr><td><code>/status</code></td><td>Show harness and composition status, including providers, routing, the active composition generation, contribution health and cleanup assurance, candidate diagnostics, and compatibility-dispatch parity.</td></tr>
+      <tr><td><code>/profile components view</code></td><td>Show packaged core components, effective activation, restart state, and determining policy provenance.</td></tr>
+      <tr><td><code>/profile component enable|disable &lt;selector&gt;</code></td><td>Change future-boot component policy in the selected profile source. See <a href="/docs/component-policy">Core Component Policy</a>.</td></tr>
       <tr><td><code>/milestone [action]</code></td><td>Release milestone management: <code>freeze</code>, <code>status</code>.</td></tr>
       <tr><td><code>/delegate [status]</code></td><td>Delegate task management across sessions.</td></tr>
       <tr><td><code>/chronos [sub]</code></td><td>Date/time context: <code>week</code>, <code>month</code>, <code>quarter</code>, <code>relative</code>, <code>iso</code>, <code>epoch</code>, <code>tz</code>, <code>range</code>, <code>all</code>.</td></tr>
@@ -170,7 +172,7 @@ import { snippet } from "../../lib/snippets";
     <li><code>memory_store</code> / <code>memory_recall</code> / <code>memory_query</code> / <code>memory_episodes</code> — persistent project memory across sessions</li>
     <li><code>web_search</code> — multi-provider web search</li>
     <li><code>api_*</code> — project REST API tools generated from <code>.omegon/openapi.toml</code> when configured</li>
-    <li><code>codebase_search</code> / <code>codebase_index</code> — ranked discovery and indexing across code and project knowledge; calls report typed unavailability if the managed codescan service cannot start</li>
+    <li><code>codebase_search</code> / <code>codebase_index</code> — ranked discovery and indexing across code and project knowledge; calls report typed unavailability if the codescan extension is absent or cannot start</li>
     <li><code>chronos</code> — authoritative date/time</li>
     <li><code>whoami</code> — auth status across development tools</li>
     <li><code>manage_tools</code> — enable/disable tools or whole tool groups</li>

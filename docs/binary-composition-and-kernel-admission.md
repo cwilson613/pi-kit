@@ -4,7 +4,7 @@ Measured on branch `refactor/minimal-default-binary` on 2026-08-14.
 
 ## Current composition
 
-| Measure | Default interactive | Headless (`--no-default-features`) |
+| Measure | Default interactive | Headless (`--no-default-features --features product`) |
 |---|---:|---:|
 | Unique normal dependency tree lines | 778 | 620 |
 | Local debug artifact | 236 MiB | not measured separately |
@@ -16,11 +16,29 @@ graph. The host retains lightweight, versioned codescan contracts and a typed
 unavailable adapter. SQLite, tree-sitter scanners, indexing, and BM25 run in the
 separately built `omegon-codescan` native extension.
 
-This is a codescan artifact boundary and a useful shrinking source and CI
-boundary. It is not yet a minimal product boundary because the host still admits the provider stack,
-control plane, lifecycle engines, web server, plugin/skill management,
-archive/signature support, and other optional operational domains. Run
-`just check-omegon-matrix` and `just check-omegon-headless-deps` when changing
+Full-product archives contain
+`share/omegon/components/core-codescan.lock.json`. This canonical record owns
+the `core:codescan` package identity. It binds the wire manifest ID, manifest
+and executable paths and digests, target, protocol range and version, fallback
+policy, and release workflow signing identity. The signed package manifest
+contains the same record and signs the lock member digest. Host resident locks
+describe only host-resident code and do not claim the sidecar bytes.
+
+Package verification compares the signed record with the archive lock and both
+sidecar members. Install and update preserve the lock in the active generation.
+Runtime discovery verifies the lock before it snapshots or starts codescan. A
+missing, corrupt, substituted, wrong-target, or wrong-protocol component is
+`service:unavailable`. Profile denial remains the distinct `service:disabled`
+state. Operator-managed SDK extensions remain outside this release ownership
+boundary and cannot promote themselves by changing `manifest.toml`.
+
+The separate `omegon-kernel-host` binary is selected with
+`--no-default-features --features kernel-host --bin omegon-kernel-host`. Its
+graph excludes the declared product domains while retaining portable codescan
+contracts and the shared native-extension host. The `omegon` product binary
+requires `product`; headless and task-capsule profiles retain product domains
+without presentation defaults. Run `just check-kernel-host`,
+`just check-omegon-matrix`, and `just check-omegon-headless-deps` when changing
 feature or dependency topology.
 
 The original assessment found approximately 332 KiB of compile-time source content:
@@ -540,8 +558,8 @@ and command surfaces project the canonical `CommandDefinition` registry.
 `scripts/check_composition_authority.py` guards these deletions.
 
 `fixtures/release-composition-matrix-v1.json` is the executable profile/path
-matrix. `fixtures/composition-budgets-v1.json` records measured maintenance and
-normal baselines plus approved deltas. The source path invokes each profile with
+matrix. `fixtures/composition-budgets-v1.json` records measured maintenance,
+normal, and artifact-row baselines plus approved deltas. The source path invokes each profile with
 `cargo run` in an isolated workspace. The linked path invokes the installed
 channel launchers from outside the checkout and verifies their `--which` target,
 resident locks, and content assets. The release path validates exact archive
@@ -554,6 +572,39 @@ by owner. The budget collector combines that runtime evidence with target-aware
 Cargo dependency closure, release executable bytes, and resident-lock entries.
 Budget failures retain owner diagnostics instead of falling back to source-text
 counts.
+
+The additive source ladder builds one `omegon-kernel-host`, installs byte-identical
+copies in `kernel-only` and `kernel+codescan`, and adds only the codescan manifest
+and sidecar to the second install. It also builds and installs the default
+`full-product` host with the same sidecar. Each row runs in a separate workspace
+and home directory. The ladder passes a temporary evidence document to
+`scripts/check_composition_budgets.py --artifact-evidence`; the document contains
+the actual install paths and runtime inspection results. Use `--budget-output`
+on `check_composition_matrix.py` to retain the resulting measurement document.
+
+Artifact budgets cover host bytes, sidecar bytes, aggregate regular-file bytes,
+Cargo dependency closures, startup tasks, external processes, model-schema
+tokens, resident capabilities, and callable capabilities. Every metric has an
+owner map whose values must sum to the measured total. Kernel-only sidecar cost
+must be zero. The additive host must match kernel-only, and every additive
+dependency, installed-byte, sidecar-byte, or process delta must belong to
+`omegon-codescan`. Release builds enforce target-specific byte budgets and
+explicit baseline-plus-delta budgets for the other metrics. Non-release source
+profiles collect and validate evidence without applying release byte ceilings.
+
+To extract another optional domain, add an `extracted_domains` declaration and
+its accumulated artifact row to the composition matrix and ladder. The
+declaration names one canonical service identity, one canonical extension
+identity, and three distinct rows. Its evidence maps the kernel absence to
+`typed_unavailable`, the additive restoration to `restores` and `extensions`,
+and full-product retention to the same inventories. Matrix validation rejects
+missing or aliased rows, mismatched identities, retained additive absence, and a
+full product that drops previously accumulated extensions.
+
+Reuse the preceding host artifact without a rebuild. Install only the declared
+sidecar files, run an absence probe before the addition, and run a restoration
+probe after it. Extend the budget policy and synthetic rejection tests for every
+changed metric. Do not weaken or replace earlier domain assertions.
 
 ## Enforcement gates
 

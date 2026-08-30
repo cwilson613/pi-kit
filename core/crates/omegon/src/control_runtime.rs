@@ -91,6 +91,19 @@ pub fn control_request_from_slash(
         crate::runtime_commands::CanonicalSlashCommand::ProfileExtensionClear => {
             ControlRequest::ProfileExtensionClear
         }
+        crate::runtime_commands::CanonicalSlashCommand::ProfileComponentEnable(selector) => {
+            ControlRequest::ProfileComponentEnable {
+                selector: selector.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ProfileComponentDisable(selector) => {
+            ControlRequest::ProfileComponentDisable {
+                selector: selector.clone(),
+            }
+        }
+        crate::runtime_commands::CanonicalSlashCommand::ProfileComponentsView => {
+            ControlRequest::ProfileComponentsView
+        }
         crate::runtime_commands::CanonicalSlashCommand::ProfileSetPersona(name) => {
             ControlRequest::ProfileSetPersona { name: name.clone() }
         }
@@ -484,6 +497,13 @@ pub(crate) async fn execute_stateless_control(
             profile_extension_deny_response(cwd, name).await
         }
         ControlRequest::ProfileExtensionClear => profile_extension_clear_response(cwd).await,
+        ControlRequest::ProfileComponentEnable { selector } => {
+            profile_component_mutation_response(cwd, selector, true).await
+        }
+        ControlRequest::ProfileComponentDisable { selector } => {
+            profile_component_mutation_response(cwd, selector, false).await
+        }
+        ControlRequest::ProfileComponentsView => profile_components_view_response(cwd).await,
         ControlRequest::ProfileSetPersona { name } => {
             profile_set_persona_response(cwd, name.as_deref()).await
         }
@@ -1146,6 +1166,8 @@ pub async fn execute_daemon_control(
             | ControlRequest::ProfileExtensionAllow { .. }
             | ControlRequest::ProfileExtensionDeny { .. }
             | ControlRequest::ProfileExtensionClear
+            | ControlRequest::ProfileComponentEnable { .. }
+            | ControlRequest::ProfileComponentDisable { .. }
             | ControlRequest::ProfileSetPersona { .. }
             | ControlRequest::ProfileSetTone { .. }
     );
@@ -3948,7 +3970,8 @@ pub async fn profile_apply_daemon_response(
 }
 
 pub async fn profile_set_mqtt_response(cwd: &Path, enabled: Option<bool>) -> SlashCommandResponse {
-    let mut profile = settings::Profile::load(cwd);
+    let loaded = settings::Profile::load_with_source(cwd);
+    let mut profile = loaded.profile;
     if let Some(enabled) = enabled {
         profile.integrations.mqtt.enabled = Some(enabled);
         let output = if enabled {
@@ -3956,7 +3979,7 @@ pub async fn profile_set_mqtt_response(cwd: &Path, enabled: Option<bool>) -> Sla
         } else {
             "MQTT bridge profile default disabled. Takes effect on next startup."
         };
-        return save_profile_response(cwd, profile, output);
+        return save_selected_profile_response(cwd, profile, &loaded.source, output);
     }
 
     SlashCommandResponse {
@@ -3977,12 +4000,14 @@ pub async fn profile_extension_allow_response(cwd: &Path, name: &str) -> SlashCo
     if name.is_empty() {
         return usage_response("Usage: /profile extension allow <name>");
     }
-    let mut profile = settings::Profile::load(cwd);
+    let loaded = settings::Profile::load_with_source(cwd);
+    let mut profile = loaded.profile;
     retain_not_equal(&mut profile.extensions.disabled, name);
     push_unique(&mut profile.extensions.enabled, name);
-    save_profile_response(
+    save_selected_profile_response(
         cwd,
         profile,
+        &loaded.source,
         "Extension allowed in profile. Extension load policy takes effect on next startup.",
     )
 }
@@ -3992,25 +4017,139 @@ pub async fn profile_extension_deny_response(cwd: &Path, name: &str) -> SlashCom
     if name.is_empty() {
         return usage_response("Usage: /profile extension deny <name>");
     }
-    let mut profile = settings::Profile::load(cwd);
+    let loaded = settings::Profile::load_with_source(cwd);
+    let mut profile = loaded.profile;
     retain_not_equal(&mut profile.extensions.enabled, name);
     push_unique(&mut profile.extensions.disabled, name);
-    save_profile_response(
+    save_selected_profile_response(
         cwd,
         profile,
+        &loaded.source,
         "Extension denied in profile. Extension load policy takes effect on next startup.",
     )
 }
 
 pub async fn profile_extension_clear_response(cwd: &Path) -> SlashCommandResponse {
-    let mut profile = settings::Profile::load(cwd);
+    let loaded = settings::Profile::load_with_source(cwd);
+    let mut profile = loaded.profile;
     profile.extensions.enabled.clear();
     profile.extensions.disabled.clear();
-    save_profile_response(
+    save_selected_profile_response(
         cwd,
         profile,
+        &loaded.source,
         "Extension profile policy cleared. Installed enabled extensions are loadable again on next startup.",
     )
+}
+
+pub async fn profile_component_disable_response(
+    cwd: &Path,
+    selector: &str,
+) -> SlashCommandResponse {
+    profile_component_mutation_response(cwd, selector, false).await
+}
+
+async fn profile_component_mutation_response(
+    cwd: &Path,
+    selector: &str,
+    enabled: bool,
+) -> SlashCommandResponse {
+    let selector = selector.trim();
+    let catalog = crate::component_policy::ComponentCatalog::product_v1();
+    if let Err(error) = catalog.validate_profile_selector(selector, "profile component command") {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(error.to_string()),
+        };
+    }
+    let loaded = settings::Profile::load_with_source(cwd);
+    if matches!(loaded.source, settings::ProfileSource::BuiltInDefault) {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(
+                "The active profile is built-in and read-only; select an explicit project or user profile target before changing component policy."
+                    .into(),
+            ),
+        };
+    }
+    let mut profile = loaded.profile;
+    profile.components.insert(
+        selector.to_string(),
+        crate::component_policy::ComponentSwitch { enabled },
+    );
+    let source = match profile.save_to_target(
+        cwd,
+        settings::ProfileSaveTarget::ActiveSource,
+        &loaded.source,
+    ) {
+        Ok(source) => source,
+        Err(error) => {
+            return SlashCommandResponse {
+                accepted: false,
+                output: Some(format!("failed to save profile: {error}")),
+            };
+        }
+    };
+    match profile_components_projection(cwd) {
+        Ok(components) => SlashCommandResponse {
+            accepted: true,
+            output: Some(
+                serde_json::json!({
+                    "changedSource": source.to_string(),
+                    "selector": selector,
+                    "requestedEnabled": enabled,
+                    "restartRequired": true,
+                    "components": components,
+                })
+                .to_string(),
+            ),
+        },
+        Err(error) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!(
+                "Component policy saved to {source}; restart required. Effective policy could not be rendered: {error}"
+            )),
+        },
+    }
+}
+
+pub async fn profile_components_view_response(cwd: &Path) -> SlashCommandResponse {
+    match profile_components_projection(cwd) {
+        Ok(components) => SlashCommandResponse {
+            accepted: true,
+            output: Some(serde_json::json!({ "components": components }).to_string()),
+        },
+        Err(error) => SlashCommandResponse {
+            accepted: false,
+            output: Some(format!("failed to resolve component policy: {error}")),
+        },
+    }
+}
+
+fn profile_components_projection(
+    cwd: &Path,
+) -> anyhow::Result<Vec<crate::surfaces::component::ComponentStatusProjection>> {
+    let home = crate::paths::omegon_home()?;
+    let policy = crate::component_policy::resolve_product_boot_policy(cwd, &home)?;
+    Ok(policy
+        .decisions()
+        .map(|decision| {
+            let package = (decision.component_id == "core:codescan").then(|| {
+                let source = crate::setup::release_coupled_codescan_dir()
+                    .map(|path| path.display().to_string());
+                crate::surfaces::component::ComponentPackageProjection {
+                    identity: crate::codescan_service::CODESCAN_EXTENSION.into(),
+                    present: source.is_some(),
+                    source,
+                }
+            });
+            crate::surfaces::component::ComponentStatusProjection::new(
+                &decision.into(),
+                package,
+                crate::surfaces::component::ComponentRuntimeEvidence::NotObserved,
+            )
+        })
+        .collect())
 }
 
 pub async fn profile_set_persona_response(cwd: &Path, name: Option<&str>) -> SlashCommandResponse {
@@ -4227,6 +4366,33 @@ fn save_profile_response(
         Err(e) => SlashCommandResponse {
             accepted: false,
             output: Some(format!("failed to save profile: {e}")),
+        },
+    }
+}
+
+fn save_selected_profile_response(
+    cwd: &Path,
+    profile: settings::Profile,
+    source: &settings::ProfileSource,
+    success: &str,
+) -> SlashCommandResponse {
+    if matches!(source, settings::ProfileSource::BuiltInDefault) {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(
+                "The active profile is built-in and read-only; select an explicit project or user profile target before changing it."
+                    .into(),
+            ),
+        };
+    }
+    match profile.save_to_target(cwd, settings::ProfileSaveTarget::ActiveSource, source) {
+        Ok(saved_source) => SlashCommandResponse {
+            accepted: true,
+            output: Some(format!("{success} Source: {saved_source}")),
+        },
+        Err(error) => SlashCommandResponse {
+            accepted: false,
+            output: Some(format!("failed to save profile: {error}")),
         },
     }
 }
@@ -5611,6 +5777,28 @@ pub(crate) fn format_auth_status(status: &auth::AuthStatus) -> String {
 mod tests {
     use super::*;
 
+    struct EnvironmentGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvironmentGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvironmentGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
     struct ControlCommandFeature;
 
     #[async_trait::async_trait]
@@ -6468,6 +6656,156 @@ mod tests {
         assert!(rendered.contains("Auth file"));
         assert!(rendered.contains("Provider Status"));
         assert!(rendered.contains("openai-codex"));
+    }
+
+    #[test]
+    fn profile_component_commands_map_to_shared_control_requests() {
+        for (args, expected) in [
+            ("component enable core:codescan", "enable"),
+            ("component disable core:codescan", "disable"),
+            ("components view", "view"),
+        ] {
+            let canonical = crate::runtime_commands::canonical_slash_command("profile", args)
+                .unwrap_or_else(|| panic!("/profile {args} must be canonical"));
+            let request = control_request_from_slash(&canonical)
+                .unwrap_or_else(|| panic!("/profile {args} must be shared"));
+            assert!(
+                matches!(
+                    (expected, request),
+                    ("enable", ControlRequest::ProfileComponentEnable { .. })
+                        | ("disable", ControlRequest::ProfileComponentDisable { .. })
+                        | ("view", ControlRequest::ProfileComponentsView)
+                ),
+                "unexpected shared request for /profile {args}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_mutations_persist_to_named_active_project_profile() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".git")).unwrap();
+        let profile_dir = project.path().join(".omegon/profiles");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let active_path = profile_dir.join("compliance.json");
+        std::fs::write(&active_path, r#"{"name":"compliance"}"#).unwrap();
+        settings::save_project_active_profile_selection(
+            project.path(),
+            &settings::ActiveProfileSelection {
+                id: "compliance".into(),
+                scope: Some("project".into()),
+            },
+        )
+        .unwrap();
+
+        let component = profile_component_disable_response(project.path(), "core:codescan").await;
+        assert!(component.accepted, "{:?}", component.output);
+        let component_output: serde_json::Value =
+            serde_json::from_str(component.output.as_deref().unwrap()).unwrap();
+        assert_eq!(component_output["selector"], "core:codescan");
+        assert_eq!(component_output["requestedEnabled"], false);
+        assert_eq!(component_output["restartRequired"], true);
+        let canonical_active_path = std::fs::canonicalize(&active_path).unwrap();
+        assert_eq!(
+            component_output["changedSource"],
+            format!("project:{}", canonical_active_path.display())
+        );
+        assert_eq!(
+            component_output["components"][0]["state"],
+            "disabled-by-profile"
+        );
+        assert_eq!(
+            component_output["components"][0]["determiningSource"]["profile"],
+            "compliance"
+        );
+        let mqtt = profile_set_mqtt_response(project.path(), Some(true)).await;
+        assert!(mqtt.accepted, "{:?}", mqtt.output);
+        let extension = profile_extension_deny_response(project.path(), "vox").await;
+        assert!(extension.accepted, "{:?}", extension.output);
+
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&active_path).unwrap()).unwrap();
+        assert_eq!(saved["components"]["core:codescan"]["enabled"], false);
+        assert_eq!(saved["integrations"]["mqtt"]["enabled"], true);
+        assert_eq!(saved["extensions"]["disabled"], serde_json::json!(["vox"]));
+        assert!(
+            !project.path().join(".omegon/profile.json").exists(),
+            "active named profile must not be shadowed by a legacy singleton"
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_component_mutation_persists_to_named_active_user_profile() {
+        let _lock = crate::test_support::env::lock_async().await;
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvironmentGuard::set("HOME", home.path());
+        let omegon_home = home.path().join(".omegon");
+        std::fs::create_dir_all(omegon_home.join("profiles")).unwrap();
+        let _omegon_home = EnvironmentGuard::set("OMEGON_HOME", &omegon_home);
+        let user_profile = omegon_home.join("profiles/personal.json");
+        std::fs::write(&user_profile, r#"{"name":"personal"}"#).unwrap();
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".git")).unwrap();
+        std::fs::create_dir_all(project.path().join(".omegon/profiles")).unwrap();
+        std::fs::write(project.path().join(".omegon/profiles/project.json"), "{}").unwrap();
+        settings::save_project_active_profile_selection(
+            project.path(),
+            &settings::ActiveProfileSelection {
+                id: "personal".into(),
+                scope: Some("user".into()),
+            },
+        )
+        .unwrap();
+
+        let response = profile_component_disable_response(project.path(), "core:codescan").await;
+        assert!(response.accepted, "{:?}", response.output);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&user_profile).unwrap()).unwrap();
+        assert_eq!(saved["components"]["core:codescan"]["enabled"], false);
+        assert!(!project.path().join(".omegon/profile.json").exists());
+    }
+
+    #[tokio::test]
+    async fn profile_component_mutation_validates_selector_before_writing() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".git")).unwrap();
+        let response = profile_component_disable_response(project.path(), "core:codesan").await;
+        assert!(!response.accepted);
+        assert!(
+            response
+                .output
+                .as_deref()
+                .is_some_and(|output| output.contains("unknown component `core:codesan`"))
+        );
+        assert!(!project.path().join(".omegon/profile.json").exists());
+    }
+
+    #[tokio::test]
+    async fn profile_component_mutation_rejects_ambiguous_built_in_target() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".git")).unwrap();
+        std::fs::create_dir_all(project.path().join(".omegon/profiles")).unwrap();
+        std::fs::write(project.path().join(".omegon/profiles/editable.json"), "{}").unwrap();
+        settings::save_project_active_profile_selection(
+            project.path(),
+            &settings::ActiveProfileSelection {
+                id: "built-in-default".into(),
+                scope: Some("built-in".into()),
+            },
+        )
+        .unwrap();
+        let response = profile_component_disable_response(project.path(), "core:codescan").await;
+        assert!(!response.accepted);
+        assert!(
+            response
+                .output
+                .as_deref()
+                .is_some_and(|output| output.contains("explicit") && output.contains("target")),
+            "{:?}",
+            response.output
+        );
+        assert!(!project.path().join(".omegon/profile.json").exists());
     }
 }
 

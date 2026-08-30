@@ -621,3 +621,121 @@ When `/runtime replace <name>` executes
 Then the failed candidate process is reaped
 And that extension remains unavailable with bounded diagnostic evidence
 And no automatic retry loop starts
+
+### Requirement: Native extensions pass host-backed conformance
+
+Every first-party native extension must pass one reusable campaign through the
+production host discovery, admission, handshake, readiness, and shutdown path.
+
+#### Scenario: Compatible extension is admitted
+Given a trusted extension snapshot implements the supported native protocol
+When the production host discovers and starts it
+Then the host admits its declared capabilities and publishes one generation
+And the extension reports its SDK identity and readiness through the shared contract
+
+#### Scenario: Incompatible extension is refused
+Given an extension omits or violates a required protocol or readiness contract
+When the production host evaluates the candidate
+Then the host refuses it before capability publication
+And the candidate process tree is settled within the cleanup deadline
+
+### Requirement: Real extension capabilities traverse the host
+
+Conformance must include a real domain invocation through the host adapter and
+the admitted extension process.
+
+#### Scenario: Codescan restores search capability
+Given the host has admitted the real codescan extension for a temporary workspace
+When a caller indexes and searches through the host-owned codescan tools
+Then the result contains the expected workspace source hit
+And provenance identifies the admitted extension generation
+
+### Requirement: Native extension cancellation is end to end
+
+Cancellation after dispatch must cross the host, transport, and extension worker
+without publishing incomplete mutation.
+
+#### Scenario: Active extension request is cancelled
+Given an admitted extension has started a mutating request
+When the caller cancels that request
+Then the host and extension report a cancelled outcome for the same request identity
+And incomplete state is not published
+
+### Requirement: Extension failures remain local and owned
+
+Crash, replacement, quarantine, and shutdown must not invalidate unrelated host
+or extension capabilities, and every owned process tree must settle.
+
+#### Scenario: One extension exhausts its restart budget
+Given two extensions are admitted and one repeatedly crashes
+When its restart budget is exhausted
+Then only the failing extension becomes quarantined and unavailable
+And the other extension and kernel capabilities remain callable
+
+#### Scenario: Host shuts down an extension tree
+Given an admitted extension has spawned a descendant process
+When the host refuses, replaces, or shuts down that extension
+Then the direct child and every owned descendant terminate within the cleanup deadline
+And no stale generation accepts a new invocation
+
+### Requirement: Component policy is enforced before execution
+
+An effective deny excludes a core product component before process creation,
+handshake, readiness, mutable engine access, or contribution publication.
+Unrelated admitted contributions remain unchanged.
+
+#### Scenario: Codescan is disabled before boot
+Given packaged component `core:codescan` is denied by effective policy
+When the runtime composes its contribution generation
+Then no codescan process, handshake, readiness probe, index, or database mutation occurs
+And unrelated host and component contributions remain eligible
+
+#### Scenario: Disabled component has a required dependent
+Given a non-disableable contribution requires a component denied by effective policy
+When the contribution graph is validated
+Then runtime publication is rejected as contradictory configuration
+And the denied component is not started to repair the contradiction
+
+#### Scenario: Disabled component has only optional dependents
+Given optional contributions depend on a component denied by effective policy
+When the contribution graph is validated
+Then the component and those optional dependents are omitted deterministically
+And diagnostics identify the dependency-based omissions
+
+### Requirement: Disabled is a typed runtime state
+
+A packaged component denied by policy is reported as `disabled-by-policy`, not
+absent, incompatible, failed, or quarantined. Its component-backed tools are not
+model-callable, while direct invocation returns typed `service:disabled`
+evidence with policy provenance.
+
+#### Scenario: Model tool inventory excludes disabled codescan
+Given packaged `core:codescan` is disabled by effective policy
+When model-callable tools are projected
+Then codescan-backed tools are excluded
+And unrelated callable tools are unchanged
+
+#### Scenario: Direct invocation reaches a disabled adapter
+Given packaged `core:codescan` is disabled by the selected profile
+When a CLI, ACP, or direct tool caller invokes codescan
+Then the host returns typed `service:disabled`
+And the response identifies `core:codescan` and the determining policy source
+
+### Requirement: Component policy changes are generation-bound
+
+Profile edits do not silently mutate components captured by an active session.
+The new policy applies on the next runtime boot unless a separately specified
+quiescent migration protocol is used.
+
+#### Scenario: Active session remains stable after profile edit
+Given an active session captured a healthy codescan component
+When the operator disables `core:codescan` in the selected profile
+Then the active generation remains unchanged
+And the command reports that the deny takes effect after restart
+
+#### Scenario: Re-enabled packaged component starts after restart
+Given packaged `core:codescan` was disabled without being uninstalled
+And effective policy is changed to allow it
+When a new runtime boot composes the generation
+Then the packaged component passes normal admission and readiness
+And codescan search becomes available without reinstallation

@@ -67,6 +67,7 @@ class Omegon < Formula
     assert_predicate share/"omegon/content-packs/omegon-shipped/content-pack.toml", :exist?
     assert_predicate share/"omegon/extensions/omegon-codescan/manifest.toml", :exist?
     assert_predicate share/"omegon/extensions/omegon-codescan/target/release/omegon-codescan", :executable?
+    assert_predicate share/"omegon/components/core-codescan.lock.json", :exist?
     assert_predicate share/"omegon/composition/omegon.composition-lock.json", :exist?
     assert_predicate share/"omegon/composition/omegon-maintain.composition-lock.json", :exist?
   end

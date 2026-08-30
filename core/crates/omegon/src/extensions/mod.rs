@@ -1,7 +1,9 @@
-//! Extension spawning and process management.
+//! Omegon product adapters for extension spawning and process management.
 //!
-//! Handles both native (binary) and OCI (container) extensions.
-//! All extensions communicate via JSON-RPC 2.0 over stdin/stdout.
+//! The dependency-clean `omegon-native-extension-host` crate owns manifests,
+//! JSON-RPC transport, child processes, handshake, replacement, and shutdown.
+//! This module retains application policy and maps the shared host into Omegon
+//! features, admission, state, widgets, voice/vox, and host actions.
 //! Stateful widgets stream updates via separate TCP connection.
 //!
 //! # Secret delivery
@@ -17,17 +19,25 @@ use omegon_traits::{ContentBlock, Feature, ToolDefinition, ToolResult};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) mod approval;
 pub mod config_store;
+#[cfg(test)]
+mod conformance_tests;
 pub(crate) mod host_actions;
-pub mod manifest;
+pub mod manifest {
+    pub use omegon_native_extension_host::*;
+}
 pub mod mind;
-pub(crate) mod sdk_compat;
+pub mod sdk_compat {
+    pub use omegon_native_extension_host::{
+        MIN_COMPATIBLE_SDK_CONTRACT_VERSION, SUPPORTED_SDK_CONTRACT_VERSION,
+        SdkCompatibilityDiagnostic, SdkCompatibilityStatus, classify_initialize_metadata,
+        classify_sdk_version,
+    };
+}
 pub mod state;
 mod tool_result;
 pub mod voice_bridge;
@@ -37,220 +47,16 @@ pub use manifest::{
     ConnectionMode, ExtensionManifest, McpConfig, McpTransport, RuntimeConfig, WidgetConfig,
 };
 pub use mind::{ExtensionMind, MindStats};
+pub use omegon_native_extension_host::{
+    ExtensionNotification, ExtensionProcessHealth, ExtensionProcessState, ExtensionSupervisor,
+    shutdown_supervisors,
+};
 pub use sdk_compat::SdkCompatibilityDiagnostic;
 pub use state::{ExtensionState, StabilityMetrics};
 pub use widgets::{ExtensionTabWidget, WidgetDeclaration, WidgetEvent};
 
-/// Environment variables that are safe to inherit from the parent process.
-/// Everything else is stripped via env_clear() — secrets never leak via env.
 const EXTENSION_TOOL_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const EXTENSION_POLL_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-const SAFE_INHERIT_ENVS: &[&str] = &[
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "LC_MESSAGES",
-    "TERM",
-    "SHELL",
-    // Dynamic linker paths — needed on some systems for compiled binaries
-    "DYLD_LIBRARY_PATH",          // macOS
-    "DYLD_FALLBACK_LIBRARY_PATH", // macOS
-    "LD_LIBRARY_PATH",            // Linux
-    // Rust runtime
-    "RUST_LOG",
-    "RUST_BACKTRACE",
-    // Project root — set by omegon from --cwd, read by extensions to locate the
-    // user's active workspace. Not a secret (just a filesystem path).
-    "OMEGON_PROJECT_ROOT",
-    // Flynt/Codex vault roots — backwards compat for the flynt-agent extension.
-    "FLYNT_VAULT",
-    "CODEX_VAULT",
-];
-
-#[derive(Debug, Clone)]
-pub struct ExtensionNotification {
-    pub extension_name: String,
-    pub method: String,
-    pub params: Value,
-}
-
-#[derive(Clone)]
-struct ExtensionNotificationSink {
-    extension_name: String,
-    tx: mpsc::UnboundedSender<ExtensionNotification>,
-}
-
-impl ExtensionNotificationSink {
-    fn send(&self, notification: omegon_extension::RpcNotification) {
-        let event = ExtensionNotification {
-            extension_name: self.extension_name.clone(),
-            method: notification.method,
-            params: notification.params,
-        };
-        if let Err(err) = self.tx.send(event) {
-            tracing::debug!(
-                extension = %self.extension_name,
-                error = %err,
-                "extension notification dropped because receiver is closed"
-            );
-        }
-    }
-}
-
-fn configure_extension_process(command: &mut tokio::process::Command) {
-    command.kill_on_drop(true);
-    #[cfg(unix)]
-    command.process_group(0);
-}
-
-#[cfg(unix)]
-fn kill_extension_process_group(pid: Option<u32>) {
-    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
-        return;
-    };
-    // SAFETY: extension commands are spawned as leaders of dedicated process
-    // groups, so a negative PID cannot target the Omegon host process.
-    unsafe {
-        libc::kill(-pid, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_extension_process_group(_pid: Option<u32>) {}
-
-/// Handles for communicating with an extension process.
-pub struct ProcessHandles {
-    child: tokio::process::Child,
-    stdin: tokio::process::ChildStdin,
-    reader: BufReader<tokio::process::ChildStdout>,
-    next_id: u64,
-}
-
-impl ProcessHandles {
-    fn new(
-        child: tokio::process::Child,
-        stdin: tokio::process::ChildStdin,
-        stdout: tokio::process::ChildStdout,
-    ) -> Self {
-        Self {
-            child,
-            stdin,
-            reader: BufReader::new(stdout),
-            next_id: 1,
-        }
-    }
-
-    /// Send a JSON-RPC request and receive the response.
-    /// Standalone so the handshake sequence can run before ExtensionFeature is constructed.
-    async fn rpc_call(&mut self, method: &str, params: Value) -> Result<Value> {
-        self.rpc_call_with_notifications(method, params, None).await
-    }
-
-    async fn rpc_call_with_notifications(
-        &mut self,
-        method: &str,
-        params: Value,
-        notification_sink: Option<&ExtensionNotificationSink>,
-    ) -> Result<Value> {
-        let id = self.next_id;
-        self.next_id += 1;
-
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        self.stdin
-            .write_all(format!("{}\n", request).as_bytes())
-            .await?;
-        self.stdin.flush().await?;
-
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let n = self.reader.read_line(&mut line).await?;
-            if n == 0 {
-                return Err(anyhow!("extension closed connection"));
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let resp: Value = serde_json::from_str(trimmed)?;
-            if let Ok(omegon_extension::RpcIncoming::Notification(notification)) =
-                omegon_extension::RpcIncoming::parse(trimmed)
-            {
-                if let Some(sink) = notification_sink {
-                    sink.send(notification);
-                }
-                continue;
-            }
-            if resp.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                return if let Some(result) = resp.get("result") {
-                    Ok(result.clone())
-                } else if let Some(error) = resp.get("error") {
-                    Err(anyhow!("RPC error: {}", error))
-                } else {
-                    Err(anyhow!("invalid RPC response: no result or error"))
-                };
-            }
-            // Continue reading (may be out-of-order notifications or prior responses)
-        }
-    }
-    /// Deterministically stop and reap the canonical extension child.
-    ///
-    /// RPC/polling clones must not own process lifetime; the supervisor calls
-    /// this after disabling new calls and respawn. Closing stdin gives a
-    /// cooperative peer a bounded opportunity to exit before forced kill.
-    async fn shutdown(&mut self, grace: std::time::Duration) -> Result<()> {
-        use tokio::io::AsyncWriteExt as _;
-
-        let pid = self.child.id();
-        let _ = self.stdin.shutdown().await;
-        let deadline = tokio::time::Instant::now() + grace;
-        loop {
-            if self.child.try_wait()?.is_some() {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-
-        kill_extension_process_group(pid);
-        let _ = self.child.start_kill();
-        tokio::time::timeout(
-            grace.max(std::time::Duration::from_millis(500)),
-            self.child.wait(),
-        )
-        .await
-        .map_err(|_| anyhow!("extension process did not exit after forced termination"))??;
-        Ok(())
-    }
-}
-
-impl Drop for ProcessHandles {
-    fn drop(&mut self) {
-        // Extension processes are long-lived JSON-RPC peers. Dropping the
-        // final host-side handle must not leave shell-script/native extension
-        // children alive, because Tokio waits for managed child processes and
-        // `cargo test` can hang after assertions complete. Respawn paths still
-        // perform explicit async kill/wait; this synchronous drop path is the
-        // deterministic backstop for tests and normal shutdown.
-        kill_extension_process_group(self.child.id());
-        let _ = self.child.start_kill();
-    }
-}
 
 fn host_rpc_response_for_extension_request(
     manifest: &ExtensionManifest,
@@ -292,19 +98,45 @@ fn host_rpc_response_for_extension_request(
     }
 }
 
+struct OmegonHostRequestHandler {
+    manifest: ExtensionManifest,
+    extension_name: String,
+}
+
+impl omegon_native_extension_host::HostRequestHandler for OmegonHostRequestHandler {
+    fn handle(&self, request: &omegon_extension::RpcRequest) -> Option<Value> {
+        host_rpc_response_for_extension_request(&self.manifest, &self.extension_name, request)
+    }
+}
+
+struct OmegonReadinessValidator;
+
+impl omegon_native_extension_host::ReadinessValidator for OmegonReadinessValidator {
+    fn validate(&self, method: &str, response: &Value) -> Result<()> {
+        if method != omegon_codescan_contracts::CODESCAN_STATUS_METHOD {
+            return Ok(());
+        }
+        let status =
+            serde_json::from_value::<omegon_codescan_contracts::CodescanStatusV1>(response.clone())
+                .context("extension returned invalid codescan status")?;
+        if status.protocol_version != omegon_codescan_contracts::CODESCAN_PROTOCOL_VERSION
+            || status.service != omegon_codescan_contracts::CODESCAN_SERVICE_ID
+            || !status.ready
+        {
+            anyhow::bail!("extension returned incompatible codescan status");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct ExtensionRuntimeContext {
     name: String,
-    ext_dir: PathBuf,
     state_dir: PathBuf,
     manifest: ExtensionManifest,
-    resolved_secrets: Vec<(String, String)>,
-    notification_sink: Option<ExtensionNotificationSink>,
     _snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
     state_binding: Option<ExtensionStateBinding>,
-    admission: crate::dynamic_admission::DynamicAdmissionPermit,
     restart: Arc<Mutex<crate::contribution_lifecycle::RestartController>>,
-    project_root: Option<PathBuf>,
 }
 
 struct ExtensionSource {
@@ -323,284 +155,6 @@ struct ExtensionStateBinding {
     source_identity: omegon_maintenance_contracts::PathIdentityV1,
 }
 
-/// Canonical owner of an extension child process. Feature and polling handles
-/// borrow RPC access through this supervisor; they never own process lifetime.
-pub struct ExtensionSupervisor {
-    name: String,
-    handles: Mutex<Option<ProcessHandles>>,
-    accepting_calls: std::sync::atomic::AtomicBool,
-    shutdown_signal: CancellationToken,
-    pid: AtomicU64,
-    runtime: ExtensionRuntimeContext,
-    expected_tools: Value,
-    request_id: Arc<AtomicU64>,
-    process_state: std::sync::atomic::AtomicU8,
-    last_error: std::sync::Mutex<Option<String>>,
-}
-
-impl ExtensionSupervisor {
-    const RUNNING: u8 = 0;
-    const UNAVAILABLE: u8 = 1;
-    const REPLACING: u8 = 2;
-    const SHUTTING_DOWN: u8 = 3;
-
-    fn new(
-        runtime: ExtensionRuntimeContext,
-        tools: &[ToolDefinition],
-        request_id: Arc<AtomicU64>,
-        handles: ProcessHandles,
-    ) -> Self {
-        let pid = handles.child.id().map_or(0, u64::from);
-        Self {
-            name: runtime.name.clone(),
-            handles: Mutex::new(Some(handles)),
-            accepting_calls: std::sync::atomic::AtomicBool::new(true),
-            shutdown_signal: CancellationToken::new(),
-            pid: AtomicU64::new(pid),
-            runtime,
-            expected_tools: serde_json::to_value(tools).unwrap_or(Value::Null),
-            request_id,
-            process_state: std::sync::atomic::AtomicU8::new(Self::RUNNING),
-            last_error: std::sync::Mutex::new(None),
-        }
-    }
-
-    fn ensure_accepting(&self) -> Result<()> {
-        if self.accepting_calls.load(Ordering::Acquire) {
-            Ok(())
-        } else {
-            Err(anyhow!("extension '{}' is shutting down", self.name))
-        }
-    }
-
-    /// Disable new RPC/respawn work, take the canonical child exactly once,
-    /// then close, terminate if needed, and reap it.
-    pub async fn shutdown(&self, grace: std::time::Duration) -> Result<()> {
-        self.process_state
-            .store(Self::SHUTTING_DOWN, Ordering::Release);
-        self.accepting_calls.store(false, Ordering::Release);
-        self.shutdown_signal.cancel();
-        let mut guard = match tokio::time::timeout(grace, self.handles.lock()).await {
-            Ok(guard) => guard,
-            Err(_) => {
-                let pid = self.pid.load(Ordering::Acquire);
-                if let Ok(pid) = u32::try_from(pid)
-                    && pid != 0
-                {
-                    kill_extension_process_group(Some(pid));
-                }
-                tokio::time::timeout(
-                    grace.max(std::time::Duration::from_millis(100)),
-                    self.handles.lock(),
-                )
-                .await
-                .map_err(|_| {
-                    anyhow!("extension '{}' RPC did not release for shutdown", self.name)
-                })?
-            }
-        };
-        let mut handles = guard.take();
-        if let Some(handles) = handles.as_mut()
-            && let Err(error) = handles.shutdown(grace).await
-        {
-            // A failed graceful/forced shutdown must not drop the canonical
-            // child before one final kill attempt. `Drop` remains the
-            // synchronous backstop, while this error is preserved for audit.
-            let _ = handles.child.start_kill();
-            return Err(error);
-        }
-        self.pid.store(0, Ordering::Release);
-        Ok(())
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub(crate) fn health(&self) -> ExtensionProcessHealth {
-        let state = self.process_state.load(Ordering::Acquire);
-        if state == Self::RUNNING
-            && let Ok(mut guard) = self.handles.try_lock()
-        {
-            let exited = match guard.as_mut() {
-                Some(handles) => handles.child.try_wait().ok().flatten(),
-                None => None,
-            };
-            if let Some(status) = exited {
-                guard.take();
-                self.pid.store(0, Ordering::Release);
-                self.accepting_calls.store(false, Ordering::Release);
-                self.process_state
-                    .store(Self::UNAVAILABLE, Ordering::Release);
-                *self
-                    .last_error
-                    .lock()
-                    .expect("extension health lock poisoned") =
-                    Some(format!("process exited with {status}"));
-            }
-        }
-
-        let state = self.process_state.load(Ordering::Acquire);
-        ExtensionProcessHealth {
-            name: self.name.clone(),
-            state: match state {
-                Self::RUNNING => ExtensionProcessState::Healthy,
-                Self::REPLACING => ExtensionProcessState::Replacing,
-                Self::SHUTTING_DOWN => ExtensionProcessState::ShuttingDown,
-                _ => ExtensionProcessState::Unavailable,
-            },
-            pid: u32::try_from(self.pid.load(Ordering::Acquire))
-                .ok()
-                .filter(|pid| *pid != 0),
-            detail: self
-                .last_error
-                .lock()
-                .expect("extension health lock poisoned")
-                .clone(),
-        }
-    }
-
-    pub(crate) async fn replace(&self) -> Result<u32> {
-        if self.shutdown_signal.is_cancelled()
-            || self.process_state.load(Ordering::Acquire) == Self::SHUTTING_DOWN
-        {
-            anyhow::bail!("extension '{}' is shutting down", self.name);
-        }
-        let state = self.process_state.load(Ordering::Acquire);
-        if state == Self::REPLACING {
-            anyhow::bail!(
-                "extension '{}' replacement is already in progress",
-                self.name
-            );
-        }
-        self.process_state
-            .compare_exchange(state, Self::REPLACING, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| anyhow!("extension '{}' state changed before replacement", self.name))?;
-        self.accepting_calls.store(false, Ordering::Release);
-
-        let old_pid = self.pid.swap(0, Ordering::AcqRel);
-        if let Ok(old_pid) = u32::try_from(old_pid)
-            && old_pid != 0
-        {
-            kill_extension_process_group(Some(old_pid));
-        }
-
-        let result = self.replace_locked().await;
-        match &result {
-            Ok(_) => {
-                *self
-                    .last_error
-                    .lock()
-                    .expect("extension health lock poisoned") = None;
-                self.accepting_calls.store(true, Ordering::Release);
-                self.process_state.store(Self::RUNNING, Ordering::Release);
-            }
-            Err(error) => {
-                self.pid.store(0, Ordering::Release);
-                *self
-                    .last_error
-                    .lock()
-                    .expect("extension health lock poisoned") = Some(error.to_string());
-                self.process_state
-                    .store(Self::UNAVAILABLE, Ordering::Release);
-            }
-        }
-        result
-    }
-
-    async fn replace_locked(&self) -> Result<u32> {
-        let mut guard = self.handles.lock().await;
-        if let Some(mut stale) = guard.take() {
-            let _ = stale.stdin.shutdown().await;
-            kill_extension_process_group(stale.child.id());
-            let _ = stale.child.start_kill();
-            tokio::time::timeout(std::time::Duration::from_millis(500), stale.child.wait())
-                .await
-                .with_context(|| format!("timed out settling extension '{}'", self.name))??;
-        }
-
-        let mut candidate = spawn_process_handles(
-            &self.runtime.manifest,
-            &self.runtime.ext_dir,
-            &self.runtime.admission,
-            self.runtime.project_root.as_deref(),
-        )
-        .await
-        .with_context(|| format!("failed to spawn extension '{}' replacement", self.name))?;
-        let candidate_handshake = match handshake(
-            &mut candidate,
-            &self.runtime.manifest,
-            &self.runtime.ext_dir,
-            &self.runtime.resolved_secrets,
-            self.runtime.notification_sink.as_ref(),
-        )
-        .await
-        {
-            Ok(handshake) => handshake,
-            Err(error) => {
-                let _ = candidate.shutdown(std::time::Duration::ZERO).await;
-                return Err(error).with_context(|| {
-                    format!("extension '{}' replacement handshake failed", self.name)
-                });
-            }
-        };
-        let candidate_tools = serde_json::to_value(&candidate_handshake.tools)
-            .context("could not compare replacement tool definitions")?;
-        if candidate_tools != self.expected_tools {
-            let _ = candidate.shutdown(std::time::Duration::ZERO).await;
-            anyhow::bail!(
-                "extension '{}' replacement changed its published tool definitions",
-                self.name
-            );
-        }
-        if self.shutdown_signal.is_cancelled() {
-            let _ = candidate.shutdown(std::time::Duration::ZERO).await;
-            anyhow::bail!("extension '{}' shut down during replacement", self.name);
-        }
-
-        self.request_id.store(candidate.next_id, Ordering::SeqCst);
-        let pid = candidate
-            .child
-            .id()
-            .ok_or_else(|| anyhow!("extension '{}' replacement has no process id", self.name))?;
-        self.pid.store(u64::from(pid), Ordering::Release);
-        *guard = Some(candidate);
-        Ok(pid)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExtensionProcessState {
-    Healthy,
-    Unavailable,
-    Replacing,
-    ShuttingDown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExtensionProcessHealth {
-    pub(crate) name: String,
-    pub(crate) state: ExtensionProcessState,
-    pub(crate) pid: Option<u32>,
-    pub(crate) detail: Option<String>,
-}
-
-/// Shut down all canonical extension children. Every runtime surface uses this
-/// function so cleanup semantics cannot drift between TUI, daemon, ACP, tests,
-/// startup failures, and ordinary exits.
-pub async fn shutdown_supervisors(
-    supervisors: &[Arc<ExtensionSupervisor>],
-    grace: std::time::Duration,
-) -> Vec<String> {
-    let mut failures = Vec::new();
-    for supervisor in supervisors {
-        if let Err(error) = supervisor.shutdown(grace).await {
-            failures.push(format!("{}: {error}", supervisor.name()));
-        }
-    }
-    failures
-}
-
 /// Wrapper Feature for any extension (native or OCI).
 /// Manages RPC communication via stdin/stdout, agnostic to runtime type.
 #[derive(Clone)]
@@ -608,7 +162,6 @@ pub struct ExtensionFeature {
     runtime: ExtensionRuntimeContext,
     tools: Vec<ToolDefinition>,
     supervisor: Arc<ExtensionSupervisor>,
-    request_id: Arc<AtomicU64>,
     widgets: Vec<WidgetDeclaration>,
     widget_tx: broadcast::Sender<WidgetEvent>,
     state: Arc<Mutex<ExtensionState>>,
@@ -620,24 +173,15 @@ impl ExtensionFeature {
         runtime: ExtensionRuntimeContext,
         tools: Vec<ToolDefinition>,
         widgets: Vec<WidgetDeclaration>,
-        handles: ProcessHandles,
+        supervisor: Arc<ExtensionSupervisor>,
         state: ExtensionState,
     ) -> (Self, broadcast::Receiver<WidgetEvent>) {
         let (widget_tx, widget_rx) = broadcast::channel::<WidgetEvent>(100);
-        let next_id = handles.next_id;
-        let request_id = Arc::new(AtomicU64::new(next_id));
-        let supervisor = Arc::new(ExtensionSupervisor::new(
-            runtime.clone(),
-            &tools,
-            request_id.clone(),
-            handles,
-        ));
         (
             Self {
                 runtime,
                 tools,
                 supervisor,
-                request_id,
                 widgets,
                 widget_tx,
                 state: Arc::new(Mutex::new(state)),
@@ -664,143 +208,16 @@ impl ExtensionFeature {
         cancel: CancellationToken,
         idle_timeout: Option<std::time::Duration>,
     ) -> Result<Value> {
-        self.supervisor.ensure_accepting()?;
-        let mut guard = self.supervisor.handles.lock().await;
-        let handles = guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("extension process not running"))?;
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        handles
-            .stdin
-            .write_all(format!("{}\n", request).as_bytes())
-            .await?;
-        handles.stdin.flush().await?;
-
-        let started_at = std::time::Instant::now();
-        let mut last_notification: Option<String> = None;
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            let read = handles.reader.read_until(b'\n', &mut line);
-            let n = if let Some(timeout) = idle_timeout {
-                tokio::select! {
-                    result = tokio::time::timeout(timeout, read) => match result {
-                        Ok(result) => result?,
-                        Err(_) => {
-                            let notification = json!({
-                                "jsonrpc": "2.0",
-                                "method": "notifications/cancelled",
-                                "params": {"request_id": id},
-                            });
-                            handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
-                            handles.stdin.flush().await?;
-                            anyhow::bail!(
-                                "extension '{}' RPC '{}' id {} timed out after {}ms waiting for response (last_notification={})",
-                                self.runtime.name,
-                                method,
-                                id,
-                                started_at.elapsed().as_millis(),
-                                last_notification.as_deref().unwrap_or("none")
-                            );
-                        }
-                    },
-                    _ = cancel.cancelled() => {
-                        let notification = json!({
-                            "jsonrpc": "2.0",
-                            "method": "notifications/cancelled",
-                            "params": {"request_id": id},
-                        });
-                        handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
-                        handles.stdin.flush().await?;
-                        anyhow::bail!(
-                            "extension '{}' RPC '{}' id {} cancelled after {}ms (last_notification={})",
-                            self.runtime.name,
-                            method,
-                            id,
-                            started_at.elapsed().as_millis(),
-                            last_notification.as_deref().unwrap_or("none")
-                        );
-                    }
-                    _ = self.supervisor.shutdown_signal.cancelled() => {
-                        anyhow::bail!("extension '{}' is shutting down", self.runtime.name);
-                    }
-                }
-            } else {
-                tokio::select! {
-                    result = read => result?,
-                    _ = cancel.cancelled() => {
-                        let notification = json!({
-                            "jsonrpc": "2.0",
-                            "method": "notifications/cancelled",
-                            "params": {"request_id": id},
-                        });
-                        handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
-                        handles.stdin.flush().await?;
-                        anyhow::bail!(
-                            "extension '{}' RPC '{}' id {} cancelled after {}ms (last_notification={})",
-                            self.runtime.name,
-                            method,
-                            id,
-                            started_at.elapsed().as_millis(),
-                            last_notification.as_deref().unwrap_or("none")
-                        );
-                    }
-                    _ = self.supervisor.shutdown_signal.cancelled() => {
-                        anyhow::bail!("extension '{}' is shutting down", self.runtime.name);
-                    }
-                }
-            };
-            if n == 0 {
-                return Err(anyhow!("extension closed connection"));
-            }
-            let trimmed = std::str::from_utf8(&line)?.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let resp: Value = serde_json::from_str(trimmed)?;
-            if let Ok(incoming) = omegon_extension::RpcIncoming::parse(trimmed) {
-                match incoming {
-                    omegon_extension::RpcIncoming::Request(req) => {
-                        let response = host_rpc_response_for_extension_request(
-                            &self.runtime.manifest,
-                            &self.runtime.name,
-                            &req,
-                        )
-                        .ok_or_else(|| anyhow!("host request produced no response"))?;
-                        handles
-                            .stdin
-                            .write_all(format!("{}\n", response).as_bytes())
-                            .await?;
-                        handles.stdin.flush().await?;
-                        continue;
-                    }
-                    omegon_extension::RpcIncoming::Notification(notification) => {
-                        last_notification = Some(notification.method.clone());
-                        if let Some(sink) = &self.runtime.notification_sink {
-                            sink.send(notification);
-                        }
-                        continue;
-                    }
-                    omegon_extension::RpcIncoming::Response(_) => {}
-                }
-            }
-            if resp.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                return if let Some(result) = resp.get("result") {
-                    Ok(result.clone())
-                } else if let Some(error) = resp.get("error") {
-                    Err(anyhow!("RPC error: {}", error))
-                } else {
-                    Err(anyhow!("invalid RPC response"))
-                };
-            }
-        }
+        self.supervisor
+            .rpc_call_with_cancel(
+                method,
+                params,
+                cancel,
+                idle_timeout,
+                omegon_native_extension_host::RpcRequestPolicy::HandleHostRequests,
+                None,
+            )
+            .await
     }
 
     async fn extension_tool_result_with_context(
@@ -839,17 +256,7 @@ impl ExtensionFeature {
         let delay = match decision {
             crate::contribution_lifecycle::RestartDecision::RetryAfter(delay) => delay,
             crate::contribution_lifecycle::RestartDecision::Quarantined => {
-                self.supervisor
-                    .accepting_calls
-                    .store(false, Ordering::Release);
-                self.supervisor
-                    .process_state
-                    .store(ExtensionSupervisor::UNAVAILABLE, Ordering::Release);
-                *self
-                    .supervisor
-                    .last_error
-                    .lock()
-                    .expect("extension health lock poisoned") = Some(format!(
+                self.supervisor.mark_unavailable(format!(
                     "transport failed and restart budget was exhausted: {cause}"
                 ));
                 return Err(anyhow!(
@@ -944,9 +351,8 @@ impl ExtensionFeature {
     pub fn polling_handle(&self) -> ExtensionPollingHandle {
         ExtensionPollingHandle {
             supervisor: self.supervisor.clone(),
-            request_id: self.request_id.clone(),
             name: self.runtime.name.clone(),
-            notification_sink: self.runtime.notification_sink.clone(),
+            source_digest: self.supervisor.source_digest().to_string(),
         }
     }
 }
@@ -957,9 +363,15 @@ impl ExtensionFeature {
 #[derive(Clone)]
 pub struct ExtensionPollingHandle {
     supervisor: Arc<ExtensionSupervisor>,
-    request_id: Arc<AtomicU64>,
     name: String,
-    notification_sink: Option<ExtensionNotificationSink>,
+    source_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ExtensionProcessProvenance {
+    pub(crate) extension: String,
+    pub(crate) source_digest: String,
+    pub(crate) pid: Option<u32>,
 }
 
 impl std::fmt::Debug for ExtensionPollingHandle {
@@ -970,6 +382,7 @@ impl std::fmt::Debug for ExtensionPollingHandle {
     }
 }
 
+#[cfg(test)]
 fn cancellation_notification(method: &str, request_id: u64) -> Value {
     let params = if method == omegon_codescan_contracts::CODESCAN_RPC_METHOD {
         json!({
@@ -987,45 +400,21 @@ fn cancellation_notification(method: &str, request_id: u64) -> Value {
 }
 
 impl ExtensionPollingHandle {
-    pub async fn pump_notifications_for(&self, idle_timeout: std::time::Duration) -> Result<()> {
-        self.supervisor.ensure_accepting()?;
-        let mut guard = self.supervisor.handles.lock().await;
-        let handles = guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("extension process not running"))?;
-        let read = async {
-            let mut line = Vec::new();
-            let n = handles.reader.read_until(b'\n', &mut line).await?;
-            anyhow::Ok::<(usize, Vec<u8>)>((n, line))
-        };
-        match tokio::select! {
-            result = tokio::time::timeout(idle_timeout, read) => result,
-            _ = self.supervisor.shutdown_signal.cancelled() => {
-                return Err(anyhow!("extension '{}' is shutting down", self.name));
-            }
-        } {
-            Ok(Ok((0, _))) => Err(anyhow!("extension closed connection")),
-            Ok(Ok((_n, line))) => {
-                let trimmed = std::str::from_utf8(&line)?.trim();
-                if trimmed.is_empty() {
-                    return Ok(());
-                }
-                if let Ok(omegon_extension::RpcIncoming::Notification(notification)) =
-                    omegon_extension::RpcIncoming::parse(trimmed)
-                    && let Some(sink) = &self.notification_sink
-                {
-                    sink.send(notification);
-                }
-                Ok(())
-            }
-            Ok(Err(err)) => Err(err),
-            Err(_) => Ok(()),
-        }
-    }
-
     /// Name of the extension this handle is connected to.
     pub fn extension_name(&self) -> &str {
         &self.name
+    }
+
+    pub async fn pump_notifications_for(&self, idle_timeout: std::time::Duration) -> Result<()> {
+        self.supervisor.pump_notifications_for(idle_timeout).await
+    }
+
+    pub(crate) fn process_provenance(&self) -> ExtensionProcessProvenance {
+        ExtensionProcessProvenance {
+            extension: self.name.clone(),
+            source_digest: self.source_digest.clone(),
+            pid: self.supervisor.health().pid,
+        }
     }
 
     /// Send a JSON-RPC request and receive the response.
@@ -1039,7 +428,6 @@ impl ExtensionPollingHandle {
         .await
     }
 
-    /// Send a cancellable JSON-RPC request to a long-running extension service.
     pub async fn rpc_call_with_cancel(
         &self,
         method: &str,
@@ -1047,122 +435,22 @@ impl ExtensionPollingHandle {
         cancel: CancellationToken,
         idle_timeout: Option<std::time::Duration>,
     ) -> Result<Value> {
-        self.supervisor.ensure_accepting()?;
-        let mut guard = tokio::select! {
-            guard = self.supervisor.handles.lock() => guard,
-            _ = cancel.cancelled() => {
-                anyhow::bail!("extension '{}' RPC '{}' cancelled before dispatch", self.name, method);
-            }
-            _ = self.supervisor.shutdown_signal.cancelled() => {
-                anyhow::bail!("extension '{}' is shutting down", self.name);
-            }
-        };
-        self.supervisor.ensure_accepting()?;
-        if cancel.is_cancelled() {
-            anyhow::bail!(
-                "extension '{}' RPC '{}' cancelled before dispatch",
-                self.name,
-                method
-            );
-        }
-        let handles = guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("extension process not running"))?;
-
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        handles
-            .stdin
-            .write_all(format!("{}\n", request).as_bytes())
-            .await?;
-        handles.stdin.flush().await?;
-
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            let read = handles.reader.read_until(b'\n', &mut line);
-            let n = if let Some(timeout) = idle_timeout {
-                tokio::select! {
-                    result = tokio::time::timeout(timeout, read) => match result {
-                        Ok(result) => result?,
-                        Err(_) => {
-                            let notification = cancellation_notification(method, id);
-                            handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
-                            handles.stdin.flush().await?;
-                            anyhow::bail!("extension '{}' RPC '{}' timed out", self.name, method);
-                        }
-                    },
-                    _ = cancel.cancelled() => {
-                        let notification = cancellation_notification(method, id);
-                        handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
-                        handles.stdin.flush().await?;
-                        anyhow::bail!("extension '{}' RPC '{}' cancelled", self.name, method);
-                    }
-                    _ = self.supervisor.shutdown_signal.cancelled() => {
-                        anyhow::bail!("extension '{}' is shutting down", self.name);
-                    }
-                }
-            } else {
-                tokio::select! {
-                    result = read => result?,
-                    _ = cancel.cancelled() => {
-                        let notification = cancellation_notification(method, id);
-                        handles.stdin.write_all(format!("{}\n", notification).as_bytes()).await?;
-                        handles.stdin.flush().await?;
-                        anyhow::bail!("extension '{}' RPC '{}' cancelled", self.name, method);
-                    }
-                    _ = self.supervisor.shutdown_signal.cancelled() => {
-                        anyhow::bail!("extension '{}' is shutting down", self.name);
-                    }
-                }
-            };
-            if n == 0 {
-                return Err(anyhow!("extension closed connection"));
-            }
-            let trimmed = std::str::from_utf8(&line)?.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let resp: Value = serde_json::from_str(trimmed)?;
-            if let Ok(incoming) = omegon_extension::RpcIncoming::parse(trimmed) {
-                match incoming {
-                    omegon_extension::RpcIncoming::Request(req) => {
-                        let response = json!({
-                            "jsonrpc": "2.0",
-                            "id": req.id,
-                            "error": {
-                                "code": -32601,
-                                "message": format!("host request method '{}' is unavailable on polling handles", req.method)
-                            }
-                        });
-                        handles
-                            .stdin
-                            .write_all(format!("{}\n", response).as_bytes())
-                            .await?;
-                        handles.stdin.flush().await?;
-                        continue;
-                    }
-                    omegon_extension::RpcIncoming::Notification(_) => {
-                        continue;
-                    }
-                    omegon_extension::RpcIncoming::Response(_) => {}
-                }
-            }
-            if resp.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                return if let Some(result) = resp.get("result") {
-                    Ok(result.clone())
-                } else if let Some(error) = resp.get("error") {
-                    Err(anyhow!("RPC error: {}", error))
-                } else {
-                    Err(anyhow!("invalid RPC response"))
-                };
-            }
-        }
+        let cancellation_params =
+            (method == omegon_codescan_contracts::CODESCAN_RPC_METHOD).then(|| {
+                json!({
+                    "protocol_version": omegon_codescan_contracts::CODESCAN_PROTOCOL_VERSION,
+                })
+            });
+        self.supervisor
+            .rpc_call_with_cancel(
+                method,
+                params,
+                cancel,
+                idle_timeout,
+                omegon_native_extension_host::RpcRequestPolicy::RejectHostRequests,
+                cancellation_params,
+            )
+            .await
     }
 }
 
@@ -1608,6 +896,7 @@ async fn spawn_from_manifest_source(
     if source.snapshot.is_some() {
         validate_admitted_runtime_paths(&manifest)?;
     }
+    source.admission.validate_source_path(&source.ext_dir)?;
 
     // Enforce required secrets before spending any resources on spawning.
     // Check against the pre-resolved pairs rather than process env.
@@ -1726,353 +1015,6 @@ fn validate_admitted_runtime_paths(manifest: &ExtensionManifest) -> Result<()> {
     Ok(())
 }
 
-/// Build a `Command` with a clean environment — only safe non-secret vars inherited.
-/// Secrets are delivered via `bootstrap_secrets` RPC, never via env.
-fn clean_command(
-    program: impl AsRef<std::ffi::OsStr>,
-    manifest: &ExtensionManifest,
-) -> Result<tokio::process::Command> {
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.env_clear();
-    for var in SAFE_INHERIT_ENVS {
-        if let Ok(val) = std::env::var(var) {
-            cmd.env(var, val);
-        }
-    }
-    for (name, value) in resolved_runtime_env(manifest)? {
-        cmd.env(name, value);
-    }
-    Ok(cmd)
-}
-
-fn resolved_runtime_env(manifest: &ExtensionManifest) -> Result<Vec<(String, String)>> {
-    let mut env = Vec::new();
-    for (name, value) in manifest.runtime.env() {
-        validate_runtime_env_name(name)?;
-        env.push((name.clone(), value.clone()));
-    }
-    for name in manifest.runtime.env_passthrough() {
-        validate_runtime_env_name(name)?;
-        if let Ok(value) = std::env::var(name) {
-            env.push((name.clone(), value));
-        }
-    }
-    Ok(env)
-}
-
-fn validate_runtime_env_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch == '_' || ch.is_ascii_uppercase() || ch.is_ascii_digit())
-        || name.contains("SECRET")
-        || name.contains("TOKEN")
-        || name.contains("PASSWORD")
-        || name.contains("KEY")
-    {
-        return Err(anyhow!(
-            "runtime env var '{name}' is not allowed; manifest runtime.env is for non-secret uppercase names only"
-        ));
-    }
-    Ok(())
-}
-
-async fn spawn_process_handles(
-    manifest: &ExtensionManifest,
-    ext_dir: &Path,
-    admission: &crate::dynamic_admission::DynamicAdmissionPermit,
-    project_root: Option<&Path>,
-) -> Result<ProcessHandles> {
-    admission.validate_source_path(ext_dir)?;
-    let extension_name = manifest.extension.name.clone();
-    let mut child = match &manifest.runtime {
-        RuntimeConfig::Native { .. } => {
-            let binary = manifest.native_binary_path(ext_dir)?;
-            let mut cmd = clean_command(&binary, manifest)?;
-            if let Some(project_root) = project_root {
-                cmd.env("OMEGON_PROJECT_ROOT", project_root);
-            }
-            configure_extension_process(&mut cmd);
-            cmd.arg("--rpc")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()?
-        }
-        RuntimeConfig::Oci { .. } => {
-            let image = manifest.oci_image()?;
-            let mut cmd = clean_command("podman", manifest)?;
-            configure_extension_process(&mut cmd);
-            cmd.args(["run", "--rm", "-i"]);
-            for (name, value) in resolved_runtime_env(manifest)? {
-                cmd.args(["--env", &format!("{name}={value}")]);
-            }
-            if let Some(project_root) = project_root {
-                cmd.args([
-                    "--env",
-                    &format!("OMEGON_PROJECT_ROOT={}", project_root.display()),
-                ]);
-            }
-            cmd.arg(&image)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()?
-        }
-    };
-
-    if let Some(stderr) = child.stderr.take() {
-        spawn_extension_stderr_drain(extension_name, stderr);
-    }
-
-    let stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err(anyhow!("no stdin"));
-        }
-    };
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            drop(stdin);
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err(anyhow!("no stdout"));
-        }
-    };
-    Ok(ProcessHandles::new(child, stdin, stdout))
-}
-
-fn spawn_extension_stderr_drain(extension_name: String, stderr: tokio::process::ChildStderr) {
-    tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    let message = line.trim_end();
-                    if !message.is_empty() {
-                        tracing::debug!(extension = %extension_name, message, "extension stderr");
-                    }
-                }
-                Err(error) => {
-                    tracing::debug!(extension = %extension_name, %error, "failed to read extension stderr");
-                    break;
-                }
-            }
-        }
-    });
-}
-
-/// Run the extension handshake sequence on a single process:
-/// 1. `get_tools` — discover tools (required by contract)
-/// 2. `bootstrap_secrets` — deliver secrets over pipe (never via env)
-///
-/// Returns handles with `next_id` advanced past the handshake, and the tool list.
-async fn handshake(
-    handles: &mut ProcessHandles,
-    manifest: &ExtensionManifest,
-    ext_dir: &Path,
-    resolved_secrets: &[(String, String)],
-    notification_sink: Option<&ExtensionNotificationSink>,
-) -> Result<ExtensionHandshake> {
-    let name = &manifest.extension.name;
-    let readiness_deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_millis(manifest.startup.timeout_ms.max(1));
-
-    // 1. Optional initialize handshake metadata. Older extensions may not
-    // implement this method; absence must not prevent startup.
-    let metadata = match tokio::time::timeout_at(
-        readiness_deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(2)),
-        handles.rpc_call_with_notifications("initialize", json!({}), notification_sink),
-    )
-    .await
-    {
-        Ok(Ok(value)) => Some(value),
-        Ok(Err(e)) => {
-            tracing::debug!(extension = name, error = %e, "extension initialize metadata unavailable");
-            None
-        }
-        Err(_) => {
-            // Older extensions may not implement `initialize` at all. The
-            // optional probe must not strand startup. Keep the request counter
-            // advanced: a late initialize response may still arrive on stdout,
-            // and reusing its id for get_tools would let stale metadata satisfy
-            // the discovery request.
-            tracing::debug!(extension = name, "extension initialize metadata timed out");
-            None
-        }
-    };
-
-    let sdk_compatibility = sdk_compat::classify_initialize_metadata(metadata.as_ref());
-    if sdk_compatibility.is_blocking() {
-        return Err(anyhow!(
-            "extension '{}' SDK contract is incompatible: {}",
-            name,
-            sdk_compatibility.message
-        ));
-    }
-    if sdk_compatibility.status == sdk_compat::SdkCompatibilityStatus::MissingLegacy {
-        tracing::warn!(
-            extension = name,
-            supported_sdk_contract = %sdk_compatibility.supported_version,
-            "extension did not advertise SDK contract version; treating as legacy"
-        );
-    }
-
-    // 2. Discover tools
-    let tools_response = tokio::time::timeout_at(
-        readiness_deadline,
-        handles.rpc_call_with_notifications("get_tools", json!({}), notification_sink),
-    )
-    .await
-    .map_err(|_| {
-        anyhow!(
-            "extension '{}' readiness timed out during get_tools after {}ms",
-            name,
-            manifest.startup.timeout_ms.max(1)
-        )
-    })??;
-    let tools = normalize_extension_tool_definitions(&tools_response).map_err(|err| {
-        anyhow!(
-            "extension '{}' returned invalid get_tools response: {err}",
-            name
-        )
-    })?;
-
-    // 3. Deliver typed config defaults, manifest runtime config, and persisted operator values.
-    // Values are delivered over RPC after process start so extension config
-    // stays in the same channel as secrets and never depends on inherited env.
-    let config = resolved_config(manifest, ext_dir)?;
-    if !config.is_empty() {
-        tokio::time::timeout_at(
-            readiness_deadline,
-            handles.rpc_call_with_notifications(
-                "bootstrap_config",
-                Value::Object(config),
-                notification_sink,
-            ),
-        )
-            .await
-            .map_err(|_| {
-                anyhow!(
-                    "extension '{}' readiness timed out during bootstrap_config after {}ms",
-                    name,
-                    manifest.startup.timeout_ms.max(1)
-                )
-            })?
-            .map_err(|error| {
-                anyhow!(
-                    "extension '{}' failed to accept bootstrap_config: {error}. Configuration delivery is required when resolved values are present.",
-                    name
-                )
-            })?;
-        tracing::debug!(extension = name, "bootstrap_config delivered");
-    }
-
-    // 4. Deliver secrets over pipe — never via env var
-    if !resolved_secrets.is_empty() {
-        let secrets_map: serde_json::Map<String, Value> = resolved_secrets
-            .iter()
-            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
-            .collect();
-        match tokio::time::timeout_at(
-            readiness_deadline,
-            handles.rpc_call_with_notifications(
-                "bootstrap_secrets",
-                Value::Object(secrets_map),
-                notification_sink,
-            ),
-        )
-        .await
-        {
-            Ok(Ok(_)) => tracing::debug!(
-                extension = name,
-                secrets = resolved_secrets.len(),
-                "bootstrap_secrets delivered"
-            ),
-            Ok(Err(e)) => {
-                tracing::error!(
-                    extension = name,
-                    error = %e,
-                    "bootstrap_secrets delivery failed — extension will run without secrets"
-                );
-                return Err(anyhow!(
-                    "extension '{}' failed to accept bootstrap_secrets: {e}. \
-                     Secrets delivery is required for extensions that declare secrets.",
-                    name,
-                ));
-            }
-            Err(_) => {
-                return Err(anyhow!(
-                    "extension '{}' readiness timed out during bootstrap_secrets after {}ms",
-                    name,
-                    manifest.startup.timeout_ms.max(1)
-                ));
-            }
-        }
-    }
-
-    // 5. Run the manifest-declared readiness probe after bootstrap. `get_tools`
-    // already served as readiness above, so avoid issuing it twice.
-    if let Some(method) = manifest
-        .startup
-        .ping_method
-        .as_deref()
-        .filter(|method| *method != "get_tools")
-    {
-        let readiness = tokio::time::timeout_at(
-            readiness_deadline,
-            handles.rpc_call_with_notifications(method, json!({}), notification_sink),
-        )
-        .await
-        .map_err(|_| {
-            anyhow!(
-                "extension '{}' readiness timed out during {} after {}ms",
-                name,
-                method,
-                manifest.startup.timeout_ms.max(1)
-            )
-        })?
-        .map_err(|error| {
-            anyhow!(
-                "extension '{}' readiness probe '{}' failed: {error}",
-                name,
-                method
-            )
-        })?;
-        if method == omegon_codescan_contracts::CODESCAN_STATUS_METHOD {
-            let status =
-                serde_json::from_value::<omegon_codescan_contracts::CodescanStatusV1>(readiness)
-                    .map_err(|error| {
-                        anyhow!("extension '{name}' returned invalid codescan status: {error}")
-                    })?;
-            if status.protocol_version != omegon_codescan_contracts::CODESCAN_PROTOCOL_VERSION
-                || status.service != omegon_codescan_contracts::CODESCAN_SERVICE_ID
-                || !status.ready
-            {
-                anyhow::bail!("extension '{name}' returned incompatible codescan status");
-            }
-        }
-    }
-
-    Ok(ExtensionHandshake {
-        tools,
-        metadata,
-        sdk_compatibility,
-    })
-}
-
-struct ExtensionHandshake {
-    tools: Vec<ToolDefinition>,
-    metadata: Option<Value>,
-    sdk_compatibility: SdkCompatibilityDiagnostic,
-}
-
 pub(crate) fn metadata_with_sdk_compatibility(
     metadata: Option<Value>,
     diagnostic: &SdkCompatibilityDiagnostic,
@@ -2091,66 +1033,9 @@ pub(crate) fn metadata_with_sdk_compatibility(
     }
 }
 
+#[cfg(test)]
 fn normalize_extension_tool_definitions(value: &Value) -> Result<Vec<ToolDefinition>> {
-    let tools = value
-        .as_array()
-        .ok_or_else(|| anyhow!("get_tools result must be an array"))?;
-    tools
-        .iter()
-        .map(normalize_extension_tool_definition)
-        .collect()
-}
-
-fn normalize_extension_tool_definition(value: &Value) -> Result<ToolDefinition> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| anyhow!("tool definition must be an object"))?;
-    let name = obj
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| anyhow!("tool definition missing non-empty name"))?
-        .to_string();
-    let label = obj
-        .get("label")
-        .and_then(Value::as_str)
-        .filter(|label| !label.is_empty())
-        .unwrap_or(&name)
-        .to_string();
-    let description = obj
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let parameters = obj
-        .get("parameters")
-        .or_else(|| obj.get("inputSchema"))
-        .or_else(|| obj.get("input_schema"))
-        .cloned()
-        .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
-    let capabilities = obj
-        .get("capabilities")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|err| anyhow!("tool '{name}' has invalid capabilities: {err}"))?
-        .unwrap_or_default();
-
-    let description = if description.is_empty() {
-        "Extension tool. Semantics are owned by the extension, not Omegon core.".to_string()
-    } else {
-        format!(
-            "Extension tool (not Omegon core; semantics are owned by the extension): {description}"
-        )
-    };
-
-    Ok(ToolDefinition {
-        name,
-        label,
-        description,
-        parameters,
-        capabilities,
-    })
+    omegon_native_extension_host::normalize_tool_definitions(value)
 }
 
 fn resolved_config(
@@ -2223,137 +1108,16 @@ async fn spawn_native(
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(
-        manifest,
-        &source.ext_dir,
-        &source.admission,
-        source.project_root.as_deref(),
-    )
-    .await?;
-
-    let notification_pair = if manifest.capabilities.voice {
-        let (tx, rx) = mpsc::unbounded_channel();
-        (
-            Some(ExtensionNotificationSink {
-                extension_name: manifest.extension.name.clone(),
-                tx,
-            }),
-            Some(rx),
-        )
-    } else {
-        (None, None)
-    };
-
-    let handshake = match handshake(
-        &mut handles,
-        manifest,
-        &source.ext_dir,
-        resolved_secrets,
-        notification_pair.0.as_ref(),
-    )
-    .await
-    {
-        Ok(handshake) => handshake,
-        Err(error) => {
-            // Every successfully spawned child has an immediate reaping
-            // obligation, including failed startup negotiation. `Drop` can
-            // request a kill but cannot synchronously wait for Tokio children.
-            if let Err(cleanup_error) = handles.shutdown(std::time::Duration::ZERO).await {
-                tracing::warn!(
-                    extension = %manifest.extension.name,
-                    %cleanup_error,
-                    "failed to reap extension after handshake failure"
-                );
-            }
-            return Err(error);
-        }
-    };
-
+    let spawned =
+        launch_supervised_extension(manifest, source, widgets, state, resolved_secrets).await?;
     tracing::info!(
         name = %manifest.extension.name,
         binary = %binary.display(),
-        tools = handshake.tools.len(),
-        widgets = widgets.len(),
+        tools = spawned.feature.tools().len(),
         secrets = resolved_secrets.len(),
         "spawned native extension"
     );
-
-    let runtime = ExtensionRuntimeContext {
-        name: manifest.extension.name.clone(),
-        ext_dir: source.ext_dir,
-        state_dir: source.state_dir,
-        manifest: manifest.clone(),
-        resolved_secrets: resolved_secrets.to_vec(),
-        notification_sink: notification_pair.0,
-        _snapshot: source.snapshot,
-        state_binding: source.state_binding,
-        admission: source.admission,
-        restart: Arc::new(Mutex::new(
-            crate::contribution_lifecycle::RestartController::new(
-                3,
-                std::time::Duration::from_millis(100),
-                std::time::Duration::from_secs(2),
-            ),
-        )),
-        project_root: source.project_root,
-    };
-
-    let (feature, widget_rx) = ExtensionFeature::new(
-        runtime,
-        handshake.tools.clone(),
-        widgets.clone(),
-        handles,
-        state,
-    );
-
-    // Extract polling handle if this extension provides vox_route
-    let vox_polling_handle = if handshake.tools.iter().any(|t| t.name == "vox_route") {
-        tracing::info!(
-            name = %manifest.extension.name,
-            "extension provides vox_route — creating polling handle for event bridge"
-        );
-        Some(feature.polling_handle())
-    } else {
-        None
-    };
-
-    let mut tab_widgets = vec![];
-    for widget in widgets {
-        let mut tab_widget = ExtensionTabWidget::new(
-            widget.id.clone(),
-            widget.label,
-            widget.renderer,
-            widget.kind,
-        );
-        if let Ok(data) = feature
-            .rpc_call(&format!("get_{}", widget.id), json!({}))
-            .await
-        {
-            tab_widget.update(data);
-        }
-        tab_widgets.push(tab_widget);
-    }
-
-    let voice_polling_handle = if manifest.capabilities.voice {
-        Some(feature.polling_handle())
-    } else {
-        None
-    };
-
-    let rpc_polling_handle = feature.polling_handle();
-    let supervisor = feature.supervisor.clone();
-    Ok(SpawnedExtension {
-        supervisor,
-        feature: Box::new(feature),
-        widgets: tab_widgets,
-        widget_rx,
-        metadata: handshake.metadata,
-        sdk_compatibility: handshake.sdk_compatibility,
-        rpc_polling_handle,
-        vox_polling_handle,
-        voice_polling_handle,
-        voice_notification_rx: notification_pair.1,
-    })
+    Ok(spawned)
 }
 
 async fn spawn_container(
@@ -2364,71 +1128,53 @@ async fn spawn_container(
     state: ExtensionState,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
-    let mut handles = spawn_process_handles(
-        manifest,
-        &source.ext_dir,
-        &source.admission,
-        source.project_root.as_deref(),
-    )
-    .await?;
-
-    let notification_pair = if manifest.capabilities.voice {
-        let (tx, rx) = mpsc::unbounded_channel();
-        (
-            Some(ExtensionNotificationSink {
-                extension_name: manifest.extension.name.clone(),
-                tx,
-            }),
-            Some(rx),
-        )
-    } else {
-        (None, None)
-    };
-
-    let handshake = match handshake(
-        &mut handles,
-        manifest,
-        &source.ext_dir,
-        resolved_secrets,
-        notification_pair.0.as_ref(),
-    )
-    .await
-    {
-        Ok(handshake) => handshake,
-        Err(error) => {
-            // Every successfully spawned child has an immediate reaping
-            // obligation, including failed startup negotiation. `Drop` can
-            // request a kill but cannot synchronously wait for Tokio children.
-            if let Err(cleanup_error) = handles.shutdown(std::time::Duration::ZERO).await {
-                tracing::warn!(
-                    extension = %manifest.extension.name,
-                    %cleanup_error,
-                    "failed to reap extension after handshake failure"
-                );
-            }
-            return Err(error);
-        }
-    };
-
+    let spawned =
+        launch_supervised_extension(manifest, source, widgets, state, resolved_secrets).await?;
     tracing::info!(
         name = %manifest.extension.name,
-        image = image,
-        tools = handshake.tools.len(),
-        widgets = widgets.len(),
+        image,
+        tools = spawned.feature.tools().len(),
         secrets = resolved_secrets.len(),
         "spawned OCI extension"
     );
+    Ok(spawned)
+}
 
+async fn launch_supervised_extension(
+    manifest: &ExtensionManifest,
+    source: ExtensionSource,
+    widgets: Vec<WidgetDeclaration>,
+    state: ExtensionState,
+    resolved_secrets: &[(String, String)],
+) -> Result<SpawnedExtension> {
+    let config = resolved_config(manifest, &source.ext_dir)?;
+    let notification_pair = if manifest.capabilities.voice {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let launch = omegon_native_extension_host::LaunchSpec {
+        manifest: manifest.clone(),
+        extension_dir: source.ext_dir,
+        project_root: source.project_root,
+        resolved_config: config,
+        resolved_secrets: resolved_secrets.to_vec(),
+        source_digest: source.admission.source_digest().to_string(),
+        notification_tx: notification_pair.0,
+        host_request_handler: Some(Arc::new(OmegonHostRequestHandler {
+            manifest: manifest.clone(),
+            extension_name: manifest.extension.name.clone(),
+        })),
+        readiness_validator: Some(Arc::new(OmegonReadinessValidator)),
+    };
+    let (supervisor, handshake) = ExtensionSupervisor::launch(launch).await?;
     let runtime = ExtensionRuntimeContext {
         name: manifest.extension.name.clone(),
-        ext_dir: source.ext_dir,
         state_dir: source.state_dir,
         manifest: manifest.clone(),
-        resolved_secrets: resolved_secrets.to_vec(),
-        notification_sink: notification_pair.0,
         _snapshot: source.snapshot,
         state_binding: source.state_binding,
-        admission: source.admission,
         restart: Arc::new(Mutex::new(
             crate::contribution_lifecycle::RestartController::new(
                 3,
@@ -2436,24 +1182,24 @@ async fn spawn_container(
                 std::time::Duration::from_secs(2),
             ),
         )),
-        project_root: source.project_root,
     };
-
     let (feature, widget_rx) = ExtensionFeature::new(
         runtime,
         handshake.tools.clone(),
         widgets.clone(),
-        handles,
+        supervisor.clone(),
         state,
     );
-
-    let vox_polling_handle = if handshake.tools.iter().any(|t| t.name == "vox_route") {
-        Some(feature.polling_handle())
-    } else {
-        None
-    };
-
-    let mut tab_widgets = vec![];
+    let vox_polling_handle = handshake
+        .tools
+        .iter()
+        .any(|tool| tool.name == "vox_route")
+        .then(|| feature.polling_handle());
+    let voice_polling_handle = manifest
+        .capabilities
+        .voice
+        .then(|| feature.polling_handle());
+    let mut tab_widgets = Vec::new();
     for widget in widgets {
         let mut tab_widget = ExtensionTabWidget::new(
             widget.id.clone(),
@@ -2469,15 +1215,7 @@ async fn spawn_container(
         }
         tab_widgets.push(tab_widget);
     }
-
-    let voice_polling_handle = if manifest.capabilities.voice {
-        Some(feature.polling_handle())
-    } else {
-        None
-    };
-
     let rpc_polling_handle = feature.polling_handle();
-    let supervisor = feature.supervisor.clone();
     Ok(SpawnedExtension {
         supervisor,
         feature: Box::new(feature),
@@ -2584,20 +1322,6 @@ mod tests {
             .map(|s| s.as_str())
             .collect();
         assert!(missing.is_empty());
-    }
-
-    #[test]
-    fn clean_command_strips_secrets() {
-        // Verify SAFE_INHERIT_ENVS doesn't include any secret-like names
-        for var in SAFE_INHERIT_ENVS {
-            assert!(
-                !var.contains("KEY")
-                    && !var.contains("TOKEN")
-                    && !var.contains("SECRET")
-                    && !var.contains("PASSWORD"),
-                "SAFE_INHERIT_ENVS contains potentially secret var: {var}"
-            );
-        }
     }
 
     #[test]
@@ -3470,129 +2194,6 @@ timeout_ms = 30000
         )
         .unwrap();
         script
-    }
-
-    fn write_failing_extension(dir: &Path) -> PathBuf {
-        let script = dir.join("failing-extension.sh");
-        std::fs::write(
-            &script,
-            r#"#!/bin/sh
-printf '%s\n' $$ > "$1"
-while IFS= read -r line; do
-  printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"forced handshake failure"}}'
-done
-"#,
-        )
-        .unwrap();
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
-        script
-    }
-
-    async fn assert_pid_reaped(pid: u32) {
-        for _ in 0..20 {
-            let status = std::process::Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .status()
-                .unwrap();
-            if !status.success() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("extension child {pid} still exists after failed handshake");
-    }
-
-    #[tokio::test]
-    async fn failed_native_handshake_kills_and_reaps_child() {
-        let _guard = SDK_COMPAT_SPAWN_TEST_LOCK.lock().await;
-        let temp = tempfile::tempdir().unwrap();
-        let script = write_failing_extension(temp.path());
-        let pid_file = temp.path().join("pid");
-        let mut command = tokio::process::Command::new(&script);
-        command
-            .arg(&pid_file)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        let mut child = command.spawn().unwrap();
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let mut handles = ProcessHandles::new(child, stdin, stdout);
-        handles.rpc_call("initialize", json!({})).await.unwrap_err();
-        handles.shutdown(std::time::Duration::ZERO).await.unwrap();
-
-        let pid: u32 = std::fs::read_to_string(pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert_pid_reaped(pid).await;
-    }
-
-    #[tokio::test]
-    async fn readiness_timeout_kills_and_reaps_native_extension() {
-        let _env_guard = crate::test_support::env::lock_async().await;
-        let _guard = SDK_COMPAT_SPAWN_TEST_LOCK.lock().await;
-        unsafe {
-            std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
-            std::env::remove_var("KUBERNETES_SERVICE_HOST");
-        }
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("hanging-extension.sh");
-        std::fs::write(
-            &script,
-            r#"#!/bin/sh
-IFS= read -r line
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"sdk_contract_version":"0.25"}}'
-while IFS= read -r line; do :; done
-"#,
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&script, permissions).unwrap();
-        std::fs::write(
-            temp.path().join("manifest.toml"),
-            r#"
-[extension]
-name = "hanging"
-version = "0.1.0"
-
-[runtime]
-type = "native"
-binary = "hanging-extension.sh"
-
-[startup]
-timeout_ms = 50
-"#,
-        )
-        .unwrap();
-
-        let manifest = ExtensionManifest::from_extension_dir(temp.path()).unwrap();
-        let mut command = tokio::process::Command::new(&script);
-        configure_extension_process(&mut command);
-        command
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        let mut child = command.spawn().unwrap();
-        let pid = child.id().unwrap();
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let mut handles = ProcessHandles::new(child, stdin, stdout);
-        let error = match handshake(&mut handles, &manifest, temp.path(), &[], None).await {
-            Ok(_) => panic!("hanging extension must not become ready"),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("readiness timed out during get_tools")
-        );
-        handles.shutdown(std::time::Duration::ZERO).await.unwrap();
-        assert_pid_reaped(pid).await;
     }
 
     #[tokio::test]

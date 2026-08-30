@@ -34,7 +34,7 @@ source-clean:
 # resolution; keep the full local gate serialized so those integration contracts
 # do not race each other under libtest's default parallel scheduler.
 test-rust:
-    {{cargo}} test --workspace -- --test-threads=1
+    OMEGON_NERD_FONT=1 {{cargo}} test --workspace -- --test-threads=1
 
 # Affected-crate Rust validation for multi-crate/shared-contract commits.
 # Single-crate changes should normally use test-crate (or a feature-specific
@@ -45,11 +45,11 @@ test-commit *args:
 
 # Run tests for a specific crate.
 test-crate crate:
-    {{cargo}} test -p {{crate}} --locked
+    OMEGON_NERD_FONT=1 {{cargo}} test -p {{crate}} --locked
 
 # Run tests matching a pattern
 test-filter pattern:
-    {{cargo}} test -p omegon '{{pattern}}'
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon '{{pattern}}'
 
 # Show Rust workspace crates affected by changed paths. By default this is the
 # reverse-dependent closure used for broad integration confidence.
@@ -63,13 +63,14 @@ test-profile *args:
 # Run Python unit tests for developer tooling scripts.
 test-dev-scripts:
     python3 -m unittest scripts/test_affected_crates.py scripts/test_test_profile.py scripts/test_dirty_report.py scripts/test_dirty_report_git.py
-    python3 -m unittest tests/test_release_manifest.py tests/test_validate_companion.py tests/test_verify_homebrew_formula.py
-    python3 -m unittest tests/test_content_pack_packaging.py
-    python3 -m unittest tests/test_composition_release_gates.py
-    python3 -m unittest tests/test_release_closeout.py
+    python3 scripts/test_release_policy.py
     python3 scripts/check_no_embedded_content.py
     python3 scripts/check_optional_domain_isolation.py
     python3 scripts/tests/test_omegon_launcher.py
+
+# Run the maintained composition, packaging, manifest, and release-policy suite.
+test-release-policy:
+    python3 scripts/test_release_policy.py
 
 # Check provider-published model context docs against the local registry.
 provider-context-truth *args:
@@ -92,7 +93,7 @@ test-changed *args:
     fi
     for crate in $crates; do
         echo "── cargo test -p $crate ──"
-        {{cargo}} test -p "$crate"
+        OMEGON_NERD_FONT=1 {{cargo}} test -p "$crate"
     done
 
 # Type check only Rust crates affected by changed paths.
@@ -131,12 +132,17 @@ check:
 # Fast compile boundary for the shrinking Omegon composition.
 # Optional domain engines and frontends must be enabled additively.
 check-omegon-headless:
-    {{cargo}} check -p omegon --locked --no-default-features
+    {{cargo}} check -p omegon --bin omegon --locked --no-default-features --features product
 
 # Compile the bounded-task capsule with its exact additive feature contract.
 check-task-capsule:
-    {{cargo}} check -p omegon --locked --no-default-features --features task-capsule
+    {{cargo}} check -p omegon --bin omegon --locked --no-default-features --features task-capsule
     python3 scripts/check_task_capsule_dependency_boundary.py
+
+# Compile and enforce the physically reduced kernel executable graph.
+check-kernel-host:
+    {{cargo}} check -p omegon --bin omegon-kernel-host --locked --no-default-features --features kernel-host
+    python3 scripts/check_kernel_dependency_boundary.py
 
 # Build the capsule separately so it cannot overwrite the full product artifact.
 build-task-capsule:
@@ -167,6 +173,10 @@ check-optional-domain-isolation:
 # Build and exercise the source composition through Cargo.
 check-source-composition cargo_profile="release":
     python3 scripts/check_composition_matrix.py --path source --cargo-profile "{{cargo_profile}}"
+
+# Build the artifact ladder, prove sidecar-only restoration, and collect/enforce aggregate budgets.
+check-additive-composition cargo_profile="release":
+    python3 scripts/check_composition_matrix.py --artifact-ladder --cargo-profile "{{cargo_profile}}"
     python3 scripts/check_composition_authority.py
 
 # Exercise a previously installed linked-development channel and its assets.
@@ -190,7 +200,7 @@ check-interface-boundary:
 
 # Deterministic virtual-time TUI stream/scroll scheduler benchmark.
 bench-tui-scroll-stream:
-    {{cargo}} test -p omegon deterministic_streaming_scroll_trace --locked -- --ignored --nocapture
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon deterministic_streaming_scroll_trace --locked -- --ignored --nocapture
 
 # Full local lint gate for the entire workspace, including examples and tests.
 lint:
@@ -201,7 +211,7 @@ lint:
 # Structurally lint every docs/**/*.openapi.{yaml,yml} contract. Rust-native
 # (no Node/Python toolchain); also runs in CI via the rust-integration job.
 lint-openapi:
-    {{cargo}} test -p omegon --test openapi_contract_lint -- --nocapture
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon --test openapi_contract_lint -- --nocapture
 
 # ─── Benchmarks ─────────────────────────────────────────────
 
@@ -413,9 +423,22 @@ install-codescan-extension:
 
 # Validate the codescan engine, portable protocol, and native extension.
 test-codescan-extension:
-    {{cargo}} test -p omegon-codescan-contracts --locked
-    {{cargo}} test -p omegon-codescan --locked
-    {{cargo}} test --manifest-path extensions/omegon-codescan/Cargo.toml --locked
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon-codescan-contracts --locked
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon-codescan --locked
+    OMEGON_NERD_FONT=1 {{cargo}} test --manifest-path extensions/omegon-codescan/Cargo.toml --locked
+
+# Run the fast deterministic native-extension host campaign.
+test-native-extension-conformance:
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon extensions::conformance_tests --locked
+
+# Build every first-party native extension and run the slow real-process rows.
+test-native-extension-acceptance:
+    {{cargo}} build --release --manifest-path extensions/omegon-browser/Cargo.toml --locked
+    {{cargo}} build --release --manifest-path extensions/omegon-codescan/Cargo.toml --features conformance-hooks --locked
+    {{cargo}} build --release --manifest-path extensions/omegon-tdd-savepoint/Cargo.toml --locked
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon extensions::conformance_tests::every_first_party_native_extension_passes_the_host_handshake --locked -- --ignored --exact --test-threads=1 --nocapture
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon setup::tests::release_coupled_codescan_traverses_discovery_and_host_binding --locked -- --ignored --exact --test-threads=1 --nocapture
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon setup::tests::release_codescan_can_be_enabled_on_restart_without_reinstall --locked -- --ignored --exact --test-threads=1 --nocapture
 
 # Build and link optional first-party extensions when their sibling checkout exists.
 # OMEGON_EXTENSIONS_ROOT overrides the conventional ../omegon-extensions path.
@@ -1264,7 +1287,7 @@ test-count:
     #!/usr/bin/env bash
     set -e
     echo "=== Rust ==="
-    {{cargo}} test --workspace 2>&1 | grep "test result" | awk '{s+=$4; f+=$6} END {printf "  %d passed, %d failed\n", s, f}'
+    OMEGON_NERD_FONT=1 {{cargo}} test --workspace 2>&1 | grep "test result" | awk '{s+=$4; f+=$6} END {printf "  %d passed, %d failed\n", s, f}'
     echo "=== Armory ==="
     if [ -d /tmp/omegon-armory ]; then cd /tmp/omegon-armory && npx tsx --test tests/*.test.ts 2>&1 | grep "^ℹ tests" | awk '{printf "  %s tests\n", $3}'; else echo "  (/tmp/omegon-armory not present)"; fi
 
@@ -1272,11 +1295,11 @@ test-count:
 
 # Regenerate the schema contract file after schema changes
 schema-regen:
-    {{cargo}} test -p omegon-memory schema_contract_generate -- --ignored
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon-memory schema_contract_generate -- --ignored
 
 # Verify schema contract is current
 schema-check:
-    {{cargo}} test -p omegon-memory schema_contract_is_current
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon-memory schema_contract_is_current
 
 # ─── Secrets ────────────────────────────────────────────────
 
@@ -1284,20 +1307,20 @@ schema-check:
 # landing test for scoped omegon-secrets changes; it avoids rebuilding reverse
 # dependents while preserving default and optional-backend coverage.
 test-secrets:
-    {{cargo}} test -p omegon-secrets --locked
-    {{cargo}} test -p omegon-secrets --features styrene-identity --locked
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon-secrets --locked
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon-secrets --features styrene-identity --locked
 
 # ─── MCP ────────────────────────────────────────────────────
 
 # Run MCP transport tests
 test-mcp:
-    {{cargo}} test -p omegon plugins::mcp
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon plugins::mcp
 
 # ─── Plugins ────────────────────────────────────────────────
 
 # Run all plugin tests (armory + mcp + registry)
 test-plugins:
-    {{cargo}} test -p omegon plugins
+    OMEGON_NERD_FONT=1 {{cargo}} test -p omegon plugins
 
 # ─── Design tree ────────────────────────────────────────────
 
@@ -1356,7 +1379,7 @@ smoke:
     [[ "$VERSION" == *"omegon"* ]] || { echo "  ✗ Binary doesn't produce version"; FAIL=1; }
 
     # 2. Test count doesn't drop below known floor
-    TEST_COUNT=$({{cargo}} test -p omegon 2>&1 | awk '/test result: ok/ { sum += $4 } END { print sum + 0 }')
+    TEST_COUNT=$(OMEGON_NERD_FONT=1 {{cargo}} test -p omegon 2>&1 | awk '/test result: ok/ { sum += $4 } END { print sum + 0 }')
     echo "  Tests: $TEST_COUNT"
     if [ "$TEST_COUNT" -lt 850 ]; then
         echo "  ✗ Test count ($TEST_COUNT) below safety floor (850)"

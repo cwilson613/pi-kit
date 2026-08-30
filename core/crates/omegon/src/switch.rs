@@ -183,7 +183,10 @@ impl VersionSwitcher {
                 if let Ok(version) = Version::parse(&version_str) {
                     let binary_path = entry.path().join("omegon");
                     let is_installed =
-                        crate::installed_release::validate_generation(&entry.path()).is_ok();
+                        crate::installed_release::validate_release_coupled_generation(
+                            &entry.path(),
+                        )
+                        .is_ok();
                     let is_active = active_version
                         .as_ref()
                         .map(|v| v.raw == version.raw)
@@ -346,7 +349,7 @@ impl VersionSwitcher {
     /// Switch to a specific version
     pub fn activate_version(&self, version: &str) -> Result<()> {
         let version_dir = self.versions_dir.join(version);
-        if crate::installed_release::validate_generation(&version_dir).is_err() {
+        if crate::installed_release::validate_release_coupled_generation(&version_dir).is_err() {
             return Err(anyhow!("Version {} is not installed", version));
         }
         let current = self
@@ -1002,14 +1005,19 @@ mod tests {
     }
 
     #[test]
-    fn activation_switches_shared_current_generation() {
+    fn activation_rejects_partial_installer_managed_generation() {
         let temp = tempfile::tempdir().unwrap();
         let versions_dir = temp.path().join(".omegon/versions");
+        let old = versions_dir.join("1.0.0");
         let generation = versions_dir.join("2.0.0");
+        fs::create_dir_all(&old).unwrap();
         fs::create_dir_all(&generation).unwrap();
         for name in ["omegon", "omegon-maintain", "install-receipt.json"] {
+            fs::write(old.join(name), b"1.0.0").unwrap();
             fs::write(generation.join(name), b"2.0.0").unwrap();
         }
+        let current = versions_dir.parent().unwrap().join("current");
+        crate::installed_release::atomic_replace_symlink(&current, &old).unwrap();
         let switcher = VersionSwitcher {
             versions_dir,
             current_exe: temp.path().join("bin/omegon"),
@@ -1017,7 +1025,10 @@ mod tests {
             cache: None,
         };
 
-        switcher.activate_version("2.0.0").unwrap();
-        assert_eq!(switcher.get_active_version().unwrap().unwrap().raw, "2.0.0");
+        let error = switcher
+            .activate_version("2.0.0")
+            .expect_err("switch must reject an incomplete full-product generation");
+        assert!(error.to_string().contains("not installed"), "{error}");
+        assert_eq!(switcher.get_active_version().unwrap().unwrap().raw, "1.0.0");
     }
 }

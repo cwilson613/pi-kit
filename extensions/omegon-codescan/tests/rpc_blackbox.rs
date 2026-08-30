@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 use omegon_codescan_contracts::{
     CODESCAN_PROTOCOL_VERSION, CODESCAN_RPC_METHOD, CODESCAN_SERVICE_ID, CODESCAN_STATUS_METHOD,
 };
+use omegon_extension::SDK_CONTRACT_VERSION;
 use serde_json::{Value, json};
 
 fn call(
@@ -63,7 +64,12 @@ fn native_process_indexes_the_assigned_workspace_and_shuts_down() {
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
     let initialize = call(&mut stdin, &mut stdout, 1, "initialize", json!({}));
+    assert_eq!(initialize["sdk_contract_version"], SDK_CONTRACT_VERSION);
     assert_eq!(initialize["extension_info"]["name"], "omegon-codescan");
+    assert_eq!(
+        initialize["extension_info"]["sdk_version"],
+        SDK_CONTRACT_VERSION
+    );
     assert_eq!(initialize["capabilities"]["codescan"], true);
 
     let status = call(

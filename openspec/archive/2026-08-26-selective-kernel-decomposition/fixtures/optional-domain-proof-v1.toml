@@ -1,4 +1,5 @@
 schema_version = 1
+test_command_prefix = ["cargo", "test", "-p", "omegon", "--locked"]
 
 kernel_sources = [
   "core/crates/omegon/src/capability_admission.rs",
@@ -30,13 +31,13 @@ public = { status = "not-applicable", reason = "Behavior policy is advisory inte
 
 [[domains]]
 id = "codescan"
-composition = "managed in-process service"
-maintenance_packages = ["omegon-codescan"]
-kernel_tokens = ["codescan_service", "omegon_codescan", "ScanCache", "Indexer"]
-architecture = { path = "docs/codebase-search.md", marker = "optional managed codescan service" }
-absence = { path = "core/crates/omegon/src/codescan_service.rs", test = "optional_absence_finalizes_and_captures_no_handle" }
+composition = "release-coupled native extension"
+maintenance_packages = []
+kernel_tokens = ["omegon_codescan", "ScanCache", "Indexer"]
+architecture = { path = "docs/codebase-search.md", marker = "codescan extension is absent or cannot start" }
+absence = { path = "core/crates/omegon/src/codescan_service.rs", test = "absent_extension_is_typed_unavailable" }
 degradation = { path = "core/crates/omegon/src/tools/codebase_search.rs", test = "unavailable_service_keeps_tools_declared_and_returns_typed_evidence" }
-public = { status = "documented", path = "site/src/pages/docs/index.astro", marker = "typed unavailability if its optional managed service cannot start" }
+public = { status = "documented", path = "site/src/pages/docs/commands.astro", marker = "typed unavailability if the codescan extension is absent or cannot start" }
 
 [[domains]]
 id = "lifecycle-openspec"
@@ -54,7 +55,7 @@ composition = "managed in-process service"
 maintenance_packages = ["omegon-memory"]
 kernel_tokens = ["memory_service", "omegon_memory", "MemoryBackend"]
 architecture = { path = "docs/project-memory.md", marker = "Managed production consumers" }
-absence = { path = "core/crates/omegon/src/memory_campaign.rs", test = "memory_campaign_typed_absence_preserves_tools_context_and_events" }
+absence = { path = "core/crates/omegon/src/memory_campaign.rs", test = "memory_campaign_typed_absence_preserves_tools_context_and_events", ignored = true }
 degradation = { path = "core/crates/omegon/src/memory_service.rs", test = "a_missing_global_path_degrades_locally_without_creation" }
 public = { status = "documented", path = "site/src/pages/docs/memory.astro", marker = "Memory is an optional managed service" }
 

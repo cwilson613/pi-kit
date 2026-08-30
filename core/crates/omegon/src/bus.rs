@@ -398,6 +398,8 @@ pub struct EventBus {
     command_defs: Vec<(usize, CommandDefinition)>,
     /// Handle to the disabled tools set from ManageTools.
     tool_admission: Option<crate::features::manage_tools::SharedToolAdmissionPolicy>,
+    /// Boot-policy exclusions that runtime tool management cannot override.
+    policy_denied_tools: std::collections::BTreeSet<omegon_traits::RuntimeCapabilityId>,
     /// Handle to the registered tool inventory from ManageTools.
     tool_inventory: Option<crate::features::manage_tools::ToolInventory>,
     /// Per-tool execution timeouts. Tools not listed use DEFAULT_TOOL_TIMEOUT.
@@ -440,6 +442,7 @@ impl EventBus {
             tool_defs: Vec::new(),
             command_defs: Vec::new(),
             tool_admission: None,
+            policy_denied_tools: std::collections::BTreeSet::new(),
             internal_tool_owners: HashMap::new(),
             acp_invocation_owners: HashMap::new(),
             in_process_services: BTreeMap::new(),
@@ -718,6 +721,23 @@ impl EventBus {
         handle: crate::features::manage_tools::SharedToolAdmissionPolicy,
     ) {
         self.tool_admission = Some(handle);
+    }
+
+    pub(crate) fn set_policy_denied_tools<I, S>(&mut self, tools: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.policy_denied_tools = tools
+            .into_iter()
+            .map(|tool| omegon_traits::RuntimeCapabilityId::tool(tool.as_ref()))
+            .collect();
+        self.refresh_tool_inventory();
+    }
+
+    fn is_tool_denied_by_policy(&self, tool_name: &str) -> bool {
+        self.policy_denied_tools
+            .contains(&omegon_traits::RuntimeCapabilityId::tool(tool_name))
     }
 
     /// Set the ManageTools inventory handle so finalize can keep its list in
@@ -2188,6 +2208,7 @@ impl EventBus {
                     .as_ref()
                     .is_none_or(|policy| !policy.contains(&definition.name))
             })
+            .filter(|(_, definition)| !self.is_tool_denied_by_policy(&definition.name))
             .filter(|(_, definition)| !is_model_hidden_tool(&definition.name))
             .map(|(index, definition)| {
                 (self.features[*index].name().to_string(), definition.clone())
@@ -2343,6 +2364,7 @@ impl EventBus {
         self.tool_defs
             .iter()
             .filter(|(_, d)| disabled.as_ref().is_none_or(|set| !set.contains(&d.name)))
+            .filter(|(_, d)| !self.is_tool_denied_by_policy(&d.name))
             .filter(|(_, d)| !is_model_hidden_tool(&d.name))
             .map(|(_, d)| {
                 if compact {
@@ -2398,6 +2420,7 @@ impl EventBus {
         self.tool_defs
             .iter()
             .filter(|(_, d)| disabled.as_ref().is_none_or(|set| !set.contains(&d.name)))
+            .filter(|(_, d)| !self.is_tool_denied_by_policy(&d.name))
             .filter(|(_, d)| !is_model_hidden_tool(&d.name))
             .filter(|(_, d)| {
                 is_core_tool(&d.name) || is_dynamic_tool(&d.name) || used_tools.contains(&d.name)
@@ -5516,6 +5539,24 @@ mod tests {
             let result = bus.execute_tool("count", "tc1", json!({}), cancel).await;
             assert!(result.is_ok(), "disabled tools must still be executable");
         });
+    }
+
+    #[test]
+    fn boot_policy_tools_are_not_model_callable_and_cannot_be_reenabled() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(CounterFeature { event_count: 0 }));
+        let mutable = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::features::manage_tools::ToolAdmissionPolicy::default(),
+        ));
+        bus.set_tool_admission_policy(mutable.clone());
+        bus.set_policy_denied_tools(["count"]);
+        bus.finalize();
+
+        assert!(bus.tool_definitions().is_empty());
+        assert_eq!(bus.all_tool_definitions().len(), 1);
+        mutable.lock().unwrap().remove("count");
+        assert!(bus.tool_definitions().is_empty());
+        assert!(bus.has_registered_tool("count"));
     }
 
     #[test]

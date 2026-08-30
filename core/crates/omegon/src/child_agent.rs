@@ -50,6 +50,9 @@ pub struct ChildAgentRuntimeProfile {
     pub enabled_extensions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_extensions: Vec<String>,
+    /// Resolved parent deny set. This is monotonic and never carries enables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_deny: Option<crate::component_policy::ChildComponentDeny>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preloaded_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -526,6 +529,12 @@ pub fn spawn_headless_child_agent(
         child.env(
             "OMEGON_CHILD_DISABLED_EXTENSIONS",
             config.runtime.disabled_extensions.join(","),
+        );
+    }
+    if let Some(policy) = &config.runtime.component_deny {
+        child.env(
+            crate::component_policy::CHILD_COMPONENT_DENIES_ENV,
+            policy.to_env_json(),
         );
     }
     if !config.runtime.preloaded_files.is_empty() {

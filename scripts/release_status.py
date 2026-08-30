@@ -20,12 +20,15 @@ def detect_signing_status(codesign_output: str) -> str:
 
 
 def read_codesign_output(binary: Path) -> str:
-    completed = subprocess.run(
-        ["codesign", "-dvvv", str(binary)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            ["codesign", "-dvvv", str(binary)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return ""
     return (completed.stdout or "") + (completed.stderr or "")
 
 

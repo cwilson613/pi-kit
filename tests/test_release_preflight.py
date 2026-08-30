@@ -204,14 +204,14 @@ class ReleasePreflightTests(unittest.TestCase):
 
 class ReleaseRecipeTests(unittest.TestCase):
     def release_block(self) -> str:
-        justfile = (ROOT / "justfile").read_text()
+        justfile = (ROOT / "Justfile").read_text()
         marker = "# Cut a stable release: test, commit milestone state if needed, tag, build.\nrelease:\n"
         start = justfile.index(marker) + len(marker) - len("release:\n")
         end = justfile.index("# Sign the local macOS validation binary", start)
         return justfile[start:end]
 
     def publish_block(self) -> str:
-        justfile = (ROOT / "justfile").read_text()
+        justfile = (ROOT / "Justfile").read_text()
         start = justfile.index("# Publish: push refs, trigger CI release/site workflows")
         end = justfile.index("\nsmoke:\n", start)
         return justfile[start:end]

@@ -129,6 +129,7 @@ class DistributionPolicyTests(unittest.TestCase):
         self.assertIn("OMEGON_INSTALL_ARCHIVE", installer)
         self.assertIn("OMEGON_INSTALL_CHECKSUMS", installer)
         self.assertIn("distribution-profile.json", flake)
+        self.assertIn('builtins.match ".*\\\\.py$"', flake)
         self.assertIn("pkgs.apple-sdk", flake)
         self.assertNotIn("darwin.apple_sdk.frameworks", flake)
         self.assertIn("sh.styrene.omegon.composition-class", oci)

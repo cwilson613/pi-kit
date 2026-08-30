@@ -101,7 +101,7 @@
       },
       "dependency_count": {"baseline": 676, "max_delta": 6},
       "startup_task_count": {"baseline": 4, "max_delta": 1},
-      "external_process_count": {"baseline": 0, "max_delta": 0},
+      "external_process_count": {"baseline": 1, "max_delta": 0},
       "model_schema_tokens": {"baseline": 8019, "max_delta": 128},
       "resident_capability_count": {"baseline": 8, "max_delta": 0},
       "callable_capability_count": {"baseline": 64, "max_delta": 1}

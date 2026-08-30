@@ -50,7 +50,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 - Native-extension readiness now reserves part of short startup deadlines for mandatory tool discovery when optional initialization metadata times out, and timeout diagnostics include child process state and bounded stderr context.
 
-- Native extension snapshots now admit release-sized executables within the existing aggregate size bound, and Nix source filtering retains the Python scripts required to install package metadata.
+- Native extension snapshots now admit release-sized executables within the existing aggregate size bound, and Nix source filtering retains the package scripts and declared content assets required during installation.
 
 - Profile component, extension, and MQTT mutations now persist to the actual selected named project or user profile instead of creating a lower-precedence legacy project profile. Built-in profiles require an explicit writable target.
 

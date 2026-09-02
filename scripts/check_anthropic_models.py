@@ -20,7 +20,7 @@ REGISTRY = REPO_ROOT / "data" / "model-registry.json"
 OVERVIEW_URL = "https://platform.claude.com/docs/en/about-claude/models/overview"
 
 MODEL_RE = re.compile(r"claude-(?:fable|mythos|opus|sonnet|haiku)-[a-z0-9-]+")
-CURRENT_SECTION_START = "Claude Fable 5 and Claude Mythos 5"
+CURRENT_SECTION_START = "Compare models"
 CURRENT_SECTION_END = "Legacy models"
 
 
@@ -53,6 +53,7 @@ def upstream_model_ids(text: str) -> set[str]:
         and "-and-" not in mid
         and mid != "claude-haiku-4-5"  # documented alias; registry stores pinned ID
         and mid != "claude-mythos-preview"  # invitation-only preview, not a GA catalog target
+        and "-system-card" not in mid
         and not mid.endswith("-on")
         and not mid.endswith("-models")
     }

@@ -18,7 +18,7 @@ use crate::bridge::{BoundaryExpectation, LlmBridge, LlmEvent, LlmMessage, Stream
 /// Claude Code CLI version for OAuth user-agent header.
 /// Must match what Anthropic expects for subscription recognition.
 /// Update when upstream Claude Code advances.
-const CLAUDE_CODE_UA: &str = "claude-cli/2.1.207";
+const CLAUDE_CODE_UA: &str = "claude-cli/2.1.258";
 use omegon_traits::ToolDefinition;
 
 /// Anthropic credential mode — records what credential source is active.
@@ -1444,6 +1444,7 @@ impl LlmBridge for AnthropicClient {
             .model
             .as_deref()
             .map(model_id_from_spec)
+            .or_else(|| crate::model_registry::ModelRegistry::global().default_model("anthropic"))
             .unwrap_or("claude-sonnet-4-6");
 
         // System prompt: always array-of-blocks format (required for cache_control).
@@ -1499,6 +1500,7 @@ impl LlmBridge for AnthropicClient {
             "messages": Self::build_messages(messages),
             "stream": true,
         });
+        apply_anthropic_automatic_caching(&mut body);
 
         let wire_tools = Self::build_tools(tools, is_oauth);
         let tool_count = wire_tools.len();
@@ -1538,19 +1540,7 @@ impl LlmBridge for AnthropicClient {
                 },
             )
             .header("anthropic-version", "2023-06-01")
-            .header("anthropic-beta", {
-                // NOTE: context-1m-2025-08-07 is NEVER sent. Sonnet 4.6 and
-                // Opus 4.6 support 1M context natively without a beta flag.
-                // Sending it triggers "Extra usage is required for long context
-                // requests" (429) on OAuth subscriptions — a deprecated billing
-                // gate that no longer corresponds to a capability gate.
-                if is_oauth {
-                    "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
-                        .to_string()
-                } else {
-                    "interleaved-thinking-2025-05-14".to_string()
-                }
-            })
+            .header("anthropic-beta", anthropic_beta_header(is_oauth, model))
             .header("content-type", "application/json")
             // Claude Code identity headers for OAuth subscription recognition
             .header(
@@ -1609,6 +1599,34 @@ impl LlmBridge for AnthropicClient {
     }
 }
 
+#[derive(Default)]
+struct AnthropicUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+}
+
+impl AnthropicUsage {
+    fn update(&mut self, usage: &Value) {
+        if let Some(value) = usage.get("input_tokens").and_then(Value::as_u64) {
+            self.input_tokens = self.input_tokens.max(value);
+        }
+        if let Some(value) = usage.get("output_tokens").and_then(Value::as_u64) {
+            self.output_tokens = self.output_tokens.max(value);
+        }
+        if let Some(value) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
+            self.cache_read_tokens = self.cache_read_tokens.max(value);
+        }
+        if let Some(value) = usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+        {
+            self.cache_creation_tokens = self.cache_creation_tokens.max(value);
+        }
+    }
+}
+
 async fn parse_anthropic_stream(
     response: reqwest::Response,
     provider_telemetry: Option<omegon_traits::ProviderTelemetrySnapshot>,
@@ -1623,10 +1641,7 @@ async fn parse_anthropic_stream(
     let mut current_thinking_text = String::new();
     let mut current_thinking_signature: Option<String> = None;
     // Actual billing tokens captured from message_start / message_delta
-    let mut acc_input_tokens: u64 = 0;
-    let mut acc_output_tokens: u64 = 0;
-    let mut acc_cache_read_tokens: u64 = 0;
-    let mut acc_cache_creation_tokens: u64 = 0;
+    let mut usage_totals = AnthropicUsage::default();
     let mut stop_reason: Option<String> = None;
     // Tracks whether the stream reached a `message_stop` terminal event. If the
     // SSE byte stream ends (Ok(None) in process_sse) without this, Anthropic
@@ -1651,10 +1666,11 @@ async fn parse_anthropic_stream(
             "message_start" => {
                 // message_start contains input token usage
                 if let Some(usage) = event.pointer("/message/usage") {
+                    usage_totals.update(usage);
                     tracing::info!(
-                        input_tokens = usage["input_tokens"].as_u64().unwrap_or(0),
-                        cache_read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
-                        cache_creation = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+                        input_tokens = usage_totals.input_tokens,
+                        cache_read = usage_totals.cache_read_tokens,
+                        cache_creation = usage_totals.cache_creation_tokens,
                         "Anthropic usage (input)"
                     );
                 }
@@ -1768,17 +1784,12 @@ async fn parse_anthropic_stream(
             // message_delta: stop_reason + final usage
             "message_delta" => {
                 if let Some(usage) = event.get("usage") {
-                    let out = usage["output_tokens"].as_u64().unwrap_or(0);
-                    let inp = usage["input_tokens"].as_u64().unwrap_or(0);
-                    let cr  = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
-                    let cc  = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
-                    if out > 0 { acc_output_tokens = out; }
-                    if inp > 0 { acc_input_tokens  = inp; }
-                    if cr  > 0 { acc_cache_read_tokens = cr; }
-                    if cc  > 0 { acc_cache_creation_tokens = cc; }
+                    usage_totals.update(usage);
                     tracing::info!(
-                        output_tokens = out, input_tokens = inp,
-                        cache_read = cr, cache_creation = cc,
+                        output_tokens = usage_totals.output_tokens,
+                        input_tokens = usage_totals.input_tokens,
+                        cache_read = usage_totals.cache_read_tokens,
+                        cache_creation = usage_totals.cache_creation_tokens,
                         "Anthropic usage (final)"
                     );
                 }
@@ -1827,10 +1838,10 @@ async fn parse_anthropic_stream(
                         "content": content_blocks,
                         "provider_stop_reason": stop_reason,
                     }),
-                    input_tokens: acc_input_tokens,
-                    output_tokens: acc_output_tokens,
-                    cache_read_tokens: acc_cache_read_tokens,
-                    cache_creation_tokens: acc_cache_creation_tokens,
+                    input_tokens: usage_totals.input_tokens,
+                    output_tokens: usage_totals.output_tokens,
+                    cache_read_tokens: usage_totals.cache_read_tokens,
+                    cache_creation_tokens: usage_totals.cache_creation_tokens,
                     provider_telemetry: provider_telemetry_done.clone(),
                 });
                 completed = true;
@@ -3713,6 +3724,19 @@ fn openai_reasoning_effort(reasoning: Option<&str>) -> Option<&'static str> {
 }
 
 fn apply_anthropic_thinking(body: &mut Value, model: &str, reasoning: Option<&str>) {
+    if anthropic_uses_bound_adaptive_thinking(model) {
+        body["thinking"] = json!({
+            "type": "adaptive",
+            "block_binding": {
+                "prefix_mismatch_behavior": "drop_block"
+            }
+        });
+        if let Some(effort) = anthropic_effort(reasoning) {
+            body["output_config"] = json!({ "effort": effort });
+        }
+        return;
+    }
+
     let Some(reasoning) = reasoning else {
         return;
     };
@@ -3727,6 +3751,48 @@ fn apply_anthropic_thinking(body: &mut Value, model: &str, reasoning: Option<&st
             "budget_tokens": budget,
         });
     }
+}
+
+fn anthropic_uses_bound_adaptive_thinking(model: &str) -> bool {
+    matches!(
+        model_id_from_spec(model),
+        "claude-fable-5-1" | "claude-mythos-5-1"
+    )
+}
+
+fn anthropic_effort(reasoning: Option<&str>) -> Option<&'static str> {
+    match reasoning? {
+        "off" => None,
+        "minimal" | "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        "max" => Some("max"),
+        _ => Some("high"),
+    }
+}
+
+fn anthropic_beta_header(is_oauth: bool, model: &str) -> String {
+    // context-1m-2025-08-07 is intentionally absent: current Anthropic models
+    // provide 1M context natively, while the old flag can trigger an OAuth
+    // subscription billing gate rather than a capability gate.
+    let mut betas = if is_oauth {
+        vec![
+            "claude-code-20250219",
+            "oauth-2025-04-20",
+            "interleaved-thinking-2025-05-14",
+        ]
+    } else {
+        vec!["interleaved-thinking-2025-05-14"]
+    };
+    if anthropic_uses_bound_adaptive_thinking(model) {
+        betas.push("thinking-binding-controls-2026-08-01");
+    }
+    betas.join(",")
+}
+
+fn apply_anthropic_automatic_caching(body: &mut Value) {
+    body["cache_control"] = json!({"type": "ephemeral"});
 }
 
 fn anthropic_manual_budget_tokens(reasoning: Option<&str>) -> Option<u32> {
@@ -5855,12 +5921,7 @@ mod tests {
 
     #[test]
     fn oauth_beta_flags_include_cc_and_oauth() {
-        let is_oauth = true;
-        let flags = if is_oauth {
-            "claude-code-20250219,oauth-2025-04-20".to_string()
-        } else {
-            "interleaved-thinking-2025-05-14".to_string()
-        };
+        let flags = anthropic_beta_header(true, "claude-sonnet-4-6");
         assert!(
             flags.contains("claude-code-20250219"),
             "OAuth must include CC beta"
@@ -5881,8 +5942,8 @@ mod tests {
         // support 1M context natively. The flag only triggers billing gates
         // ("Extra usage is required for long context requests" 429).
         // Verified empirically: OAuth request with flag → 429, without → 200.
-        let oauth_flags = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14";
-        let api_flags = "interleaved-thinking-2025-05-14";
+        let oauth_flags = anthropic_beta_header(true, "claude-fable-5-1");
+        let api_flags = anthropic_beta_header(false, "claude-fable-5-1");
         assert!(
             !oauth_flags.contains("context-1m"),
             "OAuth must never send context-1m"
@@ -5895,12 +5956,7 @@ mod tests {
 
     #[test]
     fn api_key_beta_flags_include_thinking() {
-        let is_oauth = false;
-        let flags = if is_oauth {
-            "claude-code-20250219,oauth-2025-04-20".to_string()
-        } else {
-            "interleaved-thinking-2025-05-14".to_string()
-        };
+        let flags = anthropic_beta_header(false, "claude-sonnet-4-6");
         assert!(
             flags.contains("interleaved-thinking"),
             "API key must include thinking beta"
@@ -5908,6 +5964,18 @@ mod tests {
         assert!(
             !flags.contains("claude-code"),
             "API key must NOT include CC beta"
+        );
+    }
+
+    #[test]
+    fn fable_5_1_beta_flags_enable_thinking_binding_controls() {
+        for is_oauth in [false, true] {
+            let flags = anthropic_beta_header(is_oauth, "anthropic:claude-fable-5-1");
+            assert!(flags.contains("thinking-binding-controls-2026-08-01"));
+        }
+        assert!(
+            !anthropic_beta_header(true, "claude-fable-5")
+                .contains("thinking-binding-controls-2026-08-01")
         );
     }
 
@@ -6288,6 +6356,71 @@ mod tests {
             json!({ "type": "enabled", "budget_tokens": 50_000 })
         );
         assert!(manual.get("effort").is_none());
+    }
+
+    #[test]
+    fn fable_5_1_uses_bound_adaptive_thinking_and_output_effort() {
+        for model in ["claude-fable-5-1", "anthropic:claude-mythos-5-1"] {
+            let mut body = json!({});
+            apply_anthropic_thinking(&mut body, model, Some("minimal"));
+            assert_eq!(body["thinking"]["type"], "adaptive");
+            assert_eq!(
+                body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+                "drop_block"
+            );
+            assert!(body["thinking"].get("budget_tokens").is_none());
+            assert_eq!(body["output_config"], json!({ "effort": "low" }));
+        }
+
+        let mut default_effort = json!({});
+        apply_anthropic_thinking(&mut default_effort, "claude-fable-5-1", None);
+        assert_eq!(default_effort["thinking"]["type"], "adaptive");
+        assert!(default_effort.get("output_config").is_none());
+
+        let mut off = json!({});
+        apply_anthropic_thinking(&mut off, "claude-fable-5-1", Some("off"));
+        assert_eq!(off["thinking"]["type"], "adaptive");
+        assert!(off.get("output_config").is_none());
+
+        for (level, effort) in [
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
+        ] {
+            let mut body = json!({});
+            apply_anthropic_thinking(&mut body, "claude-fable-5-1", Some(level));
+            assert_eq!(body["output_config"]["effort"], effort);
+        }
+    }
+
+    #[test]
+    fn anthropic_automatic_caching_tracks_the_growing_conversation() {
+        let mut body = json!({"messages": [{"role": "user", "content": "hello"}]});
+        apply_anthropic_automatic_caching(&mut body);
+        assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
+        assert!(body["cache_control"].get("ttl").is_none());
+    }
+
+    #[test]
+    fn anthropic_usage_keeps_cache_reads_from_message_start() {
+        let mut usage = AnthropicUsage::default();
+        usage.update(&json!({
+            "input_tokens": 37,
+            "cache_read_input_tokens": 12_345,
+            "cache_creation_input_tokens": 678
+        }));
+        usage.update(&json!({
+            "output_tokens": 91,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+        }));
+
+        assert_eq!(usage.input_tokens, 37);
+        assert_eq!(usage.output_tokens, 91);
+        assert_eq!(usage.cache_read_tokens, 12_345);
+        assert_eq!(usage.cache_creation_tokens, 678);
     }
 
     #[test]

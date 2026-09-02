@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Added direct Anthropic support for Claude Fable 5.1 and restricted-access Claude Mythos 5.1, promoting Fable 5.1 as the Anthropic S-grade default and curated model. Requests use the line's required adaptive thinking, map Omegon thinking levels onto output effort, opt into safe thinking-block drops when mutable session prefixes invalidate bound reasoning, and automatically cache growing conversations to benefit from Fable 5.1's lower cache-read price. Cache reads and writes reported at stream start now remain visible in turn usage. The Claude Code OAuth user-agent now matches upstream 2.1.258, and provider drift checks follow the current Anthropic model section and current grade schema.
+
 - First-party runtime domains now have one machine-checked packaging class, canonical owner, runtime boundary, extraction disposition, and composition evidence. The composition gate rejects missing or duplicate domains, documentation drift, and any `core:*` claim without signed identity plus kernel-absence, additive-restoration, and full-product evidence.
 
 - Operator `!` shell executions now persist as bounded, provenance-bearing conversation observations and remain visible to subsequent and restored model turns without fabricated assistant tool calls. TUI, ACP, WebSocket, IPC, and audit projections carry explicit `bang_shell` origin, while live and completed Bash output share sanitized ANSI-aware terminal rendering instead of Bash-source highlighting.

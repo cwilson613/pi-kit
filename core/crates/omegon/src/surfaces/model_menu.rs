@@ -65,7 +65,7 @@ pub fn provider_id_from_route(route_id: &str) -> &str {
 pub fn provider_seeds(provider_id: &str) -> &'static [&'static str] {
     match provider_id {
         "anthropic" => &[
-            "claude-fable-5",
+            "claude-fable-5-1",
             "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
         ],
@@ -274,6 +274,11 @@ mod tests {
     #[test]
     fn openrouter_shortlist_includes_ox_alpha() {
         assert!(provider_seeds("openrouter").contains(&"stealth/ox-alpha"));
+    }
+
+    #[test]
+    fn anthropic_shortlist_uses_fable_5_1() {
+        assert_eq!(provider_seeds("anthropic")[0], "claude-fable-5-1");
     }
 
     #[test]

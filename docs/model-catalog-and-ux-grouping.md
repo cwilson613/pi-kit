@@ -288,7 +288,7 @@ Search/filtering can follow after the first implementation slice if the generic 
 Select Model
 
 Anthropic
-  Claude Fable 5
+  Claude Fable 5.1
   Claude Sonnet 5
   Claude Haiku 4.5
 

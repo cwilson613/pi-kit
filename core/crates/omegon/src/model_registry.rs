@@ -868,7 +868,7 @@ mod tests {
         assert_eq!(reg.default_model("openai"), Some("gpt-5.6"));
         assert_eq!(reg.default_model("openai-codex"), Some("gpt-5.6"));
         assert_eq!(reg.default_model("github-copilot"), Some("gpt-5.4"));
-        assert_eq!(reg.default_model("anthropic"), Some("claude-fable-5"));
+        assert_eq!(reg.default_model("anthropic"), Some("claude-fable-5-1"));
         assert_eq!(reg.default_model("nonexistent"), None);
     }
 
@@ -884,12 +884,30 @@ mod tests {
             reg.grade_model("B", "github-copilot"),
             Some("claude-sonnet-4.6")
         );
-        assert_eq!(reg.grade_model("S", "anthropic"), Some("claude-fable-5"));
+        assert_eq!(reg.grade_model("S", "anthropic"), Some("claude-fable-5-1"));
         assert_eq!(
             reg.grade_model("D", "anthropic"),
             Some("claude-haiku-4-5-20251001")
         );
         assert_eq!(reg.grade_model("S", "nonexistent"), None);
+    }
+
+    #[test]
+    fn claude_fable_5_1_line_uses_anthropics_published_contract() {
+        let reg = ModelRegistry::global();
+        for (model, name) in [
+            ("claude-fable-5-1", "Claude Fable 5.1"),
+            ("claude-mythos-5-1", "Claude Mythos 5.1"),
+        ] {
+            let info = reg
+                .model_info(&format!("anthropic:{model}"))
+                .unwrap_or_else(|| panic!("missing anthropic:{model}"));
+            assert_eq!(info.name, name);
+            assert_eq!(info.context_input, 1_000_000);
+            assert_eq!(info.context_output, 131_072);
+            assert!(info.supports_reasoning);
+            assert_eq!(reg.infer_grade("anthropic", model), Some("S"));
+        }
     }
 
     #[test]

@@ -91,17 +91,17 @@ def main() -> int:
         if provider not in DYNAMIC_PROVIDERS and (provider, model_id) not in model_keys:
             errors.append(f"defaults.{provider} references unknown model {model_id}")
 
-    tiers = data.get("tiers", {})
-    if not isinstance(tiers, dict):
-        errors.append("tiers must be an object")
-        tiers = {}
-    for tier, providers in sorted(tiers.items()):
+    grades = data.get("grades", {})
+    if not isinstance(grades, dict):
+        errors.append("grades must be an object")
+        grades = {}
+    for grade, providers in sorted(grades.items()):
         if not isinstance(providers, dict):
-            errors.append(f"tiers.{tier} must be an object")
+            errors.append(f"grades.{grade} must be an object")
             continue
         for provider, model_id in sorted(providers.items()):
             if provider not in DYNAMIC_PROVIDERS and (provider, model_id) not in model_keys:
-                errors.append(f"tiers.{tier}.{provider} references unknown model {model_id}")
+                errors.append(f"grades.{grade}.{provider} references unknown model {model_id}")
 
     routes = data.get("routes", [])
     if not isinstance(routes, list):
@@ -114,15 +114,15 @@ def main() -> int:
         provider = route.get("provider")
         pattern = route.get("modelIdPattern")
         ceiling = route.get("contextCeiling")
-        tier = route.get("tier")
+        grade = route.get("grade")
         if not isinstance(provider, str) or not provider:
             errors.append(f"routes[{idx}] missing provider")
         if not isinstance(pattern, str) or not pattern:
             errors.append(f"routes[{idx}] missing modelIdPattern")
         if not isinstance(ceiling, int) or ceiling <= 0:
             errors.append(f"routes[{idx}] invalid contextCeiling: {ceiling!r}")
-        if tier not in tiers:
-            errors.append(f"routes[{idx}] references unknown tier {tier!r}")
+        if grade not in grades:
+            errors.append(f"routes[{idx}] references unknown grade {grade!r}")
 
     rust_providers = provider_names_from_rust() | DYNAMIC_PROVIDERS
     registry_providers = set(model_ids_by_provider)

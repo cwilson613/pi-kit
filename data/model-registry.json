@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "lastReviewed": "2026-07-01",
+  "lastReviewed": "2026-09-02",
   "_comment_inference": [
     "Inference defaults for dynamically discovered models (Ollama Cloud, local Ollama).",
     "When a model is not in the 'models' array, these heuristics are used.",
@@ -50,7 +50,7 @@
     }
   },
   "defaults": {
-    "anthropic": "claude-fable-5",
+    "anthropic": "claude-fable-5-1",
     "openai": "gpt-5.6",
     "openai-codex": "gpt-5.6",
     "groq": "llama-3.3-70b-versatile",
@@ -70,7 +70,7 @@
   },
   "grades": {
     "S": {
-      "anthropic": "claude-fable-5",
+      "anthropic": "claude-fable-5-1",
       "openai": "gpt-5.6",
       "openai-codex": "gpt-5.6",
       "google": "gemini-3.1-pro-preview",
@@ -648,6 +648,38 @@
   ],
   "models": [
     {
+      "id": "claude-fable-5-1",
+      "provider": "anthropic",
+      "name": "Claude Fable 5.1",
+      "contextInput": 1000000,
+      "contextOutput": 131072,
+      "capabilities": [
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "description": "Generally available Mythos-class model for demanding reasoning, coding, and long-horizon agentic work; requires 30-day data retention and always uses adaptive thinking",
+      "supportsReasoning": true,
+      "producer": "anthropic",
+      "executionClass": "api-cloud"
+    },
+    {
+      "id": "claude-mythos-5-1",
+      "provider": "anthropic",
+      "name": "Claude Mythos 5.1",
+      "contextInput": 1000000,
+      "contextOutput": 131072,
+      "capabilities": [
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "description": "Project Glasswing restricted-access counterpart to Fable 5.1 with the same model capabilities and 30-day data-retention requirement",
+      "supportsReasoning": true,
+      "producer": "anthropic",
+      "executionClass": "api-cloud"
+    },
+    {
       "id": "claude-fable-5",
       "provider": "anthropic",
       "name": "Claude Fable 5",
@@ -658,7 +690,7 @@
         "coding",
         "vision"
       ],
-      "description": "Generally available Mythos-class model for highest-capability reasoning, coding, and long-horizon agentic work",
+      "description": "Previous generally available Mythos-class model retained for compatibility; Fable 5.1 is recommended for new direct Anthropic sessions",
       "supportsReasoning": true,
       "producer": "anthropic",
       "executionClass": "api-cloud"
@@ -1310,7 +1342,8 @@
         "fast",
         "instruction",
         "coding",
-        "vision"
+        "vision",
+        "reasoning"
       ],
       "supportsReasoning": true,
       "description": "Fast/cost-efficient GPT-5.6 Codex route; concrete native model, no Codex CLI alias expansion required",

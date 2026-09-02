@@ -396,7 +396,7 @@ mod tests {
     fn grade_resolve_anthropic() {
         assert_eq!(
             ModelGrade::S.resolve_model("anthropic", ""),
-            "claude-fable-5"
+            "claude-fable-5-1"
         );
         assert!(
             ModelGrade::B
@@ -437,7 +437,7 @@ mod tests {
         assert!(msg.contains("S"), "should mention grade: {msg}");
         assert_eq!(
             settings.lock().unwrap().model,
-            "anthropic:claude-fable-5",
+            "anthropic:claude-fable-5-1",
             "should switch to highest-grade Anthropic model"
         );
     }
@@ -466,7 +466,7 @@ mod tests {
 
         // If on a different grade band, should switch to the S-grade default.
         let model = ModelGrade::S.resolve_model("anthropic", "claude-sonnet-4-6");
-        assert_eq!(model, "claude-fable-5");
+        assert_eq!(model, "claude-fable-5-1");
     }
 
     #[test]

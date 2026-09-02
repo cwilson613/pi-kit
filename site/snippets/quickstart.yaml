@@ -2,10 +2,10 @@
 
 setup_codex:
   cmd: |
-    curl -fsSL https://omegon.styrene.io/install.sh | sh
+    curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain sh
     omegon auth login openai-codex
     om
-  desc: "Install + OpenAI/Codex OAuth + start slim mode"
+  desc: "Externally verified install + OpenAI/Codex OAuth + start slim mode"
 
 setup_apikey:
   cmd: |

@@ -38,6 +38,7 @@ pub(crate) struct SessionViewTarget {
 struct PublishedSessionView {
     target: SessionViewTarget,
     runtime_queue: serde_json::Value,
+    activity: crate::surfaces::session_activity::SessionActivityCache,
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +83,7 @@ impl SessionViewBinding {
             published: Arc::new(RwLock::new(PublishedSessionView {
                 target,
                 runtime_queue: empty_runtime_queue(),
+                activity: Default::default(),
             })),
             generation_tx,
         }
@@ -103,6 +105,7 @@ impl SessionViewBinding {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = PublishedSessionView {
             target,
             runtime_queue: empty_runtime_queue(),
+            activity: Default::default(),
         };
         self.generation_tx.send_replace(generation);
     }
@@ -112,10 +115,31 @@ impl SessionViewBinding {
     }
 
     pub(crate) fn update_runtime_queue(&self, snapshot: serde_json::Value) {
-        self.published
+        let mut published = self
+            .published
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .runtime_queue = snapshot;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let incoming = snapshot
+            .get("activity")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
+        let accept = match incoming {
+            Some(activity) => matches!(
+                published.activity.reconcile(activity),
+                Ok(
+                    crate::surfaces::session_activity::ReconcileDisposition::Applied
+                        | crate::surfaces::session_activity::ReconcileDisposition::Idempotent
+                )
+            ),
+            None if published.activity.current().is_some() => {
+                let _ = published.activity.reconcile_unversioned_active();
+                false
+            }
+            None => true,
+        };
+        if accept {
+            published.runtime_queue = snapshot;
+        }
     }
 
     pub(crate) fn runtime_queue_snapshot(&self) -> serde_json::Value {
@@ -124,6 +148,17 @@ impl SessionViewBinding {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .runtime_queue
             .clone()
+    }
+
+    pub(crate) fn activity_snapshot(
+        &self,
+    ) -> Option<crate::surfaces::session_activity::SessionActivityProjectionV1> {
+        self.published
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .activity
+            .current()
+            .cloned()
     }
 }
 
@@ -495,5 +530,54 @@ mod tests {
         assert_eq!(binding.snapshot().session_id, second.session_id);
         assert!(binding.runtime_queue_snapshot()["depth"].is_null());
         assert!(binding.runtime_queue_snapshot()["active"].is_null());
+    }
+
+    #[test]
+    fn versioned_runtime_queue_rejects_stale_active_over_durable_idle() {
+        fn queue(revision: u64, active: bool) -> serde_json::Value {
+            serde_json::json!({
+                "depth": usize::from(active),
+                "active": active.then(|| serde_json::json!({"turn_id": 9})),
+                "items": [],
+                "activity": {
+                    "schema_version": 1,
+                    "lineage": {
+                        "session_id": "session-1",
+                        "stream_id": "stream-1",
+                        "runtime_generation": "runtime-1",
+                        "composition_generation": "composition-1"
+                    },
+                    "activity_revision": revision,
+                    "queue": [],
+                    "active_turn": active.then(|| serde_json::json!({
+                        "turn_id": "turn-1",
+                        "prompt_id": "prompt-1",
+                        "phase": "running"
+                    })),
+                    "terminal_turn": (!active).then(|| serde_json::json!({
+                        "turn_id": "turn-1",
+                        "outcome": "completed",
+                        "reason_code": "done",
+                        "authority_sequence": revision
+                    })),
+                    "lifecycle_health": "healthy",
+                    "lifecycle_detail": null,
+                    "actions": []
+                }
+            })
+        }
+
+        let binding = SessionViewBinding::new(PathBuf::from("snapshot.json"), "session-1".into());
+        binding.update_runtime_queue(queue(8, false));
+        binding.update_runtime_queue(queue(7, true));
+        binding.update_runtime_queue(serde_json::json!({
+            "depth": 1,
+            "active": {"turn_id": 9},
+            "items": []
+        }));
+
+        assert_eq!(binding.runtime_queue_snapshot()["depth"], 0);
+        assert!(binding.runtime_queue_snapshot()["active"].is_null());
+        assert!(binding.activity_snapshot().unwrap().is_durably_closed());
     }
 }

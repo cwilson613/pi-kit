@@ -48,7 +48,7 @@ This grants trusted host execution to those identities. It does not grant tool c
 
 Before evaluation, spawn, secret expansion, or connection, the host constructs a non-executable preflight with the stable ID, source kind, requested effects, protocol range, readiness budget, and a digest of the admitted source snapshot. The runtime permit binds the stable ID to those exact bytes and is revalidated at deferred execution and respawn boundaries.
 
-The profile entry remains identity-based across updates; it does not permanently pin one digest. Re-review updates before installing them because newly installed bytes can receive a new source-bound runtime permit under an already trusted ID. Local installation copies the bundle into Omegon's guarded extension root. Rebuilding the original source directory does not update that installed copy; rebuild, reinstall or update, and restart Omegon.
+The profile entry remains identity-based across updates; it does not permanently pin one digest. Re-review updates before installing them because newly installed bytes can receive a new source-bound runtime permit under an already trusted ID. Local installation copies the bundle into Omegon's guarded extension root. Rebuilding the original source directory does not update that installed copy. Rebuild and reinstall or update, then run `/extension refresh` while the session is idle. Compatible EventBus and native-RPC generations publish at explicit quiescence. Widget or voice side-channel changes still require `/runtime restart`.
 
 ## Trust is not confinement
 
@@ -61,6 +61,8 @@ Manifest trust or confinement requests cannot grant either property. A profile t
 Native extensions, MCP process and HTTP servers, and executable manifest HTTP, script, and OCI adapters enter one metadata-only candidate inventory. Discovery captures stable identity, source kind, source digest, trust and confinement requests, and probe requirements. It does not evaluate Pkl, spawn a process or container, connect to a service, resolve secrets, or publish registrations.
 
 After trust admission, candidates are quarantined from ordinary dispatch while their transport adapters negotiate declarations. EventBus publishes a new composition generation only after the complete graph passes validation, readiness, and compatibility-cache parity. One generation owner performs rollback and shutdown for every adapter. A failed candidate is cleaned up and cannot replace the previously accepted graph. Process adapters retain process-tree cleanup. HTTP adapters do not claim that the remote peer settled.
+
+Changed native extension bytes use one hidden pending generation per contribution. A newer candidate settles the older pending process before it becomes the sole candidate. `/extension refresh` publishes only through the supervisor-owned quiescent transaction. Active turns, queued work, unknown invocation authority, or active extension calls prevent commit. Retained leases and polling handles consult the shared generation fence and fail before old-generation RPC owner entry after publication.
 
 | Adapter | Readiness and failure policy | Cleanup assurance |
 |---|---|---|
@@ -90,7 +92,7 @@ Native and ACP `/status` consume one semantic composition projection. It identif
 1. Scaffold with `omegon extension init <name>` and implement the external SDK's `execute_tool` JSON-RPC contract.
 2. Build and install with `omegon extension install .`; local installation copies the candidate bundle.
 3. Review the installed code and add `extension:<name>` to `permissions.trustedContributionCode`.
-4. Restart Omegon and inspect `/status` for readiness, quarantine, cleanup, or graph diagnostics.
-5. After source changes, rebuild and reinstall before restarting; do not assume the original checkout remains linked.
+4. Run `/extension refresh` while idle and inspect `/status` for readiness, quarantine, cleanup, or graph diagnostics.
+5. After source changes, rebuild and reinstall before refresh; do not assume the original checkout remains linked. Use `/runtime restart` when the extension provides widgets or voice side channels.
 
 See `pkl/ExtensionManifest.pkl`, `pkl/PluginManifest.pkl`, and `pkl/McpConfig.pkl` for configuration shape. These schemas describe requests and configuration, not host trust grants.

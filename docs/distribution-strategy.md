@@ -15,13 +15,14 @@ visibility = "private"
 
 Map all distribution channels for the omegon binary: install.sh, GitHub Releases, Homebrew tap, and signing/notarization for macOS Gatekeeper.
 
-## Current Channels
+## Pre-Publication Channels
 
 | Channel | Status | Signing | Verification |
 |---|---|---|---|
-| `install.sh` | Working | SHA-256 mandatory, cosign optional | Automatic |
-| GitHub Releases | Working | cosign keyless + SBOM + attestations | Manual |
-| Homebrew stable / RC tap | Working | points at GitHub Release assets | Automatic formula update |
+| `install.sh` | Candidate | External `omegon-maintain` verifies signed release evidence | Automated fixtures |
+| GitHub Releases | Candidate | cosign keyless + SBOM + attestations | Release validation |
+| Homebrew | Deferred | Must derive from authenticated GitHub Release assets | Not a public lane yet |
+| Nix / OCI | Deferred | Channel-native pins or digest-bound evidence | Policy fixtures only |
 | Local build | Working | Developer ID (YubiKey) | `codesign -dvvv` |
 
 ## Signing Pipeline
@@ -62,13 +63,12 @@ The release.yml workflow can notarize macOS binaries if we add the API key as a 
 - **Local** (manual): Developer ID + notarize + staple (macOS Gatekeeper)
 - **Homebrew**: points at GitHub Releases (cosign-signed); macOS users who install via brew won't hit Gatekeeper because brew handles quarantine
 
-## Homebrew Tap
+## Future Homebrew Tap
 
-Stable formulas are updated by `.github/workflows/homebrew.yml` in the separate `styrene-lab/homebrew-tap` repository:
+When stable package publication is enabled explicitly, formulas will be updated by the manually dispatched `.github/workflows/homebrew.yml` in the separate `styrene-lab/homebrew-tap` repository:
 - stable → `Formula/omegon.rb`
 
-Install:
-- `brew tap styrene-lab/tap && brew install omegon`
+Do not present the retained formula as a supported public install path before that release work is complete.
 
 ## Linux ABI compatibility
 

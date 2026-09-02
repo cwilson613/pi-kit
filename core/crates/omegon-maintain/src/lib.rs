@@ -178,6 +178,8 @@ enum ReleaseCommand {
         manifest: PathBuf,
         #[arg(long)]
         bundle: PathBuf,
+        #[arg(long)]
+        extracted_root: Option<PathBuf>,
     },
 }
 
@@ -313,10 +315,19 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
                 archive,
                 manifest,
                 bundle,
+                extracted_root,
             },
     } = &cli.command
     {
-        release::verify_release(archive, manifest, bundle, started, deadline, &mut result);
+        release::verify_release(
+            archive,
+            manifest,
+            bundle,
+            extracted_root.as_deref(),
+            started,
+            deadline,
+            &mut result,
+        );
         settle_deadline(&mut result, started, deadline);
         finalize(&mut result);
         return emit(&result, cli.json);

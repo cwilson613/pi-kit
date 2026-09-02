@@ -25,6 +25,7 @@ impl App {
         self.interrupt_pending = false;
         self.runtime_turn_id = None;
         self.runtime_queue_snapshot = None;
+        self.session_activity_cache = Default::default();
         self.slim_turn_state = SlimTurnState::Ready;
 
         let mut conversation = ConversationView::new();

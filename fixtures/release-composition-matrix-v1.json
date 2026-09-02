@@ -1,5 +1,20 @@
 {
   "schema_version": 1,
+  "first_party_domains": [
+    {"id":"behavior-policy","canonical_owner":"omegon::behavior-policy","packaging_class":"host-service","runtime_boundary":"in-process-host","extraction_disposition":{"status":"retain","rationale":"Stateless advisory policy is inexpensive and remains subordinate to kernel admission authority."},"evidence":[{"path":"core/crates/omegon/src/features/behavior_policy.rs","claim":"typed optional in-process behavior policy"}]},
+    {"id":"codescan","canonical_owner":"core:codescan","packaging_class":"signed-core-component","runtime_boundary":"native-rpc","extraction_disposition":{"status":"extracted","rationale":"Indexing cost and failure isolation justify a release-coupled signed native component."},"evidence":[{"path":"extensions/omegon-codescan/manifest.toml","claim":"portable wire identity and native process owner"},{"path":"scripts/check_composition_matrix.py","claim":"kernel absence additive restoration and full-product retention"}]},
+    {"id":"constitutional-kernel","canonical_owner":"system:constitutional-kernel","packaging_class":"constitutional-resident","runtime_boundary":"in-process-kernel","extraction_disposition":{"status":"retain","rationale":"Non-replaceable admission and recovery authority must remain resident in every operational host."},"evidence":[{"path":"docs/binary-composition-and-kernel-admission.md","claim":"kernel admission criteria and constitutional authority"}]},
+    {"id":"context-compaction","canonical_owner":"omegon::context-compaction","packaging_class":"host-service","runtime_boundary":"in-process-managed-service","extraction_disposition":{"status":"review-candidate","rationale":"Typed lifecycle ownership exists, but no measured process boundary yet justifies component promotion."},"evidence":[{"path":"core/crates/omegon/src/context_compaction_service.rs","claim":"generation-bound managed service"}]},
+    {"id":"default-loop","canonical_owner":"system:default-loop","packaging_class":"constitutional-resident","runtime_boundary":"in-process-kernel","extraction_disposition":{"status":"retain","rationale":"The provider-neutral execution loop is required by every operational product profile."},"evidence":[{"path":"core/crates/omegon/src/loop_driver.rs","claim":"provider-neutral loop owner"}]},
+    {"id":"dynamic-contributions","canonical_owner":"omegon::contribution-lifecycle","packaging_class":"host-service","runtime_boundary":"in-process-host","extraction_disposition":{"status":"retain","rationale":"Trust admission publication and generation fencing remain host authority even when owners run out of process."},"evidence":[{"path":"core/crates/omegon/src/contribution_lifecycle.rs","claim":"candidate and publication lifecycle authority"}]},
+    {"id":"git","canonical_owner":"omegon-git","packaging_class":"host-service","runtime_boundary":"in-process-managed-service","extraction_disposition":{"status":"review-candidate","rationale":"Repository operations have typed lifecycle ownership, but extraction lacks additive and distribution evidence."},"evidence":[{"path":"core/crates/omegon-git/Cargo.toml","claim":"repository operation engine"},{"path":"core/crates/omegon/src/git_service.rs","claim":"generation-bound product adapter"}]},
+    {"id":"host-effects","canonical_owner":"system:host-effects","packaging_class":"constitutional-resident","runtime_boundary":"in-process-kernel","extraction_disposition":{"status":"retain","rationale":"Filesystem process and network effect mediation is required for safe startup and execution."},"evidence":[{"path":"core/crates/omegon/src/invocation_service.rs","claim":"privileged invocation admission"}]},
+    {"id":"lifecycle-openspec","canonical_owner":"omegon-opsx","packaging_class":"host-service","runtime_boundary":"in-process-managed-service","extraction_disposition":{"status":"review-candidate","rationale":"Revisioned lifecycle state is isolated, but current authority and cost evidence favors an in-process service."},"evidence":[{"path":"core/crates/omegon-opsx/Cargo.toml","claim":"portable lifecycle state machine"},{"path":"core/crates/omegon/src/lifecycle_service.rs","claim":"managed product adapter"}]},
+    {"id":"memory","canonical_owner":"omegon-memory","packaging_class":"host-service","runtime_boundary":"in-process-managed-service","extraction_disposition":{"status":"review-candidate","rationale":"Storage and background work are isolated, but no signed component promotion evidence exists."},"evidence":[{"path":"core/crates/omegon-memory/Cargo.toml","claim":"memory engine"},{"path":"core/crates/omegon/src/memory_service.rs","claim":"managed product adapter"}]},
+    {"id":"plans-work","canonical_owner":"styrene-work-runtime","packaging_class":"host-service","runtime_boundary":"in-process-host","extraction_disposition":{"status":"retain","rationale":"Snapshot aggregation is a no-resource service whose process extraction would add cost without isolation benefit."},"evidence":[{"path":"core/crates/styrene-work-runtime/Cargo.toml","claim":"provider-neutral work snapshot runtime"}]},
+    {"id":"sdk-extensions","canonical_owner":"operator","packaging_class":"operator-managed-sdk-extension","runtime_boundary":"operator-extension-runtime","extraction_disposition":{"status":"external","rationale":"SDK extensions are installed and governed by operators and cannot acquire release-coupled core identity."},"evidence":[{"path":"docs/extensions.md","claim":"operator-managed extension contract"},{"path":"tests/test_composition_release_gates.py","claim":"SDK metadata cannot mint core identity"}]},
+    {"id":"shipped-content","canonical_owner":"content-pack:omegon-shipped","packaging_class":"shipped-content","runtime_boundary":"content-pack","extraction_disposition":{"status":"extracted","rationale":"Replaceable skills prompts and catalog assets ship independently from constitutional host instructions."},"evidence":[{"path":"scripts/content_pack_manifest.py","claim":"versioned content-pack inventory"},{"path":"docs/binary-composition-and-kernel-admission.md","claim":"shipped content-pack boundary"}]}
+  ],
   "extracted_domains": {
     "codescan": {
       "service_identity": "service:codescan",
@@ -26,6 +41,24 @@
       }
     }
   },
+  "core_component_qualifications": {
+    "core:codescan": {
+      "wire_manifest_id": "omegon-codescan",
+      "portable_contracts": {"path":"core/crates/omegon-codescan-contracts/src/lib.rs","wire_manifest_id":"omegon-codescan"},
+      "signed_identity": {"path":"scripts/package_release.py","wire_manifest_id":"omegon-codescan"},
+      "executors": {
+        "kernel_absence": {"evidence_id":"codescan-kernel-absence-v1","path":"scripts/check_composition_matrix.py","command":"just check-additive-composition dev","component_id":"core:codescan","wire_manifest_id":"omegon-codescan"},
+        "additive_restoration": {"evidence_id":"codescan-additive-restoration-v1","path":"scripts/check_composition_matrix.py","command":"just check-additive-composition dev","component_id":"core:codescan","wire_manifest_id":"omegon-codescan"},
+        "full_product_retention": {"evidence_id":"codescan-full-product-retention-v1","path":"scripts/check_composition_matrix.py","command":"just check-additive-composition dev","component_id":"core:codescan","wire_manifest_id":"omegon-codescan"},
+        "policy": {"evidence_id":"codescan-policy-v1","path":"scripts/check_composition_matrix.py","command":"just check-additive-composition dev","component_id":"core:codescan","wire_manifest_id":"omegon-codescan"},
+        "protocol": {"evidence_id":"codescan-protocol-v1","path":"extensions/omegon-codescan/tests/rpc_blackbox.rs","command":"cargo test --manifest-path extensions/omegon-codescan/Cargo.toml --test rpc_blackbox --locked","component_id":"core:codescan","wire_manifest_id":"omegon-codescan"},
+        "cleanup": {"evidence_id":"codescan-cleanup-v1","path":"scripts/check_composition_matrix.py","command":"just check-additive-composition dev","component_id":"core:codescan","wire_manifest_id":"omegon-codescan"},
+        "aggregate_budget": {"evidence_id":"codescan-aggregate-budget-v1","path":"tests/test_composition_budgets.py","command":"python3 -m unittest tests.test_composition_budgets","component_id":"core:codescan","wire_manifest_id":"omegon-codescan"},
+        "archive_inventory": {"evidence_id":"codescan-archive-inventory-v1","path":"tests/test_composition_release_gates.py","command":"python3 -m unittest tests.test_composition_release_gates","component_id":"core:codescan","wire_manifest_id":"omegon-codescan"},
+        "sdk_non_promotion": {"evidence_id":"codescan-sdk-non-promotion-v1","path":"tests/test_distribution_policy.py","command":"python3 -m unittest tests.test_distribution_policy","component_id":"core:codescan","wire_manifest_id":"omegon-codescan"}
+      }
+    }
+  },
   "artifact_rows": {
     "kernel-only": {
       "artifact_profile": "kernel-host-v1",
@@ -46,6 +79,7 @@
           "anyhow",
           "clap",
           "omegon-codescan-contracts",
+          "omegon-kernel-runtime",
           "omegon-native-extension-host",
           "serde",
           "serde_json",

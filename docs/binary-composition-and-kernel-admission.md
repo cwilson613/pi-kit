@@ -41,6 +41,17 @@ without presentation defaults. Run `just check-kernel-host`,
 `just check-omegon-matrix`, and `just check-omegon-headless-deps` when changing
 feature or dependency topology.
 
+`omegon-kernel-host run <task.toml>` admits `max_turns`, `timeout_secs`, and an
+optional `token_budget` before authority starts. Provider-reported input and
+output usage accumulates across continuation requests. Before each continuation,
+the runtime compares observed usage and the known next input cost with the
+admitted budget. Exhaustion closes authority before returning structured status
+`exhausted` and exit code 2; it does not create another route lease or request.
+
+The full-product bounded task schema also admits an optional positive
+`tool_budget`. All model-originated tool calls share that atomic budget. The
+first call above it is refused before invocation preparation or owner dispatch.
+
 The original assessment found approximately 332 KiB of compile-time source content:
 
 | Content family | Source size |
@@ -66,6 +77,34 @@ Code or content belongs in the default binary only when all of the following hol
 A component failing any criterion defaults to an external contribution pack, optional feature artifact, or separate companion binary.
 
 ## Classification
+
+The composition policy is authoritative for packaging class. Runtime enablement
+can narrow availability, but it cannot reclassify host-owned code as a component
+or grant an SDK extension release-coupled identity.
+
+<!-- first-party-domain-inventory-v1:start -->
+| Domain | Canonical owner | Packaging class | Runtime boundary | Extraction disposition |
+|---|---|---|---|---|
+| `behavior-policy` | `omegon::behavior-policy` | `host-service` | `in-process-host` | `retain` |
+| `codescan` | `core:codescan` | `signed-core-component` | `native-rpc` | `extracted` |
+| `constitutional-kernel` | `system:constitutional-kernel` | `constitutional-resident` | `in-process-kernel` | `retain` |
+| `context-compaction` | `omegon::context-compaction` | `host-service` | `in-process-managed-service` | `review-candidate` |
+| `default-loop` | `system:default-loop` | `constitutional-resident` | `in-process-kernel` | `retain` |
+| `dynamic-contributions` | `omegon::contribution-lifecycle` | `host-service` | `in-process-host` | `retain` |
+| `git` | `omegon-git` | `host-service` | `in-process-managed-service` | `review-candidate` |
+| `host-effects` | `system:host-effects` | `constitutional-resident` | `in-process-kernel` | `retain` |
+| `lifecycle-openspec` | `omegon-opsx` | `host-service` | `in-process-managed-service` | `review-candidate` |
+| `memory` | `omegon-memory` | `host-service` | `in-process-managed-service` | `review-candidate` |
+| `plans-work` | `styrene-work-runtime` | `host-service` | `in-process-host` | `retain` |
+| `sdk-extensions` | `operator` | `operator-managed-sdk-extension` | `operator-extension-runtime` | `external` |
+| `shipped-content` | `content-pack:omegon-shipped` | `shipped-content` | `content-pack` | `extracted` |
+<!-- first-party-domain-inventory-v1:end -->
+
+`review-candidate` records a follow-up boundary for measurement; it does not
+authorize extraction. A candidate remains a host service until it has portable
+contracts, signed identity, kernel-absence and additive-restoration evidence,
+full-product retention, cleanup, and aggregate budget evidence. Today only
+`core:codescan` satisfies that promotion contract.
 
 ### Kernel
 
@@ -160,7 +199,7 @@ Before external-agent import is implemented, specify a provider-neutral `SkillIm
 - `omegon skills list/install` reads a deterministic shipped-pack manifest/directory;
 - missing, corrupt, and incompatible shipped content return actionable local diagnostics and do not panic;
 - project/user content discovery and override precedence remain unchanged;
-- source, `just link`, direct install, release archive, Homebrew, Nix/OCI, and npm packaging carry the same pack;
+- all supported distribution paths that claim shipped content carry the same pack; npm remains unsupported retained scaffolding;
 - default and headless compile matrices remain green.
 
 ---
@@ -581,6 +620,32 @@ and home directory. The ladder passes a temporary evidence document to
 `scripts/check_composition_budgets.py --artifact-evidence`; the document contains
 the actual install paths and runtime inspection results. Use `--budget-output`
 on `check_composition_matrix.py` to retain the resulting measurement document.
+
+Both reduced-host installations also execute `--probe agent-turn`. This is a
+deterministic, no-network conformance turn with one scripted request, a bounded
+event sequence, a hard deadline, and one terminal completion. Its output names
+`scripted-conformance` as the provider and does not represent an admitted
+production provider route. The ladder requires byte-identical hosts to return
+identical turn evidence and start no extension process, so adding codescan cannot
+change unrelated kernel loop behavior.
+
+The reduced host also supports production provider-backed execution through
+`omegon-kernel-host --cwd <workspace> run <task.toml>`. The command admits the
+bounded task and the exact project route from `.omegon/inference.toml` before it
+creates session authority. The shared `omegon-kernel-runtime` crate validates
+the endpoint-bound project secret. It records `turn.started` and
+`route.lease_recorded` durably before dispatch. It then consumes a bounded
+OpenAI Chat Completions stream and records one `turn.closed`. The full product
+reuses the same constitutional turn and route DTOs. Product domains remain
+absent from the reduced host dependency graph.
+
+The provider-backed acceptance uses a deterministic loopback endpoint. Live
+upstream providers are supplemental evidence and are not part of the default
+gate. Active `SIGINT` cancellation and deadline timeout both drop the provider
+transport before recording one typed terminal result. Unknown task fields return
+a structured zero-turn error before route loading or authority creation.
+Prospective tool exhaustion and injected cleanup failures remain separate
+readiness scenarios.
 
 Artifact budgets cover host bytes, sidecar bytes, aggregate regular-file bytes,
 Cargo dependency closures, startup tasks, external processes, model-schema

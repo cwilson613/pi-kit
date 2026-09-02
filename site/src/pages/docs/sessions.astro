@@ -69,6 +69,12 @@ import { snippet } from "../../lib/snippets";
     runtime queue updates. A cancellation request leaves the turn busy while owned cleanup runs.
   </p>
   <p>
+    Queue, active-turn, and terminal state use one durable lineage-scoped activity revision.
+    Persistent clients accept only newer authoritative revisions. A stale or unversioned busy
+    observation cannot override a newer durable closure. One-shot CLI output projects the fields
+    available at request time but does not claim persistent busy reconciliation.
+  </p>
+  <p>
     Mutating calls also carry a durable mutation domain and fence key. If owner acknowledgement or
     unknown-completion classification, or terminal settlement cannot be recorded after dispatch,
     Omegon withholds ordinary completion, writes independent emergency evidence, and blocks later
@@ -109,16 +115,25 @@ import { snippet } from "../../lib/snippets";
 
   <h2>Headless Mode</h2>
   <p>
-    For scripted/CI use, pass a prompt directly:
+    For bounded scripted or CI execution, use a task manifest:
   </p>
-  <pre><code># Execute a single prompt and exit
-{snippet("cli.headless_prompt")}
+  <pre><code>[task]
+prompt = "Review the repository and report the highest-risk issue."
 
-# Read prompt from a file
-{snippet("cli.headless_file")}
+[bounds]
+max_turns = 4
+timeout_secs = 120
+token_budget = 20000
+tool_budget = 8
 
-# Limit turns
-{snippet("cli.headless_bounded")}</code></pre>
+[agent]
+model = "anthropic:claude-sonnet-4-6"</code></pre>
+  <pre><code>omegon run task.toml</code></pre>
+  <p>
+    Flags can override task fields only when a corresponding flag exists. There is currently no
+    command-line override for <code>tool_budget</code>. Top-level <code>--prompt</code> remains a
+    simpler legacy headless mode, not the bounded manifest contract.
+  </p>
 
   <h2>Smoke Tests</h2>
   <pre><code>{snippet("cli.smoke")}</code></pre>

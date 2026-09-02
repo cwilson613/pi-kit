@@ -22,6 +22,10 @@ pub struct ControlContext<'a> {
     pub cli: &'a CliRuntimeView<'a>,
     pub invocation_scope: crate::invocation_service::InvocationScope,
     pub supervisor: Option<&'a mut crate::runtime_supervisor::InteractiveRuntimeSupervisor>,
+    pub dynamic_contributions:
+        Option<&'a mut crate::contribution_lifecycle::DynamicContributionGenerationOwner>,
+    pub dynamic_extension_publication:
+        Option<&'a mut crate::contribution_lifecycle::DynamicExtensionPublicationCoordinator>,
 }
 
 pub use crate::operator_commands::InterfaceControlRequest as ControlRequest;
@@ -931,7 +935,7 @@ pub async fn execute_control(
             runtime_inventory_status_response(ctx.runtime_state).await
         }
         ControlRequest::RuntimeSubstrateRefresh => {
-            runtime_substrate_refresh_response(ctx.runtime_state, ctx.agent).await
+            runtime_substrate_refresh_with_generations(ctx).await
         }
         ControlRequest::WorkspaceStatusView => {
             let workspace_ctx = workspace_control_context(ctx.agent);
@@ -2016,6 +2020,114 @@ pub async fn runtime_inventory_status_response(
         accepted: true,
         output: Some(projection.render_text()),
     }
+}
+
+async fn runtime_substrate_refresh_with_generations(
+    ctx: &mut ControlContext<'_>,
+) -> SlashCommandResponse {
+    let mut response = runtime_substrate_refresh_response(ctx.runtime_state, ctx.agent).await;
+    if !response.accepted {
+        return response;
+    }
+    let candidate_inventory = match crate::setup::runtime_substrate_refresh_candidate(
+        &ctx.agent.cwd,
+    ) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            response.accepted = false;
+            response.output = Some(format!(
+                "{} Extension generation inspection failed after the other runtime refreshes completed: {error}",
+                response.output.unwrap_or_default()
+            ));
+            return response;
+        }
+    };
+    let (Some(publication), Some(active_owner), Some(supervisor)) = (
+        ctx.dynamic_extension_publication.as_deref_mut(),
+        ctx.dynamic_contributions.as_deref_mut(),
+        ctx.supervisor.as_deref(),
+    ) else {
+        if let Some(output) = response.output.as_mut() {
+            output.push_str(
+                " Changed extension generations were inspected but cannot publish on this surface.",
+            );
+        }
+        return response;
+    };
+
+    let mut published = Vec::new();
+    let mut failures = Vec::new();
+    for name in candidate_inventory.extension_candidate_names {
+        let staged = match crate::setup::stage_installed_extension_replacement(
+            &ctx.agent.cwd,
+            &name,
+            ctx.agent.secrets.clone(),
+            active_owner.inventory(),
+        )
+        .await
+        {
+            Ok(crate::setup::InstalledExtensionReplacement::Unchanged) => continue,
+            Ok(crate::setup::InstalledExtensionReplacement::Changed(candidate)) => candidate,
+            Err(error) => {
+                failures.push(format!("{name}: staging failed: {error}"));
+                continue;
+            }
+        };
+        if let Err(error) = publication.accept(staged).await {
+            failures.push(format!("{name}: pending candidate rejected: {error}"));
+            continue;
+        }
+        let id = omegon_traits::RuntimeContributionId::new(format!("extension:{name}"))
+            .expect("admitted extension name forms a valid contribution id");
+        match publication
+            .commit_at_quiescence(&id, supervisor, &mut ctx.runtime_state.bus, active_owner)
+            .await
+        {
+            Ok(outcome) => {
+                published.push(name.clone());
+                if !outcome.retirement_failures.is_empty() {
+                    failures.push(format!(
+                        "{name}: old-generation retirement degraded: {}",
+                        outcome.retirement_failures.join("; ")
+                    ));
+                }
+            }
+            Err(error) => {
+                let cleanup = publication
+                    .reject_pending(&id, "explicit runtime refresh could not publish")
+                    .await;
+                failures.push(format!(
+                    "{name}: publication failed: {error}{}",
+                    if cleanup.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; candidate cleanup: {}", cleanup.join("; "))
+                    }
+                ));
+            }
+        }
+    }
+
+    if let Some(output) = response.output.as_mut() {
+        if published.is_empty() {
+            output.push_str(" No changed extension generation required publication.");
+        } else {
+            output.push_str(&format!(
+                " Published changed extension generation(s) at quiescence: {}.",
+                published.join(", ")
+            ));
+        }
+        if !failures.is_empty() {
+            output.push_str(&format!(
+                " Extension generation failures: {}",
+                failures.join(" | ")
+            ));
+        }
+    }
+    if !failures.is_empty() {
+        response.accepted = false;
+    }
+    response
 }
 
 pub async fn runtime_substrate_refresh_response(
@@ -5240,8 +5352,8 @@ pub async fn extension_update_response(name: Option<&str>) -> SlashCommandRespon
         Ok(()) => SlashCommandResponse {
             accepted: true,
             output: Some(match name.map(str::trim).filter(|s| !s.is_empty()) {
-                Some(name) => format!("Updated extension {name}. Run `/extension refresh` to inspect the current-session refresh candidate."),
-                None => "Updated installed extensions. Run `/extension refresh` to inspect the current-session refresh candidate.".to_string(),
+                Some(name) => format!("Updated extension {name}. Run `/extension refresh` while the session is idle to publish a compatible changed generation."),
+                None => "Updated installed extensions. Run `/extension refresh` while the session is idle to publish compatible changed generations.".to_string(),
             }),
         },
         Err(err) => SlashCommandResponse {
@@ -5256,7 +5368,7 @@ pub async fn extension_enable_response(name: &str) -> SlashCommandResponse {
         Ok(()) => SlashCommandResponse {
             accepted: true,
             output: Some(format!(
-                "Enabled extension {}. Run `/extension refresh` to inspect the current-session refresh candidate.",
+                "Enabled extension {}. Run `/extension refresh` while the session is idle to publish a compatible generation.",
                 name.trim()
             )),
         },
@@ -5272,7 +5384,7 @@ pub async fn extension_disable_response(name: &str) -> SlashCommandResponse {
         Ok(()) => SlashCommandResponse {
             accepted: true,
             output: Some(format!(
-                "Disabled extension {}. Run `/extension refresh` to inspect the current-session refresh candidate.",
+                "Disabled extension {}. Run `/extension refresh` to reconcile the current session; a process restart can still be required for widget or voice side channels.",
                 name.trim()
             )),
         },
@@ -5405,7 +5517,7 @@ pub async fn armory_install_response(target: &str) -> SlashCommandResponse {
 fn armory_install_output(result: crate::armory::ArmoryInstallResult) -> String {
     let followup = match result.kind {
         crate::armory::ArmoryItemKind::Extension => {
-            "New sessions will discover the extension. Use /extension list to verify it is installed, or /extension refresh to inspect the current-session refresh candidate."
+            "New sessions will discover the extension. Use /extension list to verify it is installed, or run /extension refresh while the current session is idle to publish a compatible generation."
         }
         crate::armory::ArmoryItemKind::Plugin => {
             "New sessions will discover the plugin. Use /plugin list, /persona list, or /armory search to verify the installed surface."

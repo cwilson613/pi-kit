@@ -13,7 +13,7 @@ visibility = "private"
 
 **Terminal-native agent harness for serious software work.**
 
-Single Rust binary. Persistent project memory. Multiple inference providers. Parallel git worktrees. Design and spec lifecycles built in.
+Rust-native release-coupled product: the `omegon` host, independent `omegon-maintain` recovery companion, bundled content, and signed `core:codescan` component. No Node.js runtime. Persistent project memory. Multiple inference providers. Parallel git worktrees. Design and spec lifecycles built in.
 
 Omegon is a systems engineering harness, not a transcript viewer. It can read and edit code, run commands, manage project memory across sessions, expose project-specific REST APIs as agent tools from OpenAPI specs, decompose work into isolated child worktrees, run bounded headless tasks, run long-lived Sentry automation, and operate as a local daemon or ACP agent server for editor integrations.
 
@@ -51,21 +51,24 @@ That means you get:
 ## Install
 
 ```sh
-curl -fsSL https://omegon.styrene.io/install.sh | sh
+curl -fsSL https://omegon.styrene.io/install.sh | \
+  OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain sh
 ```
+
+Direct installation requires an independently acquired and trusted external
+verifier. Omegon does not prescribe or download that bootstrap verifier.
 
 Nightly channel one-shot:
 
 ```sh
-curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --channel=nightly
+curl -fsSL https://omegon.styrene.io/install.sh | \
+  OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain \
+  sh -s -- --channel=nightly
 ```
 
-Or with Homebrew:
-
-```sh
-brew tap styrene-lab/tap
-brew install omegon
-```
+Homebrew, Nix, and OCI publication remain deferred while stable release channels
+are prepared. Their checked-in packaging is not a supported public installation
+path yet.
 
 Stable docs: <https://omegon.styrene.io/docs/install>
 Nightly/staging docs: <https://omegon.styrene.dev/docs/install>

@@ -614,6 +614,7 @@ struct App {
     oauth_tos_notice_shown: bool,
     /// Authoritative runtime prompt queue snapshot emitted by the coordinator.
     runtime_queue_snapshot: Option<serde_json::Value>,
+    session_activity_cache: crate::surfaces::session_activity::SessionActivityCache,
     /// Monotonic identity of the active interactive runtime prompt.
     runtime_turn_id: Option<u64>,
     session_view_binding: Option<crate::session_consumers::SessionViewBinding>,
@@ -1015,6 +1016,7 @@ impl App {
             active_action_prompt: None,
             oauth_tos_notice_shown: false,
             runtime_queue_snapshot: None,
+            session_activity_cache: Default::default(),
             runtime_turn_id: None,
             session_view_binding: None,
             session_view_generation: 0,

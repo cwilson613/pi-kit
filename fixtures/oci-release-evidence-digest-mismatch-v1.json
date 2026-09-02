@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "verification_scope": "policy-ci",
+  "publication_status": "not-performed",
+  "image_reference": "omegon-policy-fixture@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "composition_class": "host-only",
+  "core_components": [],
+  "evidence": {
+    "signature": {
+      "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "composition_class": "host-only"
+    },
+    "sbom": {
+      "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "composition_class": "host-only"
+    },
+    "provenance": {
+      "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "composition_class": "host-only"
+    },
+    "composition_identity": {
+      "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "composition_class": "host-only",
+      "core_components": []
+    }
+  }
+}

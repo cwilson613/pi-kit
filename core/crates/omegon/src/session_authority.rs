@@ -7,6 +7,7 @@ use std::{
 };
 
 use chrono::DateTime;
+pub(crate) use omegon_kernel_runtime::{RouteLeaseRecorded, TurnClosed, TurnOutcome, TurnStarted};
 use omegon_traits::{
     RuntimeCapabilityId, RuntimeCapabilityTransitionPolicy, RuntimeCompositionGenerationId,
     RuntimeContributionGenerationId, RuntimeContributionId, RuntimeEffect, RuntimeExecutionPolicy,
@@ -100,18 +101,6 @@ pub(crate) enum InvocationOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum TurnOutcome {
-    Completed,
-    Failed,
-    Cancelled,
-    TimedOut,
-    Revoked,
-    Interrupted,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ActorIdentity {
     pub(crate) principal: String,
@@ -198,31 +187,6 @@ pub(crate) struct PromptRejected {
 pub(crate) struct PromptRemoved {
     pub(crate) prompt_id: Uuid,
     pub(crate) reason: PromptRemovalReason,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct TurnStarted {
-    pub(crate) turn_id: Uuid,
-    pub(crate) prompt_id: Uuid,
-    pub(crate) runtime_generation_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RouteLeaseRecorded {
-    pub(crate) lease_id: Uuid,
-    pub(crate) request_id: Uuid,
-    pub(crate) turn_id: Uuid,
-    pub(crate) selected_provider_id: String,
-    pub(crate) selected_model_id: String,
-    pub(crate) serving_provider_id: String,
-    pub(crate) serving_model_id: String,
-    pub(crate) schema_dialect: String,
-    pub(crate) credential_source_class: String,
-    pub(crate) fallback_reason: Option<String>,
-    pub(crate) contribution_generation_id: String,
-    pub(crate) route_policy: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -837,15 +801,6 @@ fn invocation_mutation_fence_id(
         )
         .as_bytes(),
     )
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct TurnClosed {
-    pub(crate) turn_id: Uuid,
-    pub(crate) outcome: TurnOutcome,
-    pub(crate) reason_code: String,
-    pub(crate) recovery_rule_version: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4819,6 +4774,20 @@ impl SessionAuthorityHandle {
 
     pub(crate) fn state(&self) -> SessionAuthorityState {
         self.lock().state().clone()
+    }
+
+    pub(crate) fn activity_source(
+        &self,
+    ) -> (SessionAuthorityState, Result<Option<(u64, TurnClosed)>>) {
+        let authority = self.lock();
+        let state = authority.state().clone();
+        let terminal = authority.store.read_stable_facts().map(|facts| {
+            facts.into_iter().rev().find_map(|fact| match fact.payload {
+                SessionFactPayload::TurnClosed(turn) => Some((fact.sequence, turn)),
+                _ => None,
+            })
+        });
+        (state, terminal)
     }
 
     pub(crate) fn unknown_retry_disposition(

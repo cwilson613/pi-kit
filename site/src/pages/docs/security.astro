@@ -7,18 +7,18 @@ import { snippet } from "../../lib/snippets";
 
   <!-- DIAGRAM:security-layers | Concentric rings: inner = source code → CI release build (cosign keyless) → local validation binary (YubiKey/Apple Developer ID) → GitHub Attestations (provenance). Label verification command for each layer -->
   <h2>Release Signing</h2>
-  <p>Every release is signed at multiple levels, but not all signatures cover the same artifact boundary:</p>
+  <p>Release archives carry a signed package-manifest bundle. Stable releases add signed SBOM and GitHub provenance evidence. These layers do not cover the same artifact boundary:</p>
   <table>
     <thead><tr><th>Layer</th><th>Method</th><th>What it covers</th><th>Verification</th></tr></thead>
     <tbody>
       <tr><td>CI release artifacts</td><td>Sigstore bundle v0.3 (keyless, OIDC)</td><td>Archive, provenance, and both executable identities</td><td><code>omegon-maintain release verify</code></td></tr>
       <tr><td>Local macOS validation binary</td><td>Apple Developer ID (YubiKey)</td><td>Operator workstation build produced before publish</td><td><code>codesign -dvvv</code></td></tr>
-      <tr><td>Provenance</td><td>GitHub Attestations (SLSA)</td><td>CI build provenance for published release assets</td><td><code>gh attestation verify</code></td></tr>
+      <tr><td>Stable provenance</td><td>GitHub Attestations (SLSA)</td><td>CI build provenance for stable published release assets</td><td><code>gh attestation verify</code></td></tr>
     </tbody>
   </table>
   <p>
-    The manual YubiKey step signs the local validation binary. Homebrew and other package surfaces are
-    derived from CI-built release assets, not from the locally signed binary.
+    The manual YubiKey step signs the local validation binary. Deferred package surfaces such as
+    Homebrew will derive from CI-built release assets when enabled, not from the locally signed binary.
   </p>
 
   <h3>Verify a Release</h3>
@@ -36,8 +36,9 @@ import { snippet } from "../../lib/snippets";
 
   <h2>SBOM</h2>
   <p>
-    Every release includes a CycloneDX Software Bill of Materials (<code>omegon-sbom.cdx.json</code>)
-    listing all Rust crate dependencies with versions. The SBOM is itself signed with cosign.
+    Stable releases include a CycloneDX Software Bill of Materials
+    (<code>omegon-sbom.cdx.json</code>) listing all Rust crate dependencies with versions. The SBOM
+    is signed with cosign. Nightly releases do not publish the stable-only SBOM asset.
   </p>
 
   <h2>Credential Storage</h2>

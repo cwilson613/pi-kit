@@ -288,6 +288,17 @@ omegon-maintain --json release verify \
   --bundle /absolute/path/omegon-<version>-<target>.tar.gz.manifest.sigstore.json
 ```
 
+After authentication, an installer can additionally bind an already extracted
+tree to the same signed inventory:
+
+```sh
+omegon-maintain --json release verify \
+  --archive /absolute/path/omegon-<version>-<target>.tar.gz \
+  --manifest /absolute/path/omegon-<version>-<target>.tar.gz.manifest.json \
+  --bundle /absolute/path/omegon-<version>-<target>.tar.gz.manifest.sigstore.json \
+  --extracted-root /absolute/path/to/staged-root
+```
+
 Verification accepts only the compiled `styrene-lab/omegon` release workflow
 identity and issuer, Sigstore bundle v0.3 message signatures, one Rekor
 `hashedrekord` v0.0.1 entry, and complete SET, inclusion-proof, and signed
@@ -295,7 +306,10 @@ checkpoint evidence. It evaluates the Fulcio certificate and trust material at
 the authenticated Rekor integrated time, rejects timestamp-authority evidence,
 and streams a bounded regular-file-only archive without extracting it. The
 archive must exactly match the signed manifest and contain both root executables
-with mode `0755`. All three operand paths must be absolute regular files.
+with mode `0755`. With `--extracted-root`, the root must contain the exact
+manifest inventory with matching regular-file digests, sizes, and modes; extra,
+missing, linked, or special entries are rejected. All operand paths and the
+optional extracted root must be absolute.
 
 ## Read authority
 

@@ -378,6 +378,8 @@ struct PreparedComposition {
     generation_id: omegon_traits::RuntimeCompositionGenerationId,
 }
 
+pub(crate) struct PreparedDynamicPublication(PreparedComposition);
+
 #[derive(Clone)]
 pub(crate) struct InProcessServiceHandle<T: ?Sized> {
     pub(crate) capability_id: omegon_traits::RuntimeCapabilityId,
@@ -928,7 +930,7 @@ impl EventBus {
             );
         }
         let generation_id = new_composition_generation_id();
-        let prepared = self.prepare_finalization(&BTreeMap::new(), generation_id);
+        let prepared = self.prepare_finalization(&BTreeMap::new(), generation_id, false);
         match prepared {
             Ok(prepared) => {
                 self.commit_finalization(prepared);
@@ -941,10 +943,27 @@ impl EventBus {
         }
     }
 
+    pub(crate) fn prepare_dynamic_publication(
+        &mut self,
+    ) -> anyhow::Result<PreparedDynamicPublication> {
+        let generation_id = new_composition_generation_id();
+        match self.prepare_finalization(&BTreeMap::new(), generation_id, true) {
+            Ok(prepared) => Ok(PreparedDynamicPublication(prepared)),
+            Err(error) => {
+                self.clear_pending_ordinary();
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn commit_dynamic_publication(&mut self, publication: PreparedDynamicPublication) {
+        self.commit_finalization(publication.0);
+    }
+
     pub(crate) async fn try_finalize_managed(&mut self) -> anyhow::Result<()> {
         let mut candidates = std::mem::take(&mut self.pending_managed_generations);
         let generation_id = new_composition_generation_id();
-        let prepared = match self.prepare_finalization(&candidates, generation_id.clone()) {
+        let prepared = match self.prepare_finalization(&candidates, generation_id.clone(), false) {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.clear_pending_ordinary();
@@ -1019,6 +1038,7 @@ impl EventBus {
             Vec<crate::managed_service_bus::ManagedGenerationCandidate>,
         >,
         generation_id: omegon_traits::RuntimeCompositionGenerationId,
+        retain_active_managed: bool,
     ) -> anyhow::Result<PreparedComposition> {
         use omegon_traits::{
             RuntimeActivationBoundary, RuntimeAuthorityNarrowing, RuntimeCapabilityGroupId,
@@ -1226,7 +1246,12 @@ impl EventBus {
             debug_assert_ne!(active_call_timeout_ms, 0);
         }
         for active_identity in self.managed_services.graph_managed_identities() {
-            if !staged_managed_identities.contains(&active_identity) {
+            let retained = retain_active_managed
+                && frozen.iter().any(|feature| {
+                    feature.contribution_id == active_identity.0
+                        && feature.generation_id == active_identity.1
+                });
+            if !staged_managed_identities.contains(&active_identity) && !retained {
                 anyhow::bail!(
                     "removing active managed generation {} {} requires an authorized quiescent replacement",
                     active_identity.0.as_str(),
@@ -1234,6 +1259,24 @@ impl EventBus {
                 );
             }
         }
+        let staged_managed_capabilities = managed_candidates
+            .values()
+            .flatten()
+            .flat_map(|candidate| {
+                candidate
+                    .services()
+                    .map(|(capability_id, _)| capability_id.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        let retained_graph_managed_services = if retain_active_managed {
+            self.managed_services
+                .graph_managed_metadata()
+                .into_iter()
+                .filter(|service| !staged_managed_capabilities.contains(&service.capability_id))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
 
         let identity_check = frozen.iter().try_for_each(|feature| {
             for tool in &feature.tools {
@@ -1563,6 +1606,21 @@ impl EventBus {
                         .iter()
                         .map(|service| service.capability.clone()),
                 );
+                capabilities.extend(
+                    retained_graph_managed_services
+                        .iter()
+                        .filter(|service| service.owner == feature.contribution_id)
+                        .filter_map(|service| {
+                            self.accepted_graph
+                                .as_ref()?
+                                .declarations
+                                .get(&service.owner)?
+                                .capabilities
+                                .iter()
+                                .find(|capability| capability.id == service.capability_id)
+                                .cloned()
+                        }),
+                );
                 if let Some(candidate) = managed_candidates
                     .get(&feature.name)
                     .and_then(|candidates| candidates.first())
@@ -1706,15 +1764,34 @@ impl EventBus {
             }
         };
 
-        let staged_managed_capabilities = managed_candidates
-            .values()
-            .flatten()
-            .flat_map(|candidate| {
-                candidate
-                    .services()
-                    .map(|(capability_id, _)| capability_id.clone())
-            })
-            .collect::<BTreeSet<_>>();
+        for service in &retained_graph_managed_services {
+            let declaration = graph.declarations.get(&service.owner).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "candidate graph dropped active managed-service owner {}",
+                    service.owner.as_str()
+                )
+            })?;
+            let capability = declaration
+                .capabilities
+                .iter()
+                .find(|capability| capability.id == service.capability_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "candidate graph dropped active managed service {}",
+                        service.capability_id.as_str()
+                    )
+                })?;
+            if declaration.generation_id != service.generation_id
+                || graph.capability_owners.get(&service.capability_id) != Some(&service.owner)
+                || capability.kind != RuntimeCapabilityKind::InProcessService
+                || capability.service_interface.as_ref() != Some(&service.interface_id)
+            {
+                anyhow::bail!(
+                    "candidate graph changed active managed service without staging a replacement: {}",
+                    service.capability_id.as_str()
+                );
+            }
+        }
         for service in self.managed_services.direct_managed_metadata() {
             if graph.capability_owners.contains_key(&service.capability_id)
                 && !staged_managed_capabilities.contains(&service.capability_id)
@@ -1735,7 +1812,7 @@ impl EventBus {
         let mut internal_tool_owners = HashMap::new();
         let mut acp_invocation_owners = HashMap::new();
         let mut in_process_services = BTreeMap::new();
-        let mut managed_service_implementations = 0usize;
+        let mut managed_service_implementations = retained_graph_managed_services.len();
         for wave in &graph.activation_waves {
             for contribution_id in wave {
                 if contribution_id.as_str() != "system:tool-groups"
@@ -3450,6 +3527,18 @@ mod tests {
         }
     }
 
+    struct SyntheticRemoteResource;
+
+    impl ManagedResourceController for SyntheticRemoteResource {
+        fn request_stop(&self) {}
+
+        fn force_stop(&self) {}
+
+        fn await_settled(&self) -> ManagedResourceSettlementFuture<'_> {
+            Box::pin(std::future::pending())
+        }
+    }
+
     fn synthetic_managed_candidate(
         generation: &str,
         service: std::sync::Arc<SyntheticManagedService>,
@@ -4574,6 +4663,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cln_002_remote_cleanup_projection_preserves_evidence_boundary() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(SyntheticBestEffortManagedFeature));
+        let host_resources = [
+            ("task", omegon_traits::RuntimeOwnedResourceKind::Task),
+            ("socket", omegon_traits::RuntimeOwnedResourceKind::Socket),
+            (
+                "subscription",
+                omegon_traits::RuntimeOwnedResourceKind::Subscription,
+            ),
+        ]
+        .into_iter()
+        .map(|(name, kind)| {
+            let controller: std::sync::Arc<dyn ManagedResourceController> =
+                SyntheticManagedResource::new();
+            crate::managed_service_bus::ManagedResourceRegistration::new(
+                omegon_traits::RuntimeContributionResourceId::new(format!("resource:{name}"))
+                    .unwrap(),
+                kind,
+                RuntimeCleanupAssurance::BestEffort,
+                Vec::new(),
+                controller,
+            )
+        });
+        let remote: std::sync::Arc<dyn ManagedResourceController> =
+            std::sync::Arc::new(SyntheticRemoteResource);
+        let resources = host_resources
+            .chain(std::iter::once(
+                crate::managed_service_bus::ManagedResourceRegistration::new(
+                    omegon_traits::RuntimeContributionResourceId::new("resource:remote-peer")
+                        .unwrap(),
+                    omegon_traits::RuntimeOwnedResourceKind::RemoteService,
+                    RuntimeCleanupAssurance::BestEffort,
+                    Vec::new(),
+                    remote,
+                ),
+            ))
+            .collect();
+        let mut candidate = crate::managed_service_bus::ManagedGenerationCandidate::new(
+            omegon_traits::RuntimeCompositionGenerationId::new("composition:caller-supplied")
+                .unwrap(),
+            omegon_traits::RuntimeContributionId::new("feature:caller-supplied").unwrap(),
+            omegon_traits::RuntimeContributionGenerationId::new("caller:remote-cleanup-v1")
+                .unwrap(),
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            resources,
+        )
+        .unwrap();
+        candidate
+            .add_service(
+                omegon_traits::RuntimeCapabilityId::new("service:synthetic-managed").unwrap(),
+                omegon_traits::RuntimeServiceInterfaceId::new("interface:synthetic-managed-v1")
+                    .unwrap(),
+                std::sync::Arc::new(SyntheticManagedService(1)),
+            )
+            .unwrap();
+        bus.stage_managed_generation("synthetic-managed", candidate)
+            .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        let _ = bus.shutdown_managed_services().await;
+        let projection = bus.composition_diagnostic_projection().unwrap();
+        let owner = projection.managed_owners.last().unwrap();
+        assert_eq!(
+            owner.lifecycle.cleanup_assurance,
+            RuntimeCleanupAssurance::BestEffort
+        );
+        assert_eq!(
+            owner.lifecycle.cleanup_state,
+            RuntimeCleanupState::Unverified
+        );
+        assert!(
+            owner
+                .resources
+                .iter()
+                .filter(|resource| {
+                    resource.record.kind != omegon_traits::RuntimeOwnedResourceKind::RemoteService
+                })
+                .all(|resource| resource.record.cleanup_state == RuntimeCleanupState::Settled)
+        );
+        let remote = owner
+            .resources
+            .iter()
+            .find(|resource| {
+                resource.record.kind == omegon_traits::RuntimeOwnedResourceKind::RemoteService
+            })
+            .unwrap();
+        assert_eq!(
+            remote.record.cleanup_assurance,
+            RuntimeCleanupAssurance::BestEffort
+        );
+        assert_eq!(remote.record.cleanup_state, RuntimeCleanupState::Unverified);
+        remote.record.validate().unwrap();
+
+        let acp_visible = format!(
+            "{}\n{}",
+            serde_json::to_string(&projection).unwrap(),
+            projection.render_markdown()
+        );
+        assert!(acp_visible.contains("kind=remote_service cleanup=best_effort/unverified"));
+        assert!(!acp_visible.contains("kind=remote_service cleanup=strict/settled"));
+    }
+
+    #[tokio::test]
     async fn managed_graph_initial_publication_supports_typed_lookup() {
         let mut bus = EventBus::new();
         bus.register(Box::new(SyntheticManagedFeature {
@@ -4627,6 +4821,46 @@ mod tests {
                 .any(|declaration| declaration.id == capability
                     && declaration.kind == omegon_traits::RuntimeCapabilityKind::InProcessService)
         );
+        assert_eq!(resource.stops.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn dynamic_publication_retains_unrelated_managed_generation() {
+        let mut bus = EventBus::new();
+        bus.register(Box::new(SyntheticManagedFeature {
+            generation: "contribution:synthetic-managed-v1",
+            boundary: RuntimeActivationBoundary::Boot,
+            cleanup_timeout_ms: 10,
+        }));
+        let resource = SyntheticManagedResource::new();
+        bus.stage_managed_generation(
+            "synthetic-managed",
+            synthetic_managed_candidate(
+                "caller-generation-v1",
+                std::sync::Arc::new(SyntheticManagedService(1)),
+                std::sync::Arc::clone(&resource),
+                false,
+            ),
+        )
+        .unwrap();
+        bus.try_finalize_managed().await.unwrap();
+
+        bus.register(Box::new(DisplayNameFeature("additional")));
+        let publication = bus.prepare_dynamic_publication().unwrap();
+        assert_eq!(bus.feature_names(), vec!["synthetic-managed"]);
+        bus.commit_dynamic_publication(publication);
+
+        let capability =
+            omegon_traits::RuntimeCapabilityId::new("service:synthetic-managed").unwrap();
+        let interface =
+            omegon_traits::RuntimeServiceInterfaceId::new("interface:synthetic-managed-v1")
+                .unwrap();
+        let handle = bus
+            .managed_service::<SyntheticManagedService>(&capability, &interface)
+            .unwrap()
+            .unwrap();
+        assert_eq!(handle.invoke(()).await.unwrap(), 1);
+        assert_eq!(bus.feature_names(), vec!["synthetic-managed", "additional"]);
         assert_eq!(resource.stops.load(Ordering::Acquire), 0);
     }
 

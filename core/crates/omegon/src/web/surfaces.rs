@@ -18,6 +18,7 @@ pub struct WebSurfacesSnapshot {
     pub session_id: String,
     pub revision: u64,
     pub generated_at: String,
+    pub activity: Option<crate::surfaces::session_activity::TransportActivityProjectionV1>,
     pub projection: super::WebSessionProjection,
     pub surfaces: WebSurfaceBundle,
 }
@@ -248,8 +249,19 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
     WebSurfacesSnapshot {
         schema_version: WEB_SURFACES_SCHEMA_VERSION,
         session_id: state.session_id(),
-        revision: 0,
+        revision: state
+            .session_view_binding
+            .as_ref()
+            .and_then(crate::session_consumers::SessionViewBinding::activity_snapshot)
+            .map_or(0, |activity| activity.activity_revision),
         generated_at: Utc::now().to_rfc3339(),
+        activity: state
+            .session_view_binding
+            .as_ref()
+            .and_then(crate::session_consumers::SessionViewBinding::activity_snapshot)
+            .map(|activity| {
+                activity.for_transport(crate::surfaces::session_activity::ActivityTransport::Web)
+            }),
         projection,
         surfaces: WebSurfaceBundle {
             conversation: WebConversationSurface {

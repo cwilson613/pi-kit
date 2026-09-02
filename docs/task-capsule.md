@@ -33,6 +33,14 @@ directory prevents a capsule build from replacing the full product artifact.
 Set an absolute state directory, an explicit model route, and the corresponding
 credential. Do not put credentials in task files.
 
+Task files use strict decoding. An unknown root or nested field causes admission
+to fail before session, route, tool, or process authority starts.
+
+The optional `[bounds].tool_budget` field admits a positive maximum number of
+model-originated tool calls for the task. The runtime shares this immutable
+policy across parallel calls. It returns structured exhaustion before preparing
+the first call above the admitted boundary.
+
 ```bash
 OMEGON_HOME=/absolute/state/.omegon \
   target/task-capsule/release/omegon \

@@ -116,32 +116,24 @@
     "desc": "Release workflow (tag, build, optionally sign, publish)"
   },
   "install.quick_install": {
-    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh",
-    "desc": "Quick install — downloads latest signed binary"
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain sh",
+    "desc": "Install using an independently trusted external release verifier"
   },
   "install.install_custom_dir": {
-    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | INSTALL_DIR=~/.local/bin sh",
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain INSTALL_DIR=~/.local/bin sh",
     "desc": "Install to a custom directory"
   },
   "install.install_nightly": {
-    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --channel=nightly",
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain sh -s -- --channel=nightly",
     "desc": "Install latest nightly"
   },
   "install.install_version": {
-    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --version=v0.28.0",
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain sh -s -- --version=v0.28.0",
     "desc": "Install a specific version"
   },
   "install.install_ci": {
-    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --no-confirm",
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain sh -s -- --no-confirm",
     "desc": "Non-interactive install (CI)"
-  },
-  "install.brew_stable": {
-    "cmd": "brew tap styrene-lab/tap\nbrew install omegon",
-    "desc": "Homebrew install"
-  },
-  "install.brew_upgrade_stable": {
-    "cmd": "brew upgrade omegon",
-    "desc": "Update Homebrew install"
   },
   "install.verify_companions": {
     "cmd": "omegon --version\nomegon-maintain --version\nomegon --which\nomegon-maintain --which\nomegon-maintain --json identity",
@@ -220,8 +212,8 @@
     "desc": "Verify structural audit continuity"
   },
   "quickstart.setup_codex": {
-    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | sh\nomegon auth login openai-codex\nom",
-    "desc": "Install + OpenAI/Codex OAuth + start slim mode"
+    "cmd": "curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain sh\nomegon auth login openai-codex\nom",
+    "desc": "Externally verified install + OpenAI/Codex OAuth + start slim mode"
   },
   "quickstart.setup_apikey": {
     "cmd": "export ANTHROPIC_API_KEY=\"sk-ant-...\"\nom",

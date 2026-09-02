@@ -20,7 +20,7 @@ parent = "rust-agent-loop"
 
 ## Overview
 
-Implement reqwest-based streaming clients for Anthropic and OpenAI directly in Rust. The Node.js bridge remains for long-tail providers (Bedrock, Vertex, Gemini) but is not spawned in the common case (>95% of sessions). After Phase 3: Omegon is a single Rust binary with zero Node.js dependency for the common case. Installable via `brew install omegon` or `curl | sh` without Node.js.
+Implement reqwest-based streaming clients for Anthropic and OpenAI directly in Rust. The Node.js bridge remains for long-tail providers (Bedrock, Vertex, Gemini) but is not spawned in the common case (>95% of sessions). After Phase 3: Omegon is a single Rust binary with zero Node.js dependency for the common case. Package-manager publication remains separate release work; pre-publication installation uses authenticated release archives or the externally verified direct installer.
 
 ## Open Questions
 

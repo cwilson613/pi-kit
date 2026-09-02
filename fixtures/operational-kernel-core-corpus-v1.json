@@ -1,0 +1,227 @@
+{
+  "schema_version": 1,
+  "dimensions": {
+    "artifact": ["kernel-only", "kernel+core", "task-capsule", "full-product", "maintenance"],
+    "execution": ["scripted-conformance", "admitted-provider", "local-owner", "native-rpc", "remote-transport", "distribution-verifier"],
+    "authority": ["sessionless-conformance", "session-authority", "maintenance-authority", "no-runtime-authority"],
+    "surface": ["bounded", "tui", "acp", "web", "ipc", "cli", "daemon", "model", "maintenance-cli"],
+    "lifecycle": ["startup", "route", "active", "publication", "replacement", "cleanup", "recovery", "distribution"],
+    "generation": ["initial", "candidate", "candidate-during-active-turn", "replacement", "stale", "retained-previous", "none"],
+    "fault": ["none", "invalid-input", "trust-failure", "route-failure", "provider-cancelled", "budget-exhausted", "authority-write", "publication-failure", "stale-generation", "cleanup-timeout", "distribution-verification", "switch-interrupted", "notification-lost"],
+    "cleanup": ["none", "local-process-tree", "local-runtime-resource", "remote-best-effort"],
+    "distribution": ["source", "linked", "release-archive", "direct-installer", "version-switch", "homebrew", "nix", "oci"]
+  },
+  "invariants": [
+    "composition.host-bytes-unchanged",
+    "composition.failure-preserves-previous",
+    "composition.sdk-cannot-mint-core",
+    "session.durable-before-projection",
+    "session.terminal-exactly-once",
+    "session.missed-advice-reconciles",
+    "route.lease-before-dispatch",
+    "invocation.dispatch-before-owner-entry",
+    "invocation.stale-lease-denied",
+    "lifecycle.candidate-hidden-until-publication",
+    "lifecycle.quiescent-publication",
+    "lifecycle.cleanup-claim-matches-evidence",
+    "bounded.manifest-admitted-before-authority",
+    "bounded.check-before-next-action",
+    "bounded.cleanup-before-exit",
+    "distribution.authenticates-exact-composition"
+  ],
+  "families": {
+    "KRN": "reduced kernel execution and physical boundary",
+    "BND": "prospective bounded execution",
+    "CMP": "signed core component composition",
+    "ADD": "operator-managed SDK addon trust",
+    "LIF": "generation lifecycle and replacement",
+    "AUT": "session, route, and invocation authority",
+    "SUR": "cross-surface semantic parity",
+    "DST": "distribution composition and trust",
+    "CLN": "resource cleanup and settlement"
+  },
+  "scenarios": [
+    {
+      "id": "KRN-001", "title": "Deterministic kernel turn", "requirement": "kernel-composition/artifact-profiles:Reduced kernel executes bounded agent turns",
+      "axes": {"artifact":"kernel-only","execution":"scripted-conformance","authority":"sessionless-conformance","surface":"bounded","lifecycle":"active","generation":"initial","fault":"none","cleanup":"none","distribution":"source"},
+      "invariants": ["session.terminal-exactly-once", "bounded.check-before-next-action"],
+      "oracle": ["one scripted request completes once", "result names scripted-conformance", "no production route or process is claimed"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/kernel_host.rs","command":"cargo test -p omegon --bin omegon-kernel-host --locked --no-default-features --features kernel-host scripted_agent_turn"}]}
+    },
+    {
+      "id": "KRN-002", "title": "Additive component does not change kernel turn", "requirement": "kernel-composition/artifact-profiles:Reduced kernel executes bounded agent turns",
+      "axes": {"artifact":"kernel+core","execution":"scripted-conformance","authority":"sessionless-conformance","surface":"bounded","lifecycle":"active","generation":"initial","fault":"none","cleanup":"none","distribution":"source"},
+      "invariants": ["composition.host-bytes-unchanged"],
+      "oracle": ["kernel-only and kernel-plus-codescan hosts are byte-identical", "turn evidence is identical", "the unrelated sidecar does not start"],
+      "evidence": {"status":"implemented","executors":[{"path":"scripts/check_composition_matrix.py","command":"just check-additive-composition dev"}]}
+    },
+    {
+      "id": "KRN-003", "title": "Provider-backed reduced-kernel turn", "requirement": "kernel-composition/artifact-profiles:Reduced kernel executes bounded agent turns",
+      "axes": {"artifact":"kernel-only","execution":"admitted-provider","authority":"session-authority","surface":"bounded","lifecycle":"route","generation":"initial","fault":"none","cleanup":"local-runtime-resource","distribution":"source"},
+      "invariants": ["route.lease-before-dispatch", "session.durable-before-projection", "session.terminal-exactly-once", "bounded.cleanup-before-exit"],
+      "oracle": ["shared route authority issues the lease", "structured bounded completion matches full-product semantics", "product domains remain absent"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/tests/kernel_host_provider_blackbox.rs","command":"cargo test -p omegon --locked --no-default-features --features kernel-host --test kernel_host_provider_blackbox"}]}
+    },
+    {
+      "id": "KRN-004", "title": "Provider cancellation settles reduced-kernel authority", "requirement": "kernel-composition/artifact-profiles:Reduced kernel executes bounded agent turns",
+      "axes": {"artifact":"kernel-only","execution":"admitted-provider","authority":"session-authority","surface":"bounded","lifecycle":"cleanup","generation":"initial","fault":"provider-cancelled","cleanup":"local-runtime-resource","distribution":"source"},
+      "invariants": ["session.terminal-exactly-once", "bounded.cleanup-before-exit"],
+      "oracle": ["cancellation is durable", "provider resources settle before closure", "the result is typed and bounded"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/tests/kernel_host_provider_blackbox.rs","command":"cargo test -p omegon --locked --no-default-features --features kernel-host --test kernel_host_provider_blackbox"}]}
+    },
+    {
+      "id": "KRN-005", "title": "Kernel dependency and capability ratchet", "requirement": "kernel-composition/artifact-profiles:First-party domains have explicit packaging classes",
+      "axes": {"artifact":"kernel-only","execution":"local-owner","authority":"no-runtime-authority","surface":"cli","lifecycle":"startup","generation":"none","fault":"none","cleanup":"none","distribution":"source"},
+      "invariants": ["composition.host-bytes-unchanged"],
+      "oracle": ["direct roots match policy", "forbidden product packages are absent", "capability and budget inventories stay bounded"],
+      "evidence": {"status":"implemented","executors":[{"path":"scripts/check_kernel_dependency_boundary.py","command":"just check-kernel-host"}]}
+    },
+    {
+      "id": "BND-001", "title": "Invalid task manifest fails before authority", "requirement": "runtime-session/authority:Bounded execution enforces admitted task policy prospectively",
+      "axes": {"artifact":"task-capsule","execution":"admitted-provider","authority":"session-authority","surface":"bounded","lifecycle":"startup","generation":"initial","fault":"invalid-input","cleanup":"none","distribution":"source"},
+      "invariants": ["bounded.manifest-admitted-before-authority"],
+      "oracle": ["invalid field is identified", "no session route tool or process authority starts"],
+      "evidence": {"status":"implemented","executors":[{"path":"scripts/check_task_capsule_runtime.py","command":"python3 scripts/check_task_capsule_runtime.py target/task-capsule/release/omegon"}]}
+    },
+    {
+      "id": "BND-002", "title": "Token budget prevents the next provider request", "requirement": "runtime-session/authority:Bounded execution enforces admitted task policy prospectively",
+      "axes": {"artifact":"kernel-only","execution":"admitted-provider","authority":"session-authority","surface":"bounded","lifecycle":"route","generation":"initial","fault":"budget-exhausted","cleanup":"local-runtime-resource","distribution":"source"},
+      "invariants": ["bounded.check-before-next-action", "route.lease-before-dispatch"],
+      "oracle": ["no over-budget network request starts", "result reports admitted and observed tokens", "execution settles exhausted"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/tests/kernel_host_provider_blackbox.rs","command":"cargo test -p omegon --locked --no-default-features --features kernel-host --test kernel_host_provider_blackbox"}]}
+    },
+    {
+      "id": "BND-003", "title": "Tool budget prevents invocation owner entry", "requirement": "runtime-session/authority:Bounded execution enforces admitted task policy prospectively",
+      "axes": {"artifact":"kernel+core","execution":"native-rpc","authority":"session-authority","surface":"bounded","lifecycle":"active","generation":"initial","fault":"budget-exhausted","cleanup":"none","distribution":"source"},
+      "invariants": ["bounded.check-before-next-action", "invocation.dispatch-before-owner-entry"],
+      "oracle": ["no invocation lease or dispatch is created", "the component process receives no call", "execution settles exhausted"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/tests/kernel_host_provider_blackbox.rs","command":"cargo test -p omegon --locked --no-default-features --features kernel-host --test kernel_host_provider_blackbox"}]}
+    },
+    {
+      "id": "BND-004", "title": "Admitted task tool budget governs native RPC", "requirement": "runtime-session/authority:Bounded execution enforces admitted task policy prospectively",
+      "axes": {"artifact":"task-capsule","execution":"native-rpc","authority":"session-authority","surface":"bounded","lifecycle":"active","generation":"initial","fault":"budget-exhausted","cleanup":"local-runtime-resource","distribution":"source"},
+      "invariants": ["bounded.manifest-admitted-before-authority", "bounded.check-before-next-action", "invocation.dispatch-before-owner-entry", "session.terminal-exactly-once"],
+      "oracle": ["tool_budget becomes immutable admitted policy before the turn", "the exact-boundary call enters its owner and the next model-originated call creates no lease or RPC", "structured exhaustion reports admitted and observed tool calls after session and process authority settle"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/tests/task_capsule_tool_budget_blackbox.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon --locked --no-default-features --features task-capsule --test task_capsule_tool_budget_blackbox"}]}
+    },
+    {
+      "id": "CMP-001", "title": "Core component is typed unavailable from the kernel", "requirement": "kernel-composition/artifact-profiles:First-party domains have explicit packaging classes",
+      "axes": {"artifact":"kernel-only","execution":"native-rpc","authority":"no-runtime-authority","surface":"cli","lifecycle":"startup","generation":"none","fault":"none","cleanup":"none","distribution":"source"},
+      "invariants": ["composition.host-bytes-unchanged"],
+      "oracle": ["canonical service is typed unavailable", "no fallback discovery runs", "no component process starts"],
+      "evidence": {"status":"implemented","executors":[{"path":"scripts/check_composition_matrix.py","command":"just check-additive-composition dev"}]}
+    },
+    {
+      "id": "CMP-002", "title": "Core component restores only declared capability", "requirement": "kernel-composition/artifact-profiles:First-party domains have explicit packaging classes",
+      "axes": {"artifact":"kernel+core","execution":"native-rpc","authority":"no-runtime-authority","surface":"cli","lifecycle":"active","generation":"initial","fault":"none","cleanup":"local-process-tree","distribution":"source"},
+      "invariants": ["composition.host-bytes-unchanged", "lifecycle.cleanup-claim-matches-evidence"],
+      "oracle": ["declared service becomes functional", "inventory delta names only the component", "the process tree settles on host exit"],
+      "evidence": {"status":"implemented","executors":[{"path":"scripts/check_composition_matrix.py","command":"just check-additive-composition dev"}]}
+    },
+    {
+      "id": "CMP-003", "title": "New signed core component satisfies promotion evidence", "requirement": "kernel-composition/artifact-profiles:First-party domains have explicit packaging classes",
+      "axes": {"artifact":"full-product","execution":"native-rpc","authority":"session-authority","surface":"model","lifecycle":"publication","generation":"replacement","fault":"none","cleanup":"local-process-tree","distribution":"release-archive"},
+      "invariants": ["composition.sdk-cannot-mint-core", "lifecycle.quiescent-publication", "distribution.authenticates-exact-composition"],
+      "oracle": ["one qualification record binds portable contracts and signed identity to the component", "kernel absence additive restoration and full-product retention executors pass for the same wire identity", "policy protocol cleanup budget inventory and SDK non-promotion evidence is complete and non-aliased"],
+      "evidence": {"status":"implemented","executors":[{"path":"scripts/check_composition_matrix.py","command":"python3 scripts/check_composition_matrix.py --qualification"}]}
+    },
+    {
+      "id": "ADD-001", "title": "SDK addon cannot self-promote to core", "requirement": "kernel-composition/artifact-profiles:First-party domains have explicit packaging classes",
+      "axes": {"artifact":"full-product","execution":"native-rpc","authority":"no-runtime-authority","surface":"cli","lifecycle":"publication","generation":"candidate","fault":"trust-failure","cleanup":"none","distribution":"source"},
+      "invariants": ["composition.sdk-cannot-mint-core", "lifecycle.candidate-hidden-until-publication"],
+      "oracle": ["SDK metadata grants no core identity", "candidate is rejected before publication", "no core lock or package claim is created"],
+      "evidence": {"status":"implemented","executors":[{"path":"tests/test_composition_release_gates.py","command":"python3 -m unittest tests.test_composition_release_gates"}]}
+    },
+    {
+      "id": "LIF-001", "title": "Changed generation waits for quiescence", "requirement": "runtime-contributions/lifecycle:New extension generations activate at quiescent boundaries",
+      "axes": {"artifact":"full-product","execution":"native-rpc","authority":"session-authority","surface":"daemon","lifecycle":"publication","generation":"candidate-during-active-turn","fault":"none","cleanup":"none","distribution":"source"},
+      "invariants": ["lifecycle.quiescent-publication", "lifecycle.candidate-hidden-until-publication"],
+      "oracle": ["active work retains the digest-bound old generation", "the sole pending candidate keeps declarations handles aliases and processes hidden", "a supervisor coordinator explicitly commits at quiescence and a newer candidate first settles the superseded pending candidate"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/extensions/conformance_tests.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon --bin omegon lif_001_lif_003_real_process_quiescent_replacement --locked"},{"path":"core/crates/omegon/src/extensions/conformance_tests.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon --bin omegon lif_001_newer_candidate_settles_pending_before_replacement --locked"}]}
+    },
+    {
+      "id": "LIF-002", "title": "Publication failure preserves active generation", "requirement": "runtime-contributions/lifecycle:New extension generations activate at quiescent boundaries",
+      "axes": {"artifact":"full-product","execution":"native-rpc","authority":"session-authority","surface":"daemon","lifecycle":"publication","generation":"retained-previous","fault":"publication-failure","cleanup":"local-runtime-resource","distribution":"source"},
+      "invariants": ["composition.failure-preserves-previous", "lifecycle.candidate-hidden-until-publication"],
+      "oracle": ["prior generation remains callable", "candidate schemas routes and actions stay hidden", "candidate resources settle"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/contribution_lifecycle.rs","command":"cargo test -p omegon contribution_lifecycle::tests --locked"}]}
+    },
+    {
+      "id": "LIF-003", "title": "Stale generation cannot dispatch after replacement", "requirement": "runtime-contributions/lifecycle:New extension generations activate at quiescent boundaries",
+      "axes": {"artifact":"full-product","execution":"native-rpc","authority":"session-authority","surface":"model","lifecycle":"replacement","generation":"stale","fault":"stale-generation","cleanup":"none","distribution":"source"},
+      "invariants": ["invocation.stale-lease-denied"],
+      "oracle": ["stale handle and lease consult one generation fence and fail before owner entry", "no alias polling handle or cache revives the old generation", "fresh admission and native RPC capture only the replacement"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/extensions/conformance_tests.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon --bin omegon lif_001_lif_003_real_process_quiescent_replacement --locked"}]}
+    },
+    {
+      "id": "AUT-001", "title": "Authority failure blocks projection and dispatch", "requirement": "runtime-session/authority:Cross-surface semantic parity is executable",
+      "axes": {"artifact":"full-product","execution":"local-owner","authority":"session-authority","surface":"model","lifecycle":"active","generation":"initial","fault":"authority-write","cleanup":"none","distribution":"source"},
+      "invariants": ["session.durable-before-projection", "invocation.dispatch-before-owner-entry"],
+      "oracle": ["failed append does not advance snapshots", "owner entry does not occur before durable dispatch", "no fallback authority is fabricated"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/session_recovery_campaign.rs","command":"cargo test -p omegon --bin omegon session_recovery_campaign:: -- --test-threads=1"}]}
+    },
+    {
+      "id": "SUR-001", "title": "All edges project one authoritative fixture", "requirement": "runtime-session/authority:Cross-surface semantic parity is executable",
+      "axes": {"artifact":"full-product","execution":"local-owner","authority":"session-authority","surface":"web","lifecycle":"active","generation":"initial","fault":"none","cleanup":"none","distribution":"source"},
+      "invariants": ["session.durable-before-projection"],
+      "oracle": ["TUI ACP Web IPC CLI and daemon normalize one versioned activity and action projection", "differences are checked transport narrowing and one-shot CLI declares persistent reconciliation unsupported", "revision ordering prevents stale queue state from overriding durable closure and no edge duplicates admission policy"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/surface_parity_campaign.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon --bin omegon surface_parity_campaign::sur_001 --locked"}]}
+    },
+    {
+      "id": "SUR-002", "title": "Missed terminal advice reconciles on every edge", "requirement": "runtime-session/authority:Cross-surface semantic parity is executable",
+      "axes": {"artifact":"full-product","execution":"local-owner","authority":"session-authority","surface":"acp","lifecycle":"recovery","generation":"initial","fault":"notification-lost","cleanup":"none","distribution":"source"},
+      "invariants": ["session.missed-advice-reconciles", "session.terminal-exactly-once"],
+      "oracle": ["each persistent edge clears local busy state from a newer authoritative idle revision without AgentEnd", "a second prompt is admitted through shared supervisor authority", "delayed or duplicate prior-turn advice cannot corrupt newer turn state"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/surface_parity_campaign.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon --bin omegon surface_parity_campaign::sur_002 --locked"},{"path":"core/crates/omegon/src/tui/tests.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon --bin omegon delayed_prior_turn_terminal_advice_cannot_clear_newer_authoritative_turn --locked"}]}
+    },
+    {
+      "id": "DST-001", "title": "Direct install requires authenticity evidence", "requirement": "kernel-composition/distribution-parity:Supported channels authenticate exact composition before activation",
+      "axes": {"artifact":"full-product","execution":"distribution-verifier","authority":"maintenance-authority","surface":"maintenance-cli","lifecycle":"distribution","generation":"candidate","fault":"distribution-verification","cleanup":"local-runtime-resource","distribution":"direct-installer"},
+      "invariants": ["distribution.authenticates-exact-composition", "composition.failure-preserves-previous"],
+      "oracle": ["a required external bootstrap verifier authenticates archive manifest bundle target and composition before extraction", "valid checksum alone is insufficient and activation does not change on refusal", "download and generation staging are cleaned on every failed path"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/install.test.sh","command":"bash core/install.test.sh"},{"path":"core/crates/omegon-maintain/tests/release_verify_blackbox.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon-maintain --locked --test release_verify_blackbox"}]}
+    },
+    {
+      "id": "DST-002", "title": "Version switch cannot publish a mixed generation", "requirement": "kernel-composition/distribution-parity:Supported channels authenticate exact composition before activation",
+      "axes": {"artifact":"full-product","execution":"distribution-verifier","authority":"maintenance-authority","surface":"maintenance-cli","lifecycle":"distribution","generation":"replacement","fault":"switch-interrupted","cleanup":"local-runtime-resource","distribution":"version-switch"},
+      "invariants": ["distribution.authenticates-exact-composition", "composition.failure-preserves-previous"],
+      "oracle": ["only the active verified maintenance authority can admit a switch candidate", "host maintenance component content receipt and locks stay in one atomically selected generation", "pre-publication failure cleans staging preserves the old generation and recovery identifies it"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/switch.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon switch::tests --locked"},{"path":"core/crates/omegon/src/installed_release.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon installed_release::tests --locked"}]}
+    },
+    {
+      "id": "DST-003", "title": "Nix remains authenticated host-only composition", "requirement": "kernel-composition/distribution-parity:Supported channels authenticate exact composition before activation",
+      "axes": {"artifact":"kernel-only","execution":"distribution-verifier","authority":"no-runtime-authority","surface":"cli","lifecycle":"distribution","generation":"initial","fault":"none","cleanup":"none","distribution":"nix"},
+      "invariants": ["distribution.authenticates-exact-composition"],
+      "oracle": ["derivation pins are exact", "composition remains host-only", "codescan is typed unavailable with no process"],
+      "evidence": {"status":"implemented","executors":[{"path":"tests/test_distribution_runtime_smoke.py","command":"python3 -m unittest tests.test_distribution_runtime_smoke"}]}
+    },
+    {
+      "id": "DST-004", "title": "OCI release evidence is digest-bound and complete", "requirement": "kernel-composition/distribution-parity:Supported channels authenticate exact composition before activation",
+      "axes": {"artifact":"kernel-only","execution":"distribution-verifier","authority":"no-runtime-authority","surface":"daemon","lifecycle":"distribution","generation":"initial","fault":"distribution-verification","cleanup":"none","distribution":"oci"},
+      "invariants": ["distribution.authenticates-exact-composition"],
+      "oracle": ["CI proves signature SBOM provenance and composition bind one image digest", "missing mismatched or classless evidence rejects release readiness", "host-only identity remains explicit and policy verification does not claim production attestation publication"],
+      "evidence": {"status":"implemented","executors":[{"path":"tests/test_oci_distribution_policy.py","command":"python3 -m unittest tests.test_oci_distribution_policy"},{"path":"scripts/check_distribution_policy.py","command":"python3 scripts/check_distribution_policy.py"}]}
+    },
+    {
+      "id": "CLN-001", "title": "Owned native process tree settles", "requirement": "kernel-composition/artifact-profiles:Reduced kernel executes bounded agent turns",
+      "axes": {"artifact":"full-product","execution":"native-rpc","authority":"session-authority","surface":"bounded","lifecycle":"cleanup","generation":"initial","fault":"cleanup-timeout","cleanup":"local-process-tree","distribution":"source"},
+      "invariants": ["bounded.cleanup-before-exit", "lifecycle.cleanup-claim-matches-evidence"],
+      "oracle": ["graceful stop and escalation remain bounded", "parent and descendants are absent", "cleanup failure cannot be reported as success"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/extensions/conformance_tests.rs","command":"cargo test -p omegon extensions::conformance_tests --locked -- --test-threads=1"}]}
+    },
+    {
+      "id": "CLN-002", "title": "Remote cleanup claims remain evidence-bounded", "requirement": "runtime-contributions/lifecycle:New extension generations activate at quiescent boundaries",
+      "axes": {"artifact":"full-product","execution":"remote-transport","authority":"session-authority","surface":"acp","lifecycle":"cleanup","generation":"candidate","fault":"cleanup-timeout","cleanup":"remote-best-effort","distribution":"source"},
+      "invariants": ["lifecycle.cleanup-claim-matches-evidence"],
+      "oracle": ["host-owned transports tasks subscriptions and handles settle within their boundary", "remote state is typed best-effort or unverified without a new acknowledgement protocol", "timeout or transport closure never becomes a strict remote cleanup claim"],
+      "evidence": {"status":"implemented","executors":[{"path":"core/crates/omegon/src/bus.rs","command":"OMEGON_NERD_FONT=1 cargo test -p omegon --locked cln_002_remote_cleanup_projection_preserves_evidence_boundary -- --test-threads=1"}]}
+    }
+  ],
+  "promotion_profiles": {
+    "scripted-kernel-baseline": ["KRN-001", "KRN-002", "KRN-005"],
+    "provider-backed-kernel": ["KRN-003", "KRN-004", "BND-001", "BND-002", "BND-003", "BND-004", "AUT-001", "CLN-001"],
+    "signed-core-component": ["KRN-005", "CMP-001", "CMP-002", "CMP-003", "ADD-001", "LIF-001", "LIF-002", "LIF-003", "DST-001", "DST-002", "CLN-001"],
+    "sdk-addon": ["ADD-001", "LIF-001", "LIF-002", "LIF-003", "SUR-001", "SUR-002", "CLN-001", "CLN-002"],
+    "milestone-pr-readiness": ["KRN-001", "KRN-002", "KRN-003", "KRN-004", "KRN-005", "BND-001", "BND-002", "BND-003", "BND-004", "CMP-001", "CMP-002", "CMP-003", "ADD-001", "LIF-001", "LIF-002", "LIF-003", "AUT-001", "SUR-001", "SUR-002", "DST-001", "DST-002", "DST-003", "DST-004", "CLN-001", "CLN-002"]
+  }
+}

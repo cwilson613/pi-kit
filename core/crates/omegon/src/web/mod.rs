@@ -271,6 +271,7 @@ fn project_web_instance(
         context_revision: None,
         queue_depth: 0,
         active_turn: None,
+        activity: None,
     };
 
     let mut instance = crate::ipc::snapshot::project_instance_descriptor(

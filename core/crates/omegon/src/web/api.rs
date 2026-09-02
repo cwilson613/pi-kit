@@ -2188,6 +2188,16 @@ pub fn build_snapshot(state: &WebState) -> StateSnapshot {
                 context_revision: None,
                 queue_depth: 0,
                 active_turn: None,
+                activity: state
+                    .session_view_binding
+                    .as_ref()
+                    .and_then(crate::session_consumers::SessionViewBinding::activity_snapshot)
+                    .and_then(|activity| {
+                        serde_json::to_value(activity.for_transport(
+                            crate::surfaces::session_activity::ActivityTransport::Daemon,
+                        ))
+                        .ok()
+                    }),
             };
             let harness_projection = omegon_traits::IpcHarnessSnapshot {
                 context_class: harness

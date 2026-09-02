@@ -111,6 +111,13 @@ import { snippet } from "../../lib/snippets";
       <tr><td><code>omegon acp</code></td><td>Run Agent Client Protocol over stdio or WebSocket.</td></tr>
     </tbody>
   </table>
+  <p>
+    <code>omegon run task.toml</code> is the manifest-driven bounded entrypoint. A task can admit
+    <code>max_turns</code>, <code>timeout_secs</code>, <code>token_budget</code>, and
+    <code>tool_budget</code> under <code>[bounds]</code>. <code>tool_budget</code> currently has no
+    command-line override. One-shot CLI output projects representable session state and actions,
+    but it does not perform persistent busy-state reconciliation.
+  </p>
 
   <h2>OpenSpec</h2>
   <p>

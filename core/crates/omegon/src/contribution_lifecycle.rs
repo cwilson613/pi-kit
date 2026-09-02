@@ -55,9 +55,50 @@ pub(crate) struct DynamicContributionInventory {
     entries: std::sync::Arc<
         std::sync::Mutex<BTreeMap<RuntimeContributionId, DiscoveredContributionEvidence>>,
     >,
+    active:
+        std::sync::Arc<std::sync::Mutex<BTreeMap<RuntimeContributionId, ActiveDynamicGeneration>>>,
+}
+
+#[derive(Debug)]
+struct ActiveDynamicGeneration {
+    source_digest: String,
+    active_calls: usize,
+}
+
+pub(crate) struct DynamicGenerationCallGuard {
+    inventory: DynamicContributionInventory,
+    id: RuntimeContributionId,
+    source_digest: String,
+}
+
+impl Drop for DynamicGenerationCallGuard {
+    fn drop(&mut self) {
+        let mut active = self
+            .inventory
+            .active
+            .lock()
+            .expect("dynamic active-generation lock poisoned");
+        if let Some(generation) = active.get_mut(&self.id)
+            && generation.source_digest == self.source_digest
+        {
+            generation.active_calls = generation.active_calls.saturating_sub(1);
+        }
+    }
 }
 
 impl DynamicContributionInventory {
+    fn shares_authority(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.active, &other.active)
+    }
+
+    pub(crate) fn active_source_digest(&self, id: &RuntimeContributionId) -> Option<String> {
+        self.active
+            .lock()
+            .expect("dynamic active-generation lock poisoned")
+            .get(id)
+            .map(|generation| generation.source_digest.clone())
+    }
+
     pub(crate) fn discover(
         &self,
         preflight: omegon_traits::RuntimeDynamicContributionPreflight,
@@ -67,14 +108,6 @@ impl DynamicContributionInventory {
             .entries
             .lock()
             .expect("dynamic inventory lock poisoned");
-        if let Some(existing) = entries.get(&candidate.preflight.id)
-            && existing.candidate.preflight.source_digest != candidate.preflight.source_digest
-        {
-            return Err(anyhow!(
-                "dynamic contribution '{}' has conflicting discovered source digests",
-                candidate.preflight.id.as_str()
-            ));
-        }
         entries.insert(
             candidate.preflight.id.clone(),
             DiscoveredContributionEvidence {
@@ -175,9 +208,20 @@ impl DynamicContributionInventory {
             .entries
             .lock()
             .expect("dynamic inventory lock poisoned");
-        for evidence in entries.values_mut() {
+        let mut active = self
+            .active
+            .lock()
+            .expect("dynamic active-generation lock poisoned");
+        for (id, evidence) in entries.iter_mut() {
             if evidence.state == DiscoveredContributionState::Staged {
                 evidence.state = DiscoveredContributionState::Published;
+                active.insert(
+                    id.clone(),
+                    ActiveDynamicGeneration {
+                        source_digest: evidence.candidate.preflight.source_digest.clone(),
+                        active_calls: 0,
+                    },
+                );
             }
         }
     }
@@ -196,6 +240,25 @@ impl DynamicContributionInventory {
         }
     }
 
+    fn reject_generation(
+        &self,
+        id: &RuntimeContributionId,
+        source_digest: &str,
+        reason: impl AsRef<str>,
+    ) {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("dynamic inventory lock poisoned");
+        if let Some(evidence) = entries.get_mut(id)
+            && evidence.candidate.preflight.source_digest == source_digest
+            && evidence.state == DiscoveredContributionState::Staged
+        {
+            evidence.state = DiscoveredContributionState::Quarantined;
+            evidence.reason = Some(bounded_reason(reason.as_ref()));
+        }
+    }
+
     pub(crate) fn evidence(&self) -> Vec<DiscoveredContributionEvidence> {
         self.entries
             .lock()
@@ -210,22 +273,93 @@ impl DynamicContributionInventory {
         id: &RuntimeContributionId,
         source_digest: &str,
     ) -> Result<()> {
-        let entries = self
+        drop(self.begin_call(id, source_digest)?);
+        Ok(())
+    }
+
+    pub(crate) fn begin_call(
+        &self,
+        id: &RuntimeContributionId,
+        source_digest: &str,
+    ) -> Result<DynamicGenerationCallGuard> {
+        let mut active = self
+            .active
+            .lock()
+            .expect("dynamic active-generation lock poisoned");
+        let generation = active
+            .get_mut(id)
+            .filter(|generation| generation.source_digest == source_digest)
+            .ok_or_else(|| {
+                anyhow!(
+                    "dynamic contribution '{}' generation is stale or not published",
+                    id.as_str()
+                )
+            })?;
+        generation.active_calls = generation.active_calls.saturating_add(1);
+        Ok(DynamicGenerationCallGuard {
+            inventory: self.clone(),
+            id: id.clone(),
+            source_digest: source_digest.to_string(),
+        })
+    }
+
+    fn has_active_calls(&self) -> bool {
+        self.active
+            .lock()
+            .expect("dynamic active-generation lock poisoned")
+            .values()
+            .any(|generation| generation.active_calls != 0)
+    }
+
+    fn retire_if_active(&self, id: &RuntimeContributionId, source_digest: &str, failed: bool) {
+        let removed = {
+            let mut active = self
+                .active
+                .lock()
+                .expect("dynamic active-generation lock poisoned");
+            if active
+                .get(id)
+                .is_some_and(|generation| generation.source_digest == source_digest)
+            {
+                active.remove(id);
+                true
+            } else {
+                false
+            }
+        };
+        if removed {
+            self.transition(
+                id,
+                if failed {
+                    DiscoveredContributionState::Quarantined
+                } else {
+                    DiscoveredContributionState::Retired
+                },
+                failed.then(|| "generation cleanup degraded".into()),
+            );
+        }
+    }
+
+    fn retire_published_non_extensions(&self, failed: bool) {
+        let candidates = self
             .entries
             .lock()
-            .expect("dynamic inventory lock poisoned");
-        let evidence = entries
-            .get(id)
-            .ok_or_else(|| anyhow!("dynamic contribution generation is absent"))?;
-        if evidence.candidate.preflight.source_digest != source_digest
-            || evidence.state != DiscoveredContributionState::Published
-        {
-            return Err(anyhow!(
-                "dynamic contribution '{}' generation is stale or not published",
-                id.as_str()
-            ));
+            .expect("dynamic inventory lock poisoned")
+            .iter()
+            .filter(|(id, evidence)| {
+                !id.as_str().starts_with("extension:")
+                    && evidence.state == DiscoveredContributionState::Published
+            })
+            .map(|(id, evidence)| {
+                (
+                    id.clone(),
+                    evidence.candidate.preflight.source_digest.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (id, digest) in candidates {
+            self.retire_if_active(&id, &digest, failed);
         }
-        Ok(())
     }
 
     fn transition(
@@ -306,28 +440,62 @@ impl DynamicContributionGenerationOwner {
     }
 
     pub(crate) async fn reject(&mut self, reason: impl AsRef<str>) -> Vec<String> {
-        self.inventory.reject_staged(reason);
+        for supervisor in &self.extensions {
+            let id = RuntimeContributionId::new(format!("extension:{}", supervisor.name()))
+                .expect("admitted extension name forms a valid contribution id");
+            self.inventory
+                .reject_generation(&id, supervisor.source_digest(), reason.as_ref());
+        }
+        if self.extensions.is_empty() {
+            self.inventory.reject_staged(reason);
+        }
         self.shutdown_resources().await
     }
 
-    pub(crate) async fn shutdown(&mut self) -> Vec<String> {
-        let failures = self.shutdown_resources().await;
-        let mut entries = self
-            .inventory
-            .entries
-            .lock()
-            .expect("dynamic inventory lock poisoned");
-        for evidence in entries.values_mut() {
-            if evidence.state == DiscoveredContributionState::Published {
-                evidence.state = if failures.is_empty() {
-                    DiscoveredContributionState::Retired
-                } else {
-                    DiscoveredContributionState::Quarantined
-                };
-                evidence.reason =
-                    (!failures.is_empty()).then(|| bounded_reason(&failures.join("; ")));
+    async fn replace_published(&mut self, mut candidate: Self) -> Vec<String> {
+        debug_assert!(candidate.published && !candidate.settled);
+        let replacement_names = candidate
+            .extensions
+            .iter()
+            .map(|supervisor| supervisor.name().to_string())
+            .collect::<BTreeSet<_>>();
+        let mut retired = Vec::new();
+        self.extensions.retain(|supervisor| {
+            if replacement_names.contains(supervisor.name()) {
+                retired.push(supervisor.clone());
+                false
+            } else {
+                true
             }
+        });
+        for supervisor in &candidate.extensions {
+            self.control.register(supervisor.clone());
         }
+        self.extensions.append(&mut candidate.extensions);
+        self.mcp.append(&mut candidate.mcp);
+        candidate.settled = true;
+        crate::extensions::shutdown_supervisors(&retired, Duration::from_millis(500)).await
+    }
+
+    pub(crate) async fn shutdown(&mut self) -> Vec<String> {
+        let owned_extensions = self
+            .extensions
+            .iter()
+            .map(|supervisor| {
+                (
+                    RuntimeContributionId::new(format!("extension:{}", supervisor.name()))
+                        .expect("admitted extension name forms a valid contribution id"),
+                    supervisor.source_digest().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let failures = self.shutdown_resources().await;
+        for (id, digest) in owned_extensions {
+            self.inventory
+                .retire_if_active(&id, &digest, !failures.is_empty());
+        }
+        self.inventory
+            .retire_published_non_extensions(!failures.is_empty());
         failures
     }
 
@@ -349,6 +517,141 @@ impl DynamicContributionGenerationOwner {
             failures.extend(supervisor.shutdown(Duration::from_millis(500)).await);
         }
         failures
+    }
+}
+
+pub(crate) struct StagedDynamicExtensionGeneration {
+    id: RuntimeContributionId,
+    feature: Option<Box<dyn omegon_traits::Feature>>,
+    owner: DynamicContributionGenerationOwner,
+}
+
+impl StagedDynamicExtensionGeneration {
+    pub(crate) fn new(
+        feature: Box<dyn omegon_traits::Feature>,
+        supervisor: std::sync::Arc<crate::extensions::ExtensionSupervisor>,
+        inventory: DynamicContributionInventory,
+    ) -> Self {
+        let id = RuntimeContributionId::new(format!("extension:{}", supervisor.name()))
+            .expect("admitted extension name forms a valid contribution id");
+        let mut owner = DynamicContributionGenerationOwner::new(inventory);
+        owner.own_extension(supervisor);
+        owner.stage();
+        Self {
+            id,
+            feature: Some(feature),
+            owner,
+        }
+    }
+
+    async fn reject(&mut self, reason: &str) -> Vec<String> {
+        self.owner.reject(reason).await
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DynamicExtensionPublicationOutcome {
+    pub(crate) retirement_failures: Vec<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct DynamicExtensionPublicationCoordinator {
+    pending: BTreeMap<RuntimeContributionId, StagedDynamicExtensionGeneration>,
+}
+
+impl DynamicExtensionPublicationCoordinator {
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    pub(crate) async fn accept(
+        &mut self,
+        mut candidate: StagedDynamicExtensionGeneration,
+    ) -> Result<()> {
+        if let Some(mut superseded) = self.pending.remove(&candidate.id) {
+            let failures = superseded.reject("superseded by newer candidate").await;
+            if !failures.is_empty() {
+                let candidate_failures = candidate
+                    .reject("superseded candidate cleanup did not settle")
+                    .await;
+                return Err(anyhow!(
+                    "superseded candidate cleanup failed: {}; newer candidate cleanup: {}",
+                    failures.join("; "),
+                    candidate_failures.join("; ")
+                ));
+            }
+        }
+        self.pending.insert(candidate.id.clone(), candidate);
+        Ok(())
+    }
+
+    pub(crate) async fn reject_pending(
+        &mut self,
+        id: &RuntimeContributionId,
+        reason: &str,
+    ) -> Vec<String> {
+        match self.pending.remove(id) {
+            Some(mut candidate) => candidate.reject(reason).await,
+            None => Vec::new(),
+        }
+    }
+
+    pub(crate) async fn commit_at_quiescence(
+        &mut self,
+        id: &RuntimeContributionId,
+        supervisor: &crate::runtime_supervisor::InteractiveRuntimeSupervisor,
+        bus: &mut crate::bus::EventBus,
+        active_owner: &mut DynamicContributionGenerationOwner,
+    ) -> Result<DynamicExtensionPublicationOutcome> {
+        supervisor
+            .replacement_quiescence()
+            .map_err(|error| anyhow!("dynamic publication is not quiescent: {error}"))?;
+        if active_owner.inventory.has_active_calls() {
+            return Err(anyhow!(
+                "dynamic publication is not quiescent: extension calls remain active"
+            ));
+        }
+        let mut candidate = self.pending.remove(id).ok_or_else(|| {
+            anyhow!(
+                "no dynamic extension generation is pending for '{}'",
+                id.as_str()
+            )
+        })?;
+        if !active_owner
+            .inventory
+            .shares_authority(&candidate.owner.inventory)
+        {
+            let cleanup = candidate
+                .reject("candidate uses a different generation fence")
+                .await;
+            return Err(anyhow!(
+                "dynamic extension candidate uses a different generation fence; candidate cleanup: {}",
+                cleanup.join("; ")
+            ));
+        }
+        let feature = candidate
+            .feature
+            .take()
+            .expect("pending dynamic extension owns its hidden feature");
+        bus.replace_feature(feature);
+        let publication = match bus.prepare_dynamic_publication() {
+            Ok(publication) => publication,
+            Err(error) => {
+                let cleanup = candidate.reject(&error.to_string()).await;
+                return Err(anyhow!(
+                    "dynamic extension graph publication failed: {error}; candidate cleanup: {}",
+                    cleanup.join("; ")
+                ));
+            }
+        };
+        // Preparation performs all fallible work. Fence and graph publication are
+        // assignment-only and contiguous so no mixed generation can be observed.
+        candidate.owner.publish();
+        bus.commit_dynamic_publication(publication);
+        let retirement_failures = active_owner.replace_published(candidate.owner).await;
+        Ok(DynamicExtensionPublicationOutcome {
+            retirement_failures,
+        })
     }
 }
 
@@ -1250,10 +1553,43 @@ mod tests {
     }
 
     #[test]
+    fn pending_digest_stays_hidden_and_publication_fences_stale_handles() {
+        let inventory = DynamicContributionInventory::default();
+        let active = dynamic_preflight(
+            "extension:replaceable",
+            RuntimeDynamicSourceKind::NativeExtension,
+        );
+        let id = active.id.clone();
+        let active_digest = active.source_digest.clone();
+        inventory.discover(active).unwrap();
+        inventory.ready(&id);
+        inventory.stage_ready();
+        inventory.publish_staged();
+
+        let mut pending = dynamic_preflight(
+            "extension:replaceable",
+            RuntimeDynamicSourceKind::NativeExtension,
+        );
+        pending.source_digest = "sha256:replacement".into();
+        let pending_digest = pending.source_digest.clone();
+        inventory.discover(pending).unwrap();
+        inventory.ready(&id);
+        inventory.stage_ready();
+
+        inventory.ensure_callable(&id, &active_digest).unwrap();
+        assert!(inventory.ensure_callable(&id, &pending_digest).is_err());
+
+        inventory.publish_staged();
+        assert!(inventory.ensure_callable(&id, &active_digest).is_err());
+        inventory.ensure_callable(&id, &pending_digest).unwrap();
+    }
+
+    #[test]
     fn production_dynamic_discovery_has_one_lifecycle_owner() {
         let setup = include_str!("setup.rs");
         let plugins = include_str!("plugins/mod.rs");
         let acp = include_str!("acp_worker.rs");
+        let control = include_str!("control_runtime.rs");
         let main = include_str!("main.rs");
         for (name, source) in [
             ("setup", setup),
@@ -1278,5 +1614,8 @@ mod tests {
         );
         assert!(acp.contains("candidate_owner.reject"));
         assert!(main.contains("candidate_owner.shutdown().await"));
+        assert!(control.contains("stage_installed_extension_replacement("));
+        assert!(control.contains(".commit_at_quiescence(&id, supervisor"));
+        assert!(main.contains("dynamic_extension_publication: Some("));
     }
 }

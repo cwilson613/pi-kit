@@ -204,6 +204,15 @@ fn project_session(
             }
             .into(),
         ),
+        activity: session_view_binding
+            .activity_snapshot()
+            .and_then(|activity| {
+                serde_json::to_value(
+                    activity
+                        .for_transport(crate::surfaces::session_activity::ActivityTransport::Ipc),
+                )
+                .ok()
+            }),
     }
 }
 

@@ -47,11 +47,11 @@ tfswitch (github.com/warrensbox/terraform-switcher) is a Go CLI that manages mul
 
 ### Omegon version switcher design
 
-**Storage**: `~/.omegon/versions/0.14.1/` — immutable directory per version containing `omegon`, `omegon-maintain`, and `install-receipt.json`.
+**Storage**: `~/.omegon/versions/0.14.1/` — immutable complete release generation containing the executable pair, bundled content, signed components, composition locks, and `install-receipt.json`.
 
 **Active version**: `~/.omegon/current` is one atomic symlink to a complete version directory. Stable launchers for `omegon`, `om`, and `omegon-maintain`, plus `~/.config/omegon/install-receipt.json`, resolve through `current`. Changing one link therefore changes the executable pair and receipt together.
 
-**Download source**: GitHub Releases from `styrene-lab/omegon`. The switcher verifies the selected platform archive against `checksums.sha256`, requires both executable members, writes the derived receipt, and publishes the complete generation before activation. Stable and nightly releases use the same generation contract.
+**Download source**: GitHub Releases from `styrene-lab/omegon`. The switcher captures `omegon-maintain` from the active generation and uses it to authenticate the archive, signed package manifest, and Sigstore bundle before and after extraction. Checksums provide integrity evidence but are not the release authority. The switcher writes the derived receipt and publishes the complete generation before activation. Stable and nightly releases use the same generation contract.
 
 **CLI surface**:
 - `omegon switch` — interactive TUI picker showing installed + available versions
@@ -61,7 +61,7 @@ tfswitch (github.com/warrensbox/terraform-switcher) is a Go CLI that manages mul
 
 **Auto-detection**: `.omegon-version` file in project root. Contains a version string or constraint. When `omegon` starts, if `.omegon-version` exists and the requested version isn't active, it either auto-switches or warns.
 
-**Self-update**: `/update install`, direct installation, and `omegon switch` share the `versioned-current-v1` activation contract. Candidate publication cannot change the running release. After the pair and receipt validate, one atomic replacement of `current` selects the new generation; the new binary takes over on the next invocation.
+**Self-update**: `/update install`, direct installation, and `omegon switch` share the `versioned-current-v1` activation contract. The switcher captures `omegon-maintain` from the active generation and uses only that executable to authenticate the canonical signed archive before and after extraction. Candidate publication cannot change the running release. After the complete generation validates, one atomic replacement of `current` selects the host, maintenance companion, components, content, locks, and receipt; the new binary takes over on the next invocation.
 
 **Switcher subcommand with independent recovery companion**: Unlike tfswitch, version selection is an `omegon switch` subcommand rather than a separate version-manager program. `omegon-maintain` remains a distinct required recovery executable and is always installed and switched with `omegon`.
 
@@ -91,8 +91,8 @@ tfswitch (github.com/warrensbox/terraform-switcher) is a Go CLI that manages mul
 
 - Downloads from the `styrene-lab/omegon` GitHub Releases API
 - Platform detection: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
-- SHA256 checksum verification from checksums.sha256 artifact
-- Every installed generation contains matching `omegon`, `omegon-maintain`, and `install-receipt.json` members.
+- The active generation's `omegon-maintain` authenticates the archive, package manifest, and Sigstore bundle. SHA-256 checksums are supplementary integrity evidence.
+- Every installed generation contains matching executables, bundled content, signed components, composition locks, and `install-receipt.json`.
 - Version selection atomically replaces `~/.omegon/current`; stable launchers are not independently version-selecting links.
 - Interactive picker: simple terminal list with arrow keys, no ratatui dependency (runs outside TUI)
 - .omegon-version auto-detect: read file from cwd ancestors, warn if active version doesn't match

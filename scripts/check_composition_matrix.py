@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,40 @@ REQUIRED_PATHS = {"source", "linked", "release"}
 EXECUTABLES = {"omegon", "omegon-maintain"}
 LOCKS = {f"{name}.composition-lock.json" for name in EXECUTABLES}
 CONTENT_PREFIX = "share/omegon/content-packs/omegon-shipped/"
+EXPECTED_FIRST_PARTY_DOMAINS = {
+    "behavior-policy",
+    "codescan",
+    "constitutional-kernel",
+    "context-compaction",
+    "default-loop",
+    "dynamic-contributions",
+    "git",
+    "host-effects",
+    "lifecycle-openspec",
+    "memory",
+    "plans-work",
+    "sdk-extensions",
+    "shipped-content",
+}
+PACKAGING_CLASSES = {
+    "constitutional-resident",
+    "host-service",
+    "operator-managed-sdk-extension",
+    "shipped-content",
+    "signed-core-component",
+}
+CORE_QUALIFICATION_ROLES = {
+    "additive_restoration",
+    "aggregate_budget",
+    "archive_inventory",
+    "cleanup",
+    "full_product_retention",
+    "kernel_absence",
+    "policy",
+    "protocol",
+    "sdk_non_promotion",
+}
+DOMAIN_DOCUMENTATION = ROOT / "docs/binary-composition-and-kernel-admission.md"
 
 
 def load_policy(path: Path = POLICY) -> dict:
@@ -35,6 +70,11 @@ def load_policy(path: Path = POLICY) -> dict:
         raise ValueError("composition matrix must define exactly the five v1 profiles")
     validate_artifact_rows(policy.get("artifact_rows"))
     validate_extracted_domains(policy.get("extracted_domains"), policy["artifact_rows"])
+    validate_first_party_domains(policy.get("first_party_domains"), policy)
+    validate_core_component_qualifications(
+        policy.get("core_component_qualifications"), policy
+    )
+    validate_first_party_domain_documentation(policy["first_party_domains"])
     for name, profile in policy["profiles"].items():
         if set(profile.get("paths", [])) != REQUIRED_PATHS:
             raise ValueError(f"{name}: all source, linked, and release paths must be explicit")
@@ -50,6 +90,204 @@ def load_policy(path: Path = POLICY) -> dict:
         ):
             raise ValueError(f"{name}: full-product identity, runtime mode, and surfaces are required")
     return policy
+
+
+def validate_first_party_domains(domains: object, policy: dict) -> None:
+    if not isinstance(domains, list):
+        raise ValueError("first-party domains must be an inventory")
+    ids = [domain.get("id") for domain in domains if isinstance(domain, dict)]
+    if set(ids) != EXPECTED_FIRST_PARTY_DOMAINS or len(ids) != len(EXPECTED_FIRST_PARTY_DOMAINS):
+        raise ValueError("every first-party domain must appear exactly once")
+
+    expected_fields = {
+        "id",
+        "canonical_owner",
+        "packaging_class",
+        "runtime_boundary",
+        "extraction_disposition",
+        "evidence",
+    }
+    by_id = {}
+    for domain in domains:
+        if not isinstance(domain, dict) or set(domain) != expected_fields:
+            raise ValueError("first-party domain fields are not exact")
+        domain_id = domain["id"]
+        by_id[domain_id] = domain
+        if not isinstance(domain["canonical_owner"], str) or not domain["canonical_owner"]:
+            raise ValueError(f"{domain_id}: canonical owner is required")
+        if domain["packaging_class"] not in PACKAGING_CLASSES:
+            raise ValueError(f"{domain_id}: packaging class is invalid")
+        if not isinstance(domain["runtime_boundary"], str) or not domain["runtime_boundary"]:
+            raise ValueError(f"{domain_id}: runtime boundary is required")
+        disposition = domain["extraction_disposition"]
+        if (
+            not isinstance(disposition, dict)
+            or set(disposition) != {"status", "rationale"}
+            or disposition["status"]
+            not in {"retain", "review-candidate", "extracted", "external"}
+            or not isinstance(disposition["rationale"], str)
+            or len(disposition["rationale"].strip()) < 40
+        ):
+            raise ValueError(f"{domain_id}: extraction disposition is invalid")
+        evidence = domain["evidence"]
+        if not isinstance(evidence, list) or not evidence:
+            raise ValueError(f"{domain_id}: composition evidence is required")
+        for item in evidence:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"path", "claim"}
+                or not isinstance(item["claim"], str)
+                or not item["claim"].strip()
+                or not (ROOT / item["path"]).exists()
+            ):
+                raise ValueError(f"{domain_id}: composition evidence is invalid")
+
+    owners = [domain["canonical_owner"] for domain in domains]
+    if len(owners) != len(set(owners)):
+        raise ValueError("first-party domains must have one canonical owner each")
+
+    constitutional = {
+        "constitutional-kernel": "system:constitutional-kernel",
+        "default-loop": "system:default-loop",
+        "host-effects": "system:host-effects",
+    }
+    for domain_id, owner in constitutional.items():
+        domain = by_id[domain_id]
+        if (
+            domain["packaging_class"] != "constitutional-resident"
+            or domain["canonical_owner"] != owner
+            or domain["runtime_boundary"] != "in-process-kernel"
+            or domain["extraction_disposition"]["status"] != "retain"
+        ):
+            raise ValueError(f"{domain_id}: constitutional classification is contradictory")
+
+    extracted = policy.get("extracted_domains", {})
+    component_catalog = policy.get("distribution_policy", {}).get("core_component_catalog", {})
+    core_domains = {
+        domain_id
+        for domain_id, domain in by_id.items()
+        if domain["packaging_class"] == "signed-core-component"
+    }
+    if core_domains != set(extracted):
+        raise ValueError("signed core classification lacks additive promotion evidence")
+    for domain_id in core_domains:
+        domain = by_id[domain_id]
+        if (
+            domain["canonical_owner"] != f"core:{domain_id}"
+            or domain["runtime_boundary"] != "native-rpc"
+            or domain["extraction_disposition"]["status"] != "extracted"
+            or f"core:{domain_id}" not in component_catalog
+        ):
+            raise ValueError(f"{domain_id}: signed core promotion evidence is contradictory")
+
+    shipped = by_id["shipped-content"]
+    if (
+        shipped["packaging_class"] != "shipped-content"
+        or shipped["runtime_boundary"] != "content-pack"
+        or shipped["extraction_disposition"]["status"] != "extracted"
+    ):
+        raise ValueError("shipped-content: packaging classification is contradictory")
+    sdk = by_id["sdk-extensions"]
+    if (
+        sdk["packaging_class"] != "operator-managed-sdk-extension"
+        or sdk["canonical_owner"] != "operator"
+        or sdk["runtime_boundary"] != "operator-extension-runtime"
+        or sdk["extraction_disposition"]["status"] != "external"
+    ):
+        raise ValueError("sdk-extensions: packaging classification is contradictory")
+
+
+def validate_first_party_domain_documentation(domains: list[dict]) -> None:
+    document = DOMAIN_DOCUMENTATION.read_text()
+    start_marker = "<!-- first-party-domain-inventory-v1:start -->"
+    end_marker = "<!-- first-party-domain-inventory-v1:end -->"
+    if start_marker not in document or end_marker not in document:
+        raise ValueError("first-party domain documentation inventory is missing")
+    section = document.split(start_marker, 1)[1].split(end_marker, 1)[0]
+    documented_ids = re.findall(r"^\| `([^`]+)` \|", section, flags=re.MULTILINE)
+    expected_ids = {domain["id"] for domain in domains}
+    if set(documented_ids) != expected_ids or len(documented_ids) != len(expected_ids):
+        raise ValueError("first-party domain documentation must classify each domain exactly once")
+    for domain in domains:
+        expected = (
+            f"| `{domain['id']}` | `{domain['canonical_owner']}` | "
+            f"`{domain['packaging_class']}` | `{domain['runtime_boundary']}` | "
+            f"`{domain['extraction_disposition']['status']}` |"
+        )
+        if expected not in section:
+            raise ValueError(f"{domain['id']}: documentation classification is stale")
+
+
+def validate_core_component_qualifications(qualifications: object, policy: dict) -> None:
+    if not isinstance(qualifications, dict):
+        raise ValueError("core component qualifications must be an identity-keyed object")
+    core_domains = {
+        domain["canonical_owner"]: domain["id"]
+        for domain in policy.get("first_party_domains", [])
+        if domain.get("packaging_class") == "signed-core-component"
+    }
+    if set(qualifications) != set(core_domains):
+        raise ValueError("every signed core component requires exactly one qualification record")
+
+    catalog = policy.get("distribution_policy", {}).get("core_component_catalog", {})
+    extracted = policy.get("extracted_domains", {})
+    evidence_ids = set()
+    for component_id, qualification in qualifications.items():
+        if not isinstance(qualification, dict) or set(qualification) != {
+            "wire_manifest_id",
+            "portable_contracts",
+            "signed_identity",
+            "executors",
+        }:
+            raise ValueError(f"{component_id}: qualification fields are not exact")
+        domain_id = core_domains[component_id]
+        wire_manifest_id = qualification["wire_manifest_id"]
+        if (
+            not isinstance(wire_manifest_id, str)
+            or catalog.get(component_id, {}).get("wire_manifest_id") != wire_manifest_id
+            or extracted.get(domain_id, {}).get("extension_identity") != wire_manifest_id
+        ):
+            raise ValueError(f"{component_id}: qualification wire identity is mismatched")
+
+        for binding_name in ("portable_contracts", "signed_identity"):
+            binding = qualification[binding_name]
+            if (
+                not isinstance(binding, dict)
+                or set(binding) != {"path", "wire_manifest_id"}
+                or binding["wire_manifest_id"] != wire_manifest_id
+                or not isinstance(binding["path"], str)
+                or not (ROOT / binding["path"]).is_file()
+            ):
+                raise ValueError(f"{component_id}: {binding_name} binding is invalid or stale")
+
+        executors = qualification["executors"]
+        if not isinstance(executors, dict) or set(executors) != CORE_QUALIFICATION_ROLES:
+            raise ValueError(f"{component_id}: required qualification executor is missing")
+        for role, executor in executors.items():
+            if not isinstance(executor, dict) or set(executor) != {
+                "evidence_id",
+                "path",
+                "command",
+                "component_id",
+                "wire_manifest_id",
+            }:
+                raise ValueError(f"{component_id}: {role} executor fields are not exact")
+            evidence_id = executor["evidence_id"]
+            if not isinstance(evidence_id, str) or not evidence_id or evidence_id in evidence_ids:
+                raise ValueError(f"{component_id}: qualification executor evidence is aliased")
+            evidence_ids.add(evidence_id)
+            if (
+                executor["component_id"] != component_id
+                or executor["wire_manifest_id"] != wire_manifest_id
+            ):
+                raise ValueError(f"{component_id}: {role} executor is cross-component evidence")
+            if (
+                not isinstance(executor["path"], str)
+                or not (ROOT / executor["path"]).is_file()
+                or not isinstance(executor["command"], str)
+                or not executor["command"].strip()
+            ):
+                raise ValueError(f"{component_id}: {role} executor is missing or stale")
 
 
 def validate_artifact_rows(rows: object) -> None:
@@ -593,6 +831,9 @@ def exercise_installed_full_product(
         default_probe = default.get("functional_probe", {})
         provenance = default_probe.get("service_provenance", {})
         processes = default.get("external_processes")
+        provider_pid = provenance.get("pid")
+        process_running = isinstance(provider_pid, int) and process_is_running(provider_pid)
+        process_group_running = isinstance(provider_pid, int) and process_group_is_running(provider_pid)
         if (
             default_probe.get("status") != "ok"
             or default_probe.get("component_id") != "core:codescan"
@@ -607,10 +848,14 @@ def exercise_installed_full_product(
             or processes[0].get("owner") != "omegon-codescan"
             or processes[0].get("state") != "healthy"
             or processes[0].get("pid") != provenance["pid"]
-            or process_is_running(provenance["pid"])
-            or process_group_is_running(provenance["pid"])
+            or process_running
+            or process_group_running
         ):
-            raise ValueError("installed default policy did not run and settle packaged codescan")
+            raise ValueError(
+                "installed default policy did not run and settle packaged codescan: "
+                f"probe={default_probe!r} processes={processes!r} "
+                f"process_running={process_running} process_group_running={process_group_running}"
+            )
 
         replace_current_generation(current, unavailable_generation)
         (unavailable_generation / package_release.CODESCAN_EXECUTABLE).write_bytes(b"substituted")
@@ -957,6 +1202,44 @@ def exercise_source_artifact_ladder(
         if not isinstance(provenance, dict) or provenance.get("extension") != "omegon-codescan":
             raise ValueError("kernel+codescan did not report admitted process provenance")
 
+        turn_payloads = {}
+        for name in ("kernel-only", "kernel+codescan"):
+            workspace = root / f"workspace-{name}"
+            home = root / f"home-{name}"
+            env = os.environ.copy()
+            env.update({"HOME": str(home), "OMEGON_HOME": str(home), "OMEGON_LOG": "error"})
+            turn_payload = run_json(
+                [
+                    str(installs[name] / "omegon"),
+                    "--cwd",
+                    str(workspace),
+                    "composition-inspect",
+                    "--profile",
+                    "kernel",
+                    "--probe",
+                    "agent-turn",
+                ],
+                f"{name}-agent-turn",
+                workspace,
+                env,
+            )
+            turn_probe = turn_payload.get("functional_probe", {})
+            expected_turn = {
+                "name": "agent-turn",
+                "status": "ok",
+                "turns": 1,
+                "model_requests": 1,
+                "events_consumed": 3,
+                "stop_reason": "completed",
+                "response": "kernel-turn-ok",
+                "provider": "scripted-conformance",
+            }
+            if turn_probe != expected_turn or turn_payload.get("external_processes") != []:
+                raise ValueError(f"{name}: bounded kernel agent turn failed")
+            turn_payloads[name] = turn_payload
+        if turn_payloads["kernel-only"] != turn_payloads["kernel+codescan"]:
+            raise ValueError("additive codescan composition changed unrelated kernel turn behavior")
+
         workspace = root / "workspace-full-product"
         home = root / "home-full-product"
         workspace.mkdir()
@@ -1088,6 +1371,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--path", choices=sorted(REQUIRED_PATHS))
     parser.add_argument("--artifact-ladder", action="store_true")
+    parser.add_argument("--qualification", action="store_true")
     parser.add_argument("--binary-dir", type=Path)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--linked-home", type=Path)
@@ -1098,6 +1382,13 @@ def main() -> int:
     args = parser.parse_args()
     try:
         policy = load_policy(args.policy)
+        if args.qualification:
+            if args.path is not None or args.artifact_ladder:
+                raise ValueError(
+                    "qualification and artifact execution modes are mutually exclusive"
+                )
+            print("core component qualification policy passed")
+            return 0
         if args.artifact_ladder:
             if args.path is not None:
                 raise ValueError("artifact ladder and legacy path execution are mutually exclusive")
@@ -1105,7 +1396,7 @@ def main() -> int:
             print("source artifact composition ladder passed")
             return 0
         if args.path is None:
-            raise ValueError("provide --path or --artifact-ladder")
+            raise ValueError("provide --path, --artifact-ladder, or --qualification")
         exercise(
             args.path,
             policy,

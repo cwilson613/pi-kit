@@ -30,16 +30,17 @@ related = []
 
 ## Overview
 
-Omegon can currently discover and spawn native extensions at startup, while `/extension reload`, `/extension restart`, and `/runtime refresh` only refresh skills and inspect extension candidates. A rebuilt native extension therefore remains unavailable until the session restarts: the current generation retains the old child process, RPC handle, tool schemas, widgets, and event subscriptions.
+Omegon discovers and spawns native extensions at startup. An idle `/runtime refresh` or extension refresh alias can now publish changed native generations whose live authority is fully represented by the EventBus and native RPC fence. Extensions with widget or voice side channels still require `/runtime restart`. `/runtime replace <name>` remains a same-generation process respawn from the admitted snapshot and does not inspect changed source bytes.
 
 Introduce a generation-aware extension supervisor that can safely promote one rebuilt native extension without severing the harness session. The supervisor must drain the old generation, validate and bootstrap a replacement process, atomically swap its registrations, and either complete promotion or retain a usable prior generation.
 
 ## Current Evidence
 
 - `core/crates/omegon/src/setup.rs` discovers, spawns, bootstraps, and registers extensions during startup.
-- `TuiApp::refresh_runtime_substrate` in `core/crates/omegon/src/tui/mod.rs` explicitly reports that running extension processes and widgets are not restarted.
-- The runtime refresh candidate path can inspect manifests but cannot promote candidate extension generations.
-- Extension credentials are harness-managed and may not exist in the child process environment, so reload must reuse the resolved in-memory bootstrap material rather than depend on environment variables.
+- `runtime_substrate_refresh_with_generations` in `core/crates/omegon/src/control_runtime.rs` owns changed-generation publication for shared runtime control.
+- The refresh candidate path remains side-effect free. The control path separately stages admitted bytes and invokes the quiescent publication coordinator.
+- Widget and voice side channels are not part of the atomic EventBus publication boundary. A candidate that declares those channels is settled and rejected with a restart requirement.
+- Extension credentials are harness-managed and may not exist in the child process environment. Refresh resolves declared credentials through the secrets manager and delivers them through the normal bootstrap RPC. It does not depend on ambient child-process environment variables.
 - Rebuilding an extension in place updates its binary on disk but does not alter the already-running child or model-visible tool registry.
 
 ## Desired Contract
@@ -66,13 +67,13 @@ The command must return structured generation data: extension id, old and new ge
 - Secrets remain redacted and are never copied into logs, command arguments, or operator-visible diagnostics.
 - Candidate tools are unavailable until schema validation and atomic promotion complete.
 - Event/widget subscriptions carry generation ownership so retiring a generation cannot leave duplicate consumers.
-- Process termination targets the tracked child PID only.
+- Process termination targets the exact tracked dedicated process group or tree. It never kills by executable name or broad process match.
 - Failed candidates are terminated and reaped.
 - Reloading one extension must not interrupt unrelated extensions or the active session transport.
 
 ## Initial Scope
 
-Ship explicit, targeted reload for native process extensions. Automatic filesystem watching can follow after promotion semantics are proven. Do not include hot replacement of the Omegon executable or in-process compiled components.
+The current slice publishes compatible changed native generations during explicit runtime refresh. Full targeted reload with widget, voice, and subscription replacement remains future work. Automatic filesystem watching can follow after those promotion semantics are proven. Do not include hot replacement of the Omegon executable or in-process compiled components.
 
 ## Acceptance Criteria
 

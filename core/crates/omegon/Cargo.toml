@@ -15,6 +15,16 @@ name = "omegon-kernel-host"
 path = "src/kernel_host.rs"
 required-features = ["kernel-host"]
 
+[[test]]
+name = "kernel_host_provider_blackbox"
+path = "tests/kernel_host_provider_blackbox.rs"
+required-features = ["kernel-host"]
+
+[[test]]
+name = "task_capsule_tool_budget_blackbox"
+path = "tests/task_capsule_tool_budget_blackbox.rs"
+required-features = ["task-capsule"]
+
 [[example]]
 name = "fractal_demo"
 required-features = ["tui"]
@@ -26,6 +36,7 @@ required-features = ["tui"]
 [dependencies]
 omegon-extension = { version = "0.25", optional = true }
 omegon-native-extension-host = { path = "../omegon-native-extension-host" }
+omegon-kernel-runtime = { path = "../omegon-kernel-runtime" }
 omegon-maintenance-contracts = { path = "../omegon-maintenance-contracts", optional = true }
 omegon-traits = { path = "../omegon-traits", optional = true }
 omegon-git = { path = "../omegon-git", optional = true }

@@ -9,6 +9,11 @@ on:
         description: 'Tag to release (e.g. v0.15.5). Must already exist on origin.'
         required: true
         type: string
+      publish_package_channels:
+        description: 'Publish deferred Homebrew and OCI package channels'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -363,13 +368,6 @@ jobs:
             --target "${{ matrix.target }}"
           python3 scripts/check_composition_authority.py
 
-      - name: Smoke direct installer from the local release archive
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: |
-          python3 scripts/smoke_distribution_runtime.py direct-installer \
-            --archive "$ARCHIVE" \
-            --target "${{ matrix.target }}"
-
       - name: Generate SHA256 checksum
         run: |
           if command -v sha256sum >/dev/null 2>&1; then
@@ -646,7 +644,6 @@ jobs:
           cat artifacts/release-manifest.json
 
       - name: Install Rust toolchain (for cargo-cyclonedx)
-        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-cyclonedx
@@ -696,6 +693,17 @@ jobs:
               --bundle "${manifest%.manifest.json}.manifest.sigstore.json" \
               "$manifest"
           done
+
+      - name: Smoke direct installer with external bootstrap authority
+        run: |
+          cargo build -p omegon-maintain
+          archive="artifacts/omegon-${RELEASE_TAG#v}-x86_64-unknown-linux-gnu.tar.gz"
+          python3 scripts/smoke_distribution_runtime.py direct-installer \
+            --archive "$archive" \
+            --target x86_64-unknown-linux-gnu \
+            --verifier target/debug/omegon-maintain \
+            --manifest "${archive}.manifest.json" \
+            --bundle "${archive}.manifest.sigstore.json"
 
       - name: Sign SBOM and notices
         if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
@@ -769,7 +777,7 @@ jobs:
           subject-path: artifacts/omegon-*.tar.gz
 
       - name: Trigger Homebrew formula update
-        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') }}
+        if: ${{ !contains(env.RELEASE_TAG, '-nightly.') && inputs.publish_package_channels }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
         run: |
@@ -782,7 +790,7 @@ jobs:
     needs: release
     # Only build OCI images for stable releases — nightlies don't
     # need container images, and 7 Nix builds burn ~70 runner-minutes.
-    if: ${{ !contains(github.ref_name, '-fixture.') && !contains(inputs.tag_name || github.ref_name, '-nightly.') }}
+    if: ${{ !contains(github.ref_name, '-fixture.') && !contains(inputs.tag_name || github.ref_name, '-nightly.') && inputs.publish_package_channels }}
     runs-on: ubuntu-latest
     permissions:
       packages: write

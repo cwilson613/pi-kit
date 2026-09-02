@@ -21,6 +21,8 @@ use tokio_util::sync::CancellationToken;
 const ARTIFACT_PROFILE: &str = "kernel-host-v1";
 const CODESCAN_EXTENSION: &str = "omegon-codescan";
 const CORE_MARKER: &str = "omegon-composition-core-probe";
+const MAX_SCRIPTED_TURN_EVENTS: usize = 8;
+const SCRIPTED_TURN_DEADLINE: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 enum CodescanServiceError {
@@ -57,9 +59,26 @@ enum Command {
     CompositionInspect {
         #[arg(long, value_parser = ["kernel"])]
         profile: String,
-        #[arg(long, value_parser = ["core-read", "codescan-search"])]
+        #[arg(long, value_parser = ["agent-turn", "core-read", "codescan-search"])]
         probe: String,
     },
+    Run {
+        task: PathBuf,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ScriptedTurnEvent<'a> {
+    Started,
+    Text(&'a str),
+    Done,
+}
+
+#[derive(Debug)]
+struct ScriptedTurnOutcome {
+    response: String,
+    events_consumed: usize,
+    stop_reason: &'static str,
 }
 
 #[derive(Serialize)]
@@ -122,7 +141,18 @@ async fn main() {
 async fn run() -> Result<()> {
     let cli = Cli::parse();
     let cwd = bounded_workspace(cli.cwd.as_deref())?;
-    let Command::CompositionInspect { profile, probe } = cli.command;
+    let (profile, probe) = match cli.command {
+        Command::CompositionInspect { profile, probe } => (profile, probe),
+        Command::Run { task } => {
+            let result = omegon_kernel_runtime::run_task(&cwd, &task).await?;
+            println!("{}", serde_json::to_string(&result)?);
+            let exit_code = result.exit_code();
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            return Ok(());
+        }
+    };
     if profile != "kernel" {
         anyhow::bail!("composition profile '{profile}' is incompatible with {ARTIFACT_PROFILE}");
     }
@@ -200,10 +230,66 @@ async fn execute_probe(
     supervisors: &mut Vec<Arc<ExtensionSupervisor>>,
 ) -> Result<Value> {
     match probe {
+        "agent-turn" => scripted_agent_turn_probe().await,
         "core-read" => core_read_probe(cwd),
         "codescan-search" => codescan_probe(cwd, supervisors).await,
         _ => anyhow::bail!("unknown composition probe: {probe}"),
     }
+}
+
+async fn scripted_agent_turn_probe() -> Result<Value> {
+    let outcome = tokio::time::timeout(SCRIPTED_TURN_DEADLINE, async {
+        consume_scripted_turn(&[
+            ScriptedTurnEvent::Started,
+            ScriptedTurnEvent::Text("kernel-turn-ok"),
+            ScriptedTurnEvent::Done,
+        ])
+    })
+    .await
+    .map_err(|_| anyhow!("turn:deadline_exhausted"))??;
+
+    Ok(json!({
+        "name": "agent-turn",
+        "status": "ok",
+        "turns": 1,
+        "model_requests": 1,
+        "events_consumed": outcome.events_consumed,
+        "stop_reason": outcome.stop_reason,
+        "response": outcome.response,
+        "provider": "scripted-conformance"
+    }))
+}
+
+fn consume_scripted_turn(events: &[ScriptedTurnEvent<'_>]) -> Result<ScriptedTurnOutcome> {
+    let mut started = false;
+    let mut terminal = false;
+    let mut response = String::new();
+
+    for (index, event) in events.iter().enumerate() {
+        if index >= MAX_SCRIPTED_TURN_EVENTS {
+            anyhow::bail!("turn:budget_exhausted");
+        }
+        if terminal {
+            anyhow::bail!("turn:event_after_terminal");
+        }
+        match event {
+            ScriptedTurnEvent::Started if !started => started = true,
+            ScriptedTurnEvent::Started => anyhow::bail!("turn:duplicate_start"),
+            ScriptedTurnEvent::Text(text) if started => response.push_str(text),
+            ScriptedTurnEvent::Text(_) => anyhow::bail!("turn:event_before_start"),
+            ScriptedTurnEvent::Done if started => terminal = true,
+            ScriptedTurnEvent::Done => anyhow::bail!("turn:event_before_start"),
+        }
+    }
+
+    if !terminal {
+        anyhow::bail!("turn:budget_exhausted");
+    }
+    Ok(ScriptedTurnOutcome {
+        response,
+        events_consumed: events.len(),
+        stop_reason: "completed",
+    })
 }
 
 fn core_read_probe(cwd: &Path) -> Result<Value> {
@@ -360,5 +446,41 @@ mod tests {
         std::fs::write(root.path().join("composition-probe.txt"), CORE_MARKER).unwrap();
         let canonical_root = root.path().canonicalize().unwrap();
         assert_eq!(core_read_probe(&canonical_root).unwrap()["status"], "ok");
+    }
+
+    #[test]
+    fn scripted_agent_turn_completes_within_hard_bounds() {
+        let outcome = consume_scripted_turn(&[
+            ScriptedTurnEvent::Started,
+            ScriptedTurnEvent::Text("kernel-turn-ok"),
+            ScriptedTurnEvent::Done,
+        ])
+        .unwrap();
+
+        assert_eq!(outcome.response, "kernel-turn-ok");
+        assert_eq!(outcome.events_consumed, 3);
+        assert_eq!(outcome.stop_reason, "completed");
+    }
+
+    #[test]
+    fn scripted_agent_turn_without_done_exhausts_its_budget() {
+        let mut script = vec![ScriptedTurnEvent::Text(""); MAX_SCRIPTED_TURN_EVENTS];
+        script[0] = ScriptedTurnEvent::Started;
+
+        let error = consume_scripted_turn(&script).unwrap_err();
+
+        assert!(error.to_string().contains("turn:budget_exhausted"));
+    }
+
+    #[test]
+    fn scripted_agent_turn_rejects_events_after_terminal_completion() {
+        let error = consume_scripted_turn(&[
+            ScriptedTurnEvent::Started,
+            ScriptedTurnEvent::Done,
+            ScriptedTurnEvent::Text("late"),
+        ])
+        .unwrap_err();
+
+        assert!(error.to_string().contains("turn:event_after_terminal"));
     }
 }

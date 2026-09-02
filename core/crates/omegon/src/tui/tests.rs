@@ -2777,6 +2777,106 @@ fn authoritative_idle_queue_snapshot_recovers_without_prompt_started_event() {
 }
 
 #[test]
+fn delayed_prior_turn_terminal_advice_cannot_clear_newer_authoritative_turn() {
+    fn activity(revision: u64, active_turn: Option<(&str, &str)>) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "lineage": {
+                "session_id": "tui-session",
+                "stream_id": "tui-stream",
+                "runtime_generation": "runtime-1",
+                "composition_generation": "composition-1"
+            },
+            "activity_revision": revision,
+            "queue": [],
+            "active_turn": active_turn.map(|(turn_id, prompt_id)| serde_json::json!({
+                "turn_id": turn_id,
+                "prompt_id": prompt_id,
+                "phase": "running"
+            })),
+            "terminal_turn": if active_turn.is_none() { Some(serde_json::json!({
+                "turn_id": "authority-turn-1",
+                "outcome": "completed",
+                "reason_code": "worker_completed",
+                "authority_sequence": revision
+            })) } else { None },
+            "lifecycle_health": "healthy",
+            "lifecycle_detail": null,
+            "actions": []
+        })
+    }
+
+    let mut app = active_test_app();
+    app.handle_agent_event(AgentEvent::RuntimePromptStarted {
+        runtime_turn_id: 73,
+        text: "first".into(),
+        image_paths: Vec::new(),
+    });
+    app.handle_agent_event(AgentEvent::RuntimeQueueUpdated {
+        snapshot_json: serde_json::json!({
+            "depth": 0,
+            "active": {"turn_id": 73},
+            "items": [],
+            "activity": activity(3, Some(("authority-turn-1", "prompt-1")))
+        }),
+    });
+    app.handle_agent_event(AgentEvent::RuntimeQueueUpdated {
+        snapshot_json: serde_json::json!({
+            "depth": 0,
+            "active": null,
+            "items": [],
+            "activity": activity(4, None)
+        }),
+    });
+
+    app.handle_agent_event(AgentEvent::RuntimePromptStarted {
+        runtime_turn_id: 74,
+        text: "second".into(),
+        image_paths: Vec::new(),
+    });
+    app.handle_agent_event(AgentEvent::TurnStart { turn: 2 });
+
+    // Advice for turn one can arrive before the authority snapshot for turn two.
+    app.handle_agent_event(AgentEvent::AgentEnd);
+    assert!(app.agent_active);
+    assert_eq!(app.runtime_turn_id, Some(74));
+
+    app.handle_agent_event(AgentEvent::RuntimeQueueUpdated {
+        snapshot_json: serde_json::json!({
+            "depth": 0,
+            "active": {"turn_id": 74},
+            "items": [],
+            "activity": activity(6, Some(("authority-turn-2", "prompt-2")))
+        }),
+    });
+
+    app.handle_agent_event(AgentEvent::RuntimeTurnLifecycleUpdated {
+        snapshot_json: serde_json::json!({
+            "phase": "supervisor_completed",
+            "turn_id": 73
+        }),
+    });
+    app.handle_agent_event(AgentEvent::AgentEnd);
+    app.handle_agent_event(AgentEvent::RuntimeQueueUpdated {
+        snapshot_json: serde_json::json!({
+            "depth": 0,
+            "active": null,
+            "items": [],
+            "activity": activity(4, None)
+        }),
+    });
+
+    assert!(app.agent_active);
+    assert_eq!(app.runtime_turn_id, Some(74));
+    assert_eq!(
+        app.runtime_queue_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot["active"]["turn_id"].as_u64()),
+        Some(74)
+    );
+}
+
+#[test]
 fn stream_idle_provider_failure_and_lifecycle_events_project_into_tui() {
     let mut app = active_test_app();
     app.handle_agent_event(AgentEvent::StreamIdle {

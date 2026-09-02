@@ -19,7 +19,7 @@ open_questions = []
 
 ## Overview
 
-Engineers should be able to install Omegon with a single command: no git clone, no submodule init, no npm runtime, and no manual link step. Release archives, the direct installer, and Homebrew install the full product. That product contains `omegon`, `omegon-maintain`, bundled content, and signed product component `core:codescan`.
+Engineers can install Omegon without a git clone, submodule initialization, npm runtime, or manual link step. The direct installer requires an independently trusted `omegon-maintain` executable through `OMEGON_BOOTSTRAP_VERIFIER`; it cannot authenticate its first verifier from the candidate archive. Release archives and the direct installer install the full product. That product contains `omegon`, `omegon-maintain`, bundled content, and signed product component `core:codescan`. Homebrew, Nix, and OCI publication remain deferred while stable release channels are prepared.
 
 The full-product layout stores codescan composition evidence at
 `share/omegon/components/core-codescan.lock.json`. The lock binds the component
@@ -31,29 +31,25 @@ evidence.
 
 Current install surfaces:
 
-- install script: `curl -fsSL https://omegon.styrene.io/install.sh | sh`
-- nightlies: `curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --channel=nightly`
-- Homebrew: `brew tap styrene-lab/tap && brew install omegon`
+- direct installer: `curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain sh`
+- nightlies: `curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/independently-trusted/omegon-maintain sh -s -- --channel=nightly`
 - direct GitHub release artifacts from `styrene-lab/omegon`
 
-Nix packages and Nix-built OCI images currently install the default compiled host without product-component binaries. They are host-only distributions, not full-product equivalents. Codescan reports typed `service:codescan` unavailability until the operator installs and manages a compatible SDK extension. OCI images use the documented init-container and shared-volume pattern for such extensions.
+Candidate Nix packages and Nix-built OCI images contain the default compiled host without product-component binaries. They are host-only compositions, not full-product equivalents or supported public channels. Codescan reports typed `service:codescan` unavailability until the operator installs and manages a compatible SDK extension.
 
 The machine-readable target matrix is `fixtures/release-composition-matrix-v1.json`. It is authoritative for host profile, installation composition class, signed `core:*` inventory, and SDK-extension posture. Files under `core/npm/` are retained legacy scaffolding. npm is not a supported install or publication channel.
 
-Release validation executes the packaged layouts rather than relying on archive
-names or formula syntax. Native release jobs install a local archive through the
-direct installer with networking disabled, and the Homebrew update job applies
-the formula destinations before running the same full-product codescan
-acceptance. Pull requests execute the packaged Nix host on Linux. Stable OCI
-jobs load each image locally and require `full-product` host-profile and
-`host-only` composition labels, typed `service:unavailable` for `core:codescan`,
-and zero extension processes before pushing the image.
+Pre-publication validation executes local packaged layouts rather than relying on
+archive names or formula syntax. Archive and direct-installer acceptance run with
+isolated state and networking disabled. Homebrew layout, Nix host-only, and OCI
+digest-bound evidence remain deterministic policy checks; they do not claim live
+channel acceptance or publication.
 
 Source checkouts use `just link`, which performs its own release build for both executables. It installs stable development launchers into `~/.local/bin/omegon`, `~/.local/bin/om`, and `~/.local/bin/omegon-maintain`, registers the checkout in `~/.omegon/channels/default`, and keeps fallback copies in `~/.omegon/bin/`. It does not use shell-profile aliases as the primary resolution mechanism. Run `omegon --which` and `omegon-maintain --which` to inspect the resolved targets; both must report the current checkout commit and `stale: no`.
 
 ## Linux runtime requirements
 
-**Important:** Homebrew on Linux does **not** solve host glibc ABI compatibility for Omegon release binaries.
+**Important:** A future Homebrew channel on Linux will not solve host glibc ABI compatibility for Omegon release binaries.
 
 If a Linux release artifact was built against a newer glibc than your distro provides, install may succeed but the binary will fail immediately at runtime with errors like:
 
@@ -66,7 +62,7 @@ That means the host system glibc is older than the binary expects.
 
 ### Current expectation
 
-Before relying on a Linux Homebrew install, verify that your host glibc is new enough for the shipped release artifact:
+Before enabling or relying on a future Linux Homebrew install, verify that the host glibc is new enough for the shipped release artifact:
 
 ```bash
 ldd --version
@@ -84,7 +80,7 @@ Use one of these paths:
 
 ### Documentation contract
 
-Linux install surfaces must state runtime ABI requirements explicitly. `brew install` should never imply that Homebrew will supply a compatible glibc for Omegon binaries on Linux.
+Future Linux install surfaces must state runtime ABI requirements explicitly. Homebrew must not imply that it supplies a compatible glibc for Omegon binaries on Linux.
 
 ## Update contract
 
@@ -98,9 +94,11 @@ The authoritative update path therefore must:
 
 `/refresh` is intentionally narrower: it only clears transient caches and reloads extensions. It is not equivalent to `/update` after package/runtime mutation.
 
-Script-managed installs use the `versioned-current-v1` layout. Each immutable `~/.omegon/versions/<version>/` generation contains `omegon`, `omegon-maintain`, both resident composition locks, bundled content, generation-local `core:codescan` manifest, executable, and component lock, plus that generation's `install-receipt.json`. The stable `omegon`, `om`, `omegon-maintain`, and `~/.config/omegon/install-receipt.json` paths resolve through the single `~/.omegon/current` symlink. Install, self-update, rollback, and version switching validate this complete digest-bound generation before atomically replacing `current`; staging, extraction, or verification failure leaves the previous host, component, and receipt selected and callable.
+Script-managed installs use the `versioned-current-v1` layout. Each immutable `~/.omegon/versions/<version>/` generation contains `omegon`, `omegon-maintain`, both resident composition locks, bundled content, generation-local `core:codescan` manifest, executable, and component lock, plus that generation's `install-receipt.json`. The stable `omegon`, `om`, `omegon-maintain`, and `~/.config/omegon/install-receipt.json` paths resolve through the single `~/.omegon/current` symlink. Version switching captures `omegon-maintain` from the active generation and uses only that executable to authenticate the signed archive and exact extracted tree. Candidate executables do not grant activation authority. Install, self-update, rollback, and version switching atomically replace `current`; staging, extraction, or verification failure leaves the previous host, component, and receipt selected and callable.
 
 Release lifecycle operations never install or clean up `core:codescan` through `~/.omegon/extensions/omegon-codescan`. That path is operator-managed SDK-extension state. A same-named operator extension is preserved across install, update, switch, rollback, and failed-generation cleanup. `just link` also refuses to replace an operator-managed collision unless the operator removes it explicitly; its marked development install is separate from release generations.
+
+OCI readiness is currently a policy and CI check. The checked evidence requires one immutable image digest across signature, SBOM, provenance, composition identity, and the declared host-only or full-product class. This check does not claim that CI published a production image, signature, or attestation, and it does not perform live registry verification.
 
 ## Decisions
 

@@ -84,6 +84,29 @@ impl InstalledReleaseLayout {
         Ok(destination)
     }
 
+    /// Publish a newly authenticated generation without accepting an existing substitute.
+    pub(crate) fn publish_new_generation(
+        &self,
+        staging_dir: &Path,
+        version: &str,
+    ) -> anyhow::Result<PathBuf> {
+        let destination = self.generation_dir(version)?;
+        validate_release_coupled_generation(staging_dir)?;
+        fs::create_dir_all(&self.versions_root)?;
+        sync_generation(staging_dir)?;
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => anyhow::bail!(
+                "release generation appeared during authenticated publication: {}",
+                destination.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        fs::rename(staging_dir, &destination)?;
+        sync_directory(&self.versions_root)?;
+        Ok(destination)
+    }
+
     pub(crate) fn activate(&self, generation: &Path) -> anyhow::Result<()> {
         validate_release_coupled_generation(generation)?;
         if generation.parent() != Some(self.versions_root.as_path()) {
@@ -447,6 +470,23 @@ mod tests {
             "1.0.0"
         );
         assert!(published.is_dir());
+    }
+
+    #[test]
+    fn authenticated_publication_refuses_an_existing_substitute() {
+        let temp = tempfile::tempdir().unwrap();
+        let layout = layout(temp.path());
+        let existing = layout.generation_dir("2.0.0").unwrap();
+        let staging = layout.versions_root.join(".switch-authenticated");
+        write_generation(&existing, "2.0.0");
+        write_generation(&staging, "2.0.0");
+
+        let error = layout
+            .publish_new_generation(&staging, "2.0.0")
+            .expect_err("authenticated publication must not accept a raced-in directory");
+
+        assert!(error.to_string().contains("appeared"), "{error}");
+        assert!(staging.is_dir(), "caller retains cleanup ownership");
     }
 
     #[test]

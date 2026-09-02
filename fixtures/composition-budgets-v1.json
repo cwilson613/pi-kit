@@ -4,7 +4,7 @@
     "kernel-only": {
       "host_binary_size_bytes": {
         "targets": {
-          "aarch64-apple-darwin": {"baseline": 1283040, "max_delta": 262144},
+          "aarch64-apple-darwin": {"baseline": 4449584, "max_delta": 262144},
           "x86_64-apple-darwin": {"baseline": 6815744, "max_delta": 3145728},
           "aarch64-unknown-linux-gnu": {"baseline": 6291456, "max_delta": 3145728},
           "x86_64-unknown-linux-gnu": {"baseline": 7340032, "max_delta": 3145728},
@@ -22,14 +22,14 @@
       },
       "aggregate_installed_size_bytes": {
         "targets": {
-          "aarch64-apple-darwin": {"baseline": 1283040, "max_delta": 262144},
+          "aarch64-apple-darwin": {"baseline": 4449584, "max_delta": 262144},
           "x86_64-apple-darwin": {"baseline": 6815744, "max_delta": 3145728},
           "aarch64-unknown-linux-gnu": {"baseline": 6291456, "max_delta": 3145728},
           "x86_64-unknown-linux-gnu": {"baseline": 7340032, "max_delta": 3145728},
           "x86_64-unknown-linux-musl": {"baseline": 7340032, "max_delta": 3145728}
         }
       },
-      "dependency_count": {"baseline": 70, "max_delta": 2},
+      "dependency_count": {"baseline": 143, "max_delta": 2},
       "startup_task_count": {"baseline": 0, "max_delta": 0},
       "external_process_count": {"baseline": 0, "max_delta": 0},
       "model_schema_tokens": {"baseline": 0, "max_delta": 0},
@@ -39,7 +39,7 @@
     "kernel+codescan": {
       "host_binary_size_bytes": {
         "targets": {
-          "aarch64-apple-darwin": {"baseline": 1283040, "max_delta": 262144},
+          "aarch64-apple-darwin": {"baseline": 4449584, "max_delta": 262144},
           "x86_64-apple-darwin": {"baseline": 6815744, "max_delta": 3145728},
           "aarch64-unknown-linux-gnu": {"baseline": 6291456, "max_delta": 3145728},
           "x86_64-unknown-linux-gnu": {"baseline": 7340032, "max_delta": 3145728},
@@ -57,14 +57,14 @@
       },
       "aggregate_installed_size_bytes": {
         "targets": {
-          "aarch64-apple-darwin": {"baseline": 15879278, "max_delta": 1310720},
+          "aarch64-apple-darwin": {"baseline": 19046565, "max_delta": 1310720},
           "x86_64-apple-darwin": {"baseline": 23592960, "max_delta": 11534336},
           "aarch64-unknown-linux-gnu": {"baseline": 22020096, "max_delta": 11534336},
           "x86_64-unknown-linux-gnu": {"baseline": 25165824, "max_delta": 11534336},
           "x86_64-unknown-linux-musl": {"baseline": 25165824, "max_delta": 11534336}
         }
       },
-      "dependency_count": {"baseline": 182, "max_delta": 4},
+      "dependency_count": {"baseline": 255, "max_delta": 4},
       "startup_task_count": {"baseline": 0, "max_delta": 0},
       "external_process_count": {"baseline": 1, "max_delta": 0},
       "model_schema_tokens": {"baseline": 0, "max_delta": 0},

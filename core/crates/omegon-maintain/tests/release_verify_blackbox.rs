@@ -47,20 +47,31 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
 }
 
 fn verify(archive: &str, manifest: &str, bundle: &str) -> (i32, Value) {
-    let output = Command::new(binary())
-        .args([
-            "--json",
-            "release",
-            "verify",
-            "--archive",
-            archive,
-            "--manifest",
-            manifest,
-            "--bundle",
-            bundle,
-        ])
-        .output()
-        .unwrap();
+    verify_with_root(archive, manifest, bundle, None)
+}
+
+fn verify_with_root(
+    archive: &str,
+    manifest: &str,
+    bundle: &str,
+    extracted_root: Option<&str>,
+) -> (i32, Value) {
+    let mut command = Command::new(binary());
+    command.args([
+        "--json",
+        "release",
+        "verify",
+        "--archive",
+        archive,
+        "--manifest",
+        manifest,
+        "--bundle",
+        bundle,
+    ]);
+    if let Some(root) = extracted_root {
+        command.args(["--extracted-root", root]);
+    }
+    let output = command.output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let value = serde_json::from_str(&stdout).unwrap_or_else(|error| {
         panic!(
@@ -69,6 +80,45 @@ fn verify(archive: &str, manifest: &str, bundle: &str) -> (i32, Value) {
         )
     });
     (output.status.code().unwrap_or(-1), value)
+}
+
+#[test]
+fn release_verify_revalidates_an_exact_extracted_root() {
+    let (directory, archive, manifest, bundle) = fixture();
+    let extracted = directory.path().join("extracted");
+    fs::create_dir(&extracted).unwrap();
+    let file = fs::File::open(&archive).unwrap();
+    let mut package = tar::Archive::new(GzDecoder::new(std::io::BufReader::new(file)));
+    package.unpack(&extracted).unwrap();
+
+    let (code, output) = verify_with_root(
+        archive.to_str().unwrap(),
+        manifest.to_str().unwrap(),
+        bundle.to_str().unwrap(),
+        Some(extracted.to_str().unwrap()),
+    );
+    assert_eq!(code, 0, "{output:#}");
+    let verified = output["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "release_verified")
+        .unwrap();
+    let evidence: Value = serde_json::from_str(verified["evidence"].as_str().unwrap()).unwrap();
+    assert_eq!(evidence["extracted_root_verified"], true);
+
+    fs::write(extracted.join("omegon"), b"mutated after authentication").unwrap();
+    let (code, output) = verify_with_root(
+        archive.to_str().unwrap(),
+        manifest.to_str().unwrap(),
+        bundle.to_str().unwrap(),
+        Some(extracted.to_str().unwrap()),
+    );
+    assert_eq!(code, 1, "{output:#}");
+    assert_eq!(
+        output["errors"][0]["code"],
+        "release_extracted_root_invalid"
+    );
 }
 
 #[test]

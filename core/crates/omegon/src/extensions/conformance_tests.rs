@@ -124,12 +124,30 @@ async fn run_extension(
     control: PathBuf,
     marker: PathBuf,
 ) -> Result<ConformanceRun> {
+    run_extension_with_inventory(
+        root,
+        extension_dir,
+        control,
+        marker,
+        DynamicContributionInventory::default(),
+        true,
+    )
+    .await
+}
+
+async fn run_extension_with_inventory(
+    root: tempfile::TempDir,
+    extension_dir: PathBuf,
+    control: PathBuf,
+    marker: PathBuf,
+    inventory: DynamicContributionInventory,
+    publish: bool,
+) -> Result<ConformanceRun> {
     let source = std::fs::File::open(&extension_dir)?;
     let snapshot = Arc::new(crate::contribution_loading::snapshot_contribution_directory(&source)?);
     let manifest = ExtensionManifest::from_extension_dir(snapshot.path())?;
     let preflight = dynamic_preflight(&manifest, snapshot.path())?;
     let id = preflight.id.clone();
-    let inventory = DynamicContributionInventory::default();
     let candidate = inventory.discover(preflight)?;
     let mut profile = crate::settings::Profile::default();
     profile
@@ -138,16 +156,22 @@ async fn run_extension(
         .push(id.as_str().to_string());
     let policy = crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile);
     let admission = inventory.admit(&candidate, &policy)?;
-    let spawned =
-        match spawn_from_admitted_snapshot(snapshot, &extension_dir, admission, root.path(), &[])
-            .await
-        {
-            Ok(spawned) => spawned,
-            Err(error) => {
-                inventory.quarantine(&id, error.to_string());
-                return Err(error);
-            }
-        };
+    let spawned = match spawn_from_admitted_snapshot(
+        snapshot,
+        &extension_dir,
+        admission,
+        inventory.clone(),
+        root.path(),
+        &[],
+    )
+    .await
+    {
+        Ok(spawned) => spawned,
+        Err(error) => {
+            inventory.quarantine(&id, error.to_string());
+            return Err(error);
+        }
+    };
     if spawned.sdk_compatibility.status != super::sdk_compat::SdkCompatibilityStatus::Supported {
         let reason = format!(
             "first-party conformance requires SDK contract version {}: {}",
@@ -162,8 +186,10 @@ async fn run_extension(
         return Err(anyhow!(reason));
     }
     inventory.ready(&id);
-    inventory.stage_ready();
-    inventory.publish_staged();
+    if publish {
+        inventory.stage_ready();
+        inventory.publish_staged();
+    }
     Ok(ConformanceRun {
         _root: root,
         control,
@@ -441,6 +467,65 @@ async fn admitted_fixture_invokes_and_active_request_cancels() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn bounded_model_scope_refuses_native_owner_entry_above_budget() {
+    let _env_guard = crate::test_support::env::lock_async().await;
+    unsafe {
+        std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+    }
+
+    let run = run_fixture("compatible").await.unwrap();
+    let supervisor = run.spawned.supervisor.clone();
+    let marker = run.marker.clone();
+    let budget = omegon_kernel_runtime::ToolInvocationBudget::new(Some(1));
+    let scope = crate::invocation_service::InvocationScope {
+        tool_budget: Some(budget.clone()),
+        ..Default::default()
+    };
+    let mut bus = crate::bus::EventBus::new();
+    bus.register(run.spawned.feature);
+    bus.finalize();
+
+    bus.invoke_tool(
+        "fixture_echo",
+        "bounded-native-1",
+        json!({}),
+        CancellationToken::new(),
+        scope.clone(),
+    )
+    .await
+    .expect("exact-boundary invocation must reach the native owner");
+    assert!(
+        marker.exists(),
+        "admitted invocation did not enter its owner"
+    );
+    std::fs::remove_file(&marker).unwrap();
+
+    let error = bus
+        .invoke_tool(
+            "fixture_echo",
+            "bounded-native-2",
+            json!({}),
+            CancellationToken::new(),
+            scope,
+        )
+        .await
+        .expect_err("one-above invocation must fail before native RPC");
+    assert!(
+        error.to_string().contains("invocation:budget_exhausted"),
+        "{error:#}"
+    );
+    assert_eq!(budget.observed(), 1);
+    assert!(!marker.exists(), "exhausted invocation entered its owner");
+    assert_eq!(supervisor.health().state, ExtensionProcessState::Healthy);
+    supervisor
+        .shutdown(Duration::from_millis(500))
+        .await
+        .unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn replacement_enforces_tool_shape_and_preserves_stable_invocation() {
     let _env_guard = crate::test_support::env::lock_async().await;
     unsafe {
@@ -488,6 +573,9 @@ async fn stale_generation_is_rejected_before_extension_invocation() {
 
     let run = run_fixture("compatible").await.unwrap();
     let supervisor = run.spawned.supervisor.clone();
+    let polling_handle = run.spawned.rpc_polling_handle.clone();
+    let inventory = run.inventory.clone();
+    let contribution_id = run.id.clone();
     let marker = run.marker.clone();
     let mut bus = crate::bus::EventBus::new();
     bus.register(run.spawned.feature);
@@ -528,7 +616,329 @@ async fn stale_generation_is_rejected_before_extension_invocation() {
         .unwrap_err();
     assert!(error.to_string().contains("invocation:stale_generation"));
     assert!(!marker.exists(), "stale invocation reached the extension");
+
+    let mut replacement = inventory
+        .evidence()
+        .into_iter()
+        .next()
+        .expect("published extension evidence")
+        .candidate
+        .preflight;
+    replacement.source_digest = "sha256:replacement-generation".into();
+    inventory.discover(replacement).unwrap();
+    inventory.ready(&contribution_id);
+    inventory.stage_ready();
+    inventory.publish_staged();
+    let error = polling_handle
+        .rpc_call(
+            "execute_tool",
+            json!({"name": "fixture_echo", "arguments": {}}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("generation is stale"));
+    assert!(
+        !marker.exists(),
+        "stale polling handle reached the extension"
+    );
     supervisor
+        .shutdown(Duration::from_millis(500))
+        .await
+        .unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn lif_001_lif_003_real_process_quiescent_replacement() {
+    let _env_guard = crate::test_support::env::lock_async().await;
+    unsafe {
+        std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+    }
+
+    let active_run = run_fixture("compatible").await.unwrap();
+    let inventory = active_run.inventory.clone();
+    let active_polling = active_run.spawned.rpc_polling_handle.clone();
+    let active_supervisor = active_run.spawned.supervisor.clone();
+    let active_digest = active_supervisor.source_digest().to_string();
+    let active_id = active_run.id.clone();
+    let active_marker = active_run.marker.clone();
+    let mut bus = crate::bus::EventBus::new();
+    bus.register(active_run.spawned.feature);
+    bus.finalize();
+    let stale_args = json!({});
+    let stale_lease = match crate::invocation_service::InvocationService::admit_tool(
+        &bus,
+        "fixture_echo",
+        crate::invocation_service::InvocationAdmissionRequest {
+            call_id: "retained-a-lease",
+            visible_tool_name: "fixture_echo",
+            args: &stale_args,
+            scope: crate::invocation_service::InvocationScope::default(),
+            permission_policy: None,
+            permission_role: None,
+        },
+    ) {
+        crate::invocation_service::InvocationAdmission::Lease(lease) => lease,
+        _ => panic!("active extension invocation was not admitted"),
+    };
+    stale_lease
+        .claim_dispatch("retained-a-lease", "fixture_echo")
+        .unwrap();
+    let mut active_owner =
+        crate::contribution_lifecycle::DynamicContributionGenerationOwner::new(inventory.clone());
+    active_owner.own_extension(active_supervisor);
+    active_owner.publish();
+
+    let candidate_root = tempfile::tempdir().unwrap();
+    let candidate_marker = candidate_root.path().join("candidate-owner-entry.json");
+    let candidate_paths = write_fixture_with_marker(
+        candidate_root.path(),
+        "compatible",
+        candidate_marker.clone(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(candidate_root.path().join(".omegon")).unwrap();
+    std::fs::write(
+        candidate_root.path().join(".omegon/profile.json"),
+        r#"{"permissions":{"trustedContributionCode":["extension:native-conformance-fixture"]}}"#,
+    )
+    .unwrap();
+    let secrets = Arc::new(
+        omegon_secrets::SecretsManager::new(&candidate_root.path().join("secrets")).unwrap(),
+    );
+    let candidate = crate::setup::stage_installed_extension_replacement_from_home(
+        candidate_root.path(),
+        candidate_root.path(),
+        "native-conformance-fixture",
+        secrets,
+        inventory.clone(),
+    )
+    .await
+    .unwrap();
+    let crate::setup::InstalledExtensionReplacement::Changed(candidate) = candidate else {
+        panic!("changed fixture source must stage a new generation");
+    };
+    assert_eq!(candidate_paths.marker, candidate_marker);
+    let mut coordinator =
+        crate::contribution_lifecycle::DynamicExtensionPublicationCoordinator::default();
+    coordinator.accept(candidate).await.unwrap();
+    assert!(coordinator.has_pending());
+    assert!(!candidate_marker.exists());
+
+    let authority_dir = tempfile::tempdir().unwrap();
+    let authority = crate::session_authority::SessionAuthority::open(
+        &authority_dir.path().join("lif-session.json"),
+        "lif-session",
+        "lif-workspace",
+        "lif-composition",
+        crate::session_authority::ActorIdentity {
+            principal: "campaign".into(),
+            ingress: "test".into(),
+        },
+        "2026-09-01T00:00:00Z",
+    )
+    .unwrap();
+    let mut supervisor =
+        crate::runtime_supervisor::InteractiveRuntimeSupervisor::with_authority(authority).unwrap();
+
+    for prompt in ["active turn", "turn before explicit commit"] {
+        supervisor
+            .admit_prompt(
+                prompt.into(),
+                Vec::new(),
+                crate::runtime_prompt::RuntimeActor::tui(),
+                crate::runtime_prompt::ControlSurface::Tui,
+                crate::operator_commands::PromptMetadata::default(),
+                None,
+            )
+            .unwrap();
+        match supervisor.start_next_turn() {
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("admitted campaign prompt must start a turn"),
+            Err(error) => panic!("campaign turn must start: {error}"),
+        }
+        let identity = supervisor.current_identity().unwrap();
+        assert!(
+            coordinator
+                .commit_at_quiescence(&active_id, &supervisor, &mut bus, &mut active_owner)
+                .await
+                .is_err()
+        );
+        bus.invoke_tool(
+            "fixture_echo",
+            prompt,
+            json!({}),
+            CancellationToken::new(),
+            crate::invocation_service::InvocationScope::default(),
+        )
+        .await
+        .unwrap();
+        assert!(active_marker.exists());
+        std::fs::remove_file(&active_marker).unwrap();
+        supervisor
+            .submit_loop_terminal_intent(crate::runtime_turn::LoopTerminalIntent {
+                identity,
+                outcome: crate::runtime_turn::RuntimeTurnOutcome::Completed,
+                reason_code: "campaign_completed".into(),
+            })
+            .unwrap();
+    }
+
+    let active_call = inventory.begin_call(&active_id, &active_digest).unwrap();
+    assert!(
+        coordinator
+            .commit_at_quiescence(&active_id, &supervisor, &mut bus, &mut active_owner)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("extension calls remain active")
+    );
+    drop(active_call);
+
+    let outcome = coordinator
+        .commit_at_quiescence(&active_id, &supervisor, &mut bus, &mut active_owner)
+        .await
+        .unwrap();
+    assert!(outcome.retirement_failures.is_empty());
+    assert!(!coordinator.has_pending());
+
+    let stale_error = active_polling
+        .rpc_call(
+            "execute_tool",
+            json!({"name": "fixture_echo", "arguments": {}}),
+        )
+        .await
+        .unwrap_err();
+    assert!(stale_error.to_string().contains("generation is stale"));
+    assert!(!active_marker.exists());
+    let stale_lease_error = bus
+        .execute_tool_with_lease(
+            &stale_lease,
+            "fixture_echo",
+            "retained-a-lease",
+            stale_args,
+            CancellationToken::new(),
+            omegon_traits::ToolProgressSink::noop(),
+            omegon_traits::ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        stale_lease_error
+            .to_string()
+            .contains("invocation:stale_generation")
+    );
+    assert!(!active_marker.exists());
+
+    bus.invoke_tool(
+        "fixture_echo",
+        "fresh-candidate-call",
+        json!({}),
+        CancellationToken::new(),
+        crate::invocation_service::InvocationScope::default(),
+    )
+    .await
+    .unwrap();
+    assert!(candidate_marker.exists());
+    assert!(!active_marker.exists());
+    assert!(active_owner.shutdown().await.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn lif_001_newer_candidate_settles_pending_before_replacement() {
+    let _env_guard = crate::test_support::env::lock_async().await;
+    unsafe {
+        std::env::remove_var("OMEGON_RUNTIME_CONTEXT");
+        std::env::remove_var("KUBERNETES_SERVICE_HOST");
+    }
+
+    let active_run = run_fixture("compatible").await.unwrap();
+    let inventory = active_run.inventory.clone();
+    let contribution_id = active_run.id.clone();
+    let active_polling = active_run.spawned.rpc_polling_handle.clone();
+    let active_supervisor = active_run.spawned.supervisor.clone();
+    let mut coordinator =
+        crate::contribution_lifecycle::DynamicExtensionPublicationCoordinator::default();
+
+    let b_root = tempfile::tempdir().unwrap();
+    let b_paths = write_fixture_with_marker(
+        b_root.path(),
+        "compatible",
+        b_root.path().join("b-owner-entry.json"),
+    )
+    .unwrap();
+    let b_run = run_extension_with_inventory(
+        b_root,
+        b_paths.extension_dir,
+        b_paths.control,
+        b_paths.marker,
+        inventory.clone(),
+        false,
+    )
+    .await
+    .unwrap();
+    let b_pid = b_run.spawned.supervisor.health().pid.unwrap();
+    coordinator
+        .accept(
+            crate::contribution_lifecycle::StagedDynamicExtensionGeneration::new(
+                b_run.spawned.feature,
+                b_run.spawned.supervisor,
+                inventory.clone(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let c_root = tempfile::tempdir().unwrap();
+    let c_marker = c_root.path().join("c-owner-entry.json");
+    let c_paths = write_fixture_with_marker(c_root.path(), "compatible", c_marker.clone()).unwrap();
+    let c_run = run_extension_with_inventory(
+        c_root,
+        c_paths.extension_dir,
+        c_paths.control,
+        c_paths.marker,
+        inventory.clone(),
+        false,
+    )
+    .await
+    .unwrap();
+    let c_supervisor = c_run.spawned.supervisor.clone();
+    let c_pid = c_supervisor.health().pid.unwrap();
+    coordinator
+        .accept(
+            crate::contribution_lifecycle::StagedDynamicExtensionGeneration::new(
+                c_run.spawned.feature,
+                c_run.spawned.supervisor,
+                inventory,
+            ),
+        )
+        .await
+        .unwrap();
+
+    wait_for_process_exit(b_pid).await;
+    active_polling
+        .rpc_call(
+            "execute_tool",
+            json!({"name": "fixture_echo", "arguments": {}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        active_supervisor.health().state,
+        ExtensionProcessState::Healthy
+    );
+    assert!(!c_marker.exists());
+    assert!(coordinator.has_pending());
+    assert!(
+        coordinator
+            .reject_pending(&contribution_id, "campaign complete")
+            .await
+            .is_empty()
+    );
+    wait_for_process_exit(c_pid).await;
+    active_supervisor
         .shutdown(Duration::from_millis(500))
         .await
         .unwrap();

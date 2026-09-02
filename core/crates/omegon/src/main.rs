@@ -215,6 +215,8 @@ mod smoke_surface;
 mod startup;
 pub mod status;
 mod subagent_route;
+#[cfg(test)]
+mod surface_parity_campaign;
 mod task_tree;
 pub mod tool_registry;
 mod tools;
@@ -743,7 +745,7 @@ enum Commands {
     /// Designed for k8s Jobs/CronJobs, CI pipelines, and scripted automation.
     ///
     /// Accepts a task spec file (TOML) as positional argument, or inline flags.
-    /// Task spec fields can be overridden by flags.
+    /// Task spec fields with corresponding flags can be overridden.
     ///
     /// Exit codes: 0=completed, 1=error, 2=upstream exhausted, 3=timeout
     ///
@@ -753,7 +755,7 @@ enum Commands {
     ///   omegon run task.toml --model anthropic:claude-opus-4-6
     Run {
         /// Task spec file (TOML). Declares prompt, bounds, agent settings, output.
-        /// All fields can be overridden by flags.
+        /// Fields with corresponding command-line flags can be overridden.
         task_spec: Option<PathBuf>,
 
         /// Task prompt (inline). Overrides task spec.
@@ -1821,6 +1823,10 @@ async fn main() -> anyhow::Result<()> {
                     .and_then(|s| s.bounds.as_ref())
                     .and_then(|b| b.token_budget)
             });
+            let effective_tool_budget = spec
+                .as_ref()
+                .and_then(|s| s.bounds.as_ref())
+                .and_then(|b| b.tool_budget);
             let effective_cwd = spec
                 .as_ref()
                 .and_then(|s| s.task.cwd.as_deref())
@@ -1841,6 +1847,7 @@ async fn main() -> anyhow::Result<()> {
                 effective_max_turns,
                 effective_timeout,
                 effective_token_budget,
+                effective_tool_budget,
                 manifest.as_deref(),
                 effective_cwd,
                 &effective_model,
@@ -5088,6 +5095,8 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         return setup::finalize_agent_error(&mut agent, error).await;
     }
     let mut dynamic_contributions = std::mem::take(&mut agent.dynamic_contributions);
+    let mut dynamic_extension_publication =
+        contribution_lifecycle::DynamicExtensionPublicationCoordinator::default();
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel::<operator_commands::OperatorCommand>(16);
 
     // Bridge terminal completion into both the renderer-neutral event stream
@@ -5647,6 +5656,8 @@ fn build_tui_secret_readiness_snapshot(
                         omegon_traits::RuntimeSurface::Tui,
                     ),
                     supervisor: Some(&mut runtime),
+                    dynamic_contributions: Some(&mut dynamic_contributions),
+                    dynamic_extension_publication: Some(&mut dynamic_extension_publication),
                 };
                 let response = control_runtime::execute_control(&mut ctx, request).await;
                 if let Some(output) = response.output.clone() {
@@ -5680,6 +5691,8 @@ fn build_tui_secret_readiness_snapshot(
                     },
                     invocation_scope: operator_control_scope(surface),
                     supervisor: Some(&mut runtime),
+                    dynamic_contributions: Some(&mut dynamic_contributions),
+                    dynamic_extension_publication: Some(&mut dynamic_extension_publication),
                 };
                 let response = control_runtime::execute_control(&mut ctx, request).await;
                 if let Some(output) = response.output.clone() {
@@ -6312,6 +6325,8 @@ fn build_tui_secret_readiness_snapshot(
                         omegon_traits::RuntimeSurface::Tui,
                     ),
                     supervisor: Some(&mut runtime),
+                    dynamic_contributions: None,
+                    dynamic_extension_publication: None,
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
@@ -6347,6 +6362,8 @@ fn build_tui_secret_readiness_snapshot(
                         omegon_traits::RuntimeSurface::Tui,
                     ),
                     supervisor: Some(&mut runtime),
+                    dynamic_contributions: None,
+                    dynamic_extension_publication: None,
                 };
                 let response = control_runtime::execute_control(
                     &mut ctx,
@@ -7150,6 +7167,7 @@ fn build_tui_secret_readiness_snapshot(
                             .map(|authority| authority.session_id()),
                         turn_id: active.authority_turn_id,
                         authority: invocation_authority.clone(),
+                        tool_budget: None,
                     };
                     stop_voice_session_if_requested(
                         &active.prompt,
@@ -8525,6 +8543,7 @@ async fn call_tdd_savepoint_extension(
         snapshot,
         &ext_dir,
         trust_admission,
+        inventory.clone(),
         &project_root,
         &[],
     )
@@ -9147,6 +9166,8 @@ async fn execute_remote_slash_command_with_supervisor(
             },
             invocation_scope: operator_control_scope(omegon_traits::RuntimeSurface::Cli),
             supervisor,
+            dynamic_contributions: None,
+            dynamic_extension_publication: None,
         };
         return control_runtime::execute_control(&mut ctx, control_request).await;
     }
@@ -9627,6 +9648,7 @@ async fn run_auth_login(provider: &str) -> anyhow::Result<()> {
 
 /// Task specification — loaded from a TOML file for `omegon run`.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TaskSpec {
     task: TaskSpecTask,
     #[serde(default)]
@@ -9638,6 +9660,7 @@ struct TaskSpec {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TaskSpecTask {
     #[serde(default)]
     prompt: Option<String>,
@@ -9648,6 +9671,7 @@ struct TaskSpecTask {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TaskSpecBounds {
     #[serde(default = "default_max_turns")]
     max_turns: u32,
@@ -9655,9 +9679,12 @@ struct TaskSpecBounds {
     timeout_secs: u64,
     #[serde(default)]
     token_budget: Option<u64>,
+    #[serde(default)]
+    tool_budget: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TaskSpecAgent {
     #[serde(default)]
     model: Option<String>,
@@ -9670,6 +9697,7 @@ struct TaskSpecAgent {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TaskSpecOutput {
     #[serde(default)]
     path: Option<String>,
@@ -9680,6 +9708,65 @@ fn default_max_turns() -> u32 {
 }
 fn default_timeout() -> u64 {
     600
+}
+
+#[cfg(test)]
+mod task_spec_tests {
+    use super::{TaskSpec, validate_task_spec};
+
+    #[test]
+    fn rejects_unknown_task_field() {
+        let error = toml::from_str::<TaskSpec>(
+            r#"
+[task]
+prompt = "must not execute"
+invalid_policy = true
+"#,
+        )
+        .expect_err("unknown task fields must fail admission");
+
+        assert!(error.to_string().contains("invalid_policy"));
+    }
+
+    #[test]
+    fn admits_tool_budget_as_bounded_task_policy() {
+        let spec = toml::from_str::<TaskSpec>(
+            r#"
+[task]
+prompt = "exercise one native tool"
+
+[bounds]
+max_turns = 2
+timeout_secs = 30
+tool_budget = 1
+"#,
+        )
+        .expect("tool budget must be admitted by the strict task schema");
+
+        assert_eq!(spec.bounds.and_then(|bounds| bounds.tool_budget), Some(1));
+    }
+
+    #[test]
+    fn rejects_zero_tool_budget_before_runtime_setup() {
+        let spec = toml::from_str::<TaskSpec>(
+            r#"
+[task]
+prompt = "must not execute"
+
+[bounds]
+tool_budget = 0
+"#,
+        )
+        .expect("zero is syntactically valid and must fail policy admission");
+
+        let error =
+            validate_task_spec(&spec).expect_err("zero tool budget must fail before runtime setup");
+        assert!(
+            error
+                .to_string()
+                .contains("tool_budget must be greater than zero")
+        );
+    }
 }
 
 async fn run_sentry_command(
@@ -9974,7 +10061,20 @@ fn load_task_spec(path: &Path) -> anyhow::Result<TaskSpec> {
         .map_err(|e| anyhow::anyhow!("failed to read task spec {}: {e}", path.display()))?;
     let spec: TaskSpec = toml::from_str(&content)
         .map_err(|e| anyhow::anyhow!("invalid task spec {}: {e}", path.display()))?;
+    validate_task_spec(&spec)
+        .map_err(|e| anyhow::anyhow!("invalid task spec {}: {e}", path.display()))?;
     Ok(spec)
+}
+
+fn validate_task_spec(spec: &TaskSpec) -> anyhow::Result<()> {
+    if spec
+        .bounds
+        .as_ref()
+        .is_some_and(|bounds| bounds.tool_budget == Some(0))
+    {
+        anyhow::bail!("tool_budget must be greater than zero");
+    }
+    Ok(())
 }
 
 /// Structured output from a bounded task run.
@@ -9984,12 +10084,17 @@ struct RunResult {
     turns: u32,
     total_input_tokens: u64,
     total_output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_budget: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed_tool_calls: Option<u32>,
     files_read: Vec<String>,
     files_modified: Vec<String>,
     duration_secs: f64,
     summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    activity: Option<surfaces::session_activity::TransportActivityProjectionV1>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10000,12 +10105,15 @@ async fn run_bounded_task(
     max_turns: u32,
     timeout_secs: u64,
     token_budget: Option<u64>,
+    tool_budget: Option<u32>,
     _manifest: Option<&str>, // reserved for Phase 2
     cwd: &Path,
     model: &str,
     cli: &Cli,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
+    let tool_invocation_budget = tool_budget
+        .map(|admitted| omegon_kernel_runtime::ToolInvocationBudget::new(Some(admitted)));
 
     // Resolve prompt
     let prompt_text = match (prompt, prompt_file) {
@@ -10144,31 +10252,42 @@ async fn run_bounded_task(
     loop_config.compatibility.invocation_scope.session_id = Some(agent.session_id.clone());
     loop_config.compatibility.invocation_scope.turn_id = invocation_turn_id;
     loop_config.compatibility.invocation_scope.authority = invocation_authority;
+    loop_config.compatibility.invocation_scope.tool_budget = tool_invocation_budget.clone();
     loop_config.compatibility.work_snapshot = agent.work_snapshot.clone();
     loop_config.compatibility.behavior_policy = agent.behavior_policy.clone();
     loop_config.compatibility.memory_binding = agent.memory_binding.clone();
     loop_config.compatibility.context_compaction = agent.context_compaction.clone();
 
-    let bridge =
-        match bootstrap::resolve_bridge_or_bail_with_secrets(model, Some(agent.secrets.as_ref()))
-            .await
-        {
-            Ok(bridge) => bridge,
-            Err(error) => {
-                let terminal_result = supervisor.submit_loop_terminal_intent(LoopTerminalIntent {
-                    identity: active_identity,
-                    outcome: RuntimeTurnOutcome::Failed,
-                    reason_code: "provider_unavailable".into(),
-                });
-                let error = match terminal_result {
-                    Ok(_) => error,
-                    Err(terminal_error) => error.context(format!(
-                        "failed to persist provider-unavailable terminal intent: {terminal_error}"
-                    )),
-                };
-                return setup::finalize_agent_error(&mut agent, error).await;
-            }
-        };
+    let inference_snapshot = agent.inference_runtime.snapshot().await;
+    let bridge = match session_execution::boot_execution_binding()
+        .resolve_exact_admitted_provider_route(
+            model,
+            Some(agent.secrets.as_ref()),
+            &inference_snapshot,
+            &[],
+        )
+        .await
+        .map(provider_route_service::ResolvedProviderRoute::into_unleased_bridge)
+    {
+        Some(bridge) => bridge,
+        None => {
+            let error = anyhow::anyhow!(
+                "no exact admitted provider route is available for bounded model '{model}'"
+            );
+            let terminal_result = supervisor.submit_loop_terminal_intent(LoopTerminalIntent {
+                identity: active_identity,
+                outcome: RuntimeTurnOutcome::Failed,
+                reason_code: "provider_unavailable".into(),
+            });
+            let error = match terminal_result {
+                Ok(_) => error,
+                Err(terminal_error) => error.context(format!(
+                    "failed to persist provider-unavailable terminal intent: {terminal_error}"
+                )),
+            };
+            return setup::finalize_agent_error(&mut agent, error).await;
+        }
+    };
     let mut dynamic_contributions = std::mem::take(&mut agent.dynamic_contributions);
     let (events_tx, mut events_rx) = bootstrap::wire_event_channel(&agent, 256);
 
@@ -10251,6 +10370,15 @@ async fn run_bounded_task(
             outcome: RuntimeTurnOutcome::TimedOut,
             reason_code: "wall_clock_timeout".into(),
         }
+    } else if tool_invocation_budget
+        .as_ref()
+        .is_some_and(omegon_kernel_runtime::ToolInvocationBudget::exhausted)
+    {
+        LoopTerminalIntent {
+            identity: active_identity,
+            outcome: RuntimeTurnOutcome::Completed,
+            reason_code: "tool_budget_exhausted".into(),
+        }
     } else {
         terminal.into_intent(active_identity)
     };
@@ -10301,12 +10429,17 @@ async fn run_bounded_task(
         .unwrap_or_default()
         .to_string();
 
+    let tool_exhaustion = tool_invocation_budget
+        .as_ref()
+        .and_then(omegon_kernel_runtime::ToolInvocationBudget::exhaustion);
     let (status, mut error, mut exit_code) = if timed_out {
         (
             "timeout".to_string(),
             Some("wall-clock timeout".to_string()),
             3,
         )
+    } else if let Some(exhausted) = tool_exhaustion {
+        ("exhausted".to_string(), Some(exhausted.to_string()), 2)
     } else {
         match &loop_result {
             Ok(()) => ("completed".to_string(), None, 0),
@@ -10334,6 +10467,10 @@ async fn run_bounded_task(
         turns,
         total_input_tokens: in_tokens,
         total_output_tokens: out_tokens,
+        tool_budget,
+        observed_tool_calls: tool_invocation_budget
+            .as_ref()
+            .map(omegon_kernel_runtime::ToolInvocationBudget::observed),
         files_read: agent
             .conversation
             .intent
@@ -10351,6 +10488,9 @@ async fn run_bounded_task(
         duration_secs: elapsed,
         summary,
         error,
+        activity: supervisor.session_activity_projection().map(|activity| {
+            activity.for_transport(surfaces::session_activity::ActivityTransport::Cli)
+        }),
     };
 
     let json = serde_json::to_string_pretty(&result)?;

@@ -121,6 +121,11 @@ class DistributionPolicyTests(unittest.TestCase):
         self.assertIn("oci-host", release_workflow)
         self.assertIn("smoke_distribution_runtime.py", homebrew_workflow)
         self.assertIn("homebrew", homebrew_workflow)
+        self.assertNotIn("types: [published]", homebrew_workflow)
+        self.assertIn("publish_package_channels", release_workflow)
+        self.assertGreaterEqual(
+            release_workflow.count("inputs.publish_package_channels"), 2
+        )
 
     def test_host_only_package_metadata_and_installer_test_seam_are_declared(self) -> None:
         installer = (ROOT / "core/install.sh").read_text()
@@ -128,6 +133,9 @@ class DistributionPolicyTests(unittest.TestCase):
         oci = (ROOT / "nix/oci.nix").read_text()
         self.assertIn("OMEGON_INSTALL_ARCHIVE", installer)
         self.assertIn("OMEGON_INSTALL_CHECKSUMS", installer)
+        self.assertIn("OMEGON_INSTALL_MANIFEST", installer)
+        self.assertIn("OMEGON_INSTALL_BUNDLE", installer)
+        self.assertIn("OMEGON_BOOTSTRAP_VERIFIER", installer)
         self.assertIn("distribution-profile.json", flake)
         self.assertIn('builtins.match ".*\\\\.py$"', flake)
         self.assertIn('builtins.match ".*\\\\.txt$"', flake)

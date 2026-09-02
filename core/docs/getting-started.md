@@ -13,25 +13,23 @@ visibility = "private"
 
 ## Installation
 
-### One-liner (recommended)
+### Direct installer
 
-```bash
-curl -fsSL https://omegon.styrene.dev/install.sh | sh
-```
-
-This installs the `omegon` binary to `/usr/local/bin` (or `$INSTALL_DIR`).
+The direct installer requires an independently trusted `omegon-maintain`
+executable through `OMEGON_BOOTSTRAP_VERIFIER`. Homebrew, Nix, and OCI publication
+remain deferred while stable release channels are prepared. See
+`docs/omegon-install.md`.
 
 ### Manual download
 
-Download a release from [GitHub Releases](https://github.com/styrene-lab/omegon/releases) and place the binary on your `$PATH`.
+Download a release from [GitHub Releases](https://github.com/styrene-lab/omegon/releases). Preserve the complete archive layout; do not install only the host binary.
 
 ### From source
 
 ```bash
 git clone https://github.com/styrene-lab/omegon.git
 cd omegon
-cargo build --release -p omegon
-cp target/release/omegon ~/.local/bin/
+just link
 ```
 
 ## Authentication

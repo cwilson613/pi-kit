@@ -75,6 +75,10 @@ pub(crate) struct DynamicAdmissionPermit {
 }
 
 impl DynamicAdmissionPermit {
+    pub(crate) fn contribution_id(&self) -> &omegon_traits::RuntimeContributionId {
+        &self.preflight.id
+    }
+
     pub(crate) fn source_digest(&self) -> &str {
         &self.preflight.source_digest
     }

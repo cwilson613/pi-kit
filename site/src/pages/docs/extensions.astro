@@ -134,8 +134,17 @@ omegon extension search communication
 # Update all extensions
 {snippet("cli.extension_update")}
 
+# Publish compatible changed generations while the session is idle
+/extension refresh
+
 # Remove an extension
 {snippet("cli.extension_remove")}</code></pre>
+  <p>
+    Refresh stages changed installed bytes as hidden candidates and publishes them only at a
+    quiescent session boundary. Existing calls continue on the active generation until commit;
+    stale generation-bound handles fail before RPC afterward. Extensions with widget or voice
+    side channels still require <code>/runtime restart</code>.
+  </p>
 
   <h2>Building your own</h2>
   <p>

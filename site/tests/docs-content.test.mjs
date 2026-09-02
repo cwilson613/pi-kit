@@ -44,6 +44,22 @@ test('install docs use canonical snippets for all channels', () => {
   assert.doesNotMatch(content, /omegon login(?! )/);
 });
 
+test('public docs internal links resolve to checked-in pages', () => {
+  const pages = docsPages();
+  const routes = new Set(pages.map(path => {
+    const relative = path.slice(docsDir.length).replaceAll('\\', '/').replace(/\.astro$/, '');
+    return `/docs${relative}`.replace(/\/index$/, '').replace(/\/$/, '') || '/docs';
+  }));
+
+  for (const page of pages) {
+    const content = readFileSync(page, 'utf8');
+    for (const match of content.matchAll(/href=["'](\/docs(?:\/[^"'#?]*)?)/g)) {
+      const route = match[1].replace(/\/$/, '') || '/docs';
+      assert.ok(routes.has(route), `${page} links to missing internal route ${route}`);
+    }
+  }
+});
+
 test('public docs explain content-pack packaging, trust, and boot generation', () => {
   const install = readDoc('install.astro');
   const skills = readDoc('skills.astro');

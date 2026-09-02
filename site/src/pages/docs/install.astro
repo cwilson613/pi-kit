@@ -6,12 +6,17 @@ import { snippet } from "../../lib/snippets";
 <Docs title="Installation" description="Install Omegon on macOS or Linux.">
   <h1>Installation</h1>
 
-  <h2>Quick Install (Recommended)</h2>
+  <h2>Direct Install</h2>
   <pre><code>{snippet("install.quick_install")}</code></pre>
   <p>
     Downloads the latest signed release pair, shipped content pack, and product component
     <code>core:codescan</code> for your platform (macOS arm64/x86_64, Linux x86_64/aarch64).
-    It verifies the SHA-256 checksum and installs the full product to <code>/usr/local/bin</code>
+    The required <code>OMEGON_BOOTSTRAP_VERIFIER</code> must name an absolute, independently
+    acquired and trusted <code>omegon-maintain</code> executable. The installer downloads the
+    archive, canonical package manifest, and Sigstore bundle; the external verifier authenticates
+    all three before extraction. A checksum is only an integrity aid. No verifier acquisition URL
+    is implied by this command. The authenticated staged companion then checks the exact extracted
+    tree before the installer atomically activates the full product under <code>/usr/local/bin</code>
     by default.
   </p>
 
@@ -29,23 +34,18 @@ import { snippet } from "../../lib/snippets";
 # Non-interactive (CI)
 {snippet("install.install_ci")}</code></pre>
 
-  <h2>Homebrew (macOS / Linux)</h2>
-  <pre><code>{snippet("install.brew_stable")}</code></pre>
+  <h2>Deferred Package Channels</h2>
   <p>
-    Tracks the latest stable release. Updates via <code>{snippet("install.brew_upgrade_stable")}</code>.
-  </p>
-  <p>
-    On Linux, Homebrew does not provide a newer host glibc for Omegon. If the downloaded
-    binary requires a newer glibc than your distribution has, install can succeed but runtime
-    startup will fail. Check with <code>ldd --version</code> before relying on Linux Homebrew
-    in older distributions.
+    Homebrew, Nix, and OCI packaging remains under pre-publication validation. These are not
+    supported public installation channels yet; use an authenticated release archive or the
+    externally verified direct installer.
   </p>
 
   <h2>GitHub Releases</h2>
   <p>
     Download release artifacts directly from
     <a href="https://github.com/styrene-lab/omegon/releases">GitHub Releases</a>.
-    Each release includes:
+    Stable and nightly release archives include:
   </p>
   <ul>
     <li>Pre-built <code>omegon</code> and <code>omegon-maintain</code> companions for macOS and Linux</li>
@@ -54,14 +54,17 @@ import { snippet } from "../../lib/snippets";
     <li>Signed product component <code>core:codescan</code> under <code>share/omegon/extensions/</code></li>
     <li>SHA-256 checksums</li>
     <li><a href="https://www.sigstore.dev/">Sigstore cosign</a> signatures (keyless)</li>
-    <li>CycloneDX SBOM</li>
-    <li>GitHub Attestations (build provenance)</li>
     <li>Installer/update metadata used by <code>/update</code> for verification before install</li>
   </ul>
-
-  <h2>Nix and OCI Composition</h2>
   <p>
-    Nix packages and Nix-built OCI images currently contain the default compiled host but no
+    Stable releases additionally include a signed CycloneDX SBOM and GitHub build-provenance
+    attestations. Nightlies retain archive checksums and signed package-manifest bundles but omit
+    those stable-only assets.
+  </p>
+
+  <h2>Nix and OCI Candidate Composition</h2>
+  <p>
+    Candidate Nix packages and Nix-built OCI images contain the default compiled host but no
     product-component binaries. These distributions are host-only, not full-product equivalents.
     Codescan is unavailable as <code>service:codescan</code> until the operator installs and manages
     a compatible SDK extension. OCI deployments can provide that extension through an init container
@@ -153,12 +156,10 @@ import { snippet } from "../../lib/snippets";
     When a newer version is available, the TUI shows a notification.
   </p>
 
-  <h3>Homebrew installs</h3>
-  <pre><code>{snippet("install.brew_upgrade_stable")}</code></pre>
+  <h3>Future package-manager installs</h3>
   <p>
-    The in-app <code>/update</code> command detects Homebrew-managed installs and redirects
-    to the appropriate <code>brew upgrade</code> command automatically. Do not use the install
-    script to update a Homebrew-managed binary — it will conflict with brew's version tracking.
+    Package-manager ownership must remain external to Omegon when those channels are enabled.
+    The in-app <code>/update</code> command will redirect rather than overwrite a managed binary.
   </p>
 
   <h3>Script installs</h3>

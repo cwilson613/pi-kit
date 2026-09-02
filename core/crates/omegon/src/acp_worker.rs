@@ -118,6 +118,7 @@ pub enum PlanUpdateDisposition {
 /// Event streamed from the worker during prompt execution.
 #[derive(Clone, Debug)]
 pub enum WorkerEvent {
+    SessionActivity(Box<crate::surfaces::session_activity::TransportActivityProjectionV1>),
     TextChunk(String),
     ThinkingChunk(String),
     ToolStart {
@@ -639,6 +640,13 @@ async fn worker_loop(
                 let active_identity = supervisor
                     .current_identity()
                     .expect("promoted ACP turn has identity");
+                if let Some(activity) = supervisor.session_activity_projection() {
+                    let _ = event_tx.send(WorkerEvent::SessionActivity(Box::new(
+                        activity.for_transport(
+                            crate::surfaces::session_activity::ActivityTransport::Acp,
+                        ),
+                    )));
+                }
                 let execution_capture = supervisor
                     .active_execution_capture()
                     .expect("promoted ACP turn has an execution capture");
@@ -901,6 +909,7 @@ async fn worker_loop(
                             session_id: Some(session_id.clone()),
                             turn_id: active.authority_turn_id,
                             authority: invocation_authority,
+                            tool_budget: None,
                         },
                         drain_late_requests: false,
                         work_snapshot: work_snapshot.clone(),
@@ -970,6 +979,14 @@ async fn worker_loop(
                         cancelled,
                     });
                     break;
+                }
+
+                if let Some(activity) = supervisor.session_activity_projection() {
+                    let _ = event_tx.send(WorkerEvent::SessionActivity(Box::new(
+                        activity.for_transport(
+                            crate::surfaces::session_activity::ActivityTransport::Acp,
+                        ),
+                    )));
                 }
 
                 let _ = event_tx.send(WorkerEvent::TurnComplete);

@@ -4,8 +4,8 @@
 //! leases, crash-consistent invocation state, and mutation fencing.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
 
+use omegon_kernel_runtime::{InvocationLeaseStateMachine, ToolInvocationBudget};
 use omegon_traits::{
     RuntimeCapabilityId, RuntimeCapabilityTransitionPolicy, RuntimeCompositionGenerationId,
     RuntimeContributionGenerationId, RuntimeContributionId, RuntimeDeduplication, RuntimeEffect,
@@ -92,6 +92,7 @@ pub(crate) struct InvocationScope {
     pub session_id: Option<String>,
     pub turn_id: Option<Uuid>,
     pub authority: Option<crate::session_authority::SessionAuthorityHandle>,
+    pub tool_budget: Option<ToolInvocationBudget>,
 }
 
 impl Default for InvocationScope {
@@ -103,6 +104,7 @@ impl Default for InvocationScope {
             session_id: None,
             turn_id: None,
             authority: None,
+            tool_budget: None,
         }
     }
 }
@@ -135,6 +137,7 @@ pub(crate) enum InvocationDenialCode {
     LeaseMismatch,
     MutationFenced,
     UnsafeUnknownRetry,
+    BudgetExhausted,
 }
 
 impl InvocationDenialCode {
@@ -152,6 +155,7 @@ impl InvocationDenialCode {
             Self::LeaseMismatch => "invocation:lease_mismatch",
             Self::MutationFenced => "invocation:mutation_fenced",
             Self::UnsafeUnknownRetry => "invocation:unsafe_unknown_retry",
+            Self::BudgetExhausted => "invocation:budget_exhausted",
         }
     }
 }
@@ -163,15 +167,7 @@ pub(crate) struct InvocationDenial {
     pub policy_layer: Option<PermissionLayer>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum LeaseTerminal {
-    Open = 0,
-    Dispatching = 1,
-    Completed = 2,
-    Failed = 3,
-    Revoked = 4,
-}
+pub(crate) use omegon_kernel_runtime::InvocationLeaseState as LeaseTerminal;
 
 #[derive(Debug)]
 pub(crate) struct ExecutionLease {
@@ -197,7 +193,7 @@ pub(crate) struct ExecutionLease {
     authority: Option<crate::session_authority::SessionAuthorityHandle>,
     mutation_fence_recorder: Option<Box<MutationFenceRecorder>>,
     acknowledged: Arc<std::sync::Mutex<bool>>,
-    terminal: Arc<AtomicU8>,
+    terminal: InvocationLeaseStateMachine,
 }
 
 impl ExecutionLease {
@@ -209,6 +205,7 @@ impl ExecutionLease {
             call_id,
             scope,
             resolved,
+            InvocationLeaseStateMachine::new(),
         )
     }
 
@@ -219,6 +216,7 @@ impl ExecutionLease {
         call_id: &str,
         scope: InvocationScope,
         resolved: ResolvedInvocation,
+        terminal: InvocationLeaseStateMachine,
     ) -> Self {
         let mutation_fence_recorder = match (
             scope.authority.clone(),
@@ -266,7 +264,7 @@ impl ExecutionLease {
             authority: scope.authority,
             mutation_fence_recorder,
             acknowledged: Arc::new(std::sync::Mutex::new(false)),
-            terminal: Arc::new(AtomicU8::new(LeaseTerminal::Open as u8)),
+            terminal,
         }
     }
 
@@ -282,7 +280,16 @@ impl ExecutionLease {
                     "durable invocation scope has no session authority writer",
                 ));
             }
-            return Ok(Self::issue(call_id, scope, resolved));
+            let terminal = reserve_tool_budget(&scope, &resolved)?;
+            return Ok(Self::issue_with_identity(
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                None,
+                call_id,
+                scope,
+                resolved,
+                terminal,
+            ));
         };
         let session_id = scope.session_id.as_deref().ok_or_else(|| {
             denial(
@@ -343,6 +350,7 @@ impl ExecutionLease {
             }
         }
 
+        let terminal = reserve_tool_budget(&scope, &resolved)?;
         let lease_id = Uuid::new_v4();
         let invocation_id = Uuid::new_v4();
         let deduplication_id = (resolved.execution.deduplication
@@ -385,17 +393,12 @@ impl ExecutionLease {
             call_id,
             scope,
             resolved,
+            terminal,
         ))
     }
 
     pub fn terminal(&self) -> LeaseTerminal {
-        match self.terminal.load(Ordering::Acquire) {
-            0 => LeaseTerminal::Open,
-            1 => LeaseTerminal::Dispatching,
-            2 => LeaseTerminal::Completed,
-            3 => LeaseTerminal::Failed,
-            _ => LeaseTerminal::Revoked,
-        }
+        self.terminal.state()
     }
 
     pub fn execution_timeout(&self, args: &Value) -> std::time::Duration {
@@ -468,7 +471,7 @@ impl ExecutionLease {
         let dispatched = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
         omegon_traits::HostActionInvocationGuard::new(
             move |dispatch_key, action_type, required_effects| {
-                if terminal.load(Ordering::Acquire) != LeaseTerminal::Dispatching as u8 {
+                if !terminal.is_dispatching() {
                     return Err("parent invocation lease is not dispatching".into());
                 }
                 if let Some(effect) = required_effects
@@ -598,57 +601,38 @@ impl ExecutionLease {
                 "execution lease does not match the requested call",
             ));
         }
-        self.terminal
-            .compare_exchange(
-                LeaseTerminal::Open as u8,
-                LeaseTerminal::Dispatching as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
+        self.terminal.claim_dispatch().map_err(|_| {
+            denial(
+                InvocationDenialCode::LeaseClosed,
+                "execution lease is no longer open",
             )
-            .map(|_| ())
-            .map_err(|_| {
-                denial(
-                    InvocationDenialCode::LeaseClosed,
-                    "execution lease is no longer open",
-                )
-            })
+        })
     }
 
     pub fn close(&self, terminal: LeaseTerminal) -> bool {
-        debug_assert!(matches!(
-            terminal,
-            LeaseTerminal::Completed | LeaseTerminal::Failed | LeaseTerminal::Revoked
-        ));
-        self.terminal
-            .compare_exchange(
-                LeaseTerminal::Dispatching as u8,
-                terminal as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
+        self.terminal.close(terminal)
     }
 
     pub fn revoke(&self) -> bool {
-        loop {
-            let current = self.terminal.load(Ordering::Acquire);
-            if current >= LeaseTerminal::Completed as u8 {
-                return false;
-            }
-            if self
-                .terminal
-                .compare_exchange(
-                    current,
-                    LeaseTerminal::Revoked as u8,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                return true;
-            }
-        }
+        self.terminal.revoke()
     }
+}
+
+fn reserve_tool_budget(
+    scope: &InvocationScope,
+    resolved: &ResolvedInvocation,
+) -> Result<InvocationLeaseStateMachine, InvocationDenial> {
+    if resolved.kind != RuntimeInvocationKind::Tool {
+        return Ok(InvocationLeaseStateMachine::new());
+    }
+    scope
+        .tool_budget
+        .as_ref()
+        .map_or_else(
+            || Ok(InvocationLeaseStateMachine::new()),
+            ToolInvocationBudget::issue_lease,
+        )
+        .map_err(|exhausted| denial(InvocationDenialCode::BudgetExhausted, exhausted.to_string()))
 }
 
 impl Drop for ExecutionLease {
@@ -827,6 +811,26 @@ pub(crate) fn denial(code: InvocationDenialCode, message: impl Into<String>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admitted_tool_budget_refuses_before_the_next_execution_lease() {
+        let budget = omegon_kernel_runtime::ToolInvocationBudget::new(Some(1));
+        let scope = InvocationScope {
+            tool_budget: Some(budget.clone()),
+            ..InvocationScope::default()
+        };
+
+        let first =
+            ExecutionLease::prepare_and_issue("call-1", scope.clone(), fixture_resolution())
+                .expect("exact-boundary tool call must receive a lease");
+        assert_eq!(first.terminal(), LeaseTerminal::Open);
+
+        let denial = ExecutionLease::prepare_and_issue("call-2", scope, fixture_resolution())
+            .expect_err("one-above tool call must be refused before lease construction");
+        assert_eq!(denial.code, InvocationDenialCode::BudgetExhausted);
+        assert_eq!(budget.observed(), 1);
+        assert!(budget.exhausted());
+    }
 
     #[test]
     fn lease_claim_and_close_are_exactly_once() {

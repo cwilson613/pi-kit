@@ -15,17 +15,21 @@ Rust-native agent harness. See the [root README](../README.md) for usage and ins
 
 ## Architecture
 
-A single Rust binary (`omegon`) that owns the agent loop, lifecycle engine, and core tools. Native HTTPS clients for 11 LLM providers — no Node.js runtime dependency.
+The `omegon` Rust host owns the agent loop, lifecycle engine, and core tools. Release installations also contain the independent `omegon-maintain` recovery companion, bundled content, and signed `core:codescan` component. Native HTTPS clients provide inference access without a Node.js runtime dependency.
 
 ```
-omegon (Rust)
-  ├── Agent Loop — state machine, steering, follow-up
-  ├── Lifecycle Engine — explore → specify → decompose → implement → verify
-  ├── ContextManager — dynamic per-turn system prompt injection
-  ├── ConversationState — context decay, IntentDocument
-  ├── Core Tools — read, edit, write, bash, change, commit
-  └── Feature Crates — memory, lifecycle, cleave, extensions, ollama
-        ↕ ToolProvider / ContextProvider / EventSubscriber / SessionHook
+Omegon release product
+  ├── omegon (Rust host)
+  │   ├── Agent Loop — state machine, steering, follow-up
+  │   ├── Lifecycle Engine — explore → specify → decompose → implement → verify
+  │   ├── ContextManager — dynamic per-turn system prompt injection
+  │   ├── ConversationState — context decay, IntentDocument
+  │   ├── Core Tools — read, edit, write, bash, change, commit
+  │   └── Feature Crates — memory, lifecycle, cleave, extensions, ollama
+  │         ↕ ToolProvider / ContextProvider / EventSubscriber / SessionHook
+  ├── omegon-maintain (independent verifier and recovery companion)
+  ├── core:codescan (signed release-coupled component)
+  └── bundled content
 ```
 
 ## Development

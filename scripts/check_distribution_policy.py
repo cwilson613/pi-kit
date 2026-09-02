@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = ROOT / "fixtures" / "release-composition-matrix-v1.json"
+OCI_EVIDENCE_PATH = ROOT / "fixtures" / "oci-release-evidence-valid-v1.json"
 RELEASE_TARGETS = {
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -35,6 +37,9 @@ ROW_KEYS = {
     "core_components",
     "sdk_extensions",
 }
+OCI_EVIDENCE_NAMES = {"signature", "sbom", "provenance", "composition_identity"}
+OCI_COMPOSITION_CLASSES = {"host-only", "full-product"}
+OCI_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def require(condition: bool, message: str) -> None:
@@ -117,6 +122,86 @@ def validate_policy(document: dict[str, Any]) -> None:
     )
 
 
+def validate_oci_release_evidence(
+    evidence_document: dict[str, Any], policy_document: dict[str, Any]
+) -> None:
+    """Validate deterministic CI policy evidence without contacting a registry."""
+    validate_policy(policy_document)
+    require(
+        set(evidence_document)
+        == {
+            "schema_version",
+            "verification_scope",
+            "publication_status",
+            "image_reference",
+            "image_digest",
+            "composition_class",
+            "core_components",
+            "evidence",
+        },
+        "OCI release evidence has missing or unknown fields",
+    )
+    require(evidence_document["schema_version"] == 1, "unsupported OCI evidence schema")
+    require(
+        evidence_document["verification_scope"] == "policy-ci"
+        and evidence_document["publication_status"] == "not-performed",
+        "OCI verification must remain policy-only and must not claim publication",
+    )
+
+    digest = evidence_document["image_digest"]
+    require(
+        isinstance(digest, str) and OCI_DIGEST_PATTERN.fullmatch(digest) is not None,
+        "OCI image digest must be an immutable sha256 digest",
+    )
+    image_reference = evidence_document["image_reference"]
+    require(
+        isinstance(image_reference, str)
+        and image_reference.endswith(f"@{digest}")
+        and image_reference != f"@{digest}",
+        "OCI image reference must identify the candidate by its exact digest",
+    )
+
+    composition_class = evidence_document["composition_class"]
+    require(
+        composition_class in OCI_COMPOSITION_CLASSES,
+        "OCI composition class must be host-only or full-product",
+    )
+    components = evidence_document["core_components"]
+    require(isinstance(components, list), "OCI component inventory must be an array")
+    require(len(components) == len(set(components)), "OCI component inventory has duplicates")
+    catalog = policy_document["distribution_policy"]["core_component_catalog"]
+    expected_components = [] if composition_class == "host-only" else sorted(catalog)
+    require(
+        components == expected_components,
+        f"OCI {composition_class} component inventory is inconsistent with policy",
+    )
+
+    evidence = evidence_document["evidence"]
+    require(isinstance(evidence, dict), "OCI evidence collection must be an object")
+    require(
+        set(evidence) == OCI_EVIDENCE_NAMES,
+        "OCI signature, SBOM, provenance, and composition identity are all required",
+    )
+    for name in sorted(OCI_EVIDENCE_NAMES):
+        item = evidence[name]
+        expected_keys = {"image_digest", "composition_class"}
+        if name == "composition_identity":
+            expected_keys.add("core_components")
+        require(
+            isinstance(item, dict) and set(item) == expected_keys,
+            f"OCI {name} evidence has missing or unknown fields",
+        )
+        require(item["image_digest"] == digest, f"OCI {name} binds a different image digest")
+        require(
+            item["composition_class"] == composition_class,
+            f"OCI {name} binds a different composition class",
+        )
+    require(
+        evidence["composition_identity"]["core_components"] == components,
+        "OCI composition identity binds a different component inventory",
+    )
+
+
 def validate_source_evidence(document: dict[str, Any], root: Path) -> None:
     validate_policy(document)
     release = (root / ".github/workflows/release.yml").read_text()
@@ -146,11 +231,14 @@ def validate_source_evidence(document: dict[str, Any], root: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--policy", type=Path, default=POLICY_PATH)
+    parser.add_argument("--oci-evidence", type=Path, default=OCI_EVIDENCE_PATH)
     args = parser.parse_args()
     try:
         policy = json.loads(args.policy.read_text())
         validate_policy(policy)
         validate_source_evidence(policy, ROOT)
+        evidence = json.loads(args.oci_evidence.read_text())
+        validate_oci_release_evidence(evidence, policy)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         parser.error(str(error))
     print("distribution policy: ok")

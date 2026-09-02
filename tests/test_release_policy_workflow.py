@@ -9,6 +9,7 @@ REQUIRED_MODULES = {
     "tests.test_content_pack_packaging",
     "tests.test_distribution_policy",
     "tests.test_distribution_runtime_smoke",
+    "tests.test_oci_distribution_policy",
     "tests.test_optional_domain_isolation",
     "tests.test_release_closeout",
     "tests.test_release_manifest",

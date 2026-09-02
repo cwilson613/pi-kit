@@ -67,7 +67,14 @@ def run_full_product(archive: Path, target: str, generation: Path, executable: P
         raise ValueError("installed full-product rollback restoration failed")
 
 
-def smoke_direct(archive: Path, target: str, installer: Path) -> None:
+def smoke_direct(
+    archive: Path,
+    target: str,
+    installer: Path,
+    verifier: Path,
+    manifest: Path,
+    bundle: Path,
+) -> None:
     version = archive.name.removeprefix("omegon-").removesuffix(f"-{target}.tar.gz")
     with tempfile.TemporaryDirectory(prefix="omegon-direct-installer-") as directory:
         root = Path(directory)
@@ -91,6 +98,9 @@ def smoke_direct(archive: Path, target: str, installer: Path) -> None:
                 "NO_COLOR": "1",
                 "OMEGON_INSTALL_ARCHIVE": str(archive.resolve()),
                 "OMEGON_INSTALL_CHECKSUMS": str(checksums.resolve()),
+                "OMEGON_INSTALL_MANIFEST": str(manifest.resolve()),
+                "OMEGON_INSTALL_BUNDLE": str(bundle.resolve()),
+                "OMEGON_BOOTSTRAP_VERIFIER": str(verifier.resolve()),
                 "PATH": f"{no_network}{os.pathsep}{env['PATH']}",
             }
         )
@@ -138,6 +148,9 @@ def main() -> int:
         command.add_argument("--target", required=True)
         if mode == "direct-installer":
             command.add_argument("--installer", type=Path, default=ROOT / "core/install.sh")
+            command.add_argument("--verifier", type=Path, required=True)
+            command.add_argument("--manifest", type=Path, required=True)
+            command.add_argument("--bundle", type=Path, required=True)
     host = subparsers.add_parser("nix-host")
     host.add_argument("--binary", type=Path, required=True)
     host.add_argument("--metadata", type=Path, required=True)
@@ -146,7 +159,14 @@ def main() -> int:
     payload.add_argument("--metadata", type=Path, required=True)
     args = parser.parse_args()
     if args.mode == "direct-installer":
-        smoke_direct(args.archive, args.target, args.installer)
+        smoke_direct(
+            args.archive,
+            args.target,
+            args.installer,
+            args.verifier,
+            args.manifest,
+            args.bundle,
+        )
     elif args.mode == "homebrew":
         smoke_homebrew(args.archive, args.target)
     elif args.mode == "nix-host":

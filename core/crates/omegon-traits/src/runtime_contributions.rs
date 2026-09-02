@@ -996,6 +996,11 @@ impl RuntimeOwnedResourceRecord {
         {
             return Err("a remote service cannot claim strict host cleanup assurance");
         }
+        if self.kind == RuntimeOwnedResourceKind::RemoteService
+            && self.cleanup_state == RuntimeCleanupState::Settled
+        {
+            return Err("a remote service cannot claim settlement without peer acknowledgement");
+        }
         Ok(())
     }
 }

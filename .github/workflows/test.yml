@@ -311,6 +311,33 @@ jobs:
           OMEGON_NERD_FONT: "1"
         run: python3 scripts/check_composition_matrix.py --artifact-ladder --cargo-profile release
 
+  operational-kernel-promotion-profiles:
+    name: Operational kernel promotion profiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install just
+        uses: extractions/setup-just@v3
+      - name: Build task capsule runtime prerequisite
+        run: |
+          CARGO_TARGET_DIR=target/task-capsule cargo build -p omegon --release --locked \
+            --no-default-features --features task-capsule
+      - name: Execute provider, signed-core, and SDK-addon evidence
+        env:
+          OMEGON_NERD_FONT: "1"
+        run: |
+          python3 scripts/check_operational_kernel_core_corpus.py \
+            --execute-profile provider-backed-kernel \
+            --execute-profile signed-core-component \
+            --execute-profile sdk-addon
+          python3 scripts/check_operational_kernel_core_corpus.py \
+            --profile milestone-pr-readiness
+
   rust-standalone-crates:
     name: Standalone crate tests
     runs-on: ubuntu-latest

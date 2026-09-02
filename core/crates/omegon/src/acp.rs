@@ -1577,6 +1577,13 @@ impl OmegonAcpAgent {
                         }
                     };
                     match event {
+                        Ok(WorkerEvent::SessionActivity(activity)) => {
+                            if let Some(c) = conn.borrow().as_ref()
+                                && let Ok(payload) = serde_json::to_value(&*activity)
+                            {
+                                let _ = send_acp_ext_notification(c, "_session/activity", payload);
+                            }
+                        }
                         Ok(WorkerEvent::TextChunk(text)) => {
                             shadow_surface_update(
                                 conn.borrow().as_ref(),

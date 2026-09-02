@@ -145,6 +145,106 @@ def full_product_inspection(*, denied: bool, unavailable: bool = False) -> dict:
 
 
 class CompositionReleaseGateTests(unittest.TestCase):
+    def test_first_party_domains_have_one_checked_packaging_class(self) -> None:
+        matrix = load("check_composition_matrix")
+        policy = matrix.load_policy()
+        domains = policy["first_party_domains"]
+        self.assertEqual(
+            {domain["id"] for domain in domains},
+            {
+                "behavior-policy",
+                "codescan",
+                "constitutional-kernel",
+                "context-compaction",
+                "default-loop",
+                "dynamic-contributions",
+                "git",
+                "host-effects",
+                "lifecycle-openspec",
+                "memory",
+                "plans-work",
+                "sdk-extensions",
+                "shipped-content",
+            },
+        )
+        self.assertEqual(
+            {domain["packaging_class"] for domain in domains},
+            {
+                "constitutional-resident",
+                "host-service",
+                "operator-managed-sdk-extension",
+                "shipped-content",
+                "signed-core-component",
+            },
+        )
+
+    def test_first_party_domain_inventory_rejects_duplicates_and_contradictions(self) -> None:
+        matrix = load("check_composition_matrix")
+        policy = matrix.load_policy()
+
+        duplicate = json.loads(json.dumps(policy["first_party_domains"]))
+        duplicate.append(json.loads(json.dumps(duplicate[0])))
+        with self.assertRaisesRegex(ValueError, "exactly once"):
+            matrix.validate_first_party_domains(duplicate, policy)
+
+        unknown_class = json.loads(json.dumps(policy["first_party_domains"]))
+        unknown_class[0]["packaging_class"] = "optional-maybe"
+        with self.assertRaisesRegex(ValueError, "packaging class"):
+            matrix.validate_first_party_domains(unknown_class, policy)
+
+        duplicate_owner = json.loads(json.dumps(policy["first_party_domains"]))
+        memory_owner = next(
+            domain for domain in duplicate_owner if domain["id"] == "memory"
+        )
+        memory_owner["canonical_owner"] = "omegon-git"
+        with self.assertRaisesRegex(ValueError, "canonical owner"):
+            matrix.validate_first_party_domains(duplicate_owner, policy)
+
+        false_core = json.loads(json.dumps(policy["first_party_domains"]))
+        memory = next(domain for domain in false_core if domain["id"] == "memory")
+        memory["packaging_class"] = "signed-core-component"
+        memory["runtime_boundary"] = "native-rpc"
+        memory["extraction_disposition"]["status"] = "extracted"
+        with self.assertRaisesRegex(ValueError, "promotion evidence"):
+            matrix.validate_first_party_domains(false_core, policy)
+
+    def test_signed_core_qualification_binds_complete_identity_scoped_evidence(self) -> None:
+        matrix = load("check_composition_matrix")
+        policy = matrix.load_policy()
+        qualification = policy["core_component_qualifications"]["core:codescan"]
+
+        self.assertEqual(qualification["wire_manifest_id"], "omegon-codescan")
+        self.assertEqual(
+            set(qualification["executors"]), matrix.CORE_QUALIFICATION_ROLES
+        )
+        matrix.validate_core_component_qualifications(
+            policy["core_component_qualifications"], policy
+        )
+
+    def test_signed_core_qualification_rejects_missing_aliased_and_cross_component_evidence(self) -> None:
+        matrix = load("check_composition_matrix")
+        policy = matrix.load_policy()
+
+        missing = json.loads(json.dumps(policy["core_component_qualifications"]))
+        missing["core:codescan"]["executors"].pop("protocol")
+        with self.assertRaisesRegex(ValueError, "executor is missing"):
+            matrix.validate_core_component_qualifications(missing, policy)
+
+        aliased = json.loads(json.dumps(policy["core_component_qualifications"]))
+        executors = aliased["core:codescan"]["executors"]
+        executors["cleanup"]["evidence_id"] = executors["policy"]["evidence_id"]
+        with self.assertRaisesRegex(ValueError, "evidence is aliased"):
+            matrix.validate_core_component_qualifications(aliased, policy)
+
+        cross_component = json.loads(
+            json.dumps(policy["core_component_qualifications"])
+        )
+        cross_component["core:codescan"]["executors"]["cleanup"][
+            "component_id"
+        ] = "core:other"
+        with self.assertRaisesRegex(ValueError, "cross-component evidence"):
+            matrix.validate_core_component_qualifications(cross_component, policy)
+
     def test_matrix_declares_positive_additive_artifact_ladder(self) -> None:
         matrix = load("check_composition_matrix")
         policy = matrix.load_policy()

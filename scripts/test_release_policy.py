@@ -20,6 +20,8 @@ TEST_MODULES = (
     "tests.test_distribution_runtime_smoke",
     "tests.test_nightly_cutoff_workflow",
     "tests.test_nightly_standard_release",
+    "tests.test_oci_distribution_policy",
+    "tests.test_operational_kernel_core_corpus",
     "tests.test_optional_domain_isolation",
     "tests.test_release_closeout",
     "tests.test_release_manifest",

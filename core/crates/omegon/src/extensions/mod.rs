@@ -132,6 +132,10 @@ impl omegon_native_extension_host::ReadinessValidator for OmegonReadinessValidat
 #[derive(Clone)]
 struct ExtensionRuntimeContext {
     name: String,
+    contribution_generation_id: omegon_traits::RuntimeContributionGenerationId,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
+    contribution_id: omegon_traits::RuntimeContributionId,
+    source_digest: String,
     state_dir: PathBuf,
     manifest: ExtensionManifest,
     _snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
@@ -145,7 +149,13 @@ struct ExtensionSource {
     snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
     state_binding: Option<ExtensionStateBinding>,
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
     project_root: Option<PathBuf>,
+}
+
+struct ExtensionGenerationAdmission {
+    permit: crate::dynamic_admission::DynamicAdmissionPermit,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
 }
 
 #[derive(Clone)]
@@ -208,6 +218,10 @@ impl ExtensionFeature {
         cancel: CancellationToken,
         idle_timeout: Option<std::time::Duration>,
     ) -> Result<Value> {
+        let _generation_guard = self
+            .runtime
+            .inventory
+            .begin_call(&self.runtime.contribution_id, &self.runtime.source_digest)?;
         self.supervisor
             .rpc_call_with_cancel(
                 method,
@@ -353,6 +367,8 @@ impl ExtensionFeature {
             supervisor: self.supervisor.clone(),
             name: self.runtime.name.clone(),
             source_digest: self.supervisor.source_digest().to_string(),
+            inventory: self.runtime.inventory.clone(),
+            contribution_id: self.runtime.contribution_id.clone(),
         }
     }
 }
@@ -365,6 +381,8 @@ pub struct ExtensionPollingHandle {
     supervisor: Arc<ExtensionSupervisor>,
     name: String,
     source_digest: String,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
+    contribution_id: omegon_traits::RuntimeContributionId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -406,6 +424,9 @@ impl ExtensionPollingHandle {
     }
 
     pub async fn pump_notifications_for(&self, idle_timeout: std::time::Duration) -> Result<()> {
+        let _generation_guard = self
+            .inventory
+            .begin_call(&self.contribution_id, &self.source_digest)?;
         self.supervisor.pump_notifications_for(idle_timeout).await
     }
 
@@ -435,6 +456,9 @@ impl ExtensionPollingHandle {
         cancel: CancellationToken,
         idle_timeout: Option<std::time::Duration>,
     ) -> Result<Value> {
+        let _generation_guard = self
+            .inventory
+            .begin_call(&self.contribution_id, &self.source_digest)?;
         let cancellation_params =
             (method == omegon_codescan_contracts::CODESCAN_RPC_METHOD).then(|| {
                 json!({
@@ -486,6 +510,12 @@ pub(crate) fn extension_rpc_invocation_name(extension_name: &str) -> String {
 impl Feature for ExtensionFeature {
     fn name(&self) -> &str {
         &self.runtime.name
+    }
+
+    fn runtime_contribution_generation_id(
+        &self,
+    ) -> Option<omegon_traits::RuntimeContributionGenerationId> {
+        Some(self.runtime.contribution_generation_id.clone())
     }
 
     fn tool_provenance(&self) -> omegon_traits::ToolProvenance {
@@ -810,6 +840,16 @@ pub(crate) fn dynamic_preflight(
     })
 }
 
+fn extension_generation_id(
+    name: &str,
+    source_digest: &str,
+) -> Result<omegon_traits::RuntimeContributionGenerationId> {
+    omegon_traits::RuntimeContributionGenerationId::new(format!(
+        "contribution:{name}-sha256-{source_digest}"
+    ))
+    .map_err(anyhow::Error::msg)
+}
+
 /// Spawn an extension from its manifest directory.
 ///
 /// `resolved_secrets` contains pre-resolved (name, value) pairs for all secrets
@@ -822,23 +862,33 @@ pub async fn spawn_from_manifest(
 ) -> Result<SpawnedExtension> {
     let manifest = ExtensionManifest::from_extension_dir(ext_dir)?;
     let preflight = dynamic_preflight(&manifest, ext_dir)?;
+    let inventory = crate::contribution_lifecycle::DynamicContributionInventory::default();
+    let candidate = inventory.discover(preflight.clone())?;
     let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test(preflight);
-    spawn_from_manifest_source(
+    let spawned = spawn_from_manifest_source(
         ext_dir,
         ext_dir,
         None,
         None,
-        admission,
+        ExtensionGenerationAdmission {
+            permit: admission,
+            inventory: inventory.clone(),
+        },
         None,
         resolved_secrets,
     )
-    .await
+    .await?;
+    inventory.ready(&candidate.preflight.id);
+    inventory.stage_ready();
+    inventory.publish_staged();
+    Ok(spawned)
 }
 
 pub(crate) async fn spawn_from_admitted_snapshot(
     snapshot: Arc<crate::contribution_loading::ContributionSnapshot>,
     state_dir: &Path,
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
     project_root: &Path,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
@@ -849,7 +899,10 @@ pub(crate) async fn spawn_from_admitted_snapshot(
         state_dir,
         Some(snapshot),
         Some(state_binding),
-        admission,
+        ExtensionGenerationAdmission {
+            permit: admission,
+            inventory,
+        },
         Some(project_root.to_path_buf()),
         resolved_secrets,
     )
@@ -859,6 +912,7 @@ pub(crate) async fn spawn_from_admitted_snapshot(
 pub(crate) async fn spawn_from_release_snapshot(
     snapshot: Arc<crate::contribution_loading::ContributionSnapshot>,
     admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
     project_root: &Path,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
@@ -868,7 +922,10 @@ pub(crate) async fn spawn_from_release_snapshot(
         &ext_dir,
         Some(snapshot),
         None,
-        admission,
+        ExtensionGenerationAdmission {
+            permit: admission,
+            inventory,
+        },
         Some(project_root.to_path_buf()),
         resolved_secrets,
     )
@@ -880,7 +937,7 @@ async fn spawn_from_manifest_source(
     state_dir: &Path,
     snapshot: Option<Arc<crate::contribution_loading::ContributionSnapshot>>,
     state_binding: Option<ExtensionStateBinding>,
-    admission: crate::dynamic_admission::DynamicAdmissionPermit,
+    generation_admission: ExtensionGenerationAdmission,
     project_root: Option<PathBuf>,
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
@@ -889,7 +946,8 @@ async fn spawn_from_manifest_source(
         state_dir: state_dir.to_path_buf(),
         snapshot,
         state_binding,
-        admission,
+        admission: generation_admission.permit,
+        inventory: generation_admission.inventory,
         project_root,
     };
     let manifest = ExtensionManifest::from_extension_dir(&source.ext_dir)?;
@@ -1148,6 +1206,10 @@ async fn launch_supervised_extension(
     resolved_secrets: &[(String, String)],
 ) -> Result<SpawnedExtension> {
     let config = resolved_config(manifest, &source.ext_dir)?;
+    let source_digest = source.admission.source_digest().to_string();
+    let contribution_id = source.admission.contribution_id().clone();
+    let contribution_generation_id =
+        extension_generation_id(&manifest.extension.name, &source_digest)?;
     let notification_pair = if manifest.capabilities.voice {
         let (tx, rx) = mpsc::unbounded_channel();
         (Some(tx), Some(rx))
@@ -1160,7 +1222,7 @@ async fn launch_supervised_extension(
         project_root: source.project_root,
         resolved_config: config,
         resolved_secrets: resolved_secrets.to_vec(),
-        source_digest: source.admission.source_digest().to_string(),
+        source_digest: source_digest.clone(),
         notification_tx: notification_pair.0,
         host_request_handler: Some(Arc::new(OmegonHostRequestHandler {
             manifest: manifest.clone(),
@@ -1171,6 +1233,10 @@ async fn launch_supervised_extension(
     let (supervisor, handshake) = ExtensionSupervisor::launch(launch).await?;
     let runtime = ExtensionRuntimeContext {
         name: manifest.extension.name.clone(),
+        contribution_generation_id,
+        inventory: source.inventory,
+        contribution_id,
+        source_digest,
         state_dir: source.state_dir,
         manifest: manifest.clone(),
         _snapshot: source.snapshot,
@@ -1239,6 +1305,18 @@ mod tests {
     #[test]
     fn extension_manifest_paths() {
         // Placeholder for integration tests
+    }
+
+    #[test]
+    fn contribution_generation_identity_is_bound_to_source_digest() {
+        let generation_a = extension_generation_id("fixture", &"a".repeat(64)).unwrap();
+        let generation_b = extension_generation_id("fixture", &"b".repeat(64)).unwrap();
+
+        assert_ne!(generation_a, generation_b);
+        assert_eq!(
+            generation_a.as_str(),
+            format!("contribution:fixture-sha256-{}", "a".repeat(64))
+        );
     }
 
     #[test]
@@ -1498,11 +1576,22 @@ timeout_ms = 30000
         );
         let manifest = ExtensionManifest::from_extension_dir(snapshot.path()).unwrap();
         let preflight = dynamic_preflight(&manifest, snapshot.path()).unwrap();
+        let inventory = crate::contribution_lifecycle::DynamicContributionInventory::default();
+        let candidate = inventory.discover(preflight.clone()).unwrap();
         let admission = crate::dynamic_admission::DynamicAdmissionPermit::for_test(preflight);
-        let spawned =
-            spawn_from_admitted_snapshot(snapshot, &extension_dir, admission, temp.path(), &[])
-                .await
-                .unwrap();
+        let spawned = spawn_from_admitted_snapshot(
+            snapshot,
+            &extension_dir,
+            admission,
+            inventory.clone(),
+            temp.path(),
+            &[],
+        )
+        .await
+        .unwrap();
+        inventory.ready(&candidate.preflight.id);
+        inventory.stage_ready();
+        inventory.publish_staged();
         let first = spawned
             .feature
             .execute("echo", "call-1", json!({}), CancellationToken::new())

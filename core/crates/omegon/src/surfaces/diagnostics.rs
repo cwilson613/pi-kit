@@ -135,9 +135,10 @@ impl CompositionDiagnosticProjection {
                 }
                 for resource in &owner.resources {
                     output.push_str(&format!(
-                        "\n    - resource={} kind={} state={} stop={} force={} reason={}",
+                        "\n    - resource={} kind={} cleanup={}/{} stop={} force={} reason={}",
                         resource.record.id.as_str(),
                         serialized_label(&resource.record.kind),
+                        serialized_label(&resource.record.cleanup_assurance),
                         serialized_label(&resource.record.cleanup_state),
                         resource.stop_attempted,
                         resource.force_attempted,

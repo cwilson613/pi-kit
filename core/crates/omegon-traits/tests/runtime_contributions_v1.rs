@@ -248,6 +248,15 @@ fn lifecycle_records_reject_unbounded_reasons_and_false_cleanup_claims() {
         serde_json::from_value(value["resource"].clone()).unwrap();
     resource.kind = omegon_traits::RuntimeOwnedResourceKind::RemoteService;
     assert!(resource.validate().is_err());
+
+    resource.cleanup_assurance = omegon_traits::RuntimeCleanupAssurance::BestEffort;
+    resource.cleanup_state = omegon_traits::RuntimeCleanupState::Settled;
+    assert_eq!(
+        resource.validate(),
+        Err("a remote service cannot claim settlement without peer acknowledgement")
+    );
+    resource.cleanup_state = omegon_traits::RuntimeCleanupState::Unverified;
+    resource.validate().unwrap();
 }
 
 #[test]

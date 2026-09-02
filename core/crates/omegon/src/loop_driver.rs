@@ -1484,6 +1484,7 @@ impl LoopInvocationContract for LoopInvocationPort<'_> {
             session_id,
             turn_id,
             authority,
+            tool_budget: None,
         };
         self.runtime
             .invoke_internal(

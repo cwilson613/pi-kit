@@ -413,6 +413,7 @@ impl InteractiveRuntimeSupervisor {
     }
 
     pub(crate) fn queue_snapshot_json(&self) -> serde_json::Value {
+        let activity = self.session_activity_projection();
         serde_json::json!({
             "depth": self.queue_depth(),
             "active": self.turns.current().map(|active| serde_json::json!({
@@ -426,6 +427,86 @@ impl InteractiveRuntimeSupervisor {
             })),
             "items": self.queue.snapshot_items(),
             "previews": self.queue_preview(),
+            "activity": activity,
+        })
+    }
+
+    pub(crate) fn session_activity_projection(
+        &self,
+    ) -> Option<crate::surfaces::session_activity::SessionActivityProjectionV1> {
+        use crate::surfaces::session_activity::{
+            ActiveTurnActivityV1, LifecycleHealthV1, QueuedActivityV1,
+            SESSION_ACTIVITY_SCHEMA_VERSION, SessionActivityLineageV1, SessionActivityProjectionV1,
+            TerminalTurnActivityV1,
+        };
+        let authority = self.authority.as_ref()?;
+        let (state, latest_terminal) = authority.activity_source();
+        let session_id = state.session_id.clone()?;
+        let stream_id = state.stream_id?.to_string();
+        let composition_generation = state.runtime_generation_id.clone()?;
+        let runtime_generation = state
+            .active_turn
+            .as_ref()
+            .map(|turn| turn.runtime_generation_id.clone())
+            .unwrap_or_else(|| composition_generation.clone());
+        let active_turn = state.active_turn.as_ref().map(|turn| ActiveTurnActivityV1 {
+            turn_id: turn.turn_id.to_string(),
+            prompt_id: turn.prompt.prompt_id.to_string(),
+            phase: if turn.accepted_interruption.is_some() {
+                "cancelling"
+            } else {
+                "running"
+            }
+            .into(),
+        });
+        let (terminal_turn, health, lifecycle_detail) = match latest_terminal {
+            Ok(terminal) => (
+                terminal.map(|(sequence, turn)| TerminalTurnActivityV1 {
+                    turn_id: turn.turn_id.to_string(),
+                    outcome: match turn.outcome {
+                        TurnOutcome::Completed => "completed",
+                        TurnOutcome::Failed => "failed",
+                        TurnOutcome::Cancelled => "cancelled",
+                        TurnOutcome::TimedOut => "timed_out",
+                        TurnOutcome::Revoked => "revoked",
+                        TurnOutcome::Interrupted => "interrupted",
+                        TurnOutcome::Unknown => "unknown",
+                    }
+                    .into(),
+                    reason_code: turn.reason_code,
+                    authority_sequence: sequence,
+                }),
+                LifecycleHealthV1::Healthy,
+                None,
+            ),
+            Err(error) => (
+                None,
+                LifecycleHealthV1::Degraded,
+                Some(format!("authority_terminal_unavailable: {error}")),
+            ),
+        };
+        Some(SessionActivityProjectionV1 {
+            schema_version: SESSION_ACTIVITY_SCHEMA_VERSION,
+            lineage: SessionActivityLineageV1 {
+                session_id,
+                stream_id,
+                runtime_generation,
+                composition_generation,
+            },
+            activity_revision: state.last_sequence,
+            queue: state
+                .queued_prompts
+                .iter()
+                .map(|prompt| QueuedActivityV1 {
+                    prompt_id: prompt.prompt_id.to_string(),
+                    submission_id: prompt.submission_id.to_string(),
+                })
+                .collect(),
+            actions: SessionActivityProjectionV1::canonical_actions(active_turn.is_some(), health),
+            active_turn,
+            terminal_turn,
+            lifecycle_health: health,
+            lifecycle_detail,
         })
     }
 

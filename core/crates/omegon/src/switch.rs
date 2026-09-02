@@ -3,7 +3,7 @@
 //! Provides version management capabilities including:
 //! - GitHub Releases API client
 //! - Platform detection and artifact mapping
-//! - Download and checksum verification
+//! - Download and signed composition verification
 //! - Version storage management
 //! - Interactive terminal picker
 //! - .omegon-version auto-detection
@@ -15,11 +15,14 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// GitHub repository info for releases
 const REPO_OWNER: &str = "styrene-lab";
 const REPO_NAME: &str = "omegon";
 const GITHUB_API_BASE: &str = "https://api.github.com";
+const MAX_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_EVIDENCE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Platform target mapping
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +113,14 @@ pub struct VersionSwitcher {
     pub current_exe: PathBuf,
     client: reqwest::Client,
     cache: Option<Vec<GitHubRelease>>,
+}
+
+struct SwitchWorkDir(PathBuf);
+
+impl Drop for SwitchWorkDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 impl Default for VersionSwitcher {
@@ -229,8 +240,23 @@ impl VersionSwitcher {
         Ok(None)
     }
 
-    /// Download and install a specific version
-    pub async fn install_version(&mut self, version: &str) -> Result<PathBuf> {
+    /// Authenticate, publish, and activate a specific version while the selector is locked.
+    async fn switch_version(&mut self, version: &str) -> Result<PathBuf> {
+        crate::installed_release::validate_version_component(version)?;
+        fs::create_dir_all(&self.versions_dir)?;
+        let versions_dir = self.versions_dir.canonicalize()?;
+        let current = versions_dir
+            .parent()
+            .ok_or_else(|| anyhow!("versions directory has no parent"))?
+            .join("current");
+        let _switch_lock = crate::filelock::try_acquire_lock(&current)
+            .map_err(|error| anyhow!("could not acquire switch lock: {error}"))?
+            .ok_or_else(|| anyhow!("another release update is already active"))?;
+
+        let active = capture_active_generation(&versions_dir, &current)?;
+        let active_maintainer = active.join("omegon-maintain").canonicalize()?;
+        clean_stale_switch_work(&versions_dir, &active)?;
+
         let releases = self.fetch_releases().await?;
         // Match tag_name with or without 'v' prefix
         let version_bare = version.strip_prefix('v').unwrap_or(version);
@@ -241,90 +267,54 @@ impl VersionSwitcher {
             .ok_or_else(|| anyhow!("Version {} not found in releases", version))?
             .clone();
 
-        let platform = detect_platform()?;
-        // Try multiple artifact naming conventions — the format has changed
-        // across releases (omegon-agent-*, omegon-*, omegon-VERSION-TRIPLE.*)
-        let candidates = [
-            format!("omegon-{}.tar.gz", platform.target), // current: omegon-darwin-arm64.tar.gz
-            format!("omegon-agent-{}.tar.gz", platform.target), // v0.12.x: omegon-agent-darwin-arm64.tar.gz
-            format!("omegon-{}-{}.tar.gz", version_bare, platform.rust_triple()), // CI raw: omegon-0.14.0-aarch64-apple-darwin.tar.gz
-        ];
-        let artifact_name = candidates
-            .iter()
-            .find(|name| release.assets.iter().any(|a| &a.name == *name))
-            .ok_or_else(|| {
-                anyhow!(
-                    "No asset found for platform {} in release {}. Available: {}",
-                    platform.target,
-                    release.tag_name,
-                    release
-                        .assets
-                        .iter()
-                        .map(|a| a.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })?
-            .clone();
+        let artifact_name = format!(
+            "omegon-{}-{}.tar.gz",
+            version_bare,
+            crate::installed_release::compiled_target()
+        );
+        let manifest_name = format!("{artifact_name}.manifest.json");
+        let bundle_name = format!("{artifact_name}.manifest.sigstore.json");
+        let asset = required_asset(&release, &artifact_name)?;
+        let manifest_asset = required_asset(&release, &manifest_name)?;
+        let bundle_asset = required_asset(&release, &bundle_name)?;
 
-        // Asset is guaranteed to exist — the candidate loop above verified it
-        let asset = release
-            .assets
-            .iter()
-            .find(|a| a.name == artifact_name)
-            .expect("candidate loop verified asset exists")
-            .clone();
+        let work = SwitchWorkDir(versions_dir.join(format!(".switch-{}", uuid::Uuid::new_v4())));
+        fs::create_dir(&work.0)?;
+        let archive_path = work.0.join(&artifact_name);
+        let manifest_path = work.0.join(&manifest_name);
+        let bundle_path = work.0.join(&bundle_name);
+        self.download_asset_to(&asset, &archive_path, MAX_ARCHIVE_BYTES)
+            .await?;
+        self.download_asset_to(&manifest_asset, &manifest_path, MAX_EVIDENCE_BYTES)
+            .await?;
+        self.download_asset_to(&bundle_asset, &bundle_path, MAX_EVIDENCE_BYTES)
+            .await?;
 
-        let checksums_asset = release
-            .assets
-            .iter()
-            .find(|a| a.name == "checksums.sha256")
-            .ok_or_else(|| anyhow!("No checksums file found"))?
-            .clone();
+        verify_with_active_maintainer(
+            &active_maintainer,
+            &archive_path,
+            &manifest_path,
+            &bundle_path,
+            None,
+            version_bare,
+        )?;
 
-        // Download and verify
-        let tarball_data = self.download_asset(&asset).await?;
-        let checksums_data = self.download_asset(&checksums_asset).await?;
-
-        verify_checksum(&tarball_data, &checksums_data, &artifact_name)?;
-
-        let release_root = self
-            .versions_dir
-            .parent()
-            .ok_or_else(|| anyhow!("versions directory has no parent"))?;
-        let current = release_root.join("current");
-        let active = fs::read_link(&current).map_err(|_| {
-            anyhow!("version switching requires an installer-managed active release")
-        })?;
         let active_receipt = fs::read_to_string(active.join("install-receipt.json"))?;
-        let staging = self
-            .versions_dir
-            .join(format!(".{version}.staging-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&staging)?;
-        extract_tarball(&tarball_data, &staging)?;
+        let staging = work.0.join("candidate");
+        fs::create_dir(&staging)?;
+        extract_tarball_path(&archive_path, &staging)?;
+        verify_with_active_maintainer(
+            &active_maintainer,
+            &archive_path,
+            &manifest_path,
+            &bundle_path,
+            Some(&staging),
+            version_bare,
+        )?;
 
-        let binary_path = staging.join("omegon");
-        let maintenance_path = staging.join("omegon-maintain");
-        if !binary_path.is_file() || !maintenance_path.is_file() {
-            return Err(anyhow!(
-                "Release archive did not contain the companion pair"
-            ));
-        }
-
-        // Make executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&binary_path)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&binary_path, perms)?;
-            let mut perms = fs::metadata(&maintenance_path)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&maintenance_path, perms)?;
-        }
-        let version_dir = self.versions_dir.join(version);
+        let version_dir = versions_dir.join(version_bare);
         let mut receipt: serde_json::Value = serde_json::from_str(&active_receipt)?;
-        receipt["version"] = serde_json::Value::String(version.to_string());
+        receipt["version"] = serde_json::Value::String(version_bare.to_string());
         receipt["version_dir"] = serde_json::Value::String(version_dir.display().to_string());
         receipt["versioned_binary"] =
             serde_json::Value::String(version_dir.join("omegon").display().to_string());
@@ -337,27 +327,31 @@ impl VersionSwitcher {
             serde_json::to_string_pretty(&receipt)? + "\n",
         )?;
         let layout = crate::installed_release::InstalledReleaseLayout::new(
-            self.versions_dir.clone(),
+            versions_dir,
             self.current_exe.clone(),
             self.current_exe.with_file_name("omegon-maintain"),
             active.join("install-receipt.json"),
         )?;
-        let published = layout.publish_generation(&staging, version)?;
-        Ok(published.join("omegon"))
-    }
-
-    /// Switch to a specific version
-    pub fn activate_version(&self, version: &str) -> Result<()> {
-        let version_dir = self.versions_dir.join(version);
-        if crate::installed_release::validate_release_coupled_generation(&version_dir).is_err() {
-            return Err(anyhow!("Version {} is not installed", version));
+        crate::installed_release::validate_release_coupled_generation(&staging)?;
+        let (published, published_new) = if version_dir.exists() {
+            authenticated_generation_matches(&staging, &version_dir)?;
+            (version_dir, false)
+        } else {
+            (layout.publish_new_generation(&staging, version_bare)?, true)
+        };
+        if let Err(error) = layout.activate(&published) {
+            cleanup_unselected_published_generation(
+                &current,
+                &published,
+                &layout.versions_root,
+                published_new,
+            )
+            .map_err(|cleanup| {
+                anyhow!("selector activation failed ({error}); candidate cleanup failed: {cleanup}")
+            })?;
+            return Err(error);
         }
-        let current = self
-            .versions_dir
-            .parent()
-            .ok_or_else(|| anyhow!("versions directory has no parent"))?
-            .join("current");
-        crate::installed_release::atomic_replace_symlink(&current, &version_dir)
+        Ok(published.join("omegon"))
     }
 
     /// Interactive version picker.
@@ -539,8 +533,17 @@ impl VersionSwitcher {
     }
 
     /// Download an asset from GitHub
-    async fn download_asset(&self, asset: &GitHubAsset) -> Result<Vec<u8>> {
-        let response = self
+    async fn download_asset_to(&self, asset: &GitHubAsset, path: &Path, limit: u64) -> Result<()> {
+        use std::io::Write;
+
+        if asset.size > limit {
+            return Err(anyhow!(
+                "Release asset {} exceeds the {} byte limit",
+                asset.name,
+                limit
+            ));
+        }
+        let mut response = self
             .client
             .get(&asset.browser_download_url)
             .header("User-Agent", "omegon-version-switcher")
@@ -555,8 +558,248 @@ impl VersionSwitcher {
             ));
         }
 
-        Ok(response.bytes().await?.to_vec())
+        let mut file = fs::File::create(path)?;
+        let mut downloaded = 0_u64;
+        while let Some(chunk) = response.chunk().await? {
+            downloaded = downloaded
+                .checked_add(chunk.len() as u64)
+                .ok_or_else(|| anyhow!("release asset size overflow"))?;
+            if downloaded > limit {
+                return Err(anyhow!(
+                    "Release asset {} exceeds the {} byte limit",
+                    asset.name,
+                    limit
+                ));
+            }
+            file.write_all(&chunk)?;
+        }
+        file.sync_all()?;
+        Ok(())
     }
+}
+
+fn required_asset(release: &GitHubRelease, name: &str) -> Result<GitHubAsset> {
+    release
+        .assets
+        .iter()
+        .find(|asset| asset.name == name)
+        .cloned()
+        .ok_or_else(|| {
+            anyhow!(
+                "Release {} is missing required asset {name}",
+                release.tag_name
+            )
+        })
+}
+
+fn capture_active_generation(versions_dir: &Path, current: &Path) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(current).map_err(|error| {
+        anyhow!("version switching requires an installer-managed active release: {error}")
+    })?;
+    if !metadata.file_type().is_symlink() {
+        return Err(anyhow!(
+            "version switching requires the installer-managed current selector"
+        ));
+    }
+    let active = current.canonicalize()?;
+    if active.parent() != Some(versions_dir) {
+        return Err(anyhow!("active release is outside the version store"));
+    }
+    crate::installed_release::validate_release_coupled_generation(&active)?;
+    Ok(active)
+}
+
+fn clean_stale_switch_work(versions_dir: &Path, active: &Path) -> Result<()> {
+    for entry in fs::read_dir(versions_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let switch_owned = name.starts_with(".switch-");
+        if !switch_owned || !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if entry.path().canonicalize().is_ok_and(|path| path == active) {
+            continue;
+        }
+        fs::remove_dir_all(entry.path())?;
+    }
+    Ok(())
+}
+
+fn selector_names_generation(selector: &Path, generation: &Path) -> bool {
+    selector
+        .canonicalize()
+        .ok()
+        .zip(generation.canonicalize().ok())
+        .is_some_and(|(selected, expected)| selected == expected)
+}
+
+fn cleanup_unselected_published_generation(
+    selector: &Path,
+    generation: &Path,
+    versions_dir: &Path,
+    published_new: bool,
+) -> Result<()> {
+    if published_new && !selector_names_generation(selector, generation) {
+        fs::remove_dir_all(generation)?;
+        fs::File::open(versions_dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn verify_with_active_maintainer(
+    maintainer: &Path,
+    archive: &Path,
+    manifest: &Path,
+    bundle: &Path,
+    extracted_root: Option<&Path>,
+    expected_version: &str,
+) -> Result<()> {
+    for operand in [maintainer, archive, manifest, bundle] {
+        if !operand.is_absolute() {
+            return Err(anyhow!(
+                "release verification operand is not absolute: {}",
+                operand.display()
+            ));
+        }
+    }
+    if extracted_root.is_some_and(|path| !path.is_absolute()) {
+        return Err(anyhow!("extracted release root is not absolute"));
+    }
+
+    let mut command = Command::new(maintainer);
+    command.args(["--json", "release", "verify", "--archive"]);
+    command.arg(archive);
+    command.arg("--manifest").arg(manifest);
+    command.arg("--bundle").arg(bundle);
+    if let Some(root) = extracted_root {
+        command.arg("--extracted-root").arg(root);
+    }
+    let output = command.output()?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "active release maintainer refused candidate authentication: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let result: omegon_maintenance_contracts::MaintenanceResultV1 =
+        serde_json::from_slice(&output.stdout)
+            .map_err(|error| anyhow!("active maintainer returned malformed JSON: {error}"))?;
+    result
+        .validate()
+        .map_err(|error| anyhow!("active maintainer returned an invalid result: {error}"))?;
+    if result.command != "release.verify"
+        || result.status != omegon_maintenance_contracts::ResultStatus::Success
+    {
+        return Err(anyhow!(
+            "active maintainer did not report verification success"
+        ));
+    }
+    let verified = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "release_verified")
+        .ok_or_else(|| anyhow!("active maintainer omitted release_verified evidence"))?;
+    let evidence: serde_json::Value = serde_json::from_str(
+        verified
+            .evidence
+            .as_deref()
+            .ok_or_else(|| anyhow!("active maintainer omitted verification evidence"))?,
+    )
+    .map_err(|error| anyhow!("active maintainer returned malformed evidence: {error}"))?;
+    if evidence["version"] != expected_version
+        || evidence["target"] != crate::installed_release::compiled_target()
+        || evidence["extracted_root_verified"] != extracted_root.is_some()
+    {
+        return Err(anyhow!(
+            "active maintainer evidence does not match the requested release"
+        ));
+    }
+    Ok(())
+}
+
+fn authenticated_generation_matches(candidate: &Path, existing: &Path) -> Result<()> {
+    crate::installed_release::validate_release_coupled_generation(existing)?;
+    compare_generation_tree(candidate, existing, Path::new("")).map_err(|error| {
+        anyhow!("installed version differs from authenticated release: {error}")
+    })?;
+    let candidate_receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(candidate.join("install-receipt.json"))?)?;
+    let existing_receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(existing.join("install-receipt.json"))?)?;
+    for field in [
+        "version",
+        "platform",
+        "binary",
+        "maintenance_binary",
+        "version_dir",
+        "versioned_binary",
+        "versioned_maintenance_binary",
+        "activation",
+        "layout",
+    ] {
+        if candidate_receipt.get(field) != existing_receipt.get(field) {
+            return Err(anyhow!(
+                "installed version receipt differs from authenticated generation: {field}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn compare_generation_tree(candidate: &Path, existing: &Path, relative: &Path) -> Result<()> {
+    let candidate_dir = candidate.join(relative);
+    let existing_dir = existing.join(relative);
+    for entry in fs::read_dir(&candidate_dir)? {
+        let entry = entry?;
+        let child_relative = relative.join(entry.file_name());
+        if child_relative == Path::new("install-receipt.json") {
+            continue;
+        }
+        let metadata = entry.file_type()?;
+        let existing_metadata = fs::symlink_metadata(existing.join(&child_relative))?;
+        if metadata.is_symlink() || existing_metadata.file_type().is_symlink() {
+            return Err(anyhow!("generation member is a symlink"));
+        }
+        if metadata.is_dir() && existing_metadata.is_dir() {
+            compare_generation_tree(candidate, existing, &child_relative)?;
+        } else if metadata.is_file()
+            && existing_metadata.is_file()
+            && generation_modes_match(&entry.path(), &existing.join(&child_relative))?
+            && fs::read(entry.path())? == fs::read(existing.join(&child_relative))?
+        {
+        } else {
+            return Err(anyhow!(
+                "generation member differs: {}",
+                child_relative.display()
+            ));
+        }
+    }
+    for entry in fs::read_dir(existing_dir)? {
+        let child_relative = relative.join(entry?.file_name());
+        if child_relative != Path::new("install-receipt.json")
+            && !candidate.join(&child_relative).exists()
+        {
+            return Err(anyhow!(
+                "installed generation has unauthenticated member: {}",
+                child_relative.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn generation_modes_match(left: &Path, right: &Path) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+
+    Ok(fs::metadata(left)?.permissions().mode() & 0o777
+        == fs::metadata(right)?.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn generation_modes_match(_left: &Path, _right: &Path) -> Result<bool> {
+    Ok(true)
 }
 
 /// Detect the current platform and map to artifact name
@@ -583,59 +826,12 @@ pub fn detect_platform() -> Result<PlatformInfo> {
     })
 }
 
-/// Verify SHA256 checksum
-fn verify_checksum(data: &[u8], checksums: &[u8], filename: &str) -> Result<()> {
-    use sha2::{Digest, Sha256};
-
-    let checksums_str = String::from_utf8_lossy(checksums);
-    let expected_hash = checksums_str
-        .lines()
-        .find_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 && parts[1] == filename {
-                Some(parts[0])
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| anyhow!("Checksum for {} not found", filename))?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let actual_hash = format!("{:x}", hasher.finalize());
-
-    if actual_hash != expected_hash {
-        return Err(anyhow!(
-            "Checksum mismatch for {}: expected {}, got {}",
-            filename,
-            expected_hash,
-            actual_hash
-        ));
-    }
-
-    Ok(())
-}
-
-/// Extract tarball to directory
-fn extract_tarball(data: &[u8], dest_dir: &Path) -> Result<()> {
-    use std::io::Cursor;
-
-    let tar_data = if data.starts_with(&[0x1f, 0x8b]) {
-        // Gzipped
-        use flate2::read::GzDecoder;
-        use std::io::Read;
-
-        let mut decoder = GzDecoder::new(Cursor::new(data));
-        let mut buf = Vec::new();
-        decoder.read_to_end(&mut buf)?;
-        buf
-    } else {
-        data.to_vec()
-    };
-
-    let mut archive = tar::Archive::new(Cursor::new(tar_data));
+/// Extract an authenticated release archive to an owned staging directory.
+fn extract_tarball_path(archive_path: &Path, dest_dir: &Path) -> Result<()> {
+    let file = fs::File::open(archive_path)?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
     archive.unpack(dest_dir)?;
-
     Ok(())
 }
 
@@ -738,15 +934,8 @@ pub async fn switch_to_version(version: &str) -> anyhow::Result<()> {
     // Normalize: always strip 'v' prefix so directory names are consistent
     let version = version.strip_prefix('v').unwrap_or(version);
     let mut switcher = VersionSwitcher::new();
-    let installed = switcher.list_installed_versions()?;
-
-    let already_installed = installed.iter().any(|v| v.version.raw == version);
-    if !already_installed {
-        println!("Downloading omegon {version}...");
-        switcher.install_version(version).await?;
-    }
-
-    switcher.activate_version(version)?;
+    println!("Downloading and authenticating omegon {version}...");
+    switcher.switch_version(version).await?;
     println!("✓ Switched to omegon {version}");
     println!("  Restart omegon to use the new version.");
     Ok(())
@@ -1004,31 +1193,480 @@ mod tests {
         assert_eq!(versions[3].raw, "0.13.0");
     }
 
-    #[test]
-    fn activation_rejects_partial_installer_managed_generation() {
-        let temp = tempfile::tempdir().unwrap();
-        let versions_dir = temp.path().join(".omegon/versions");
-        let old = versions_dir.join("1.0.0");
-        let generation = versions_dir.join("2.0.0");
-        fs::create_dir_all(&old).unwrap();
-        fs::create_dir_all(&generation).unwrap();
-        for name in ["omegon", "omegon-maintain", "install-receipt.json"] {
-            fs::write(old.join(name), b"1.0.0").unwrap();
-            fs::write(generation.join(name), b"2.0.0").unwrap();
+    #[cfg(unix)]
+    fn write_test_generation(path: &Path, version: &str, maintainer: &[u8]) {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::create_dir_all(path).unwrap();
+        fs::write(path.join("omegon"), format!("omegon-{version}")).unwrap();
+        fs::write(path.join("omegon-maintain"), maintainer).unwrap();
+        fs::write(
+            path.join("install-receipt.json"),
+            format!("{{\"version\":\"{version}\",\"layout\":\"versioned-current-v1\"}}"),
+        )
+        .unwrap();
+        let signing_identity = serde_json::json!({
+            "issuer": "https://token.actions.githubusercontent.com",
+            "workflow_identity": "https://github.com/styrene-lab/omegon/.github/workflows/release.yml@refs/tags/v1.0.0",
+            "verification": "required"
+        });
+        for (executable, identity) in [("omegon", "omegon"), ("omegon-maintain", "omegon-maintain")]
+        {
+            let bytes = fs::read(path.join(executable)).unwrap();
+            let digest = omegon_maintenance_contracts::AuthorityKey::from_bytes(
+                Sha256::digest(bytes).into(),
+            );
+            fs::write(
+                path.join(format!("{executable}.composition-lock.json")),
+                serde_json::to_vec(&serde_json::json!({
+                    "schema_version": 1,
+                    "executable_identity": identity,
+                    "executable_digest": digest,
+                    "target": crate::installed_release::compiled_target(),
+                    "protocol_minimum": 1,
+                    "protocol_maximum": 1,
+                    "contributions": [],
+                    "signing_identity": signing_identity.clone()
+                }))
+                .unwrap(),
+            )
+            .unwrap();
         }
-        let current = versions_dir.parent().unwrap().join("current");
+        let manifest = b"name = \"omegon-codescan\"\n";
+        let codescan = format!("codescan-{version}").into_bytes();
+        let content = "share/omegon/content-packs/omegon-shipped/content-pack.toml";
+        let extension_manifest = "share/omegon/extensions/omegon-codescan/manifest.toml";
+        let extension_binary =
+            "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan";
+        for (relative, bytes) in [
+            (content, b"id = \"omegon-shipped\"\n".as_slice()),
+            (extension_manifest, manifest.as_slice()),
+            (extension_binary, codescan.as_slice()),
+        ] {
+            let member = path.join(relative);
+            fs::create_dir_all(member.parent().unwrap()).unwrap();
+            fs::write(member, bytes).unwrap();
+        }
+        let component_lock = "share/omegon/components/core-codescan.lock.json";
+        let component_lock_path = path.join(component_lock);
+        fs::create_dir_all(component_lock_path.parent().unwrap()).unwrap();
+        fs::write(
+            component_lock_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "component_id": "core:codescan",
+                "wire_manifest_id": "omegon-codescan",
+                "manifest_path": extension_manifest,
+                "manifest_digest": omegon_maintenance_contracts::AuthorityKey::from_bytes(Sha256::digest(manifest).into()),
+                "executable_path": extension_binary,
+                "executable_digest": omegon_maintenance_contracts::AuthorityKey::from_bytes(Sha256::digest(&codescan).into()),
+                "target": crate::installed_release::compiled_target(),
+                "protocol_minimum": 1,
+                "protocol_maximum": 1,
+                "protocol_version": 1,
+                "fallback": "typed_unavailable",
+                "signing_identity": signing_identity
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for executable in ["omegon", "omegon-maintain", extension_binary] {
+            fs::set_permissions(path.join(executable), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    fn verifier_script(log: &Path, version: &str, target: &str) -> Vec<u8> {
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$0|$*" >> '{}'
+extracted=false
+case " $* " in *" --extracted-root "*) extracted=true;; esac
+printf '%s\n' '{{"schema_version":1,"command":"release.verify","status":"success","request_id":"00000000-0000-0000-0000-000000000000","artifact":{{"version":"1.0.0","commit":"test","target":"{target}","digest":"{zero}"}},"composition":{{"profile":"full-product","generation":"{zero}","excluded_inputs":[]}},"deadline":{{"requested_ms":300000,"elapsed_ms":1,"expired":false}},"diagnostics":[{{"code":"release_verified","severity":"info","scope":"release","message":"verified","evidence":"{{\"version\":\"{version}\",\"target\":\"{target}\",\"extracted_root_verified\":'$extracted'}}"}}],"mutations":[],"errors":[],"truncated":false,"next_cursor":null}}'
+"#,
+            log.display(),
+            zero = "0".repeat(64)
+        )
+        .into_bytes()
+    }
+
+    #[cfg(unix)]
+    fn archive_generation(path: &Path) -> Vec<u8> {
+        let output = Vec::new();
+        let encoder = flate2::write::GzEncoder::new(output, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for entry in walk_generation(path, Path::new("")) {
+            if entry == Path::new("install-receipt.json") {
+                continue;
+            }
+            archive
+                .append_path_with_name(path.join(&entry), &entry)
+                .unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[cfg(unix)]
+    fn walk_generation(root: &Path, relative: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for entry in fs::read_dir(root.join(relative)).unwrap() {
+            let entry = entry.unwrap();
+            let child = relative.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                files.extend(walk_generation(root, &child));
+            } else {
+                files.push(child);
+            }
+        }
+        files.sort();
+        files
+    }
+
+    #[cfg(unix)]
+    fn serve_assets(assets: Vec<(String, Vec<u8>)>) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            for _ in 0..assets.len() {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 2048];
+                let read = stream.read(&mut request).unwrap();
+                let first = String::from_utf8_lossy(&request[..read]);
+                let path = first.split_whitespace().nth(1).unwrap();
+                let body = assets
+                    .iter()
+                    .find(|(name, _)| path == format!("/{name}"))
+                    .unwrap()
+                    .1
+                    .clone();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        (base, handle)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn switch_uses_captured_active_authority_twice_and_changes_one_selector() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        let old = versions.join("1.0.0");
+        let candidate_source = temp.path().join("candidate-source");
+        let log = temp.path().join("maintainer.log");
+        let candidate_ran = temp.path().join("candidate-ran");
+        let active_script =
+            verifier_script(&log, "2.0.0", crate::installed_release::compiled_target());
+        write_test_generation(&old, "1.0.0", &active_script);
+        let malicious = format!("#!/bin/sh\ntouch '{}'\nexit 99\n", candidate_ran.display());
+        write_test_generation(&candidate_source, "2.0.0", malicious.as_bytes());
+        fs::create_dir_all(&versions).unwrap();
+        let current = temp.path().join("current");
         crate::installed_release::atomic_replace_symlink(&current, &old).unwrap();
-        let switcher = VersionSwitcher {
-            versions_dir,
+        fs::create_dir(versions.join(".switch-stale")).unwrap();
+        fs::create_dir(versions.join(".installer.staging-123")).unwrap();
+
+        let archive_name = format!(
+            "omegon-2.0.0-{}.tar.gz",
+            crate::installed_release::compiled_target()
+        );
+        let manifest_name = format!("{archive_name}.manifest.json");
+        let bundle_name = format!("{archive_name}.manifest.sigstore.json");
+        let archive_bytes = archive_generation(&candidate_source);
+        let assets = vec![
+            (archive_name.clone(), archive_bytes),
+            (manifest_name.clone(), b"manifest".to_vec()),
+            (bundle_name.clone(), b"bundle".to_vec()),
+        ];
+        let (base, server) = serve_assets(assets.clone());
+        let release = GitHubRelease {
+            tag_name: "v2.0.0".into(),
+            name: "2.0.0".into(),
+            body: String::new(),
+            prerelease: false,
+            assets: assets
+                .iter()
+                .map(|(name, bytes)| GitHubAsset {
+                    name: name.clone(),
+                    browser_download_url: format!("{base}/{name}"),
+                    size: bytes.len() as u64,
+                })
+                .collect(),
+        };
+        let mut switcher = VersionSwitcher {
+            versions_dir: versions.clone(),
             current_exe: temp.path().join("bin/omegon"),
             client: reqwest::Client::new(),
-            cache: None,
+            cache: Some(vec![release]),
+        };
+
+        switcher.switch_version("2.0.0").await.unwrap();
+        server.join().unwrap();
+
+        assert_eq!(
+            current.canonicalize().unwrap(),
+            versions.join("2.0.0").canonicalize().unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(current.join("omegon")).unwrap(),
+            "omegon-2.0.0"
+        );
+        assert_eq!(
+            fs::read_to_string(old.join("omegon")).unwrap(),
+            "omegon-1.0.0"
+        );
+        assert!(
+            !candidate_ran.exists(),
+            "candidate executables must never run"
+        );
+        assert!(!versions.join(".switch-stale").exists());
+        assert!(
+            versions.join(".installer.staging-123").exists(),
+            "switch recovery must not remove another publisher's staging"
+        );
+        assert!(fs::read_dir(&versions).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".switch-")
+        }));
+        let calls = fs::read_to_string(log).unwrap();
+        let lines: Vec<_> = calls.lines().collect();
+        assert_eq!(lines.len(), 2, "{calls}");
+        let captured = old.join("omegon-maintain").canonicalize().unwrap();
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.starts_with(captured.to_str().unwrap()))
+        );
+        assert!(!lines[0].contains("--extracted-root"));
+        assert!(lines[1].contains("--extracted-root"));
+        for line in lines {
+            assert!(line.contains(&archive_name));
+            assert!(line.contains(&manifest_name));
+            assert!(line.contains(&bundle_name));
+        }
+        for member in [
+            "omegon",
+            "omegon-maintain",
+            "omegon.composition-lock.json",
+            "omegon-maintain.composition-lock.json",
+            "install-receipt.json",
+            "share/omegon/content-packs/omegon-shipped/content-pack.toml",
+            "share/omegon/extensions/omegon-codescan/manifest.toml",
+            "share/omegon/extensions/omegon-codescan/target/release/omegon-codescan",
+            "share/omegon/components/core-codescan.lock.json",
+        ] {
+            assert_eq!(
+                fs::read(current.join(member)).unwrap(),
+                fs::read(versions.join("2.0.0").join(member)).unwrap(),
+                "selector mixed generation member {member}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_signed_operand_preserves_current_and_cleans_stale_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        let old = versions.join("1.0.0");
+        let log = temp.path().join("maintainer.log");
+        write_test_generation(
+            &old,
+            "1.0.0",
+            &verifier_script(&log, "2.0.0", crate::installed_release::compiled_target()),
+        );
+        let current = temp.path().join("current");
+        crate::installed_release::atomic_replace_symlink(&current, &old).unwrap();
+        fs::create_dir(versions.join(".switch-stale")).unwrap();
+        let archive_name = format!(
+            "omegon-2.0.0-{}.tar.gz",
+            crate::installed_release::compiled_target()
+        );
+        let release = GitHubRelease {
+            tag_name: "v2.0.0".into(),
+            name: "2.0.0".into(),
+            body: String::new(),
+            prerelease: false,
+            assets: vec![GitHubAsset {
+                name: archive_name,
+                browser_download_url: "http://127.0.0.1:1/archive".into(),
+                size: 1,
+            }],
+        };
+        let mut switcher = VersionSwitcher {
+            versions_dir: versions.clone(),
+            current_exe: temp.path().join("bin/omegon"),
+            client: reqwest::Client::new(),
+            cache: Some(vec![release]),
         };
 
         let error = switcher
-            .activate_version("2.0.0")
-            .expect_err("switch must reject an incomplete full-product generation");
-        assert!(error.to_string().contains("not installed"), "{error}");
-        assert_eq!(switcher.get_active_version().unwrap().unwrap().raw, "1.0.0");
+            .switch_version("2.0.0")
+            .await
+            .expect_err("checksum or archive alone must not authorize activation");
+
+        assert!(error.to_string().contains("manifest.json"), "{error}");
+        assert_eq!(current.canonicalize().unwrap(), old.canonicalize().unwrap());
+        assert!(!versions.join(".switch-stale").exists());
+        assert!(
+            !log.exists(),
+            "verification cannot run without all operands"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn active_verifier_refusal_cleans_downloads_and_preserves_current() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        let old = versions.join("1.0.0");
+        let candidate = temp.path().join("candidate");
+        let log = temp.path().join("maintainer.log");
+        write_test_generation(
+            &old,
+            "1.0.0",
+            &verifier_script(&log, "2.0.0", "wrong-target"),
+        );
+        write_test_generation(&candidate, "2.0.0", b"candidate-maintainer");
+        let current = temp.path().join("current");
+        crate::installed_release::atomic_replace_symlink(&current, &old).unwrap();
+
+        let archive_name = format!(
+            "omegon-2.0.0-{}.tar.gz",
+            crate::installed_release::compiled_target()
+        );
+        let manifest_name = format!("{archive_name}.manifest.json");
+        let bundle_name = format!("{archive_name}.manifest.sigstore.json");
+        let assets = vec![
+            (archive_name, archive_generation(&candidate)),
+            (manifest_name, b"manifest".to_vec()),
+            (bundle_name, b"bundle".to_vec()),
+        ];
+        let (base, server) = serve_assets(assets.clone());
+        let release = GitHubRelease {
+            tag_name: "v2.0.0".into(),
+            name: "2.0.0".into(),
+            body: String::new(),
+            prerelease: false,
+            assets: assets
+                .iter()
+                .map(|(name, bytes)| GitHubAsset {
+                    name: name.clone(),
+                    browser_download_url: format!("{base}/{name}"),
+                    size: bytes.len() as u64,
+                })
+                .collect(),
+        };
+        let mut switcher = VersionSwitcher {
+            versions_dir: versions.clone(),
+            current_exe: temp.path().join("bin/omegon"),
+            client: reqwest::Client::new(),
+            cache: Some(vec![release]),
+        };
+
+        switcher
+            .switch_version("2.0.0")
+            .await
+            .expect_err("wrong-target active verification must refuse the candidate");
+        server.join().unwrap();
+
+        assert_eq!(current.canonicalize().unwrap(), old.canonicalize().unwrap());
+        assert!(!versions.join("2.0.0").exists());
+        assert!(fs::read_dir(&versions).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".switch-")
+        }));
+        let calls = fs::read_to_string(log).unwrap();
+        assert_eq!(calls.lines().count(), 1, "{calls}");
+        let captured = old.join("omegon-maintain").canonicalize().unwrap();
+        assert!(calls.starts_with(captured.to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maintainer_result_rejects_malformed_wrong_version_and_wrong_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("archive");
+        let manifest = temp.path().join("manifest");
+        let bundle = temp.path().join("bundle");
+        for path in [&archive, &manifest, &bundle] {
+            fs::write(path, "operand").unwrap();
+        }
+        for (version, target) in [
+            ("wrong", crate::installed_release::compiled_target()),
+            ("2.0.0", "wrong-target"),
+        ] {
+            let verifier = temp.path().join(format!("verifier-{version}-{target}"));
+            fs::write(
+                &verifier,
+                verifier_script(&temp.path().join("log"), version, target),
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&verifier, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                verify_with_active_maintainer(
+                    &verifier, &archive, &manifest, &bundle, None, "2.0.0"
+                )
+                .is_err()
+            );
+        }
+        let malformed = temp.path().join("malformed");
+        fs::write(&malformed, b"#!/bin/sh\necho not-json\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&malformed, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            verify_with_active_maintainer(&malformed, &archive, &manifest, &bundle, None, "2.0.0")
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_generation_requires_generation_bound_receipt() {
+        let temp = tempfile::tempdir().unwrap();
+        let candidate = temp.path().join("candidate");
+        let existing = temp.path().join("existing");
+        write_test_generation(&candidate, "2.0.0", b"maintainer");
+        write_test_generation(&existing, "2.0.0", b"maintainer");
+        authenticated_generation_matches(&candidate, &existing).unwrap();
+
+        fs::write(
+            existing.join("install-receipt.json"),
+            b"{\"version\":\"1.0.0\",\"layout\":\"versioned-current-v1\"}",
+        )
+        .unwrap();
+        assert!(authenticated_generation_matches(&candidate, &existing).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_activation_removes_only_an_unselected_new_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        let old = versions.join("1.0.0");
+        let candidate = versions.join("2.0.0");
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir(&candidate).unwrap();
+        let current = temp.path().join("current");
+        crate::installed_release::atomic_replace_symlink(&current, &old).unwrap();
+
+        cleanup_unselected_published_generation(&current, &candidate, &versions, true).unwrap();
+
+        assert!(!candidate.exists());
+        assert_eq!(current.canonicalize().unwrap(), old.canonicalize().unwrap());
     }
 }

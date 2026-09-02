@@ -613,7 +613,9 @@ impl App {
                 }
             }
             AgentEvent::AgentEnd => {
-                self.terminalize_runtime_turn();
+                if self.session_activity_cache.current().is_none() {
+                    self.terminalize_runtime_turn();
+                }
             }
             AgentEvent::PhaseChanged { phase } => {
                 self.conversation
@@ -687,6 +689,24 @@ impl App {
                 self.show_toast(&message, ratatui_toaster::ToastType::Info);
             }
             AgentEvent::RuntimeQueueUpdated { snapshot_json } => {
+                let incoming = snapshot_json
+                    .get("activity")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok());
+                let accepted = match incoming {
+                    Some(activity) => matches!(
+                        self.session_activity_cache.reconcile(activity),
+                        Ok(
+                            crate::surfaces::session_activity::ReconcileDisposition::Applied
+                                | crate::surfaces::session_activity::ReconcileDisposition::Idempotent
+                        )
+                    ),
+                    None if self.session_activity_cache.current().is_some() => false,
+                    None => true,
+                };
+                if !accepted {
+                    return;
+                }
                 let runtime_idle = snapshot_json
                     .get("active")
                     .is_some_and(serde_json::Value::is_null);
@@ -848,7 +868,12 @@ impl App {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("active");
                 if phase == "supervisor_completed" {
-                    self.terminalize_runtime_turn();
+                    let advised_turn = snapshot_json
+                        .get("turn_id")
+                        .and_then(serde_json::Value::as_u64);
+                    if self.runtime_turn_id.is_none() || advised_turn == self.runtime_turn_id {
+                        self.terminalize_runtime_turn();
+                    }
                 } else {
                     self.slim_turn_state =
                         SlimTurnState::Lifecycle(format!("turn {}", phase.replace('_', " ")));

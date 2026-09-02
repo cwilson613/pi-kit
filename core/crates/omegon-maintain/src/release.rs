@@ -1,9 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Component, Path},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -75,11 +75,19 @@ pub(super) fn verify_release(
     archive_path: &Path,
     manifest_path: &Path,
     bundle_path: &Path,
+    extracted_root: Option<&Path>,
     started: Instant,
     deadline: Duration,
     result: &mut MaintenanceResultV1,
 ) {
-    match verify_release_inner(archive_path, manifest_path, bundle_path, started, deadline) {
+    match verify_release_inner(
+        archive_path,
+        manifest_path,
+        bundle_path,
+        extracted_root,
+        started,
+        deadline,
+    ) {
         Ok(evidence) => super::diagnostic(
             result,
             "release_verified",
@@ -96,6 +104,7 @@ fn verify_release_inner(
     archive_path: &Path,
     manifest_path: &Path,
     bundle_path: &Path,
+    extracted_root: Option<&Path>,
     started: Instant,
     deadline: Duration,
 ) -> Result<serde_json::Value, VerificationError> {
@@ -199,6 +208,9 @@ fn verify_release_inner(
             "archive identity changed during verification",
         ));
     }
+    if let Some(root) = extracted_root {
+        verify_extracted_root(root, &manifest.members, started, deadline)?;
+    }
 
     Ok(json!({
         "repository": manifest.repository,
@@ -208,11 +220,207 @@ fn verify_release_inner(
         "archive_digest": archive_digest,
         "integrated_time": integrated_time,
         "members_verified": manifest.members.len(),
+        "extracted_root_verified": extracted_root.is_some(),
         "composition_locks_verified": manifest.composition_locks.len(),
         "signing_identity": manifest.workflow_identity,
         "signature_verification": "verified",
         "trust_root": "sigstore-production-embedded",
     }))
+}
+
+fn verify_extracted_root(
+    root: &Path,
+    members: &[PackageMemberV1],
+    started: Instant,
+    deadline: Duration,
+) -> Result<(), VerificationError> {
+    check_deadline(started, deadline)?;
+    if !root.is_absolute() {
+        return Err(VerificationError::new(
+            "release_extracted_root_invalid",
+            "extracted root path must be absolute",
+        ));
+    }
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|error| VerificationError::new("release_extracted_root_invalid", error))?;
+    if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+        return Err(VerificationError::new(
+            "release_extracted_root_invalid",
+            "extracted root must be a real directory",
+        ));
+    }
+
+    let mut expected_files = BTreeMap::new();
+    let mut expected_directories = BTreeSet::new();
+    for member in members {
+        validate_member_path(&member.path)?;
+        if expected_files.insert(member.path.clone(), member).is_some() {
+            return Err(VerificationError::new(
+                "release_extracted_root_invalid",
+                "signed manifest contains duplicate extracted member paths",
+            ));
+        }
+        let mut parent = Path::new(&member.path).parent();
+        while let Some(path) = parent {
+            if path.as_os_str().is_empty() {
+                break;
+            }
+            expected_directories.insert(path.to_path_buf());
+            parent = path.parent();
+        }
+    }
+
+    let mut seen_files = BTreeSet::new();
+    let mut seen_directories = BTreeSet::new();
+    let mut aggregate = 0_u64;
+    inspect_extracted_directory(
+        root,
+        Path::new(""),
+        &expected_files,
+        &expected_directories,
+        &mut seen_files,
+        &mut seen_directories,
+        &mut aggregate,
+        started,
+        deadline,
+    )?;
+    if seen_files.len() != expected_files.len()
+        || expected_files.keys().any(|path| !seen_files.contains(path))
+        || seen_directories != expected_directories
+    {
+        return Err(VerificationError::new(
+            "release_extracted_root_invalid",
+            "extracted member tree does not exactly match the signed manifest",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inspect_extracted_directory(
+    root: &Path,
+    relative: &Path,
+    expected_files: &BTreeMap<String, &PackageMemberV1>,
+    expected_directories: &BTreeSet<PathBuf>,
+    seen_files: &mut BTreeSet<String>,
+    seen_directories: &mut BTreeSet<PathBuf>,
+    aggregate: &mut u64,
+    started: Instant,
+    deadline: Duration,
+) -> Result<(), VerificationError> {
+    let directory = root.join(relative);
+    let entries = fs::read_dir(&directory)
+        .map_err(|error| VerificationError::new("release_extracted_root_invalid", error))?;
+    for entry in entries {
+        check_deadline(started, deadline)?;
+        let entry = entry
+            .map_err(|error| VerificationError::new("release_extracted_root_invalid", error))?;
+        let name = entry.file_name();
+        let name = name.to_str().ok_or_else(|| {
+            VerificationError::new(
+                "release_extracted_root_invalid",
+                "extracted member path is not UTF-8",
+            )
+        })?;
+        let child_relative = relative.join(name);
+        let child_text = child_relative.to_str().ok_or_else(|| {
+            VerificationError::new(
+                "release_extracted_root_invalid",
+                "extracted member path is not UTF-8",
+            )
+        })?;
+        validate_member_path(child_text)?;
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| VerificationError::new("release_extracted_root_invalid", error))?;
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() {
+            return Err(VerificationError::new(
+                "release_extracted_root_invalid",
+                "symlinks are forbidden in an extracted release root",
+            ));
+        }
+        if file_type.is_dir() {
+            if !expected_directories.contains(&child_relative)
+                || !seen_directories.insert(child_relative.clone())
+            {
+                return Err(VerificationError::new(
+                    "release_extracted_root_invalid",
+                    "extracted root contains an unexpected directory",
+                ));
+            }
+            inspect_extracted_directory(
+                root,
+                &child_relative,
+                expected_files,
+                expected_directories,
+                seen_files,
+                seen_directories,
+                aggregate,
+                started,
+                deadline,
+            )?;
+            continue;
+        }
+        if !file_type.is_file() {
+            return Err(VerificationError::new(
+                "release_extracted_root_invalid",
+                "special files are forbidden in an extracted release root",
+            ));
+        }
+        let expected = expected_files.get(child_text).ok_or_else(|| {
+            VerificationError::new(
+                "release_extracted_root_invalid",
+                "extracted root contains a file absent from the signed manifest",
+            )
+        })?;
+        if !seen_files.insert(child_text.to_string()) {
+            return Err(VerificationError::new(
+                "release_extracted_root_invalid",
+                "extracted root contains a duplicate member path",
+            ));
+        }
+        if metadata.len() != expected.size
+            || metadata.permissions().mode() & 0o7777 != expected.mode
+        {
+            return Err(VerificationError::new(
+                "release_extracted_root_invalid",
+                "extracted member size or mode does not match the signed manifest",
+            ));
+        }
+        *aggregate = aggregate.checked_add(metadata.len()).ok_or_else(|| {
+            VerificationError::new("release_archive_limit", "extracted size overflow")
+        })?;
+        if metadata.len() > MAX_MEMBER_BYTES || *aggregate > MAX_AGGREGATE_BYTES {
+            return Err(VerificationError::new(
+                "release_archive_limit",
+                "extracted release exceeds its member or aggregate byte limit",
+            ));
+        }
+        let mut file = open_operand(
+            &entry.path(),
+            MAX_MEMBER_BYTES,
+            "release_extracted_root_invalid",
+            started,
+            deadline,
+        )?;
+        let identity = file_identity(&file, "release_extracted_root_invalid")?;
+        let digest = hash_file(
+            &mut file,
+            MAX_MEMBER_BYTES,
+            "release_extracted_root_invalid",
+            started,
+            deadline,
+        )?;
+        if digest != expected.digest
+            || file_identity(&file, "release_extracted_root_invalid")? != identity
+        {
+            return Err(VerificationError::new(
+                "release_extracted_root_invalid",
+                "extracted member digest or identity changed from the signed manifest",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verify_product_component_lock(
@@ -856,6 +1064,22 @@ fn hash_archive(
     started: Instant,
     deadline: Duration,
 ) -> Result<AuthorityKey, VerificationError> {
+    hash_file(
+        file,
+        MAX_ARCHIVE_BYTES,
+        "release_archive_limit",
+        started,
+        deadline,
+    )
+}
+
+fn hash_file(
+    file: &mut File,
+    limit: u64,
+    code: &'static str,
+    started: Instant,
+    deadline: Duration,
+) -> Result<AuthorityKey, VerificationError> {
     let mut hasher = Sha256::new();
     let mut consumed = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
@@ -870,10 +1094,10 @@ fn hash_archive(
         consumed = consumed.checked_add(read as u64).ok_or_else(|| {
             VerificationError::new("release_archive_limit", "archive size overflow")
         })?;
-        if consumed > MAX_ARCHIVE_BYTES {
+        if consumed > limit {
             return Err(VerificationError::new(
-                "release_archive_limit",
-                "archive exceeds the compressed-byte limit",
+                code,
+                "file exceeds its verification byte limit",
             ));
         }
         hasher.update(&buffer[..read]);
@@ -1305,6 +1529,7 @@ mod tests {
             archive,
             manifest,
             bundle,
+            None,
             Instant::now(),
             Duration::from_secs(30),
         )
@@ -1323,6 +1548,54 @@ mod tests {
             assert!(validate_member_path(path).is_err(), "accepted {path}");
         }
         assert!(validate_member_path("omegon-maintain").is_ok());
+    }
+
+    #[test]
+    fn extracted_root_requires_exact_regular_member_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let nested = directory.path().join("share/omegon");
+        std::fs::create_dir_all(&nested).unwrap();
+        let member_path = nested.join("payload");
+        std::fs::write(&member_path, b"authenticated bytes").unwrap();
+        std::fs::set_permissions(&member_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let member = PackageMemberV1 {
+            path: "share/omegon/payload".into(),
+            mode: 0o755,
+            size: 19,
+            digest: AuthorityKey::from_bytes(Sha256::digest(b"authenticated bytes").into()),
+        };
+        let verify = || {
+            verify_extracted_root(
+                directory.path(),
+                std::slice::from_ref(&member),
+                Instant::now(),
+                Duration::from_secs(5),
+            )
+        };
+        assert!(verify().is_ok());
+
+        std::fs::write(&member_path, b"mutated bytes......").unwrap();
+        assert_eq!(verify().unwrap_err().code, "release_extracted_root_invalid");
+        std::fs::write(&member_path, b"wrong size").unwrap();
+        assert_eq!(verify().unwrap_err().code, "release_extracted_root_invalid");
+        std::fs::write(&member_path, b"authenticated bytes").unwrap();
+        std::fs::set_permissions(&member_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(verify().unwrap_err().code, "release_extracted_root_invalid");
+        std::fs::set_permissions(&member_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::fs::write(directory.path().join("unexpected"), b"extra").unwrap();
+        assert_eq!(verify().unwrap_err().code, "release_extracted_root_invalid");
+        std::fs::remove_file(directory.path().join("unexpected")).unwrap();
+        std::os::unix::fs::symlink(&member_path, directory.path().join("link")).unwrap();
+        assert_eq!(verify().unwrap_err().code, "release_extracted_root_invalid");
+        std::fs::remove_file(directory.path().join("link")).unwrap();
+        let socket =
+            std::os::unix::net::UnixListener::bind(directory.path().join("socket")).unwrap();
+        assert_eq!(verify().unwrap_err().code, "release_extracted_root_invalid");
+        drop(socket);
+        std::fs::remove_file(directory.path().join("socket")).unwrap();
+        std::fs::remove_file(&member_path).unwrap();
+        assert_eq!(verify().unwrap_err().code, "release_extracted_root_invalid");
     }
 
     #[test]
@@ -1637,6 +1910,7 @@ mod tests {
             &archive,
             &manifest,
             &bundle,
+            None,
             Instant::now(),
             Duration::from_secs(30),
         )
@@ -1658,6 +1932,7 @@ mod tests {
                 &archive,
                 &manifest,
                 &bundle,
+                None,
                 Instant::now(),
                 Duration::from_secs(30),
             )
@@ -1675,6 +1950,7 @@ mod tests {
                 &archive,
                 &manifest,
                 &bundle,
+                None,
                 Instant::now(),
                 Duration::from_secs(30),
             )
@@ -1700,6 +1976,7 @@ mod tests {
                     &archive,
                     &manifest,
                     &bundle,
+                    None,
                     Instant::now(),
                     Duration::from_secs(30),
                 )
@@ -1725,6 +2002,7 @@ mod tests {
                 &archive,
                 &manifest,
                 &bundle,
+                None,
                 Instant::now(),
                 Duration::from_secs(30),
             )
@@ -1748,6 +2026,7 @@ mod tests {
                 &archive,
                 &manifest,
                 &bundle,
+                None,
                 Instant::now(),
                 Duration::from_secs(30),
             )

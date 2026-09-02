@@ -1207,6 +1207,8 @@ pub struct IpcSessionSnapshot {
     pub queue_depth: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3593,6 +3595,7 @@ mod tests {
                 context_revision: None,
                 queue_depth: 0,
                 active_turn: None,
+                activity: None,
             },
             design_tree: IpcDesignTreeSnapshot {
                 counts: IpcDesignCounts {

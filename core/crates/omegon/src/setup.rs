@@ -230,6 +230,7 @@ impl RuntimeSubstrateInventory {
 pub struct RuntimeSubstrateRefreshCandidate {
     pub inventory: RuntimeSubstrateInventory,
     pub extension_candidates: usize,
+    pub extension_candidate_names: Vec<String>,
     pub skipped_by_policy: usize,
     pub disabled_extensions: usize,
     pub invalid_manifests: Vec<String>,
@@ -250,10 +251,9 @@ fn apply_initial_memory_status(
 
 /// Build a runtime substrate refresh candidate inventory without mutating live runtime state.
 ///
-/// This intentionally does not spawn extension subprocesses or register live
-/// features. It verifies the filesystem/profile side of extension discovery so
-/// `/runtime restart` can report whether a candidate refresh is plausible
-/// before the later promotion implementation exists.
+/// This function does not spawn extension subprocesses or register live
+/// features. The supervisor-owned refresh path uses this inventory to select
+/// candidates before it stages and publishes changed generations.
 pub fn runtime_substrate_refresh_candidate(
     cwd: &Path,
 ) -> anyhow::Result<RuntimeSubstrateRefreshCandidate> {
@@ -301,6 +301,7 @@ pub fn runtime_substrate_refresh_candidate(
         match crate::extensions::ExtensionManifest::from_extension_dir(&path) {
             Ok(manifest) => {
                 dry_run.extension_candidates += 1;
+                dry_run.extension_candidate_names.push(ext_name);
                 dry_run.inventory.extension_metadata_entries += 1;
                 dry_run.inventory.extension_rpc_handles += 1;
                 dry_run.inventory.widget_receivers += 1;
@@ -2540,6 +2541,7 @@ async fn discover_and_register_extensions_with_policy(
             crate::extensions::spawn_from_release_snapshot(
                 snapshot,
                 trust_admission,
+                inventory.clone(),
                 project_root,
                 &resolved_secrets,
             )
@@ -2549,6 +2551,7 @@ async fn discover_and_register_extensions_with_policy(
                 snapshot,
                 &state_dir,
                 trust_admission,
+                inventory.clone(),
                 project_root,
                 &resolved_secrets,
             )
@@ -2619,6 +2622,125 @@ async fn discover_and_register_extensions_with_policy(
         admission,
         discovery_attempts,
     })
+}
+
+pub(crate) enum InstalledExtensionReplacement {
+    Unchanged,
+    Changed(crate::contribution_lifecycle::StagedDynamicExtensionGeneration),
+}
+
+pub(crate) async fn stage_installed_extension_replacement(
+    cwd: &Path,
+    name: &str,
+    secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
+) -> anyhow::Result<InstalledExtensionReplacement> {
+    stage_installed_extension_replacement_from_home(
+        cwd,
+        &crate::paths::omegon_home()?,
+        name,
+        secrets,
+        inventory,
+    )
+    .await
+}
+
+pub(crate) async fn stage_installed_extension_replacement_from_home(
+    cwd: &Path,
+    home: &Path,
+    name: &str,
+    secrets: std::sync::Arc<omegon_secrets::SecretsManager>,
+    inventory: crate::contribution_lifecycle::DynamicContributionInventory,
+) -> anyhow::Result<InstalledExtensionReplacement> {
+    let id = omegon_traits::RuntimeContributionId::new(format!("extension:{name}"))
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let admission = crate::contribution_loading::GuardedContributionDirectory::open(
+        home,
+        &[b"extensions"],
+        home,
+        omegon_maintenance_contracts::ContributionKind::Extension,
+        "user",
+    )?
+    .ok_or_else(|| anyhow::anyhow!("installed extension directory is unavailable"))?;
+    if !admission.allows(name.as_bytes())? {
+        anyhow::bail!("extension `{name}` is not an admitted installed contribution");
+    }
+    let directory = admission
+        .open_child_directory(name.as_bytes())?
+        .ok_or_else(|| anyhow::anyhow!("extension `{name}` is not installed"))?;
+    let snapshot = std::sync::Arc::new(
+        crate::contribution_loading::snapshot_contribution_directory(&directory)?,
+    );
+    if extension_state_disabled(snapshot.path()) {
+        anyhow::bail!("extension `{name}` is disabled");
+    }
+    let profile = crate::settings::Profile::load(cwd);
+    let env_enabled = crate::parse_csv_env("OMEGON_CHILD_ENABLED_EXTENSIONS");
+    let env_disabled = crate::parse_csv_env("OMEGON_CHILD_DISABLED_EXTENSIONS");
+    if !profile
+        .extensions
+        .permits(name, &env_enabled, &env_disabled)
+    {
+        anyhow::bail!("extension `{name}` is disabled by the active profile");
+    }
+    let manifest = crate::extensions::ExtensionManifest::from_extension_dir(snapshot.path())?;
+    if manifest.extension.name != name {
+        anyhow::bail!(
+            "extension directory `{name}` declares manifest identity `{}`",
+            manifest.extension.name
+        );
+    }
+    let preflight = crate::extensions::dynamic_preflight(&manifest, snapshot.path())?;
+    if inventory.active_source_digest(&id).as_deref() == Some(&preflight.source_digest) {
+        return Ok(InstalledExtensionReplacement::Unchanged);
+    }
+    let candidate = inventory.discover(preflight)?;
+    let permit = inventory.admit(
+        &candidate,
+        &crate::dynamic_admission::DynamicAdmissionPolicy::from_profile(&profile),
+    )?;
+    let resolved_secrets = resolve_extension_secrets(&manifest, secrets.as_ref()).await;
+    let spawned = crate::extensions::spawn_from_admitted_snapshot(
+        snapshot,
+        &home.join("extensions").join(name),
+        permit,
+        inventory.clone(),
+        &find_project_root(cwd),
+        &resolved_secrets,
+    )
+    .await
+    .inspect_err(|error| inventory.quarantine(&id, error.to_string()))?;
+    if !spawned.widgets.is_empty()
+        || spawned.vox_polling_handle.is_some()
+        || spawned.voice_polling_handle.is_some()
+        || spawned.voice_notification_rx.is_some()
+    {
+        let failures = crate::extensions::shutdown_supervisors(
+            std::slice::from_ref(&spawned.supervisor),
+            std::time::Duration::from_millis(500),
+        )
+        .await;
+        inventory.quarantine(
+            &id,
+            "changed generation requires restart to replace widget or voice side channels",
+        );
+        anyhow::bail!(
+            "extension `{name}` requires `/runtime restart` to replace widget or voice side channels{}",
+            if failures.is_empty() {
+                String::new()
+            } else {
+                format!("; candidate cleanup: {}", failures.join("; "))
+            }
+        );
+    }
+    inventory.ready(&id);
+    Ok(InstalledExtensionReplacement::Changed(
+        crate::contribution_lifecycle::StagedDynamicExtensionGeneration::new(
+            spawned.feature,
+            spawned.supervisor,
+            inventory,
+        ),
+    ))
 }
 
 pub(crate) fn release_coupled_codescan_dir() -> Option<PathBuf> {

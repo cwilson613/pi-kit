@@ -22,6 +22,7 @@ pub mod palette;
 pub mod plans;
 pub mod profile;
 pub(crate) mod session;
+pub(crate) mod session_activity;
 pub mod settings;
 
 #[cfg(test)]

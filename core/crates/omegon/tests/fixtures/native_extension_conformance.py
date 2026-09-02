@@ -10,6 +10,7 @@ import time
 MODE = os.environ.get("OMEGON_FIXTURE_MODE", "compatible")
 CONTROL = os.environ.get("OMEGON_FIXTURE_CONTROL")
 MARKER = os.environ.get("OMEGON_FIXTURE_MARKER")
+COUNTER = os.environ.get("OMEGON_FIXTURE_COUNTER")
 ACTIVE = {}
 ACTIVE_LOCK = threading.Lock()
 OUTPUT_LOCK = threading.Lock()
@@ -102,6 +103,9 @@ for line in sys.stdin:
         else:
             respond(request, result={"ready": True})
     elif method == "execute_tool":
+        if COUNTER:
+            with open(COUNTER, "a", encoding="utf-8") as stream:
+                stream.write("owner-entered\n")
         child = None
         if "child_process" in active_modes:
             child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])

@@ -2,21 +2,30 @@
 # Install omegon from GitHub Releases.
 #
 # Usage:
-#   curl -fsSL https://omegon.styrene.io/install.sh | sh
+#   curl -fsSL https://omegon.styrene.io/install.sh | \
+#     OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/trusted/omegon-maintain sh
 #
 # Non-interactive:
-#   curl -fsSL https://omegon.styrene.io/install.sh | sh -s -- --no-confirm
+#   curl -fsSL https://omegon.styrene.io/install.sh | \
+#     OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/trusted/omegon-maintain \
+#     sh -s -- --no-confirm
 #
 # Or directly from GitHub:
-#   curl -fsSL https://raw.githubusercontent.com/styrene-lab/omegon/main/core/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/styrene-lab/omegon/main/core/install.sh | \
+#     OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/trusted/omegon-maintain sh
 #
 # Environment variables:
 #   INSTALL_DIR   — installation directory (default: /usr/local/bin)
 #   VERSION       — specific version to install (default: latest)
 #   NO_COLOR      — disable colored output (set to any value)
-# Test-only local archive seam (both variables are required together):
+# An independently acquired and trusted verifier is mandatory:
+#   OMEGON_BOOTSTRAP_VERIFIER — absolute path to a trusted verifier implementing
+#                               `--json release verify`
+# Test-only local release seam (all four variables are required together):
 #   OMEGON_INSTALL_ARCHIVE    — absolute path to a release archive
 #   OMEGON_INSTALL_CHECKSUMS  — absolute path to its checksums.sha256
+#   OMEGON_INSTALL_MANIFEST   — absolute path to its package manifest
+#   OMEGON_INSTALL_BUNDLE     — absolute path to its Sigstore bundle
 #
 # Manual download:
 #   https://github.com/styrene-lab/omegon/releases
@@ -39,10 +48,17 @@ VERSION="${VERSION:-}"
 CHANNEL="${CHANNEL:-stable}"
 GITHUB_API="https://api.github.com/repos/${REPO}"
 TMP=""
+EXTRACTED_ROOT=""
+STAGING_DIR=""
+PUBLISHED_CANDIDATE=""
+INSTALL_SUCCEEDED=false
 NO_CONFIRM=false
 RECEIPT_DIR="${HOME}/.config/omegon"
 LOCAL_ARCHIVE="${OMEGON_INSTALL_ARCHIVE:-}"
 LOCAL_CHECKSUMS="${OMEGON_INSTALL_CHECKSUMS:-}"
+LOCAL_MANIFEST="${OMEGON_INSTALL_MANIFEST:-}"
+LOCAL_BUNDLE="${OMEGON_INSTALL_BUNDLE:-}"
+BOOTSTRAP_VERIFIER="${OMEGON_BOOTSTRAP_VERIFIER:-}"
 
 # ── Parse arguments ───────────────────────────────────────────
 
@@ -52,7 +68,7 @@ for arg in "$@"; do
     --channel=*) CHANNEL="${arg#--channel=}" ;;
     --version=*) VERSION="${arg#--version=}" ;;
     --help|-h)
-      echo "Usage: curl -fsSL https://omegon.styrene.io/install.sh | sh"
+      echo "Usage: curl -fsSL https://omegon.styrene.io/install.sh | OMEGON_BOOTSTRAP_VERIFIER=/absolute/path/to/trusted/omegon-maintain sh"
       echo ""
       echo "Options (pass after 'sh -s --'):"
       echo "  --no-confirm        Skip interactive confirmation"
@@ -64,6 +80,8 @@ for arg in "$@"; do
       echo "  VERSION         Pin a specific version tag (default: latest for selected channel)"
       echo "  CHANNEL         Release channel: stable | nightly (default: stable)"
       echo "  NO_COLOR        Disable colored output"
+      echo "  OMEGON_BOOTSTRAP_VERIFIER"
+      echo "                   Absolute path to an independently trusted release verifier (required)"
       exit 0
       ;;
   esac
@@ -94,22 +112,42 @@ die()     { err "$*"; cleanup; exit 1; }
 dimtext() { printf "${DIM}%s${RESET}" "$*"; }
 
 cleanup() {
+  if [ -n "$STAGING_DIR" ] && [ -d "$STAGING_DIR" ]; then
+    rm -rf "$STAGING_DIR"
+  fi
+  if [ "$INSTALL_SUCCEEDED" = false ] && [ -n "$PUBLISHED_CANDIDATE" ] && [ -d "$PUBLISHED_CANDIDATE" ]; then
+    rm -rf "$PUBLISHED_CANDIDATE"
+  fi
   if [ -n "$TMP" ] && [ -d "$TMP" ]; then
     rm -rf "$TMP"
   fi
 }
 
-trap cleanup EXIT INT TERM
+abort() { cleanup; trap - EXIT; exit 1; }
+trap cleanup EXIT
+trap abort HUP INT TERM
 
 # ── Preflight checks ─────────────────────────────────────────
 
-if [ -n "$LOCAL_ARCHIVE" ] || [ -n "$LOCAL_CHECKSUMS" ]; then
-  [ -n "$LOCAL_ARCHIVE" ] && [ -n "$LOCAL_CHECKSUMS" ] ||
-    die "OMEGON_INSTALL_ARCHIVE and OMEGON_INSTALL_CHECKSUMS must be supplied together"
+case "$BOOTSTRAP_VERIFIER" in
+  /*) ;;
+  *) die "OMEGON_BOOTSTRAP_VERIFIER must explicitly name an absolute independently trusted verifier" ;;
+esac
+[ -f "$BOOTSTRAP_VERIFIER" ] && [ ! -L "$BOOTSTRAP_VERIFIER" ] && [ -x "$BOOTSTRAP_VERIFIER" ] ||
+  die "OMEGON_BOOTSTRAP_VERIFIER must name an executable regular file, not a symlink"
+
+if [ -n "$LOCAL_ARCHIVE" ] || [ -n "$LOCAL_CHECKSUMS" ] || [ -n "$LOCAL_MANIFEST" ] || [ -n "$LOCAL_BUNDLE" ]; then
+  [ -n "$LOCAL_ARCHIVE" ] && [ -n "$LOCAL_CHECKSUMS" ] &&
+    [ -n "$LOCAL_MANIFEST" ] && [ -n "$LOCAL_BUNDLE" ] ||
+    die "OMEGON_INSTALL_ARCHIVE, OMEGON_INSTALL_CHECKSUMS, OMEGON_INSTALL_MANIFEST, and OMEGON_INSTALL_BUNDLE must be supplied together"
   [ "${LOCAL_ARCHIVE#/}" != "$LOCAL_ARCHIVE" ] && [ -f "$LOCAL_ARCHIVE" ] ||
     die "OMEGON_INSTALL_ARCHIVE must name an absolute local file"
   [ "${LOCAL_CHECKSUMS#/}" != "$LOCAL_CHECKSUMS" ] && [ -f "$LOCAL_CHECKSUMS" ] ||
     die "OMEGON_INSTALL_CHECKSUMS must name an absolute local file"
+  [ "${LOCAL_MANIFEST#/}" != "$LOCAL_MANIFEST" ] && [ -f "$LOCAL_MANIFEST" ] ||
+    die "OMEGON_INSTALL_MANIFEST must name an absolute local file"
+  [ "${LOCAL_BUNDLE#/}" != "$LOCAL_BUNDLE" ] && [ -f "$LOCAL_BUNDLE" ] ||
+    die "OMEGON_INSTALL_BUNDLE must name an absolute local file"
 else
   command -v curl >/dev/null 2>&1 || die "curl is required but not found"
 fi
@@ -133,6 +171,12 @@ json_number_field() {
   json_file="$1"
   json_key="$2"
   sed -n 's/.*"'"$json_key"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$json_file" | head -1
+}
+
+verification_result_succeeded() {
+  result_file="$1"
+  [ "$(json_string_field "$result_file" status)" = "success" ] &&
+    grep -Eq '"code"[[:space:]]*:[[:space:]]*"release_verified"' "$result_file"
 }
 
 validate_resident_lock() {
@@ -295,6 +339,9 @@ if [ -z "$VERSION" ]; then
     die "could not determine latest ${CHANNEL} release. Check: https://github.com/${REPO}/releases"
   fi
 fi
+case "$VERSION" in
+  ""|.|..|*[!A-Za-z0-9._+-]*) die "VERSION contains characters unsafe for a generation name" ;;
+esac
 
 # Strip 'v' prefix from version for asset names (tags are v0.15.2, assets are omegon-0.15.2-...)
 VERSION_NUM=$(echo "$VERSION" | sed 's/^v//')
@@ -345,7 +392,8 @@ if [ "$NEEDS_SUDO" = true ]; then
   printf "  ${YELLOW}Requires:${RESET}    sudo (%s is not writable)\n" "${INSTALL_DIR}"
 fi
 printf "  ${DIM}Source: github.com/%s${RESET}\n" "${REPO}"
-printf "  ${DIM}Integrity: SHA-256 checksum verification${RESET}\n"
+printf "  ${DIM}Authenticity: required external package-manifest and Sigstore-bundle verification${RESET}\n"
+printf "  ${DIM}Integrity aid: SHA-256 checksum verification${RESET}\n"
 echo ""
 
 # ── Confirmation ──────────────────────────────────────────────
@@ -374,6 +422,7 @@ else
   step "Downloading ${ARCHIVE}..."
   HTTP_CODE=$(curl -fSL -w '%{http_code}' -o "${TMP}/${ARCHIVE}" "$ARCHIVE_URL" 2>/dev/null) || true
 fi
+
 if [ -z "$LOCAL_ARCHIVE" ] && { [ ! -f "${TMP}/${ARCHIVE}" ] || [ "$HTTP_CODE" = "404" ]; }; then
   # Fallback: if musl target not available, try gnu
   if [ -n "${TARGET_FALLBACK:-}" ]; then
@@ -392,6 +441,11 @@ if [ -z "$LOCAL_ARCHIVE" ] && { [ ! -f "${TMP}/${ARCHIVE}" ] || [ "$HTTP_CODE" =
   Check releases: https://github.com/${REPO}/releases/tag/${VERSION}"
   fi
 fi
+
+MANIFEST="${ARCHIVE}.manifest.json"
+BUNDLE="${ARCHIVE}.manifest.sigstore.json"
+MANIFEST_URL="${BASE_URL}/${MANIFEST}"
+BUNDLE_URL="${BASE_URL}/${BUNDLE}"
 
 ARCHIVE_SIZE=$(wc -c < "${TMP}/${ARCHIVE}" | tr -d ' ')
 if [ "$ARCHIVE_SIZE" -lt 1000 ]; then
@@ -437,63 +491,64 @@ else
   warn "Checksum file not available for this release — skipping verification"
 fi
 
-# ── Signature verification (optional — requires cosign) ──────
+# ── External bootstrap authentication ─────────────────────────
 
 if [ -n "$LOCAL_ARCHIVE" ]; then
-  step "Local archive seam preserves checksum and package validation; signature download skipped"
-elif command -v cosign >/dev/null 2>&1; then
-  SIG_URL="${BASE_URL}/${ARCHIVE}.sig"
-  PEM_URL="${BASE_URL}/${ARCHIVE}.pem"
-  if curl -fsSL -o "${TMP}/${ARCHIVE}.sig" "$SIG_URL" 2>/dev/null && \
-     curl -fsSL -o "${TMP}/${ARCHIVE}.pem" "$PEM_URL" 2>/dev/null; then
-    if cosign verify-blob "${TMP}/${ARCHIVE}" \
-         --signature "${TMP}/${ARCHIVE}.sig" \
-         --certificate "${TMP}/${ARCHIVE}.pem" \
-         --certificate-identity-regexp "github.com/styrene-lab/omegon" \
-         --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-         >/dev/null 2>&1; then
-      ok "Signature verified (Sigstore cosign)"
-    else
-      warn "Signature verification failed — the binary may not have been built by the official CI"
-    fi
-  else
-    warn "Signature files not available for this release"
-  fi
+  cp "$LOCAL_MANIFEST" "${TMP}/${MANIFEST}" || die "could not stage local package manifest"
+  cp "$LOCAL_BUNDLE" "${TMP}/${BUNDLE}" || die "could not stage local Sigstore bundle"
 else
-  step "Install cosign for cryptographic signature verification"
+  step "Downloading signed package evidence..."
+  curl -fsSL -o "${TMP}/${MANIFEST}" "$MANIFEST_URL" 2>/dev/null ||
+    die "package manifest not available for ${ARCHIVE}"
+  curl -fsSL -o "${TMP}/${BUNDLE}" "$BUNDLE_URL" 2>/dev/null ||
+    die "Sigstore bundle not available for ${ARCHIVE}"
 fi
+
+step "Authenticating release with the external bootstrap verifier..."
+if ! "$BOOTSTRAP_VERIFIER" --json release verify \
+    --archive "${TMP}/${ARCHIVE}" \
+    --manifest "${TMP}/${MANIFEST}" \
+    --bundle "${TMP}/${BUNDLE}" \
+    >"${TMP}/bootstrap-verification.json" 2>"${TMP}/bootstrap-verification.err"; then
+  die "external bootstrap verifier refused the release; checksum success cannot grant authenticity"
+fi
+verification_result_succeeded "${TMP}/bootstrap-verification.json" ||
+  die "external bootstrap verifier returned malformed or incomplete success evidence"
+ok "Release authenticity and signed composition verified"
 
 # ── Extract ───────────────────────────────────────────────────
 
-step "Extracting..."
+step "Extracting authenticated archive..."
 
-tar xzf "${TMP}/${ARCHIVE}" -C "$TMP" 2>/dev/null || \
+EXTRACTED_ROOT="${TMP}/extracted"
+mkdir "$EXTRACTED_ROOT" || die "could not create authenticated extraction root"
+tar xzf "${TMP}/${ARCHIVE}" -C "$EXTRACTED_ROOT" 2>/dev/null || \
   die "failed to extract ${ARCHIVE} — the download may be corrupted"
 
 for REQUIRED_BINARY in "$BINARY" "$MAINTAIN_BINARY"; do
-  if [ ! -f "${TMP}/${REQUIRED_BINARY}" ]; then
+  if [ ! -f "${EXTRACTED_ROOT}/${REQUIRED_BINARY}" ]; then
     die "binary '${REQUIRED_BINARY}' not found in archive — release companion pair is incomplete"
   fi
 done
 for REQUIRED_LOCK in "${BINARY}.composition-lock.json" "${MAINTAIN_BINARY}.composition-lock.json"; do
-  [ -f "${TMP}/${REQUIRED_LOCK}" ] || die "resident lock '${REQUIRED_LOCK}' not found in archive"
+  [ -f "${EXTRACTED_ROOT}/${REQUIRED_LOCK}" ] || die "resident lock '${REQUIRED_LOCK}' not found in archive"
 done
 PACK_RELATIVE="share/omegon/content-packs/omegon-shipped"
-if [ ! -f "${TMP}/${PACK_RELATIVE}/content-pack.toml" ]; then
+if [ ! -f "${EXTRACTED_ROOT}/${PACK_RELATIVE}/content-pack.toml" ]; then
   die "shipped content pack not found in archive — optional content installation is incomplete"
 fi
 CODESCAN_RELATIVE="share/omegon/extensions/omegon-codescan"
 COMPONENT_LOCK_RELATIVE="share/omegon/components/core-codescan.lock.json"
-if [ ! -f "${TMP}/${CODESCAN_RELATIVE}/manifest.toml" ] || \
-   [ ! -f "${TMP}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" ] || \
-   [ ! -f "${TMP}/${COMPONENT_LOCK_RELATIVE}" ]; then
+if [ ! -f "${EXTRACTED_ROOT}/${CODESCAN_RELATIVE}/manifest.toml" ] || \
+   [ ! -f "${EXTRACTED_ROOT}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" ] || \
+   [ ! -f "${EXTRACTED_ROOT}/${COMPONENT_LOCK_RELATIVE}" ]; then
   die "release-coupled codescan extension not found in archive"
 fi
 
 # ── Validate binary ───────────────────────────────────────────
 
 for REQUIRED_BINARY in "$BINARY" "$MAINTAIN_BINARY" "${CODESCAN_RELATIVE}/target/release/omegon-codescan"; do
-  FIRST_BYTES=$(head -c 4 "${TMP}/${REQUIRED_BINARY}" | xxd -p 2>/dev/null || od -A n -t x1 -N 4 "${TMP}/${REQUIRED_BINARY}" | tr -d ' ')
+  FIRST_BYTES=$(head -c 4 "${EXTRACTED_ROOT}/${REQUIRED_BINARY}" | xxd -p 2>/dev/null || od -A n -t x1 -N 4 "${EXTRACTED_ROOT}/${REQUIRED_BINARY}" | tr -d ' ')
   case "$OS_NAME" in
     darwin)
       case "$FIRST_BYTES" in
@@ -508,11 +563,22 @@ for REQUIRED_BINARY in "$BINARY" "$MAINTAIN_BINARY" "${CODESCAN_RELATIVE}/target
       esac
       ;;
   esac
-  chmod +x "${TMP}/${REQUIRED_BINARY}"
 done
 
-OMEGON_STAGED_VERSION=$("${TMP}/${BINARY}" --version 2>/dev/null | head -1 | awk '{print $2}') || die "staged omegon failed to launch"
-MAINTAIN_STAGED_VERSION=$("${TMP}/${MAINTAIN_BINARY}" --version 2>/dev/null | head -1 | awk '{print $2}') || die "staged omegon-maintain failed to launch"
+step "Revalidating the extracted member tree with authenticated omegon-maintain..."
+if ! "${EXTRACTED_ROOT}/${MAINTAIN_BINARY}" --json release verify \
+    --archive "${TMP}/${ARCHIVE}" \
+    --manifest "${TMP}/${MANIFEST}" \
+    --bundle "${TMP}/${BUNDLE}" \
+    --extracted-root "$EXTRACTED_ROOT" \
+    >"${TMP}/extracted-verification.json" 2>"${TMP}/extracted-verification.err"; then
+  die "authenticated omegon-maintain refused the exact extracted archive member tree"
+fi
+verification_result_succeeded "${TMP}/extracted-verification.json" ||
+  die "authenticated omegon-maintain returned malformed or incomplete extracted-tree evidence"
+
+OMEGON_STAGED_VERSION=$("${EXTRACTED_ROOT}/${BINARY}" --version 2>/dev/null | head -1 | awk '{print $2}') || die "staged omegon failed to launch"
+MAINTAIN_STAGED_VERSION=$("${EXTRACTED_ROOT}/${MAINTAIN_BINARY}" --version 2>/dev/null | head -1 | awk '{print $2}') || die "staged omegon-maintain failed to launch"
 if [ -z "$OMEGON_STAGED_VERSION" ] || [ "$OMEGON_STAGED_VERSION" != "$MAINTAIN_STAGED_VERSION" ]; then
   die "release companion version mismatch: omegon=${OMEGON_STAGED_VERSION:-missing}, omegon-maintain=${MAINTAIN_STAGED_VERSION:-missing}"
 fi
@@ -552,16 +618,16 @@ mkdir -p "$VERSIONS_DIR" "$RECEIPT_DIR" || die "could not create release directo
 STAGING_DIR="${VERSIONS_DIR}/.${VERSION}.staging.$$"
 rm -rf "$STAGING_DIR"
 mkdir "$STAGING_DIR" || die "could not create release staging directory"
-mv "${TMP}/${BINARY}" "${STAGING_DIR}/${BINARY}"
-mv "${TMP}/${MAINTAIN_BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}"
-mv "${TMP}/${BINARY}.composition-lock.json" "${STAGING_DIR}/${BINARY}.composition-lock.json"
-mv "${TMP}/${MAINTAIN_BINARY}.composition-lock.json" "${STAGING_DIR}/${MAINTAIN_BINARY}.composition-lock.json"
+mv "${EXTRACTED_ROOT}/${BINARY}" "${STAGING_DIR}/${BINARY}"
+mv "${EXTRACTED_ROOT}/${MAINTAIN_BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}"
+mv "${EXTRACTED_ROOT}/${BINARY}.composition-lock.json" "${STAGING_DIR}/${BINARY}.composition-lock.json"
+mv "${EXTRACTED_ROOT}/${MAINTAIN_BINARY}.composition-lock.json" "${STAGING_DIR}/${MAINTAIN_BINARY}.composition-lock.json"
 mkdir -p "${STAGING_DIR}/share/omegon/content-packs"
-mv "${TMP}/${PACK_RELATIVE}" "${STAGING_DIR}/${PACK_RELATIVE}"
+mv "${EXTRACTED_ROOT}/${PACK_RELATIVE}" "${STAGING_DIR}/${PACK_RELATIVE}"
 mkdir -p "${STAGING_DIR}/share/omegon/extensions"
-mv "${TMP}/${CODESCAN_RELATIVE}" "${STAGING_DIR}/${CODESCAN_RELATIVE}"
+mv "${EXTRACTED_ROOT}/${CODESCAN_RELATIVE}" "${STAGING_DIR}/${CODESCAN_RELATIVE}"
 mkdir -p "${STAGING_DIR}/share/omegon/components"
-mv "${TMP}/${COMPONENT_LOCK_RELATIVE}" "${STAGING_DIR}/${COMPONENT_LOCK_RELATIVE}"
+mv "${EXTRACTED_ROOT}/${COMPONENT_LOCK_RELATIVE}" "${STAGING_DIR}/${COMPONENT_LOCK_RELATIVE}"
 chmod +x "${STAGING_DIR}/${BINARY}" "${STAGING_DIR}/${MAINTAIN_BINARY}" || \
   die "could not make release pair executable"
 chmod +x "${STAGING_DIR}/${CODESCAN_RELATIVE}/target/release/omegon-codescan" || \
@@ -590,10 +656,11 @@ validate_full_generation "$STAGING_DIR" "$VERSION"
 # Flush the complete candidate before publishing its immutable directory.
 sync
 if [ -e "$VERSION_DIR" ] || [ -L "$VERSION_DIR" ]; then
-  validate_full_generation "$VERSION_DIR" "$VERSION"
-  rm -rf "$STAGING_DIR"
+  die "release generation already exists; refusing to substitute it for the authenticated candidate: ${VERSION_DIR}"
 else
   mv "$STAGING_DIR" "$VERSION_DIR" || die "could not publish release generation"
+  STAGING_DIR=""
+  PUBLISHED_CANDIDATE="$VERSION_DIR"
   sync
 fi
 
@@ -618,6 +685,7 @@ atomic_link() {
     sudo ln -s "$link_target" "$temp_link" || die "could not stage ${link_path}"
     if ! sudo mv -f -T "$temp_link" "$link_path" 2>/dev/null && \
        ! sudo mv -f -h "$temp_link" "$link_path" 2>/dev/null; then
+      sudo rm -f "$temp_link"
       die "could not atomically update ${link_path}"
     fi
   else
@@ -625,6 +693,7 @@ atomic_link() {
     ln -s "$link_target" "$temp_link" || die "could not stage ${link_path}"
     if ! mv -f -T "$temp_link" "$link_path" 2>/dev/null && \
        ! mv -f -h "$temp_link" "$link_path" 2>/dev/null; then
+      rm -f "$temp_link"
       die "could not atomically update ${link_path}"
     fi
   fi
@@ -653,18 +722,21 @@ if [ ! -L "$CURRENT_LINK" ] && [ -L "$INSTALL_TARGET" ]; then
   fi
 fi
 
-# One activation rename changes the selected pair and its receipt together.
-atomic_link "$VERSION_DIR" "$CURRENT_LINK"
+# Prepare stable launch links while they still resolve through the old selector.
 atomic_link "${CURRENT_LINK}/${BINARY}" "$INSTALL_TARGET"
 atomic_link "${CURRENT_LINK}/${BINARY}" "$OM_TARGET"
 atomic_link "${CURRENT_LINK}/${MAINTAIN_BINARY}" "$MAINTAIN_INSTALL_TARGET"
 atomic_link "${CURRENT_LINK}/install-receipt.json" "$RECEIPT_PATH"
 
+# This final rename is the only operation that changes the selected generation.
+atomic_link "$VERSION_DIR" "$CURRENT_LINK"
+INSTALL_SUCCEEDED=true
+PUBLISHED_CANDIDATE=""
+
 # ── Verify installation ──────────────────────────────────────
 
-INSTALLED_VERSION=""
+INSTALLED_VERSION="omegon ${OMEGON_STAGED_VERSION}"
 if command -v "$BINARY" >/dev/null 2>&1; then
-  INSTALLED_VERSION=$("${INSTALL_DIR}/${BINARY}" --version 2>/dev/null | head -1 || echo "")
   ok "Installed to ${BOLD}${VERSION_DIR}/${BINARY}${RESET}"
   ok "Symlinked from ${BOLD}${INSTALL_DIR}/${BINARY}${RESET}"
 elif [ -x "${INSTALL_DIR}/${BINARY}" ]; then

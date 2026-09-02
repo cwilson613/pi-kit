@@ -753,7 +753,11 @@ async fn lif_001_lif_003_real_process_quiescent_replacement() {
                 None,
             )
             .unwrap();
-        supervisor.start_next_turn().unwrap().unwrap();
+        match supervisor.start_next_turn() {
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("admitted campaign prompt must start a turn"),
+            Err(error) => panic!("campaign turn must start: {error}"),
+        }
         let identity = supervisor.current_identity().unwrap();
         assert!(
             coordinator

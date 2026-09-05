@@ -101,6 +101,33 @@ def group_exists(group: int) -> bool:
     return str(group) in groups.split()
 
 
+def prepare_fixture_workspace(root, provider):
+    workspace = root / "workspace"
+    config = workspace / ".omegon"
+    config.mkdir(parents=True)
+    provider.tool_path = str(root / "outside-project" / "denied.txt")
+    (config / "profile.json").write_text(json.dumps({"permissions": {"tools": {"write": "prompt"}}}) + "\n")
+    (config / "inference.toml").write_text(f'''schema_version = 1
+[[endpoints]]
+id = "acceptance"
+adapter = "chat-completions"
+secret_refs = ["OMEGON_PROJECT_ENDPOINT_616363657074616E6365_TOKEN"]
+[endpoints.transport]
+kind = "http"
+base_url = "{provider.url}/v1"
+[[offerings]]
+id = "openai:gpt-5.4"
+endpoint = "acceptance"
+native_model_id = "gpt-5.4"
+input_modalities = ["text"]
+output_modalities = ["text"]
+[offerings.capabilities]
+tools = true
+reasoning = true
+''')
+    return workspace
+
+
 def run(binary: Path, output: Path):
     binary = binary.resolve(strict=True)
     checkout = Path(__file__).resolve().parents[1]
@@ -140,29 +167,7 @@ def run(binary: Path, output: Path):
 
     with tempfile.TemporaryDirectory(prefix="omegon-tui-") as temporary, fixture_provider() as provider:
         root = Path(temporary)
-        workspace = root / "workspace"
-        config = workspace / ".omegon"
-        config.mkdir(parents=True)
-        provider.tool_path = str(root / "outside-project" / "denied.txt")
-        (config / "profile.json").write_text(json.dumps({"permissions": {"tools": {"write": "prompt"}}}) + "\n")
-        (config / "inference.toml").write_text(f'''schema_version = 1
-[[endpoints]]
-id = "acceptance"
-adapter = "chat-completions"
-secret_refs = ["OMEGON_PROJECT_ENDPOINT_616363657074616E6365_TOKEN"]
-[endpoints.transport]
-kind = "http"
-base_url = "{provider.url}/v1"
-[[offerings]]
-id = "openai:gpt-5.4"
-endpoint = "acceptance"
-native_model_id = "gpt-5.4"
-input_modalities = ["text"]
-output_modalities = ["text"]
-[offerings.capabilities]
-tools = true
-reasoning = true
-''')
+        workspace = prepare_fixture_workspace(root, provider)
         log = output / "omegon.log"
         command = [str(binary), "--cwd", str(workspace), "--model", "openai:gpt-5.4", "--no-splash", "--fresh", "--log-level", "debug", "--log-file", str(log)]
         # Start with an explicit environment, so real credentials/plugins cannot leak into the fixture.

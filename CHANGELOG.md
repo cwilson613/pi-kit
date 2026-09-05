@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Added an operator terminal compatibility kit with fixed-build launchers for installed Ghostty, WezTerm, iTerm2, kitty and Apple Terminal clients. Trials use isolated local fixtures, preserve native terminal settings, record output locally, and retain build/client identity plus operator assessment sheets.
+
 - F2 opens a Project browser with Sessions and Work tabs. Operators can inspect the current or saved session, explicitly resume a saved session, read the current plan and workstream status, and return to their draft. Refresh preserves selection by item identity, approvals retain the browser underneath, and cancellation from the browser preserves the unsent draft. Captured terminal acceptance now exercises project navigation and a denied write while browsing Work.
 
 - TUI overlays now share rendering and input precedence, preserve covered navigation state, and prevent background scrolling or composer edits. Unwired extension actions report their limitation instead of false success. Startup, native transcript printing, shell handoff, tutorial handoff, and shutdown use shared terminal mode ownership with success-ordered recovery and full redraw after primary-screen round trips. Captured acceptance verifies native transcript output and restored terminal preferences.

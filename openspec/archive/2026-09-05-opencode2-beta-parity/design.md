@@ -2,8 +2,8 @@
 
 ## Priority and boundaries
 
-Planned; implementation has not started. Delivery order is instruction discovery,
-then MCP phase deadlines. Both local findings are source-confirmed in the
+Implementation is complete. Delivery order was instruction discovery,
+MCP phase deadlines, then reconnect and duplicate-action verification. Both local findings are source-confirmed in the
 [comparison](../../../docs/opencode2-beta-parity.md). Effort estimates there are
 relative judgments, not measured durations.
 
@@ -23,7 +23,8 @@ ordering must not be described as permission to override immutable core rules.
 Use the active worktree boundary, not the main checkout behind its `.git` file.
 Do not scan sibling directories or descend below cwd in this slice.
 
-Deduplicate canonical source paths. If cwd is outside a Git worktree, preserve
+Deduplicate canonical source paths. Preserve explicit symlinked policy files,
+including shared targets outside the worktree; bound the discovery walk itself. If cwd is outside a Git worktree, preserve
 cwd-only discovery. Missing files are normal; distinguish them from unreadable
 files. An unreadable applicable file produces an actionable preparation error,
 not silent fallback to a less specific file or an indefinite wait.
@@ -64,8 +65,25 @@ a shared server. If transport shutdown is necessary, use the existing lifecycle
 owner and surface its effect. Remote cancellation is not proof that remote work
 stopped. Diagnostics identify phase, effective budget, and cleanup outcome.
 
+Legacy servers with neither startup nor catalog overrides retain completed
+inventory when optional discovery stalls after tools are loaded. Explicit
+startup/catalog overrides select complete-catalog readiness. Shutdown removes
+connections from the registry under a short lock before awaiting their settlement.
+
 Use deterministic fake MCP servers and controlled time to test deadlines without
 minute-long sleeps. Preserve existing resource/prompt injection limits and TTLs.
+
+## 3. Reconnect and duplicate-action verification
+
+Test snapshot/live-event handoff for both WebSocket routes. Subscribe before
+building or sending the initial snapshot, so completion during an awaited send
+remains observable. Retain existing authoritative queue and supervisor recovery.
+
+Verify repeated durable admission identities across authority reopen, approval
+recovery, and detached delegate results. Distinguish web-owned pending tool
+approvals from cleave approvals and preserve the existing first-consumer
+TUI/web responder ownership. Record unsupported transport retry identity and
+client-detach versus daemon-restart behavior explicitly.
 
 ## Validation and landing
 
@@ -81,5 +99,5 @@ budgets. Record current build identity, observable result, and cleanup evidence.
 Use `just link` only if installed asset identity is necessary.
 
 Close each task only after its validation completes. Archive this change after
-both slices satisfy their scenarios; deferred roadmap items do not block it.
+all three workstreams satisfy their scenarios; deferred roadmap items do not block it.
 The design update itself requires OpenSpec validation and `git diff --check`.

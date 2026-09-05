@@ -29,6 +29,9 @@ For user-facing docs, edit `site/src/pages/docs/` and the command snippets in `s
 - `docs/omegon-browser-extension.md`: native browser automation extension backed by Vercel agent-browser.
 - `docs/armory-discovery.md`: unified discovery model for browsing upstream extensions, plugins, skills, and catalog agents.
 - `docs/project-memory.md`: project memory behavior.
+- [`docs/project-instructions.md`](project-instructions.md): scoped AGENTS.md discovery, source completeness, and preparation errors.
+- [`docs/mcp-phase-deadlines.md`](mcp-phase-deadlines.md): startup, inventory, and execution budgets with legacy fallback.
+- [`docs/reconnect-parity-verification.md`](reconnect-parity-verification.md): reconnect fixes, approval replay, and duplicate-input evidence boundaries.
 - `docs/openapi-tools.md`: project-local OpenAPI specs compiled into agent tools.
 - `docs/prompt-and-user-command-surfaces.md`: reusable prompt definitions, `/prompt` routing, safety verdicts, and user-defined command aliases.
 - [`docs/harness-architecture-parity/`](harness-architecture-parity/README.md): evidence-pinned architecture matrix, harness profiles, and philosophy/tradeoff analysis for OpenCode, Omegon, Pi, and DeepSeek Harness.

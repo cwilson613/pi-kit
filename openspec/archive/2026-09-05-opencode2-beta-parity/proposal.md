@@ -13,6 +13,8 @@ retains the wider parity assessment and deferred candidates.
    preserve root and nearest-scope guidance, and remove silent truncation.
 2. Separate MCP startup, catalog, and execution deadlines with compatible
    configuration fallback and cancellation settlement.
+3. Verify reconnect with pending approval, duplicate input admission, and detached
+   delegate completion; fix reproduced event-loss defects in existing owners.
 
 These are independently landable slices. Instruction discovery does not depend
 on a new durable instruction event model. MCP deadlines do not depend on either
@@ -20,7 +22,7 @@ instruction work or a new transport runtime. A beta executable comparison is
 useful reference evidence but is not a prerequisite for these local fixes.
 
 Deferred: durable instruction refresh, token-budgeted compaction, model presets,
-and broad lifecycle or tool-inventory campaigns. Their entry criteria remain in
+and broad lifecycle or tool-inventory campaigns beyond those three cases. Their entry criteria remain in
 the ranked comparison; they are not requirements of this change.
 
 Excluded: OpenCode API/config compatibility, a new plugin runtime or renderer,
@@ -33,4 +35,5 @@ automatic shared-daemon startup, cache warming, and changes to route authority.
 - Required guidance is not silently truncated or silently omitted on read failure.
 - MCP phases honor independent budgets while legacy configuration retains its behavior.
 - Cancellation and timeout errors identify the phase and report cleanup truthfully.
+- Reconnect tests distinguish durable idempotency from client retry support and record protocol limitations explicitly.
 - Each slice passes its focused scenarios, applicable landing checks, and runtime exercise.

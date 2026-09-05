@@ -1,6 +1,4 @@
-# Immediate OpenCode2 parity - Delta Spec
-
-## ADDED Requirements
+# harness-parity/opencode2 - Baseline
 
 ### Requirement: Project instruction construction includes all applicable ancestors
 
@@ -89,10 +87,22 @@ When the harness runs a tool call, resource read, or prompt retrieval
 Then the operation succeeds without being limited by the earlier phase budgets
 
 #### Scenario: Catalog pagination stalls
-Given a server returns one catalog page and stalls on the next
+Given a server has explicit startup/catalog budgets and returns one catalog page but stalls on the next
 When the catalog phase deadline expires
 Then the harness settles discovery with a catalog timeout diagnostic
 And additional pages do not reset the phase deadline
+
+#### Scenario: Legacy optional catalog stalls after tool discovery
+Given a legacy configuration without startup or catalog overrides
+And tools were discovered successfully before an optional catalog stalled
+When the shared readiness deadline expires
+Then completed tool inventory remains available with a partial-discovery diagnostic
+
+#### Scenario: Shutdown waits for service settlement
+Given the lifecycle owner is closing an MCP connection
+When service settlement suspends shutdown
+Then the client registry lock is released
+And new invocations can observe server unavailability without waiting behind cleanup
 
 #### Scenario: Startup stalls
 Given a server does not finish initialization
@@ -123,3 +133,39 @@ When one call times out
 Then its result identifies the execution timeout and known cancellation outcome
 And the other call remains active unless the lifecycle owner explicitly reports transport-wide failure
 And the timed-out remote work is not reported stopped without evidence
+
+### Requirement: Reconnect transitions preserve events and authoritative pending state
+
+The transition from initial snapshot to live subscription must not lose events
+emitted during snapshot delivery. Pending approval and delegate results must
+remain retrievable after client detach. Daemon restart guarantees are evaluated
+separately and must not be inferred from client reconnection.
+
+#### Scenario: Event during snapshot delivery
+Given a client is connecting while runtime events continue
+When an event arrives while the initial snapshot is being sent
+Then the client can observe that event through its live subscription or authoritative reconciliation
+And snapshot delivery does not leave an unsubscribed event-loss window
+
+#### Scenario: Pending approval and completed delegate
+Given a session has a web-owned pending approval and a delegate completes while its client is detached
+When a client reconnects to the same running session
+Then pending approval and delegate results remain recoverable from authoritative state
+And missed advisory events do not imply that the work disappeared
+
+### Requirement: Duplicate-action verification distinguishes authority and transport contracts
+
+Verification must exercise durable command deduplication and inspect whether
+client retries carry a stable submission identity. Missing transport identity
+must be recorded as an unsupported guarantee, not described as end-to-end deduplication.
+
+#### Scenario: Repeated durable submission identity
+Given an admitted input has a durable submission identity
+When the same identity is submitted again across authority reload
+Then the existing admission is retained without a second executed input
+
+#### Scenario: Client retry has no submission identity
+Given a transport input contract has no client-provided retry identity
+When duplicate-action verification examines reconnect retries
+Then the evidence explicitly records that retry deduplication is not supported by that contract
+And it does not use durable-record deduplication as proof of transport-level safety

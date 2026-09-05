@@ -1,119 +1,85 @@
-# OpenCode2 beta parity design
+# Immediate parity design
 
-## Status and authority
+## Priority and boundaries
 
-Planned; no implementation tasks are complete. The
-[comparison](../../../docs/opencode2-beta-parity.md) defines the reference snapshot
-and evidence confidence. This design proposes Omegon behavior even where beta
-behavior differs. A matching beta command is not an acceptance test.
+Planned; implementation has not started. Delivery order is instruction discovery,
+then MCP phase deadlines. Both local findings are source-confirmed in the
+[comparison](../../../docs/opencode2-beta-parity.md). Effort estimates there are
+relative judgments, not measured durations.
 
-## Instruction admission
+OpenCode remains implementation evidence. Omegon's prompt ownership, managed
+services, session authority, route admission, and RBAC remain authoritative.
+No frozen session payload, route lease, or compaction contract needs to change.
 
-Extend `prompt.rs` discovery to include every ancestor from the active worktree
-root to cwd. Keep global directives separate and preserve Omegon's declared
-precedence: immutable core, operator/project policy, then behavior defaults.
-Nearest project guidance adds scope; it must not discard root guidance.
-Use canonical worktree boundaries and deduplicate canonical paths.
+## 1. Complete instruction discovery
 
-Represent instruction sources as typed observations: available value, confirmed
-absence, or temporarily unavailable. A source record contains its identity,
-scope, content reference, and hash. Reject silent truncation. If a configured
-instruction budget cannot hold required guidance, report the condition before
-dispatch instead of silently dropping policy.
+Primary owner: `core/crates/omegon/src/prompt.rs::load_project_directives` and its
+callers. Inspect `find_repo_root` and existing prompt preparation before editing.
 
-The session authority admits changed generations before the physical model
-attempt. No-op reads append no event. Retry assembly consumes admitted content,
-and recovery reconstructs the same content without rereading historical files.
-Temporary failures preserve the previous admitted value; initial failure blocks
-dispatch with a recoverable diagnostic. Confirmed deletion admits a removal.
-Bodies remain in the privileged content store; public projections expose source
-identity and generation, subject to existing redaction rules.
+Discover every ancestor AGENTS.md from the active worktree root through cwd.
+Render root first and nearest scope last, with source labels. Keep global
+operator guidance in its existing owner. Project directives add to root policy;
+ordering must not be described as permission to override immutable core rules.
+Use the active worktree boundary, not the main checkout behind its `.git` file.
+Do not scan sibling directories or descend below cwd in this slice.
 
-Add event types or explicitly version contracts; do not alter frozen payloads.
-Legacy sessions establish an initial generation at the next safe model boundary.
-Compaction binds its input and replacement to an admitted generation. It cannot
-promote quoted history, tool output, or remote MCP material into policy authority.
-Nested directives discovered by file tools require a separate scope check before
-admission; they must not become unscoped session-wide authority.
+Deduplicate canonical source paths. If cwd is outside a Git worktree, preserve
+cwd-only discovery. Missing files are normal; distinguish them from unreadable
+files. An unreadable applicable file produces an actionable preparation error,
+not silent fallback to a less specific file or an indefinite wait.
 
-## MCP phase budgets
+Remove the 4000-byte per-file truncation. Preserve complete UTF-8 content and
+source boundaries. Inspect the existing request budget enforcement and route
+preparation path: if complete required guidance cannot fit, return a bounded,
+actionable error before dispatch. Do not create another tokenizer or a separate
+configuration subsystem merely to replace this truncation.
 
-Add optional startup, catalog, and execution budgets at the existing server
-configuration owner. Retain `timeout_secs` as a fallback for each unset phase;
-retain current defaults when no fields are supplied. Use explicit units in Rust
-and Pkl and validate zero, overflow, and invalid inputs consistently.
+This slice operates when existing prompt construction runs. It does not promise
+live updates on every attempt, durable generations, or historical replay of
+changed files. Those require a separate design. Record that boundary in tests
+and operator documentation rather than implying full instruction-lifecycle parity.
 
-Transport establishment and initialization share a startup deadline. Catalog
-listing and pagination have a bounded catalog deadline. Tool execution, resource
-reads, and prompt retrieval use the execution budget. Progress does not extend
-the hard deadline. Cancellation can settle work earlier than any budget.
+## 2. MCP phase deadlines
 
-Local process cleanup remains tree-scoped. Remote transport cancellation records
-what is known; it must not claim a remote process stopped without evidence.
-Managed readiness and cleanup policies remain authoritative and can impose a
-stricter outer bound. Errors identify the phase, configured budget, and settlement.
+Primary owner: `core/crates/omegon/src/plugins/mcp.rs::McpServerConfig`, connection,
+inventory, and invocation paths; update applicable Pkl schema owners as needed.
 
-## Context retention
+Add optional `startup_timeout_secs`, `catalog_timeout_secs`, and
+`execution_timeout_secs`. Each unset phase inherits `timeout_secs`; retain the
+existing default when all fields are absent. Validate explicit phase budgets as
+positive durations and reject conversion overflow. Inspect existing handling of
+legacy zero before changing it; preserve legacy behavior or document an explicit
+migration rather than silently changing accepted configuration.
 
-Extend `ContextCompactionSnapshotV1` through a compatible versioned boundary if
-its contract requires it. Carry the admitted model limits and estimates for
-instructions, tool schemas, requested output, and conversation content.
-Select the newest complete conversation units that fit the retained-token budget.
-Keep tool calls paired with their results, and preserve referenced attachment
-identity. Do not reuse OpenCode's character heuristic as a universal tokenizer.
+Transport establishment and initialization share a startup deadline. Inventory
+listing and pagination share a catalog deadline. Tool calls, prompt retrieval,
+and resource reads use execution deadlines. Managed lifecycle policy may impose
+a stricter outer deadline, but it must not accidentally reuse a shorter startup
+budget to limit an already-ready tool invocation.
 
-`context_compaction_service.rs` remains a planner. `session_compaction.rs` and
-session authority retain commit, abandonment, context revision, and recovery
-ownership. Failed summaries do not replace the active context. Existing
-route-service attempt limits govern summary and overflow retries.
+Progress does not extend the execution deadline. Cancellation can end an
+operation earlier. Preserve existing process-tree cleanup and managed settlement
+owners. A timeout of one call must not indiscriminately kill unrelated calls or
+a shared server. If transport shutdown is necessary, use the existing lifecycle
+owner and surface its effect. Remote cancellation is not proof that remote work
+stopped. Diagnostics identify phase, effective budget, and cleanup outcome.
 
-Verify manual requests during active work, cancellation, and a second overflow.
-Do not impose the beta's manual-input priority or `auto` switch behavior until
-the reference fixture and local queue contract resolve their interaction.
+Use deterministic fake MCP servers and controlled time to test deadlines without
+minute-long sleeps. Preserve existing resource/prompt injection limits and TTLs.
 
-## Model presets
+## Validation and landing
 
-Extend offering evidence with model-specific named presets containing typed,
-adapter-supported controls. A selection binds offering, preset, normalized
-controls, and inventory generation to existing route provenance.
-Unknown presets and unsupported controls fail before bridge replacement.
-Provider/model capability admission still applies after preset resolution.
+Each slice starts with its focused failing regressions and lands independently.
+Use `just test-crate omegon` plus `just clippy-changed` for an isolated omegon
+change. Shared contracts or multi-crate changes require `just test-commit`.
+Run applicable schema checks when Pkl changes. Do not rerun unrelated provider
+campaigns unless the actual diff affects their contracts.
 
-Expose available presets through semantic model projections and the command
-registry consumed by TUI, CLI, and ACP. Preserve existing thinking settings as
-explicit mappings where supported. Do not permit arbitrary request headers,
-credential replacement, transport changes, or invented capabilities in a preset.
+Exercise current source through `just run`: inspect model-bound instructions in
+a nested temporary worktree, and use a fake MCP server with short independent
+budgets. Record current build identity, observable result, and cleanup evidence.
+Use `just link` only if installed asset identity is necessary.
 
-## Continuity campaign
-
-Use `session_recovery_campaign.rs`, `surface_parity_campaign.rs`,
-`control_runtime.rs`, and delegate fixtures before adding production code.
-Test two clients against one existing server, disconnect during streaming,
-reconnect with pending approval, duplicate input submission, completion while
-detached, restart after ambiguous tool execution, and cancellation descendants.
-
-Compare semantic state, not renderer text. Input identity and durable facts must
-prevent duplicate admission; uncertain external side effects must remain
-uncertain rather than being automatically rerun. Delegation preserves worktree
-isolation and the current child authority ceiling. Permissions apply to every
-nested invocation and every resource in a multi-file mutation.
-
-Treat missing endpoints, unavailable beta commands, and fixture infrastructure
-failures separately from behavioral differences. The reference executable uses
-isolated configuration and temporary repositories; do not share personal
-credentials or user services between fixtures.
-
-## Validation and rollout
-
-Keep production changes split by I, M, C, R and reproduced campaign findings.
-Each starts with a focused failing scenario and ends with the narrowest relevant
-crate gate plus `just clippy-changed`. Shared contracts or multiple crates use
-`just test-commit`; broad recovery/security changes justify the broader ladder.
-Add schema checks when Pkl changes. Run long Cargo gates to completion.
-
-Exercise current source through `just run`. Use `just link` only if installed
-launcher or bundled-asset identity matters, then verify `omegon --which`.
-Record build identity, fixture identity, events, exit status, and cleanup result.
-Update Workbench/OpenSpec status as implementation lands; archive only after
-scenario reconciliation. This documentation-only proposal needs OpenSpec
-validation and `git diff --check`, not a Rust build or installation.
+Close each task only after its validation completes. Archive this change after
+both slices satisfy their scenarios; deferred roadmap items do not block it.
+The design update itself requires OpenSpec validation and `git diff --check`.

@@ -1,120 +1,125 @@
-# OpenCode2 parity - Delta Spec
+# Immediate OpenCode2 parity - Delta Spec
 
 ## ADDED Requirements
 
-### Requirement: Parity evidence distinguishes source and executable behavior
+### Requirement: Project instruction construction includes all applicable ancestors
 
-The parity campaign must record reference identity, local build identity,
-scenario inputs, observable results, and unresolved evidence differences.
-
-#### Scenario: Beta differs from documentation
-Given a pinned beta executable and a documented behavior
-When the reference fixture produces a different result
-Then the campaign records the discrepancy and executable identity
-And it does not mark the local behavior deficient solely from documentation
-
-### Requirement: Scoped instructions are admitted with durable provenance
-
-The harness must combine applicable ancestor directives and admit instruction
-changes before dispatch while preserving scope, authority, and replay identity.
+Prompt construction must include each applicable ancestor AGENTS.md once, from
+active worktree root through cwd, with source labels and complete UTF-8 content.
+Global guidance retains its existing owner. Immutable core authority is unchanged.
 
 #### Scenario: Intermediate ancestor and long root policy
-Given root and intermediate AGENTS.md files and a nested working directory
-And the root guidance exceeds 4000 bytes
-And the applicable guidance fits the configured instruction budget
-When the harness prepares the model request
-Then both applicable files are represented without silent truncation
+Given distinct root, intermediate, and cwd AGENTS.md files
+And root guidance exceeds 4000 bytes and includes multibyte characters
+And the complete guidance fits the request budget
+When the harness constructs the project instruction section
+Then all three files appear completely in root-to-cwd order with source labels
+And no source appears twice
 
-#### Scenario: Required instructions exceed budget
-Given applicable required guidance exceeds the configured instruction budget
-When the harness prepares the model request
-Then it prevents dispatch with an actionable budget diagnostic
-And it does not silently drop required guidance
+#### Scenario: Linked worktree boundary
+Given cwd is nested in a linked worktree with its own root AGENTS.md
+And the main checkout and a directory above the worktree contain different guidance
+When the harness constructs project instructions
+Then it loads the active worktree ancestors
+And it excludes main-checkout and above-worktree project guidance
+And global operator guidance retains its existing separate loading behavior
 
-#### Scenario: Instruction changes and temporary read failure
-Given an admitted instruction generation
-When the next preparation observes changed guidance and a temporarily unavailable source
-Then it admits the changed available guidance and retains the unavailable source's last admitted value
-And replay reconstructs the admitted values without reading current files
+#### Scenario: Canonical duplicate
+Given two discovered paths resolve to the same permitted instruction file
+When the harness constructs project instructions
+Then that canonical file contributes content only once
 
-#### Scenario: Initial source unavailable
-Given no admitted instruction generation and an unavailable required source
+#### Scenario: Missing ancestor file and non-Git directory
+Given cwd is outside a Git worktree and contains an AGENTS.md
+When the harness constructs project instructions
+Then it loads the cwd file without scanning unrelated ancestors
+And absent optional instruction files do not cause an error
+
+### Requirement: Required project guidance is never silently omitted
+
+Prompt preparation must distinguish missing files from read errors, preserve
+complete required guidance, and fail actionably before dispatch if it cannot
+read or fit that guidance. This requirement applies at existing construction
+boundaries; it does not require live refresh or durable instruction generations.
+
+#### Scenario: Unreadable applicable file
+Given an applicable AGENTS.md exists but cannot be read
 When the harness prepares a model request
-Then dispatch waits for a successful observation or explicit cancellation
-And the operator can identify the unavailable source
+Then preparation reports the source and a recoverable read error
+And no model request is dispatched with silently omitted guidance
 
-#### Scenario: Confirmed deletion and unchanged reread
-Given an admitted source that is later confirmed absent
-When the harness prepares the next model request
-Then it records removal of that source
-And later observations of the same absence append no duplicate change
+#### Scenario: Required guidance cannot fit
+Given complete required instructions exceed the available model request budget
+When the harness prepares a model request
+Then it reports an actionable budget error before network dispatch
+And it does not truncate policy to make the request fit
 
-### Requirement: MCP deadlines distinguish operation phases
+### Requirement: MCP phase budgets preserve legacy configuration fallback
 
-MCP must enforce separate startup, catalog, and execution budgets with compatible
-legacy fallback and truthful cancellation settlement.
+MCP must support optional positive startup_timeout_secs, catalog_timeout_secs,
+and execution_timeout_secs. An unset phase inherits timeout_secs and its existing
+default. Explicit phase values must be validated before connection.
+
+#### Scenario: Partial phase override
+Given timeout_secs is 30 and execution_timeout_secs is 90
+When the harness resolves MCP deadlines
+Then startup and catalog inherit 30 seconds and execution receives 90 seconds
+
+#### Scenario: Existing configuration
+Given a previously supported MCP configuration without phase overrides
+When the harness resolves MCP deadlines
+Then its effective legacy timeout behavior remains unchanged
+
+#### Scenario: Invalid explicit budget
+Given an explicit phase budget is zero, negative, malformed, or overflows duration conversion
+When the harness loads the MCP configuration
+Then it rejects the invalid value with the phase identified before starting that server
+
+### Requirement: MCP operations enforce their own phase deadlines
+
+Startup covers connection and initialization. Catalog covers inventory discovery
+including pagination. Execution covers tool calls, resource reads, and prompt
+retrieval. Progress must not extend the hard deadline. Managed outer lifecycle
+bounds and cancellation remain authoritative.
 
 #### Scenario: Slow execution with fast discovery
-Given a server whose startup and catalog finish within their configured budgets
-And an execution budget longer than its catalog budget
-When a tool completes after the catalog budget but before the execution deadline
-Then the tool result succeeds
-And startup and catalog budgets do not prematurely terminate execution
+Given startup and catalog complete within short configured budgets
+And an execution operation completes after those durations but within its execution budget
+When the harness runs a tool call, resource read, or prompt retrieval
+Then the operation succeeds without being limited by the earlier phase budgets
 
-#### Scenario: Legacy configuration and cancellation
-Given a server configured only with timeout_secs
-When an MCP operation is cancelled before its inherited deadline
-Then cancellation settles the operation without waiting for the timeout
-And local descendants are terminated or cleanup failure is reported
-And remote termination is not claimed without evidence
+#### Scenario: Catalog pagination stalls
+Given a server returns one catalog page and stalls on the next
+When the catalog phase deadline expires
+Then the harness settles discovery with a catalog timeout diagnostic
+And additional pages do not reset the phase deadline
 
-### Requirement: Compaction retains complete context within a token budget
+#### Scenario: Startup stalls
+Given a server does not finish initialization
+When the startup deadline expires
+Then the harness reports the startup budget and settles through its existing lifecycle owner
 
-Compaction must retain the newest complete conversation units that fit its
-budget and commit replacement only after successful summary validation.
+#### Scenario: Progress does not grant extra runtime
+Given a running MCP operation emits progress repeatedly
+When its execution deadline expires
+Then the harness settles it as an execution timeout despite the progress
 
-#### Scenario: One oversized recent turn
-Given a recent turn exceeds the retention budget and includes a tool transaction
-When the planner selects retained context
-Then it does not split the tool call from its result
-And it selects a bounded complete suffix or reports that required context cannot fit
+### Requirement: MCP cancellation reports bounded and truthful settlement
 
-#### Scenario: Summary fails during instruction change
-Given a compaction bound to an admitted instruction generation
-When summary generation fails
-Then the active context revision remains unchanged
-And no new instruction generation is inferred from the failed summary
+Cancellation must settle before a later operation deadline. Existing lifecycle
+owners retain process-tree cleanup authority. A single operation timeout must
+not kill unrelated calls without an explicit server-lifecycle consequence.
+Remote work is not reported terminated without evidence.
 
-### Requirement: Model presets resolve through offering admission
+#### Scenario: Local cancellation
+Given a local MCP operation is active with a future deadline
+When the operator cancels it
+Then cancellation settles without waiting for the full deadline
+And any required process cleanup covers descendants or reports incomplete cleanup
 
-Named model presets must resolve against the selected offering and its inventory
-generation before changing the active route or dispatching a request.
-
-#### Scenario: Unknown or unsupported preset
-Given an active route and a requested preset absent from the selected offering
-When the operator selects that preset through TUI, CLI, or ACP
-Then selection fails without dispatch or route replacement
-And all surfaces expose the same semantic failure
-
-#### Scenario: Valid preset with stale inventory
-Given a preset selected from an inventory generation that has been replaced
-When the route is admitted for execution
-Then current offering and control evidence are revalidated under existing lease policy
-And stale evidence cannot authorize an unsupported request
-
-### Requirement: Continuity findings are reconciled against existing owners
-
-The campaign must exercise client and child lifecycle behavior before proposing
-replacement infrastructure. Confirmed defects must have bounded fixes or deferrals.
-
-#### Scenario: Reconnect with pending work
-Given pending input, an approval request, and a background delegate on an existing server
-When a client disconnects and reconnects
-Then the campaign compares recovered semantic identities and results
-And it records any lost or duplicate input, approval, or completion as a specific finding
-
-#### Scenario: Ambiguous execution across restart
-Given an external tool may have acted before the server stopped
-When the recovery fixture restarts the server
-Then the campaign verifies whether execution remains uncertain without an unsafe automatic rerun
-And it records the durable evidence and any violated local recovery contract
+#### Scenario: Concurrent operation and remote uncertainty
+Given two calls share a remote MCP transport
+When one call times out
+Then its result identifies the execution timeout and known cancellation outcome
+And the other call remains active unless the lifecycle owner explicitly reports transport-wide failure
+And the timed-out remote work is not reported stopped without evidence

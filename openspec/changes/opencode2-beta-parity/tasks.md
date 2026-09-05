@@ -1,53 +1,29 @@
-## 1. Freeze reference and establish fixtures
+## 1. Highest ROI — Complete project instruction loading
 <!-- specs: harness-parity/opencode2 -->
 
-- [ ] Resolve beta-19129 platform artifact identity and source correspondence, or retain the explicit mismatch.
-- [ ] Capture CLI help and selected reference behaviors in isolated temporary projects; record docs/source/binary differences.
-- [ ] Map I/M/C/R/S/D/P/L/T rows to existing tests and add only missing behavior fixtures.
+- [ ] Add failing prompt.rs fixtures for root/intermediate/cwd composition and a root file longer than 4000 bytes, including multibyte UTF-8.
+- [ ] Verify find_repo_root behavior in a linked worktree; add boundary, canonical duplicate, absent-file, unreadable-file, and non-Git cwd fixtures.
+- [ ] Replace first-file selection with root-to-cwd discovery and source-labelled complete content; preserve existing global guidance ownership.
+- [ ] Remove silent truncation and propagate actionable read/preparation failures through existing prompt callers.
+- [ ] Verify complete guidance fits the existing model request budget or fails before dispatch; add a no-network-dispatch assertion for oversized required guidance.
+- [ ] Run focused prompt/preparation tests, the applicable crate landing gate, and Clippy; exercise nested-worktree prompt construction through the current harness.
+- [ ] Document discovery order and construction-time refresh scope; update Unreleased and commit this slice independently.
 
-## 2. I — Scoped instruction discovery and admission
+## 2. Next ROI — Separate MCP phase deadlines
 <!-- specs: harness-parity/opencode2 -->
 
-- [ ] Reproduce intermediate ancestor loss and silent truncation in prompt.rs; implement complete worktree-bounded discovery.
-- [ ] Add typed available/absent/unavailable observations and versioned session-authority instruction facts.
-- [ ] Verify change, no-op, deletion, initial failure, transient failure, replay, redaction, and nested scope.
-- [ ] Bind physical request preparation and compaction to admitted generations without changing frozen payloads.
+- [ ] Add failing configuration fixtures for phase overrides, legacy fallback, absent settings, invalid explicit values, and duration overflow; record existing legacy-zero behavior.
+- [ ] Add optional startup_timeout_secs, catalog_timeout_secs, and execution_timeout_secs at McpServerConfig and applicable Pkl schemas.
+- [ ] Apply startup and catalog deadlines to their complete phases, including catalog pagination, while preserving managed outer lifecycle bounds.
+- [ ] Apply execution deadlines to tools, resource reads, and prompt retrieval without extending them on progress.
+- [ ] Use fake MCP fixtures to verify slow execution after fast discovery, stalled startup/catalog, pagination exhaustion, and timeout phase diagnostics.
+- [ ] Verify cancellation settles promptly, cleanup remains process-tree scoped, remote uncertainty is explicit, and unrelated calls are not killed by a single-call timeout.
+- [ ] Run focused MCP/configuration tests, schema checks where applicable, the landing gate, and Clippy; exercise the current harness with the fake server.
+- [ ] Document effective budget precedence and diagnostics; update Unreleased and commit this slice independently.
 
-## 3. M — MCP phase deadlines
+## 3. Close the bounded pass
 <!-- specs: harness-parity/opencode2 -->
 
-- [ ] Add compatible startup/catalog/execution configuration and applicable Pkl validation.
-- [ ] Apply phase deadlines to connection, paginated catalogs, calls, prompt retrieval, and resource reads.
-- [ ] Verify legacy fallback, invalid budgets, slow tools, stalled catalogs, progress, cancellation, and descendant cleanup.
-
-## 4. R — Exact model preset admission
-<!-- specs: harness-parity/opencode2 -->
-
-- [ ] Define typed offering presets and compatibility mappings for existing thinking controls.
-- [ ] Admit preset controls and inventory generation through provider_route_service.rs and route provenance.
-- [ ] Verify unknown controls, unsupported capabilities, stale inventory, preserved active routes, and TUI/CLI/ACP semantic parity.
-- [ ] Rerun the completed provider-routing/parity regression scenarios.
-
-## 5. C — Budgeted retained context
-<!-- specs: harness-parity/opencode2 -->
-
-- [ ] Add token-budget inputs and complete-unit retention to the managed compaction planner.
-- [ ] Verify oversized turns, tool pairs, attachments, fixed-prompt pressure, failed summary, and instruction-generation binding.
-- [ ] Resolve manual barrier and auto/overflow semantics with reference and local queue fixtures before changing either policy.
-
-## 6. S/D/P/L/T — Existing lifecycle and tool verification
-<!-- specs: harness-parity/opencode2 -->
-
-- [ ] Exercise two clients, streaming disconnect, duplicate submission, pending approval, detached delegate completion, and restart ambiguity.
-- [ ] Verify descendant cancellation, delegate authority ceilings, multi-resource denial, saved approvals, and nested dispatch permission checks.
-- [ ] Exercise inventory refresh and stale local capability evidence through current routing owners.
-- [ ] Compare tool discovery and schema cost with a large MCP inventory; verify every nested dispatch retains permission checks.
-- [ ] Record bounded fixes for reproduced failures; explicitly defer unsupported or unresolved scenarios.
-
-## 7. Landing evidence and reconciliation
-<!-- specs: harness-parity/opencode2 -->
-
-- [ ] Run focused tests and the applicable crate/shared-contract landing gates for each implementation slice.
-- [ ] Exercise the current Omegon harness and record build identity, reference identity, events, and cleanup evidence.
-- [ ] Reconcile the decision matrix, scenario results, Workbench, OpenSpec tasks, and operator documentation.
-- [ ] Validate the completed change and archive only after all adopted requirements are verified.
+- [ ] Reconcile each scenario with local test and runtime evidence, including build identity and remaining limitations.
+- [ ] Update the comparison to distinguish implemented local fixes from unverified beta executable parity; do not advance a full upstream review marker.
+- [ ] Validate OpenSpec, reconcile any active Workbench state, and archive only after both implementation slices are complete.

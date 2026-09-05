@@ -14,9 +14,10 @@ visibility = "private"
 
 Design date: 2026-09-04. Implementation has not started.
 
-The proposed pass targets instruction correctness, bounded integration lifetimes,
-and continuity across clients. Preserve the completed routing work and prove
-existing session guarantees before adding new infrastructure.
+The immediate pass targets complete instruction discovery and separate MCP phase
+deadlines. The wider comparison remains a ranked backlog. Durable instruction
+refresh, context retention, model presets, and lifecycle campaigns are deferred
+from the active OpenSpec scope.
 
 [Proposal](../openspec/changes/opencode2-beta-parity/proposal.md) ·
 [Design](../openspec/changes/opencode2-beta-parity/design.md) ·
@@ -44,8 +45,9 @@ correspondence remains unverified. The downloaded npm metadata reported integrit
 This identifies the wrapper package, not a platform executable.
 
 This is a targeted behavior comparison, not a complete commit-range audit from
-either historical revision to V2. No last-reviewed marker advances. The first
-implementation task freezes a binary fixture and confirms each selected behavior.
+either historical revision to V2. No last-reviewed marker advances. A later
+executable parity claim requires a pinned binary fixture. Locally reproduced
+instruction and timeout fixes do not depend on completing that comparison.
 
 ## What the completed work already covers
 
@@ -72,18 +74,39 @@ prompt and compaction facts; `session_replay.rs` and `session_recovery_campaign.
 cover recovery; `features/delegate.rs` exposes async delegates and result retrieval;
 `control_runtime.rs` routes shared commands. Adding equivalents would duplicate owners.
 
-## Decision matrix
+## ROI-ranked backlog
 
-“Adopt” selects an outcome for this pass. “Investigate” requires a reproduction
-before implementation. Priorities reflect local impact, not upstream release order.
+This order weighs user impact, confidence in the local gap, implementation scope,
+and dependencies. Effort is a relative design estimate, not a delivery promise.
+The order supersedes the initial broad proposal. Only ranks 1 and 2 are active
+implementation requirements in OpenSpec; every later item needs a separate scope.
+
+| Rank | Task | Return and confidence | Relative effort | Disposition / entry criterion |
+|---|---|---|---|---|
+| 1 | Complete ancestor instruction discovery; remove silent truncation | Prevents lost project policy on ordinary nested-repository work. High confidence from inspected code. | Small–medium: prompt loader, callers, budget/error handling, fixtures. | **Pursue now.** Reproduce first-file selection and truncation, then fix through existing construction. |
+| 2 | Separate MCP startup, catalog, and execution deadlines | Lets slow tools complete without weakening discovery limits. High confidence in shared-timeout coupling. | Medium: configuration, lifecycle wiring, fake-server tests. | **Pursue now.** Independent of instruction work; preserve legacy defaults. |
+| 3 | Focused reconnect and duplicate-action verification | Protects active work and approvals; existing recovery owners reduce investigation cost. A missing guarantee is not yet confirmed. | Small bounded investigation; repair effort unknown. | **Next diagnostic pass.** Start with duplicate submission, pending approval on reconnect, and detached delegate completion. Stop expanding when each has existing proof or a bounded defect. |
+| 4 | Token-budgeted retained context | Addresses oversized recent turns during long sessions. Planner mismatch is confirmed; frequency and user impact need fixtures. | Medium–large: estimates, whole tool transactions, model limits, recovery. | **Defer pending reproduction.** Demonstrate turn-based retention exceeding a useful budget; design independently of instruction epochs where possible. |
+| 5 | Durable instruction refresh and replay | Makes policy changes during long sessions explicit and reproducible. Valuable, but broader than loading files correctly. | Large: event contracts, privileged content, retries, replay, compaction, projections. | **Separate architectural follow-up.** Establish a stale-instruction/replay case and choose update, failure, and scope semantics first. |
+| 6 | Remaining permission, cancellation, and inventory verification | High consequence if faulty, but current owners already implement guarantees. No defect established by this review. | Medium investigation; repair effort unknown. | **Target evidence gaps.** A concrete safety or data-loss defect overrides this provisional rank immediately. |
+| 7 | Large MCP inventory / Code Mode comparison | May reduce schema cost and improve tool discovery; actual bottleneck unmeasured. | Medium investigation. | **Measure first.** Capture representative schema tokens and tool-discovery failures before proposing runtime changes. |
+| 8 | Named model presets | Convenience beyond existing thinking controls is not demonstrated. | Medium–large across catalog, route provenance, and surfaces. | **Defer.** Require an operator workflow that existing controls cannot express cleanly. |
+| 9 | Cache warming | Possible latency/cache benefit with recurring provider requests. Benefit unmeasured. | Medium plus ongoing request cost. | **Defer.** Require measured net benefit, explicit opt-in, and cost accounting. |
+| — | Shared daemon by default, another renderer, OpenCode API/plugin compatibility | Product/topology changes rather than demonstrated local reliability fixes. | Large. | **Outside this pass.** Require independent product justification. |
+
+## Evidence and disposition matrix
+
+“Adopt” selects an outcome for the immediate pass. “Investigate” identifies a
+follow-up evidence question, not a task required to close this change. The ROI
+ranking above controls delivery order; P0/P1/P2 below retain impact groupings.
 Local paths below are relative to `core/crates/omegon/src/` unless stated otherwise.
 
 | ID / priority | V2 behavior and evidence | Local finding | Decision and bounded outcome |
 |---|---|---|---|
-| I / P0 | Ambient instructions become durable source deltas; temporary read failure preserves prior values. [Instructions](https://opencode.ai/v2/docs/instructions/); source `packages/core/src/session/instruction-state.ts`. | `prompt.rs::load_project_directives` returns the first readable cwd/root file, skips intermediate ancestors, and truncates at 4000 bytes. `context.rs` replaces persistent injections in memory. | **Adopt:** complete scoped ancestor discovery and durable admitted instruction generations. Preserve Omegon precedence and privileged-source boundaries. |
+| I / P0 | Ambient instructions become durable source deltas; temporary read failure preserves prior values. [Instructions](https://opencode.ai/v2/docs/instructions/); source `packages/core/src/session/instruction-state.ts`. | `prompt.rs::load_project_directives` returns the first readable cwd/root file, skips intermediate ancestors, and truncates at 4000 bytes. `context.rs` replaces persistent injections in memory. | **Adopt:** complete scoped ancestor discovery without silent truncation. **Defer:** durable refresh and admitted generations to rank 5. Preserve Omegon precedence and privileged-source boundaries. |
 | M / P0 | Separate startup, catalog, and execution deadlines. [MCP](https://opencode.ai/v2/docs/mcp-servers/); source `packages/core/src/mcp/client.ts`. | `plugins/mcp.rs::McpServerConfig` has one `timeout_secs`, used in readiness, inventory, and execution paths. | **Adopt:** independently configurable phase budgets with legacy fallback and cancellation evidence. Do not copy the beta's long default execution timeout. |
-| C / P1 | Checkpoint plus token-budgeted recent context; manual compaction admission and bounded overflow recovery. [Compaction](https://opencode.ai/v2/docs/compaction/). | `session_compaction.rs` already records lifecycle and context revisions. `context_compaction_service.rs::plan_compaction` retains turns, with fixed manual/pressure fallbacks. | **Adopt:** budget-based retention. **Investigate:** manual barrier ordering and recovery after partial output; retain existing authority and recovery machinery. |
-| R / P1 | Named model variants resolve against catalog entries and reject unknown names. [Models](https://opencode.ai/v2/docs/models/); source `packages/core/src/model-resolver.ts::withVariant`. | `provider_route_service.rs` admits reasoning capability; inspected catalog has no general named-variant inventory. | **Adopt:** typed, model-specific request presets and exact admission across operator surfaces. Preserve current thinking controls as compatibility mappings. |
+| C / P1 | Checkpoint plus token-budgeted recent context; manual compaction admission and bounded overflow recovery. [Compaction](https://opencode.ai/v2/docs/compaction/). | `session_compaction.rs` already records lifecycle and context revisions. `context_compaction_service.rs::plan_compaction` retains turns, with fixed manual/pressure fallbacks. | **Defer:** retention redesign until the rank 4 reproduction. **Investigate:** manual barrier ordering and recovery after partial output; retain existing authority and recovery machinery. |
+| R / P1 | Named model variants resolve against catalog entries and reject unknown names. [Models](https://opencode.ai/v2/docs/models/); source `packages/core/src/model-resolver.ts::withVariant`. | `provider_route_service.rs` admits reasoning capability; inspected catalog has no general named-variant inventory. | **Defer:** named presets until rank 8's operator use case is established. Preserve existing thinking controls and exact route admission. |
 | S / P1 | Default shared user service, private server option, explicit remote server connection, full TUI, run, and mini clients. [CLI](https://opencode.ai/v2/docs/cli/). | Existing daemon/control, durable session, and surface machinery. End-to-end detach/reconnect equivalence was not established. | **Investigate:** reconnect, duplicate submission, pending approval, and terminal loss through existing surfaces. **Defer:** changing default launch topology or adding another renderer. |
 | D / P1 | Background child sessions and completion delivery. [Agents](https://opencode.ai/v2/docs/agents/). | Async delegates, notifications, progress, and result retrieval already exist in `features/delegate.rs`. | **Skip:** another delegation engine. **Investigate:** completion delivery across reconnect/restart and cancellation of descendants. Preserve write-worktree isolation. |
 | P / P1 | Ordered rules, multi-resource checks, project approvals that cannot override configured deny, per-call Code Mode checks. [Permissions](https://opencode.ai/v2/docs/permissions/). | `permissions.rs`, `loop_permission.rs`, `tools/permissions.rs`, and `omegon-rbac` already own policy. | **Investigate:** parity fixtures for multi-file mutations, saved approval scope, remote clients, and nested dispatch. **Skip:** copying child-agent authority semantics or raw-command matching as an OS sandbox. |
@@ -100,14 +123,11 @@ Source links for the inspected implementation are pinned:
 
 ## Delivery order
 
-1. Freeze V2 executable identity and run reference fixtures. Record supported,
-   different, broken-in-beta, and unavailable outcomes separately.
-2. Land I and M as independent changes. Instruction discovery can land before
-   durable refresh, provided the latter remains explicitly pending.
-3. Land R against the existing routing baseline. Land C after instruction
-   generation semantics are defined, so compaction preserves the admitted generation.
-4. Run the S/D/P/L/T verification campaign. Open bounded fixes only for reproduced gaps.
-5. Reconcile every row with tests, retained differences, or a named deferral.
+1. Reproduce and fix instruction discovery through current prompt construction.
+2. Reproduce and separate MCP deadlines without changing legacy defaults.
+3. Validate and land each slice independently, then close the bounded OpenSpec pass.
+4. Start a separate rank 3 investigation if pursued; promote later items only
+   after their entry criteria are met. Deferred rows do not block this pass.
 
 No blanket parity declaration follows from the existence of a command or module.
 Each selected scenario needs an observable outcome on the current Omegon build.

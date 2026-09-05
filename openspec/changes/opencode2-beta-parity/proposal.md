@@ -1,30 +1,36 @@
-# OpenCode2 beta follow-up parity
+# OpenCode2 parity: immediate reliability fixes
 
 ## Intent
 
-Close evidence-backed OpenCode2 gaps in instruction handling, MCP lifetimes,
-context retention, and model-specific controls. Verify session continuity through
-Omegon's existing clients and lifecycle owners.
-
-The [comparison](../../../docs/opencode2-beta-parity.md) records historical work,
-reference identities, evidence limits, and adopt/defer/skip/investigate decisions.
+Fix two locally evidenced problems with the highest immediate return: incomplete
+project instruction loading and one MCP timeout serving unrelated operation phases.
+The [ranked comparison](../../../docs/opencode2-beta-parity.md#roi-ranked-backlog)
+retains the wider parity assessment and deferred candidates.
 
 ## Scope
 
-Adopt scoped instruction discovery and durable refresh, separate MCP phase
-deadlines, token-budgeted compaction retention, and admitted model request presets.
-Run a bounded campaign for reconnect, input deduplication, approvals, delegation,
-and inventory freshness. Implement campaign findings only when reproduced.
+1. Load all applicable ancestor AGENTS.md files inside the active worktree,
+   preserve root and nearest-scope guidance, and remove silent truncation.
+2. Separate MCP startup, catalog, and execution deadlines with compatible
+   configuration fallback and cancellation settlement.
 
-Exclude OpenCode API/config compatibility, a new plugin runtime, another TUI,
+These are independently landable slices. Instruction discovery does not depend
+on a new durable instruction event model. MCP deadlines do not depend on either
+instruction work or a new transport runtime. A beta executable comparison is
+useful reference evidence but is not a prerequisite for these local fixes.
+
+Deferred: durable instruction refresh, token-budgeted compaction, model presets,
+and broad lifecycle or tool-inventory campaigns. Their entry criteria remain in
+the ranked comparison; they are not requirements of this change.
+
+Excluded: OpenCode API/config compatibility, a new plugin runtime or renderer,
 automatic shared-daemon startup, cache warming, and changes to route authority.
 
 ## Success criteria
 
-- Each selected behavior has pinned reference evidence and a local scenario result.
-- Ancestor instructions remain complete and current with replayable provenance.
-- MCP startup and catalog limits do not cap a separately authorized tool lifetime.
-- Retained context fits a configured budget without splitting tool transactions.
-- Unsupported model presets fail before route replacement or network dispatch.
-- Client continuity failures produce bounded fixes or explicit deferrals.
-- The completed routing baseline continues to pass its regression checks.
+- Root, intermediate, and cwd directives load once in documented order.
+- Worktree boundaries and global/project ownership remain correct.
+- Required guidance is not silently truncated or silently omitted on read failure.
+- MCP phases honor independent budgets while legacy configuration retains its behavior.
+- Cancellation and timeout errors identify the phase and report cleanup truthfully.
+- Each slice passes its focused scenarios, applicable landing checks, and runtime exercise.

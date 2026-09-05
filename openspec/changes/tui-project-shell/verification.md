@@ -167,3 +167,55 @@ The browser also displays a generic search hint without implementing search;
 this is documented as a known cross-client limitation. Remaining project execution/
 evidence navigation, extension response transport and persistent inline layout
 stay unchecked; this OpenSpec change remains implementing.
+
+# Sixth delivery: agent-operated native compatibility (2026-09-05)
+
+The operator rejected a manual checklist handoff. The agent now performs the native
+trials through `scripts/tui_native_acceptance.py` and the compiled macOS helper,
+using the same frozen binary as the fifth delivery. No Rust source changed.
+
+Selected clean results are indexed at
+`/Users/wilson/workspace/styrene-labs/omegon-native-compatibility-results/REPORT.md`
+and `results.json`. The five trials contain 50 native PNG captures plus current-view
+text, window identity, timestamps, capture hashes and links to the corresponding
+asciinema recordings and process manifests. All selected runs completed with four
+local requests, no denied file and recorder exit zero:
+
+| Client | Selected native evidence batch | Resize mechanism |
+|---|---|---|
+| Ghostty 1.3.1 | omegon-native-compatibility-03/ghostty | Per-window font zoom |
+| iTerm2 3.6.11 | omegon-native-compatibility-02/iterm | Native rows/columns |
+| kitty 0.48.2 | omegon-native-compatibility-02/kitty | Native window resize |
+| WezTerm 20240203-110809-5046fc22 | omegon-native-compatibility-03/wezterm | Owned split creation/removal |
+| Terminal 2.15 | omegon-native-compatibility-04/terminal | Native rows/columns |
+
+Evidence batch paths are relative to `/Users/wilson/workspace/styrene-labs/`.
+Scenarios cover project detail/Work navigation, two prompts, native transcript
+export, denial above Work, conversation return and exit. Multiline paste and draft
+preservation run on the four clients with suitable input controls. Terminal's
+scripted input appends Return; its adapted scenario uses F2 to leave details and
+makes no physical-Escape or bracketed-paste claim. iTerm current-view assertions
+exclude retained history. Ghostty's printable decision input uses a raw text action,
+not pasted content. WezTerm binds explicitly to its owned GUI PID's Unix socket.
+
+The first batch is diagnostic only: the operator reported accidentally approving
+one write. Subsequent failures caught driver differences (paste is not a decision
+key, Terminal appends Return, first launch can create extra windows, and WezTerm
+can default to a separate mux server). These remain failed records rather than
+acceptance. Clean selected runs supersede them. The agent terminated outstanding
+owned diagnostic application/wrapper processes and the mux server created by its
+capability probe.
+
+The agent inspected native screenshots from every client. Concrete presentation
+findings are duplicated/clipped permission choices, an unsupported Project search
+hint, and loss of the primary send hint in the narrow WezTerm split. These are
+recorded as follow-up tasks. The trials do not certify physical keyboard mapping,
+drag selection, clipboard shortcuts or cancellation, and do not assign those as
+manual operator steps.
+
+Three native observation contracts passed after an initial missing-runner failure;
+these reject history-only markers and false passes from startup, writes or failed
+exits. The existing four operator-kit contracts and fixture contracts pass. The
+Swift helper compiled, and OpenSpec validation passes. The earlier final Rust crate
+and Clippy results still apply because this delivery changes only test tooling and
+documentation. The overall reconstruction remains implementing.

@@ -159,7 +159,7 @@ And resuming requires a separate R action while no turn is active
 
 ### Requirement: Attributable native terminal operator kit
 
-The operator kit provides launchers for installed supported native terminal clients, a fixed executable/runner identity, isolated fixture state, local output recordings and an explicit unassessed results sheet. Native terminal capability settings are retained. GUI/font fidelity remains an operator screenshot check rather than an inferred result from terminal bytes.
+The operator kit provides launchers for installed supported native terminal clients, a fixed executable/runner identity, isolated fixture state, local output recordings and an explicit unassessed results sheet. Native terminal capability settings are retained. GUI/font fidelity requires native screenshot inspection by the agent or operator rather than an inferred result from terminal bytes.
 
 #### Scenario: Launch a client trial
 Given a prepared kit and an installed supported terminal client
@@ -177,3 +177,24 @@ Given a trial owns child processes including a separate process session
 When the runner is terminated
 Then cleanup targets that owned descendant tree
 And unrelated terminal sessions remain outside the cleanup set
+
+### Requirement: Agent-operated native compatibility acceptance
+
+Native compatibility testing must run without operator input. The agent must drive
+owned native windows, capture their rendered output and current text, and record
+per-client outcomes against a fixed executable. Tests must distinguish pasted text
+from decision keys and must not use retained history to satisfy current-view checks.
+
+#### Scenario: Native interaction and denial
+
+Given a fixed test executable and an installed terminal with programmatic controls,
+When the agent drives project navigation, conversation turns and a write decision,
+Then captures identify the owned window and executable and acceptance requires the
+expected local request count, absent denied file and successful recorded exit.
+
+#### Scenario: Incomplete or interrupted automation
+
+Given a missing native control, ambiguous window identity or operator intervention,
+When the affected trial cannot establish its expected outcome,
+Then it is recorded as incomplete or diagnostic rather than a compatibility pass,
+and the agent cleans up its own outstanding test process.

@@ -34,3 +34,16 @@
 - [x] Prepare fixed-build launchers, isolated fixture state, local recordings and assessment sheets for installed native clients.
 - [x] Verify environment isolation, literal argument handling, artifact identity checks and descendant cleanup.
 - [x] Check native client startup and exercise one complete native recorded trial before handoff.
+
+## 5. Agent-operated native compatibility
+<!-- specs: tui-project-client -->
+
+- [x] Automate native input and owned-window screenshot capture, with current-view and fixture outcome assertions.
+- [x] Run installed clients, inspect native screenshots, and record supported checks and concrete limitations without delegating manual steps to the operator.
+
+## 6. Presentation findings from native trials
+<!-- specs: tui-project-client -->
+
+- [ ] Remove duplicated permission choices and keep the active decision controls readable at narrow widths.
+- [ ] Implement Project browser search or remove its unsupported search hint.
+- [ ] Preserve the primary send hint when the composer footer is narrower than its help text.

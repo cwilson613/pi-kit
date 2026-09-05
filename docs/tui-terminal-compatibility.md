@@ -1,6 +1,6 @@
-# Operator terminal compatibility testing
+# Native terminal compatibility testing
 
-Prepare a fixed test build and launchers for installed macOS terminal clients:
+The agent can drive installed macOS clients and inspect native window captures without operator input. Prepare a fixed test build first:
 
 ```sh
 cargo build -p omegon --locked
@@ -50,3 +50,38 @@ Startup readiness is not a complete compatibility pass.
 Known browser limitation: the generic menu renders a `/` search hint, but this
 browser increment does not yet route search input. Work shows current Workbench
 summaries; execution/evidence navigation and persistent inline layout remain pending.
+
+## Automated native trials
+
+Build the small macOS helper and run the native driver against the prepared kit:
+
+```sh
+swiftc scripts/tui_native_macos.swift -o /tmp/omegon-tui-native-macos
+python3 scripts/tui_native_acceptance.py \
+  --bundle /absolute/path/outside/checkout/operator-kit \
+  --helper /tmp/omegon-tui-native-macos \
+  --output /absolute/path/outside/checkout/native-results
+```
+
+The output directory must be new. `--clients ghostty iterm kitty wezterm terminal`
+selects clients; that list is also the default. Each trial stores window identity,
+current text, native PNG captures, hashes and a machine-readable result. It links
+the corresponding kit recording. Failures do not stop the other client trials.
+The driver stops its own application process after a failed trial.
+
+Ghostty uses native AppleScript key/paste actions and screen export. Its screen
+export helper preserves all clipboard item types around the operation. iTerm2 uses
+an explicit window ID and excludes retained history from current-view assertions.
+Kitty enables remote control only on the new test instance's local Unix socket.
+WezTerm targets the socket of the new GUI PID, avoiding an unrelated mux server.
+Apple Terminal's scripting command appends Return, so its navigation scenario uses
+combined sequences and does not claim physical-key or bracketed-paste coverage.
+
+Ghostty changes its viewport through font zoom; WezTerm creates and removes an
+owned split. iTerm2, kitty and Terminal resize their windows. The driver records
+these distinctions rather than claiming identical window-manager coverage.
+
+Native screenshot inspection can identify clipping and glyph problems. The driver
+itself checks behavior and fixture results, not pixel aesthetics. A successful
+trial is scoped to its recorded actions; physical keyboard layouts, drag selection
+and system clipboard shortcuts are not implied by terminal input injection.

@@ -26,16 +26,6 @@ use crate::conversation::PlanAction;
 use crate::runtime_composition::{decide_interactive_startup_model, restart_args_for_session};
 use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "tui")]
-use crossterm::ExecutableCommand;
-#[cfg(feature = "tui")]
-use crossterm::event::DisableMouseCapture;
-#[cfg(all(feature = "tui", unix))]
-use crossterm::event::EnableMouseCapture;
-#[cfg(feature = "tui")]
-use crossterm::terminal::disable_raw_mode;
-#[cfg(all(feature = "tui", unix))]
-use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
-#[cfg(feature = "tui")]
 use std::collections::VecDeque;
 #[cfg(feature = "tui")]
 use std::io;
@@ -5374,7 +5364,9 @@ fn build_tui_secret_readiness_snapshot(
         None => InteractiveRuntimeSupervisor::default(),
     };
 
+    let terminal_session = tui::TerminalSessionHandle::new();
     let tui_config = tui::TuiConfig {
+        terminal_session: terminal_session.clone(),
         cwd: agent.cwd.to_string_lossy().to_string(),
         is_oauth,
         initial,
@@ -5913,42 +5905,16 @@ fn build_tui_secret_readiness_snapshot(
 
                 #[cfg(unix)]
                 {
-                    use crossterm::event::DisableBracketedPaste;
-                    use crossterm::terminal::LeaveAlternateScreen;
-
-                    if keyboard_enhancement {
-                        let _ = io::stdout()
-                            .execute(crossterm::event::PopKeyboardEnhancementFlags);
-                    }
-                    let _ = disable_raw_mode();
-                    let _ = io::stdout().execute(DisableMouseCapture);
-                    let _ = io::stdout().execute(DisableBracketedPaste);
-                    let _ = io::stdout().execute(LeaveAlternateScreen);
-                    let _ = io::stdout().flush();
-
-                    let suspend_result = unsafe { libc::raise(libc::SIGTSTP) };
-                    let handoff_error = if suspend_result != 0 {
-                        Some(std::io::Error::last_os_error().to_string())
-                    } else {
-                        None
-                    };
-
-                    let _ = enable_raw_mode();
-                    if keyboard_enhancement {
-                        let _ = io::stdout().execute(
-                            crossterm::event::PushKeyboardEnhancementFlags(
-                                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-                            ),
-                        );
-                    }
-                    let _ = io::stdout().execute(EnterAlternateScreen);
-                    let _ = io::stdout().execute(crossterm::event::EnableBracketedPaste);
-                    let _ = io::stdout().execute(EnableMouseCapture);
-                    let _ = io::stdout().flush();
-
-                    if let Some(err) = handoff_error {
+                    // Mode preferences belong to the TUI owner, including mouse-copy mode.
+                    let _ = keyboard_enhancement; // retained wire compatibility
+                    let result = terminal_session.with_primary_screen(|| {
+                        if unsafe { libc::raise(libc::SIGTSTP) } != 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else { Ok(()) }
+                    });
+                    if let Err(error) = result {
                         let _ = events_tx.send(AgentEvent::SystemNotification {
-                            message: format!("Shell handoff failed: {err}"),
+                            message: format!("Shell handoff failed: {error}"),
                         });
                     }
                 }
@@ -7590,12 +7556,7 @@ fn build_tui_secret_readiness_snapshot(
             "TUI teardown exceeded its cooperative deadline and was aborted"
         );
     }
-    let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
-    let _ = io::stdout().execute(DisableMouseCapture);
-    let _ = io::stdout().execute(crossterm::event::PopKeyboardEnhancementFlags);
-    let _ = disable_raw_mode();
-    let _ = io::stdout().execute(crossterm::terminal::LeaveAlternateScreen);
-    let _ = io::stdout().flush();
+    terminal_session.restore();
 
     // Save session + profile
     if !cli.no_session {

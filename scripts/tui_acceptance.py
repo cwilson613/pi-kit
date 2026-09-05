@@ -123,9 +123,9 @@ def run(binary: Path, output: Path):
     def screen():
         return tmux("capture-pane", "-p", "-t", "run:0.0")
 
-    def capture(name):
+    def capture(name, *, primary=False):
         path = output / (name + ".txt")
-        path.write_text(screen())
+        path.write_text(tmux("capture-pane", "-p", "-a", "-t", "run:0.0") if primary else screen())
         ledger["captures"].append({"name": name, "time": time.time(), "sha256": digest(path),
                                    "geometry": tmux("display-message", "-p", "-t", "run:0.0", "#{pane_width}x#{pane_height}").strip()})
 
@@ -194,6 +194,18 @@ reasoning = true
             action("resize-window", "-t", "run:0", "-x", "90", "-y", "30")
             wait_for(lambda: "TUI_FIXTURE_REPLY_2" in screen() and "ready · idle" in screen(), "reply survives resize and runtime becomes idle")
             capture("04-resize")
+            before_modes = tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}:#{mouse_any_flag}").strip()
+            action("send-keys", "-t", "run:0.0", "-l", "/session-export scrollback")
+            action("send-keys", "-t", "run:0.0", "Enter")
+            wait_for(lambda: "Transcript printed" in screen() and "TUI_FIXTURE_REPLY_2" in screen(), "fullscreen redraw after native publication")
+            after_modes = tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}:#{mouse_any_flag}").strip()
+            assert before_modes.startswith("1:"), "TUI must own the alternate screen"
+            assert after_modes == before_modes, "native publication changed terminal mode preferences"
+            ledger["terminal_modes"] = {"before_print": before_modes, "after_print": after_modes}
+            capture("04a-print-return")
+            capture("04b-primary-transcript", primary=True)
+            primary = (output / "04b-primary-transcript.txt").read_text()
+            assert "TUI_FIXTURE_REPLY_2" in primary, "native transcript missing from saved primary screen"
             action("send-keys", "-t", "run:0.0", "-l", "fixture permission probe")
             action("send-keys", "-t", "run:0.0", "Enter")
             wait_for(provider.tool_waiting.is_set, "provider reached permission probe barrier")

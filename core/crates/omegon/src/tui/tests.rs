@@ -10996,3 +10996,69 @@ async fn blocking_decisions_preserve_copy_surface_and_resolve_in_arrival_order()
     );
     assert_eq!(app.active_menu, prior_menu);
 }
+
+#[tokio::test]
+async fn visible_extension_overlay_owns_escape_above_copy_and_settings() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.open_settings_menu();
+    let menu = app.active_menu.clone();
+    app.copy_text_modal = Some(CopyTextModal::new("Copy", "retained"));
+    app.active_modal = Some((
+        "visible extension".into(),
+        serde_json::json!({"text": "overlay"}),
+        None,
+        std::time::Instant::now(),
+    ));
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    assert!(
+        app.active_modal.is_none(),
+        "Escape belongs to the visible extension overlay"
+    );
+    assert!(app.copy_text_modal.is_some());
+    assert_eq!(app.active_menu, menu);
+}
+
+#[tokio::test]
+async fn settings_page_navigation_does_not_scroll_background_conversation() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.open_settings_menu();
+    app.conversation.conv_state.scroll_offset = 40;
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    assert_eq!(app.conversation.conv_state.scroll_offset, 40);
+}
+
+#[tokio::test]
+async fn extension_action_keys_and_paste_do_not_modify_the_composer() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.active_action_prompt = Some(("extension".into(), vec!["Apply".into()]));
+    let before = app.editor.render_text();
+    for event in [
+        Event::Key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE)),
+        Event::Key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)),
+        Event::Paste("must not leak".into()),
+    ] {
+        app.handle_terminal_event(event, &tx).await;
+    }
+    assert_eq!(app.editor.render_text(), before);
+    assert!(
+        app.active_action_prompt.is_some(),
+        "an unwired response must not report completion"
+    );
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    assert!(app.active_action_prompt.is_none());
+}

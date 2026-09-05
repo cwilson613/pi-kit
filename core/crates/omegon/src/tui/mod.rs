@@ -62,6 +62,9 @@ mod streaming_presentation;
 pub mod tab_bar;
 mod terminal_input;
 mod terminal_session;
+use terminal_presentation::TerminalMode;
+pub(crate) use terminal_session::TerminalSessionHandle;
+mod terminal_presentation;
 pub mod theme;
 pub mod tool_inspection;
 pub mod turn_tool_projection;
@@ -138,14 +141,8 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::ExecutableCommand;
+use crossterm::event::MouseEventKind;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton};
-use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
 use omegon_traits::{AgentEvent, PermissionPersistence, PermissionRequestKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -428,6 +425,7 @@ struct App {
     conversation: ConversationView,
     stream_presentation: streaming_presentation::StreamingPresentationController,
     native_publication: native_publication::NativePublicationState,
+    terminal_session: Option<TerminalSessionHandle>,
     agent_active: bool,
     should_quit: bool,
     turn: u32,
@@ -921,6 +919,7 @@ impl App {
             conversation: ConversationView::new(),
             stream_presentation: streaming_presentation::StreamingPresentationController::default(),
             native_publication: native_publication::NativePublicationState::default(),
+            terminal_session: None,
             agent_active: false,
             should_quit: false,
             turn: 0,
@@ -1027,21 +1026,28 @@ impl App {
         }
     }
 
-    fn set_mouse_capture(&mut self, enabled: bool) {
+    fn set_mouse_capture(&mut self, enabled: bool) -> bool {
         if self.mouse_capture_enabled == enabled {
-            return;
+            return true;
+        }
+        if let Some(session) = &self.terminal_session
+            && let Err(error) = session.set_mode(TerminalMode::MouseCapture, enabled)
+        {
+            tracing::warn!(%error, "mouse capture transition failed");
+            self.show_toast(
+                "Could not change terminal mouse mode",
+                ratatui_toaster::ToastType::Warning,
+            );
+            return false;
         }
         self.mouse_capture_enabled = enabled;
-        if enabled {
-            let _ = io::stdout().execute(EnableMouseCapture);
-        } else {
-            let _ = io::stdout().execute(DisableMouseCapture);
-        }
+        true
     }
 
     fn enable_mouse_interaction_mode(&mut self) {
-        self.terminal_copy_mode = false;
-        self.set_mouse_capture(true);
+        if self.set_mouse_capture(true) {
+            self.terminal_copy_mode = false;
+        }
     }
 
     fn apply_ui_presentation(&mut self, policy: UiPresentationPolicy) {
@@ -1148,8 +1154,10 @@ impl App {
 
     fn set_terminal_copy_mode(&mut self, enabled: bool) {
         let changed = self.terminal_copy_mode != enabled;
+        if !self.set_mouse_capture(!enabled) {
+            return;
+        }
         self.terminal_copy_mode = enabled;
-        self.set_mouse_capture(!enabled);
         if !changed {
             return;
         }
@@ -5692,35 +5700,34 @@ warning: {warning}"
 
         let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omegon"));
 
-        // Restore terminal before exec
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = io::stdout().execute(crossterm::terminal::LeaveAlternateScreen);
-        let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
-        let _ = io::stdout().execute(crossterm::event::DisableMouseCapture);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            let err = std::process::Command::new(&exe)
+        let launch = || -> io::Result<()> {
+            let mut command = std::process::Command::new(&exe);
+            command
                 .arg("--tutorial")
                 .arg("--no-splash")
                 .arg("--context-class")
                 .arg("compact")
-                .current_dir(&tutorial_dir)
-                .exec();
-            SlashResult::Display(format!("Failed to launch tutorial: {err}"))
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::process::Command::new(&exe)
-                .arg("--tutorial")
-                .arg("--no-splash")
-                .arg("--context-class")
-                .arg("compact")
-                .current_dir(&tutorial_dir)
-                .spawn();
-            self.should_quit = true;
-            SlashResult::Handled
+                .current_dir(&tutorial_dir);
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                Err(command.exec())
+            }
+            #[cfg(not(unix))]
+            {
+                command.spawn().map(|_| ())
+            }
+        };
+        let result = match &self.terminal_session {
+            Some(session) => session.with_primary_screen(launch),
+            None => launch(),
+        };
+        match result {
+            Ok(()) => {
+                self.should_quit = true;
+                SlashResult::Handled
+            }
+            Err(error) => SlashResult::Display(format!("Failed to launch tutorial: {error}")),
         }
     }
 
@@ -6545,24 +6552,6 @@ warning: {warning}"
         )
     }
 
-    fn restore_tui_after_native_scrollback(
-        out: &mut io::Stdout,
-        keyboard_enhancement: bool,
-        mouse_capture: bool,
-    ) -> std::io::Result<()> {
-        out.execute(EnterAlternateScreen)?;
-        enable_raw_mode()?;
-        if keyboard_enhancement {
-            let _ = out.execute(PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-            ));
-        }
-        if mouse_capture {
-            let _ = out.execute(EnableMouseCapture);
-        }
-        Ok(())
-    }
-
     fn write_session_transcript_markdown_to_dir(
         &self,
         dir: &std::path::Path,
@@ -6702,17 +6691,16 @@ warning: {warning}"
             }
         };
 
-        let mouse_capture = self.mouse_capture_enabled;
-        let keyboard_enhancement = self.keyboard_enhancement;
-        let result = (|| -> std::io::Result<()> {
+        let Some(session) = self.terminal_session.clone() else {
+            self.show_toast(
+                "Native terminal is not attached",
+                ratatui_toaster::ToastType::Warning,
+            );
+            return;
+        };
+        let result = session.with_primary_screen(|| -> std::io::Result<()> {
             use std::io::Write;
             let mut out = io::stdout();
-            let _ = disable_raw_mode();
-            let _ = out.execute(DisableMouseCapture);
-            if keyboard_enhancement {
-                let _ = out.execute(PopKeyboardEnhancementFlags);
-            }
-            out.execute(LeaveAlternateScreen)?;
             writeln!(out)?;
             if prepared.range.start == 0 {
                 writeln!(out, "----- Omegon transcript -----")?;
@@ -6724,8 +6712,8 @@ warning: {warning}"
             }
             writeln!(out)?;
             out.flush()?;
-            Self::restore_tui_after_native_scrollback(&mut out, keyboard_enhancement, mouse_capture)
-        })();
+            Ok(())
+        });
 
         let delivery = if result.is_ok() {
             native_publication::DeliveryResult::Committed
@@ -6740,16 +6728,10 @@ warning: {warning}"
             let message = if prepared.range.end == transcript.len() {
                 "Transcript printed to native scrollback"
             } else {
-                "Transcript chunk printed; run /print again to continue"
+                "Transcript chunk printed; run /session-export scrollback again to continue"
             };
             self.show_toast(message, ratatui_toaster::ToastType::Success);
         } else {
-            let mut out = io::stdout();
-            let _ = Self::restore_tui_after_native_scrollback(
-                &mut out,
-                keyboard_enhancement,
-                mouse_capture,
-            );
             self.show_toast(
                 "Native scrollback delivery is uncertain; blind retry disabled",
                 ratatui_toaster::ToastType::Warning,
@@ -7173,6 +7155,7 @@ fn startup_mouse_capture_enabled(mode: crate::settings::StartupMouseCaptureMode)
 /// coordinator through channels.
 /// Configuration for the TUI — passed from main.
 pub struct TuiConfig {
+    pub(crate) terminal_session: TerminalSessionHandle,
     pub cwd: String,
     pub is_oauth: bool,
     /// Present when a prior session was resumed; retained for runtime context.
@@ -7733,20 +7716,21 @@ pub async fn run_tui(
     cancel: SharedCancel,
     settings: crate::settings::SharedSettings,
 ) -> io::Result<()> {
-    let terminal_guard = terminal_session::TerminalSessionGuard::new();
+    let terminal_session = config.terminal_session.clone();
+    let mut rendered_terminal_revision = terminal_session.presentation_revision();
+    let terminal_guard =
+        terminal_session::TerminalSessionGuard::with_handle(terminal_session.clone());
     // Register process-terminal signals once, before terminal acquisition.
     // Recreating these listeners inside each loop iteration leaves SIGHUP gaps
     // where controlling-terminal loss can apply the default fatal action.
     let mut termination_signals = terminal_session::TerminationSignals::new()?;
-    enable_raw_mode()?;
-    terminal_guard.mark_raw();
+    terminal_session.set_mode(TerminalMode::Raw, true)?;
 
     // Initialize image protocol detection AFTER raw mode (suppresses echo)
     // but BEFORE alt screen (picker queries need the primary screen).
     image::init_picker();
 
-    io::stdout().execute(EnterAlternateScreen)?;
-    terminal_guard.mark_alternate_screen();
+    terminal_session.set_mode(TerminalMode::AlternateScreen, true)?;
     // Set the terminal's own background color to our theme bg.
     // This ensures the alternate screen buffer is filled with our color,
     // not the user's terminal profile background. Without this, crossterm's
@@ -7761,11 +7745,9 @@ pub async fn run_tui(
     ))?;
     let mouse_capture_enabled = startup_mouse_capture_enabled(config.startup_mouse_capture);
     if mouse_capture_enabled {
-        io::stdout().execute(EnableMouseCapture)?;
-        terminal_guard.mark_mouse_capture();
+        terminal_session.set_mode(TerminalMode::MouseCapture, true)?;
     }
-    io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
-    terminal_guard.mark_bracketed_paste();
+    terminal_session.set_mode(TerminalMode::BracketedPaste, true)?;
 
     // Enable Kitty keyboard protocol when the terminal supports it.
     // This lets crossterm distinguish Shift+Enter from Enter, which is
@@ -7774,10 +7756,7 @@ pub async fn run_tui(
     let has_keyboard_enhancement =
         crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
     if has_keyboard_enhancement {
-        io::stdout().execute(PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-        ))?;
-        terminal_guard.mark_keyboard_enhancement();
+        terminal_session.set_mode(TerminalMode::KeyboardEnhancement, true)?;
     }
 
     let backend = CrosstermBackend::new(io::stdout());
@@ -7805,6 +7784,7 @@ pub async fn run_tui(
     );
 
     let mut app = App::new(settings.clone());
+    app.terminal_session = Some(terminal_session.clone());
     app.mouse_capture_enabled = mouse_capture_enabled;
     app.terminal_copy_mode = !mouse_capture_enabled;
     app.keyboard_enhancement = has_keyboard_enhancement;
@@ -8042,6 +8022,9 @@ pub async fn run_tui(
         // remains urgent and draws immediately.
         let now = std::time::Instant::now();
         scheduler.mark_timer_due(now);
+        if terminal_session.presentation_revision() != rendered_terminal_revision {
+            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+        }
         if scheduler.should_draw(now) {
             let drawn_revision = scheduler
                 .begin_draw()
@@ -8050,10 +8033,19 @@ pub async fn run_tui(
             let publication_revision = app.publish_stream_presentation();
             let draw_started = std::time::Instant::now();
             let mut callback_elapsed = Duration::ZERO;
-            terminal.draw(|f| {
-                let callback_started = std::time::Instant::now();
-                app.draw(f);
-                callback_elapsed = callback_started.elapsed();
+            terminal_session.with_fullscreen_io(|| {
+                let revision = terminal_session.presentation_revision();
+                if revision != rendered_terminal_revision {
+                    terminal.clear()?;
+                    rendered_terminal_revision = revision;
+                }
+                terminal
+                    .draw(|f| {
+                        let callback_started = std::time::Instant::now();
+                        app.draw(f);
+                        callback_elapsed = callback_started.elapsed();
+                    })
+                    .map(|_| ())
             })?;
             if let Some((generation, revision)) = publication_revision
                 && app.acknowledge_stream_presentation_draw(generation, revision)

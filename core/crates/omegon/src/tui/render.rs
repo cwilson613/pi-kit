@@ -4,10 +4,13 @@
 //! clearing, layout allocation, surface composition, overlay precedence, and
 //! render-time hit-area registration.
 
+use super::interaction::NavigationOwner;
 use super::*;
 
 impl App {
     pub(super) fn draw(&mut self, frame: &mut Frame) {
+        self.expire_navigation_overlay();
+        let owner = self.navigation_owner();
         let draw_started = std::time::Instant::now();
         let mut draw_phases = runtime_trace::DrawPhaseTimings::default();
         self.refresh_at_picker();
@@ -984,11 +987,15 @@ impl App {
             frame.render_widget(palette, palette_area);
         }
 
-        if let Some(ref picker) = self.at_picker {
+        if owner == NavigationOwner::Composer
+            && let Some(ref picker) = self.at_picker
+        {
             picker.render(area, frame, t.as_ref());
         }
 
-        if let Some(menu) = &self.active_menu {
+        if let Some(menu) = &self.active_menu
+            && owner == NavigationOwner::Menu
+        {
             menu_surface::render_menu_surface(
                 frame,
                 area,
@@ -998,12 +1005,16 @@ impl App {
             );
         }
 
-        if let Some(viewer) = &self.process_viewer {
+        if let Some(viewer) = &self.process_viewer
+            && owner == NavigationOwner::Process
+        {
             process_viewer::render_process_viewer(frame, area, self.theme.as_ref(), viewer);
         }
 
         // Selector popup (overlays everything when active)
-        if let Some(ref sel) = self.selector {
+        if let Some(ref sel) = self.selector
+            && owner == NavigationOwner::Selector
+        {
             sel.render(area, frame, t.as_ref());
         }
 
@@ -1016,7 +1027,9 @@ impl App {
         );
 
         // ── Tutorial overlay — rendered on top of everything except toasts ──
-        if let Some(ref overlay) = self.tutorial_overlay {
+        if let Some(ref overlay) = self.tutorial_overlay
+            && owner == NavigationOwner::Tutorial
+        {
             let footer_h = footer_area.height;
             overlay.render(main_area, frame.buffer_mut(), self.theme.as_ref(), footer_h);
         }
@@ -1067,17 +1080,21 @@ impl App {
         }
 
         // Render command panel above the main surfaces and below blocking prompts/modals.
-        if let Some(panel) = &self.command_panel {
+        if let Some(panel) = &self.command_panel
+            && owner == NavigationOwner::Panel
+        {
             command_surfaces::render_panel(area, frame.buffer_mut(), self.theme.as_ref(), panel);
         }
 
         // Render responder-backed blocking prompts above passive command panels.
-        if let Some(prompt) = &self.command_prompt {
+        if let Some(prompt) = &self.command_prompt
+            && owner == NavigationOwner::Prompt
+        {
             command_surfaces::render_prompt(area, frame.buffer_mut(), self.theme.as_ref(), prompt);
         }
 
         // Render first-class copy text surface above command prompts/panels.
-        if self.copy_text_modal.is_some() {
+        if self.copy_text_modal.is_some() && owner == NavigationOwner::Copy {
             self.render_copy_text_modal(frame);
         }
 
@@ -1085,21 +1102,15 @@ impl App {
         // blocking extension overlays/prompts so confirmations never obscure required choices.
         self.render_operator_event_toast(frame);
 
-        // Render modal overlay if active
-        if let Some((widget_id, data, auto_dismiss_ms, spawn_time)) = &self.active_modal {
-            // Check if modal should auto-dismiss
-            if let Some(dismiss_ms) = auto_dismiss_ms {
-                if spawn_time.elapsed().as_millis() > *dismiss_ms as u128 {
-                    self.active_modal = None;
-                } else {
-                    extension_overlays::render_modal(frame, self.theme.as_ref(), widget_id, data);
-                }
-            } else {
-                extension_overlays::render_modal(frame, self.theme.as_ref(), widget_id, data);
-            }
+        if owner == NavigationOwner::ExtensionModal
+            && let Some((widget_id, data, _, _)) = &self.active_modal
+        {
+            extension_overlays::render_modal(frame, self.theme.as_ref(), widget_id, data);
         }
         // Render action prompt if active
-        if let Some((widget_id, actions)) = &self.active_action_prompt {
+        if let Some((widget_id, actions)) = &self.active_action_prompt
+            && owner == NavigationOwner::ExtensionAction
+        {
             extension_overlays::render_action_prompt(
                 frame,
                 self.theme.as_ref(),
@@ -1109,7 +1120,7 @@ impl App {
         }
         // The same owner used by keyboard routing paints above every passive
         // surface. Those surfaces retain their selection and scroll state.
-        if self.blocking_owner().is_some()
+        if owner == NavigationOwner::Decision
             && let Some(prompt) = self
                 .interaction
                 .prompt

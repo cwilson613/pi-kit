@@ -3,6 +3,7 @@
 //! Terminal polling and ownership remain in `run_tui`; this adapter owns modal
 //! precedence and routes one decoded crossterm event into `App` state/actions.
 
+use super::interaction::NavigationOwner;
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,8 +18,12 @@ impl App {
         input_event: Event,
         command_tx: &OperatorCommandTx,
     ) -> InputDisposition {
+        self.expire_navigation_overlay();
+        let owner = self.navigation_owner();
         let blocking_owner = self.blocking_owner();
-        if blocking_owner.is_some() && !matches!(input_event, Event::Key(_) | Event::Resize(..)) {
+        if owner != NavigationOwner::Composer
+            && !matches!(input_event, Event::Key(_) | Event::Resize(..))
+        {
             return InputDisposition::SkipLoop;
         }
         match input_event {
@@ -176,7 +181,7 @@ impl App {
                 modifiers: KeyModifiers::CONTROL,
                 ..
             }) => {
-                if blocking_owner.is_some() {
+                if owner != NavigationOwner::Composer {
                     return InputDisposition::SkipLoop;
                 }
                 if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
@@ -187,10 +192,52 @@ impl App {
                 }
             }
             Event::Key(key) => {
+                if blocking_owner.is_none()
+                    && self.agent_active
+                    && key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    let _ = self
+                        .handle_ui_action(UiAction::CancelActiveTurn, command_tx)
+                        .await;
+                    return InputDisposition::SkipLoop;
+                }
+                match owner {
+                    NavigationOwner::ExtensionAction => {
+                        if key.code == KeyCode::Esc {
+                            self.active_action_prompt = None;
+                        } else if let KeyCode::Char(c) = key.code
+                            && let Some(index) = c.to_digit(10).and_then(|n| n.checked_sub(1))
+                            && self
+                                .active_action_prompt
+                                .as_ref()
+                                .is_some_and(|(_, actions)| (index as usize) < actions.len())
+                        {
+                            self.show_toast(
+                                "This extension does not accept action responses",
+                                ratatui_toaster::ToastType::Warning,
+                            );
+                        }
+                        return InputDisposition::SkipLoop;
+                    }
+                    NavigationOwner::ExtensionModal => {
+                        if key.code == KeyCode::Esc {
+                            self.active_modal = None;
+                        }
+                        return InputDisposition::SkipLoop;
+                    }
+                    NavigationOwner::Prompt => {
+                        if key.code == KeyCode::Esc {
+                            self.command_prompt = None;
+                        }
+                        return InputDisposition::SkipLoop;
+                    }
+                    _ => {}
+                }
+
                 // A passive process viewer can be dismissed when no decision
                 // owns input. During a decision, Escape belongs to its prompt.
-                if blocking_owner.is_none()
-                    && self.process_viewer.is_some()
+                if owner == NavigationOwner::Process
                     && matches!(
                         key.code,
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')
@@ -251,7 +298,9 @@ impl App {
                     return InputDisposition::SkipLoop;
                 }
 
-                if let Some(copy_modal) = self.copy_text_modal.as_mut() {
+                if owner == NavigationOwner::Copy
+                    && let Some(copy_modal) = self.copy_text_modal.as_mut()
+                {
                     match (key.code, key.modifiers) {
                         (KeyCode::Esc, _) => {
                             self.close_copy_text_modal();
@@ -287,9 +336,12 @@ impl App {
                         }
                         _ => {}
                     }
+                    return InputDisposition::SkipLoop;
                 }
 
-                if let Some(panel) = self.command_panel.as_mut() {
+                if owner == NavigationOwner::Panel
+                    && let Some(panel) = self.command_panel.as_mut()
+                {
                     match (key.code, key.modifiers) {
                         (KeyCode::Esc, _) => {
                             self.close_command_panel_to_return_target();
@@ -340,61 +392,66 @@ impl App {
                         }
                         _ => {}
                     }
+                    return InputDisposition::SkipLoop;
                 }
 
                 // Global conversation controls must remain live while the
                 // agent/tool loop is active. Handle them before editor,
                 // selector, permission, or interrupt-debounce paths can
                 // consume the key event.
-                match (key.code, key.modifiers) {
-                    (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
-                        self.conversation.toggle_pin();
-                        return InputDisposition::SkipLoop;
-                    }
-                    (KeyCode::Up, modifiers)
-                        if modifiers.contains(KeyModifiers::ALT)
-                            && modifiers.contains(KeyModifiers::SHIFT) =>
-                    {
-                        if self.conversation.move_to_operator_prompt(true).is_some() {
-                            self.conversation.conv_state.snap_to_selected();
+                if owner == NavigationOwner::Composer {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
+                            self.conversation.toggle_pin();
+                            return InputDisposition::SkipLoop;
                         }
-                        return InputDisposition::SkipLoop;
-                    }
-                    (KeyCode::Down, modifiers)
-                        if modifiers.contains(KeyModifiers::ALT)
-                            && modifiers.contains(KeyModifiers::SHIFT) =>
-                    {
-                        if self.conversation.move_to_operator_prompt(false).is_some() {
-                            self.conversation.conv_state.snap_to_selected();
+                        (KeyCode::Up, modifiers)
+                            if modifiers.contains(KeyModifiers::ALT)
+                                && modifiers.contains(KeyModifiers::SHIFT) =>
+                        {
+                            if self.conversation.move_to_operator_prompt(true).is_some() {
+                                self.conversation.conv_state.snap_to_selected();
+                            }
+                            return InputDisposition::SkipLoop;
                         }
-                        return InputDisposition::SkipLoop;
+                        (KeyCode::Down, modifiers)
+                            if modifiers.contains(KeyModifiers::ALT)
+                                && modifiers.contains(KeyModifiers::SHIFT) =>
+                        {
+                            if self.conversation.move_to_operator_prompt(false).is_some() {
+                                self.conversation.conv_state.snap_to_selected();
+                            }
+                            return InputDisposition::SkipLoop;
+                        }
+                        (KeyCode::PageUp, _) => {
+                            self.conversation.scroll_up(20);
+                            return InputDisposition::SkipLoop;
+                        }
+                        (KeyCode::PageDown, _) => {
+                            self.conversation.scroll_down(20);
+                            return InputDisposition::SkipLoop;
+                        }
+                        (KeyCode::Home, _) => {
+                            self.conversation.conv_state.scroll_offset = u16::MAX;
+                            self.conversation.conv_state.user_scrolled = true;
+                            return InputDisposition::SkipLoop;
+                        }
+                        (KeyCode::End, _) => {
+                            self.conversation.scroll_down(u16::MAX);
+                            return InputDisposition::SkipLoop;
+                        }
+                        _ => {}
                     }
-                    (KeyCode::PageUp, _) => {
-                        self.conversation.scroll_up(20);
-                        return InputDisposition::SkipLoop;
-                    }
-                    (KeyCode::PageDown, _) => {
-                        self.conversation.scroll_down(20);
-                        return InputDisposition::SkipLoop;
-                    }
-                    (KeyCode::Home, _) => {
-                        self.conversation.conv_state.scroll_offset = u16::MAX;
-                        self.conversation.conv_state.user_scrolled = true;
-                        return InputDisposition::SkipLoop;
-                    }
-                    (KeyCode::End, _) => {
-                        self.conversation.scroll_down(u16::MAX);
-                        return InputDisposition::SkipLoop;
-                    }
-                    _ => {}
                 }
 
-                if self.should_discard_key_after_interrupt(&key) {
+                if owner == NavigationOwner::Composer
+                    && self.should_discard_key_after_interrupt(&key)
+                {
                     return InputDisposition::SkipLoop;
                 }
 
                 // ── Structured menu intercepts navigation when open ────
-                if self.process_viewer.is_some() {
+                if owner == NavigationOwner::Process {
                     match key.code {
                         KeyCode::Up | KeyCode::Char('k') => {
                             if let Some(viewer) = self.process_viewer.as_mut() {
@@ -491,7 +548,7 @@ impl App {
                     }
                     return InputDisposition::SkipLoop;
                 }
-                if self.active_menu.is_some() {
+                if owner == NavigationOwner::Menu {
                     if self.menu_input.is_some() {
                         match key.code {
                             KeyCode::Char(ch)
@@ -674,7 +731,7 @@ impl App {
                 }
 
                 // ── Selector popup intercepts all keys when open ────
-                if self.selector.is_some() {
+                if owner == NavigationOwner::Selector {
                     match key.code {
                         KeyCode::Up => {
                             if let Some(ref mut s) = self.selector {
@@ -739,7 +796,9 @@ impl App {
                 }
 
                 // ── Secret input mode intercepts keys ────────────
-                if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
+                if owner == NavigationOwner::Composer
+                    && matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. })
+                {
                     match key.code {
                         KeyCode::Char(c) => {
                             self.editor.secret_insert(c);
@@ -827,7 +886,9 @@ impl App {
                 }
 
                 // ── Reverse search mode intercepts keys ─────────
-                if matches!(self.editor.mode(), editor::EditorMode::ReverseSearch { .. }) {
+                if owner == NavigationOwner::Composer
+                    && matches!(self.editor.mode(), editor::EditorMode::ReverseSearch { .. })
+                {
                     match key.code {
                         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             // Ctrl+R again: search further back
@@ -1019,29 +1080,6 @@ impl App {
                         return InputDisposition::SkipLoop;
                     }
                     if self.dashboard.handle_key(key) {
-                        return InputDisposition::SkipLoop;
-                    }
-                }
-
-                // Handle action prompt input (1-9 keys) before other keys
-                if let Some((widget_id, actions)) = &self.active_action_prompt
-                    && let KeyCode::Char(c) = key.code
-                    && let Some(digit) = c.to_digit(10)
-                {
-                    let idx = (digit - 1) as usize;
-                    if idx < actions.len() {
-                        let action = actions[idx].clone();
-                        // Log the action selection. The response
-                        // path to the extension is not yet wired —
-                        // when an extension needs bidirectional action
-                        // handling, add a TuiCommand::WidgetAction
-                        // variant that routes through the bus to the
-                        // owning ExtensionFeature's rpc_call.
-                        self.show_command_toast(CommandToast::new(
-                            format!("{}: {}", widget_id, action),
-                            CommandSeverity::Success,
-                        ));
-                        self.active_action_prompt = None;
                         return InputDisposition::SkipLoop;
                     }
                 }

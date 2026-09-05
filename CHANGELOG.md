@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- F2 opens a Project browser with Sessions and Work tabs. Operators can inspect the current or saved session, explicitly resume a saved session, read the current plan and workstream status, and return to their draft. Refresh preserves selection by item identity, approvals retain the browser underneath, and cancellation from the browser preserves the unsent draft. Captured terminal acceptance now exercises project navigation and a denied write while browsing Work.
+
 - TUI overlays now share rendering and input precedence, preserve covered navigation state, and prevent background scrolling or composer edits. Unwired extension actions report their limitation instead of false success. Startup, native transcript printing, shell handoff, tutorial handoff, and shutdown use shared terminal mode ownership with success-ordered recovery and full redraw after primary-screen round trips. Captured acceptance verifies native transcript output and restored terminal preferences.
 
 - Session-backed TUI startup prepares a validated semantic view before exposing clients, and new empty sessions display readiness without a missing-projection warning. Permission and manual-action prompts share visible/input ownership, queue arrivals, and preserve passive surface state. Profile application now propagates declared permission policy into runtime admission. Captured terminal acceptance exercises a denied write above Settings and return to the prior surface.

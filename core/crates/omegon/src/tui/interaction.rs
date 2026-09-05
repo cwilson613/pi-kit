@@ -20,6 +20,7 @@ pub(super) enum NavigationOwner {
     Selector,
     Process,
     Menu,
+    Project,
     Composer,
 }
 
@@ -56,6 +57,8 @@ impl App {
             NavigationOwner::Process
         } else if self.active_menu.is_some() {
             NavigationOwner::Menu
+        } else if self.project_browser.is_some() {
+            NavigationOwner::Project
         } else {
             NavigationOwner::Composer
         }

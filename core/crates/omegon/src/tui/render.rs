@@ -668,7 +668,7 @@ impl App {
                 if self.ui_surfaces.dashboard {
                     "⏎ send  ⇧⏎/⌥⏎ newline  ^O/Tab details  ^D tree  / commands ".into()
                 } else {
-                    "⏎ send  ⇧⏎/⌥⏎ newline  ^O/Tab details  /ui surfaces  / commands ".into()
+                    "⏎ send  ⇧⏎/⌥⏎ newline  ^O/Tab details  F2 project  / commands ".into()
                 }
             } else {
                 "⏎ send  ⇧⏎/⌥⏎ newline  ⌥↑/⌥↓ history ".into()
@@ -991,6 +991,12 @@ impl App {
             && let Some(ref picker) = self.at_picker
         {
             picker.render(area, frame, t.as_ref());
+        }
+
+        if owner == NavigationOwner::Project
+            && let Some(browser) = &self.project_browser
+        {
+            browser.render(frame, self.theme.as_ref());
         }
 
         if let Some(menu) = &self.active_menu

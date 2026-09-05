@@ -3997,11 +3997,11 @@ fn ui_command_can_toggle_individual_surfaces() {
 }
 
 #[test]
-fn empty_editor_hint_mentions_ui_surfaces_when_dashboard_hidden() {
+fn empty_editor_hint_mentions_project_browser_when_dashboard_hidden() {
     let mut app = test_app();
     app.apply_ui_preset(UiSurfaces::lean());
     let rendered = render_app_to_string(&mut app, 100, 20);
-    assert!(rendered.contains("/ui surfaces"), "{rendered}");
+    assert!(rendered.contains("F2 project"), "{rendered}");
     assert!(!rendered.contains("^D tree"), "{rendered}");
 }
 
@@ -4153,7 +4153,7 @@ fn empty_editor_hint_mentions_tool_detail_hotkey() {
     let rendered = render_app_to_string(&mut app, 100, 20);
     assert!(rendered.contains("^O/Tab details"), "{rendered}");
     assert!(!rendered.contains("^D tree"), "{rendered}");
-    assert!(rendered.contains("/ui surfaces"), "{rendered}");
+    assert!(rendered.contains("F2 project"), "{rendered}");
 }
 
 #[test]
@@ -11061,4 +11061,127 @@ async fn extension_action_keys_and_paste_do_not_modify_the_composer() {
     )
     .await;
     assert!(app.active_action_prompt.is_none());
+}
+
+#[tokio::test]
+async fn project_browser_inspection_preserves_composer_draft() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.editor.set_text("unfinished project question");
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    let rendered = render_app_to_string(&mut app, 120, 40);
+    assert!(rendered.contains("Project browser"), "{rendered}");
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    let rendered = render_app_to_string(&mut app, 120, 40);
+    assert!(rendered.contains("Current session"), "{rendered}");
+    for _ in 0..2 {
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+    }
+    assert_eq!(app.editor.render_text(), "unfinished project question");
+    assert_eq!(
+        app.navigation_owner(),
+        interaction::NavigationOwner::Composer
+    );
+}
+
+#[tokio::test]
+async fn project_browser_detail_survives_permission_decision() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.open_project_browser();
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    let (respond, response) = std::sync::mpsc::channel();
+    app.handle_agent_event(AgentEvent::PermissionRequest {
+        tool_name: "write".into(),
+        path: "outside/project".into(),
+        kind: omegon_traits::PermissionRequestKind::PathBoundary,
+        persistence: omegon_traits::PermissionPersistence::ProjectDirectory,
+        grant_path: None,
+        respond: std::sync::Arc::new(std::sync::Mutex::new(Some(respond))),
+    });
+    assert!(render_app_to_string(&mut app, 120, 40).contains("Permission required"));
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    assert_eq!(
+        response.try_recv().unwrap(),
+        omegon_traits::PermissionResponse::Deny
+    );
+    let screen = render_app_to_string(&mut app, 120, 40);
+    assert!(screen.contains("Project browser · Details"), "{screen}");
+    assert!(screen.contains("Current session"));
+}
+
+#[tokio::test]
+async fn project_browser_cancel_reaches_runtime_and_preserves_draft() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+    app.agent_active = true;
+    app.editor.set_text("next question remains unsent");
+    app.open_project_browser();
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        &tx,
+    )
+    .await;
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(TuiCommand::CancelActiveTurn { .. })
+    ));
+    assert_eq!(app.editor.render_text(), "next question remains unsent");
+    assert_eq!(
+        app.navigation_owner(),
+        interaction::NavigationOwner::Project
+    );
+}
+
+#[tokio::test]
+async fn project_browser_work_inspection_shows_published_plan_tasks() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.workbench_state.active = Some(PlanDisplaySnapshot {
+        mode: "implementation".into(),
+        completed: 1,
+        total: 2,
+        items: vec![
+            PlanDisplayItem {
+                status: PlanDisplayStatus::Done,
+                description: "Inspect project sources".into(),
+            },
+            PlanDisplayItem {
+                status: PlanDisplayStatus::Active,
+                description: "Build the project browser".into(),
+            },
+        ],
+    });
+    app.open_project_browser();
+    for code in [KeyCode::Tab, KeyCode::Enter] {
+        app.handle_terminal_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), &tx)
+            .await;
+    }
+    let screen = render_app_to_string(&mut app, 120, 40);
+    assert!(screen.contains("Current plan"), "{screen}");
+    assert!(screen.contains("Done: Inspect project sources"), "{screen}");
+    assert!(
+        screen.contains("Active: Build the project browser"),
+        "{screen}"
+    );
 }

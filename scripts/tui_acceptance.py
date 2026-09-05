@@ -58,7 +58,7 @@ def fixture_provider():
             reply = f"TUI_FIXTURE_REPLY_{number}"
             if server.tool_path is not None and number >= 4:
                 reply += (" The operator denied the requested write. The fixture has completed its permission check "
-                          "and will make no further tool calls. The requested file remains absent, the prior Settings "
+                          "and will make no further tool calls. The requested file remains absent, the prior project "
                           "surface is preserved, and control returns to the conversation for the next operator prompt.")
             deltas = [({"content": reply}, None), ({}, "stop")]
             if tool_probe:
@@ -186,8 +186,23 @@ reasoning = true
             if "semantic frontend is unavailable" in screen():
                 raise AssertionError("startup exposed an unavailable session projection")
             capture("01-startup")
+            action("send-keys", "-t", "run:0.0", "-l", "fixture turn 1")
+            action("send-keys", "-t", "run:0.0", "F2")
+            wait_for(lambda: "Project browser" in screen(), "project browser opens")
+            capture("01a-project-sessions")
+            action("send-keys", "-t", "run:0.0", "Enter")
+            wait_for(lambda: "Details" in screen() and "Current session" in screen(), "current session inspection")
+            capture("01b-project-session-detail")
+            action("send-keys", "-t", "run:0.0", "Escape")
+            action("send-keys", "-t", "run:0.0", "Tab")
+            wait_for(lambda: "No active work" in screen(), "project work tab")
+            capture("01c-project-work")
+            action("send-keys", "-t", "run:0.0", "Escape")
+            wait_for(lambda: "Project browser" not in screen() and "fixture turn 1" in screen(), "draft survives project browsing")
+            capture("01d-project-return-draft")
             for number in (1, 2):
-                action("send-keys", "-t", "run:0.0", "-l", f"fixture turn {number}")
+                if number != 1:
+                    action("send-keys", "-t", "run:0.0", "-l", f"fixture turn {number}")
                 action("send-keys", "-t", "run:0.0", "Enter")
                 wait_for(lambda: f"TUI_FIXTURE_REPLY_{number}" in screen(), f"visible reply {number}")
                 capture(f"0{number + 1}-turn-{number}")
@@ -213,12 +228,17 @@ reasoning = true
             action("send-keys", "-t", "run:0.0", "Enter")
             wait_for(lambda: "Settings" in screen(), "Settings opens during active turn")
             capture("05-settings")
+            action("send-keys", "-t", "run:0.0", "Escape")
+            action("send-keys", "-t", "run:0.0", "F2")
+            action("send-keys", "-t", "run:0.0", "Tab")
+            wait_for(lambda: "No active work" in screen(), "project browsing during active turn")
+            capture("05a-project-during-turn")
             provider.release_tool.set()
             wait_for(lambda: "Permission required" in screen(), "permission visible above Settings")
             capture("06-permission")
             action("send-keys", "-t", "run:0.0", "-l", "n")
-            wait_for(lambda: "Settings" in screen() and "Permission required" not in screen(), "return to Settings after denial")
-            capture("07-return-settings")
+            wait_for(lambda: "Project browser" in screen() and "No active work" in screen() and "Permission required" not in screen(), "return to project work tab after denial")
+            capture("07-return-project-work")
             action("send-keys", "-t", "run:0.0", "Escape")
             wait_for(lambda: "TUI_FIXTURE_REPLY_4" in screen() and "ready · idle" in screen(), "denied tool turn completes")
             capture("08-denied-turn-complete")

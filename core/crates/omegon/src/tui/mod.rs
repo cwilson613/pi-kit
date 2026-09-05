@@ -44,6 +44,7 @@ mod native_publication;
 pub mod operation_lifecycle_projection;
 pub mod permission_lane;
 pub mod process_viewer;
+mod project_browser;
 mod render;
 mod runtime_trace;
 pub mod segment_components;
@@ -516,6 +517,7 @@ struct App {
     session_row: statusline::SessionRow,
     /// Structured session plan snapshot for the active Workbench panel.
     workbench_state: WorkbenchState,
+    project_browser: Option<project_browser::ProjectBrowser>,
     tool_inspection_target: Option<ToolInspectionTarget>,
     activity_tools: std::collections::VecDeque<ActivityToolState>,
     /// Explicit Slim turn state rendered in the session row.
@@ -974,6 +976,7 @@ impl App {
             )),
             session_row: statusline::SessionRow::default(),
             workbench_state: WorkbenchState::default(),
+            project_browser: None,
             completed_plan_history_available: false,
             tool_inspection_target: None,
             activity_tools: std::collections::VecDeque::new(),
@@ -6212,7 +6215,9 @@ warning: {warning}"
     }
 
     fn prepare_interrupt_ui(&mut self) {
-        self.editor.clear_line();
+        if self.project_browser.is_none() {
+            self.editor.clear_line();
+        }
         self.conversation.conv_state.force_scroll_to_bottom();
         self.interrupt_pending = true;
         self.slim_turn_state = SlimTurnState::Interrupting;

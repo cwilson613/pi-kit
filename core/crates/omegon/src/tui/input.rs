@@ -202,7 +202,15 @@ impl App {
                         .await;
                     return InputDisposition::SkipLoop;
                 }
+                if owner == NavigationOwner::Composer && key.code == KeyCode::F(2) {
+                    self.open_project_browser();
+                    return InputDisposition::SkipLoop;
+                }
                 match owner {
+                    NavigationOwner::Project => {
+                        self.handle_project_browser_key(key, command_tx);
+                        return InputDisposition::SkipLoop;
+                    }
                     NavigationOwner::ExtensionAction => {
                         if key.code == KeyCode::Esc {
                             self.active_action_prompt = None;

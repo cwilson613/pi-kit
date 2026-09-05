@@ -18,6 +18,7 @@ impl App {
             return;
         }
 
+        self.project_browser = None;
         self.activity_tools.clear();
         self.last_tool_name = None;
         self.completed_tool_name = None;

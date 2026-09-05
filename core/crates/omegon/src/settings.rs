@@ -1791,6 +1791,7 @@ impl Profile {
     /// Apply profile to settings (called at startup).
     pub fn apply_to(&self, settings: &mut Settings) {
         settings.profile_name = self.compact_label().map(ToOwned::to_owned);
+        settings.permissions = self.permissions.clone();
 
         if let Some(ref m) = self.last_used_model {
             settings.set_model(&format!("{}:{}", m.provider, m.model_id));
@@ -3260,6 +3261,22 @@ mod tests {
         assert!(p.extensions.permits("scry", &[], &[]));
         assert!(!p.extensions.permits("vox", &[], &[]));
         assert!(!p.extensions.permits("lipstyk", &[], &[]));
+    }
+
+    #[test]
+    fn profile_application_preserves_runtime_tool_permission_policy() {
+        let profile: Profile =
+            serde_json::from_str(r#"{"permissions":{"tools":{"write":"prompt","bash":"deny"}}}"#)
+                .unwrap();
+        let mut settings = Settings::default();
+        profile.apply_to(&mut settings);
+        assert_eq!(settings.permissions.tools, profile.permissions.tools);
+        let cleared = Profile::default();
+        cleared.apply_to(&mut settings);
+        assert!(
+            settings.permissions.tools.is_empty(),
+            "switching profile replaces the prior policy"
+        );
     }
 
     #[test]

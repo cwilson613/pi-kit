@@ -138,12 +138,18 @@ impl App {
     }
 
     fn handle_presented_agent_event(&mut self, event: AgentEvent, replaying: bool) {
+        if self.defer_blocking_interaction(&event) {
+            return;
+        }
         // Runtime authority events must bypass stream-presentation buffering:
         // buffering a terminal supervisor/queue snapshot can strand the TUI in
         // a locally active state after the worker has already returned.
         let authoritative_runtime_event = matches!(
             event,
-            AgentEvent::RuntimeTurnLifecycleUpdated { .. } | AgentEvent::RuntimeQueueUpdated { .. }
+            AgentEvent::RuntimeTurnLifecycleUpdated { .. }
+                | AgentEvent::RuntimeQueueUpdated { .. }
+                | AgentEvent::PermissionRequest { .. }
+                | AgentEvent::OperatorWaitRequest { .. }
         );
         if !authoritative_runtime_event {
             let decision = if replaying {
@@ -428,6 +434,7 @@ impl App {
 
                 // Store the responder — the next key event (y/a/n) will
                 // resolve it. See handle_permission_key below.
+                self.interaction.prompt = self.command_prompt.clone();
                 self.pending_permission = Some(respond.clone());
                 self.pending_permission_context = Some(PendingPermissionContext {
                     tool_name,
@@ -461,6 +468,7 @@ impl App {
                 {
                     let _ = tx.send(());
                 }
+                self.interaction.prompt = self.command_prompt.clone();
                 self.pending_operator_wait = Some(respond.clone());
                 self.pending_operator_wait_context = Some(prompt);
             }

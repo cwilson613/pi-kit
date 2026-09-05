@@ -17,6 +17,10 @@ impl App {
         input_event: Event,
         command_tx: &OperatorCommandTx,
     ) -> InputDisposition {
+        let blocking_owner = self.blocking_owner();
+        if blocking_owner.is_some() && !matches!(input_event, Event::Key(_) | Event::Resize(..)) {
+            return InputDisposition::SkipLoop;
+        }
         match input_event {
             // ── Mouse scroll ────────────────────────────────────────
             Event::Mouse(mouse) => match mouse.kind {
@@ -172,6 +176,9 @@ impl App {
                 modifiers: KeyModifiers::CONTROL,
                 ..
             }) => {
+                if blocking_owner.is_some() {
+                    return InputDisposition::SkipLoop;
+                }
                 if matches!(self.editor.mode(), editor::EditorMode::SecretInput { .. }) {
                     // In secret mode, try to paste from clipboard into hidden buffer
                     // (Ctrl+V may deliver text as a Key event on some terminals)
@@ -180,12 +187,10 @@ impl App {
                 }
             }
             Event::Key(key) => {
-                // The process viewer is passive and must always yield operator
-                // agency, even while another responder-backed prompt changes
-                // state or the viewed process terminalizes in the background.
-                // Handle dismissal before permission/wait ownership and
-                // interrupt debounce can consume Escape.
-                if self.process_viewer.is_some()
+                // A passive process viewer can be dismissed when no decision
+                // owns input. During a decision, Escape belongs to its prompt.
+                if blocking_owner.is_none()
+                    && self.process_viewer.is_some()
                     && matches!(
                         key.code,
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')
@@ -203,7 +208,7 @@ impl App {
 
                 // Blocking responder-backed prompts own input before passive panels,
                 // scrollback controls, selectors, or editor actions.
-                if self.pending_operator_wait.is_some() {
+                if blocking_owner == Some(interaction::BlockingOwner::OperatorWait) {
                     let response = match key.code {
                         KeyCode::Enter
                         | KeyCode::Char(' ')
@@ -230,7 +235,7 @@ impl App {
                     return InputDisposition::SkipLoop;
                 }
 
-                if self.pending_permission.is_some() {
+                if blocking_owner == Some(interaction::BlockingOwner::Permission) {
                     let response = permission_response_for_key(key.code, key.modifiers);
                     if let Some(response) = response {
                         let _ = self

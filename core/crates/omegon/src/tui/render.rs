@@ -1107,6 +1107,17 @@ impl App {
                 actions,
             );
         }
+        // The same owner used by keyboard routing paints above every passive
+        // surface. Those surfaces retain their selection and scroll state.
+        if self.blocking_owner().is_some()
+            && let Some(prompt) = self
+                .interaction
+                .prompt
+                .as_ref()
+                .or(self.command_prompt.as_ref())
+        {
+            command_surfaces::render_prompt(area, frame.buffer_mut(), self.theme.as_ref(), prompt);
+        }
         self.last_draw_phase_timings = draw_phases;
     }
 }

@@ -10938,3 +10938,61 @@ fn drawn_completion_backlog_releases_app_without_requeueing() {
     assert!(!app.agent_active);
     assert!(!app.conversation.is_streaming());
 }
+
+#[tokio::test]
+async fn blocking_decisions_preserve_copy_surface_and_resolve_in_arrival_order() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.open_settings_menu();
+    app.active_menu.as_mut().unwrap().state.selected_row = 2;
+    let prior_menu = app.active_menu.clone();
+    app.copy_text_modal = Some(CopyTextModal::new("Prior copy", "prior selection"));
+    let (permission_tx, permission_rx) = std::sync::mpsc::channel();
+    app.handle_agent_event(AgentEvent::PermissionRequest {
+        tool_name: "write".into(),
+        path: "src/allowed.rs".into(),
+        kind: omegon_traits::PermissionRequestKind::PathBoundary,
+        persistence: omegon_traits::PermissionPersistence::ProjectDirectory,
+        grant_path: None,
+        respond: std::sync::Arc::new(std::sync::Mutex::new(Some(permission_tx))),
+    });
+    let (wait_tx, wait_rx) = std::sync::mpsc::channel();
+    let (ack_tx, _ack_rx) = std::sync::mpsc::channel();
+    app.handle_agent_event(AgentEvent::OperatorWaitRequest {
+        prompt: "Second decision".into(),
+        timeout_secs: 60,
+        acknowledge: std::sync::Arc::new(std::sync::Mutex::new(Some(ack_tx))),
+        respond: std::sync::Arc::new(std::sync::Mutex::new(Some(wait_tx))),
+    });
+    let rendered = render_app_to_string(&mut app, 120, 40);
+    assert!(
+        rendered.contains("Permission required"),
+        "first decision must remain visible: {rendered}"
+    );
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    assert_eq!(
+        permission_rx.try_recv().unwrap(),
+        omegon_traits::PermissionResponse::Allow
+    );
+    assert!(wait_rx.try_recv().is_err());
+    let rendered = render_app_to_string(&mut app, 120, 40);
+    assert!(rendered.contains("Second decision"));
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    assert_eq!(
+        wait_rx.try_recv().unwrap(),
+        omegon_traits::OperatorWaitResponse::Completed
+    );
+    assert!(
+        app.copy_text_modal.is_some(),
+        "resolving decisions preserves prior surface state"
+    );
+    assert_eq!(app.active_menu, prior_menu);
+}

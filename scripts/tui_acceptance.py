@@ -46,10 +46,26 @@ def fixture_provider():
             with server.request_lock:
                 server.requests += 1
                 number = server.requests
+            tool_probe = number == 3 and server.tool_path is not None
+            if tool_probe:
+                server.tool_waiting.set()
+                if not server.release_tool.wait(timeout=60):
+                    self.send_error(504)
+                    return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            for delta, finish in [({"content": f"TUI_FIXTURE_REPLY_{number}"}, None), ({}, "stop")]:
+            reply = f"TUI_FIXTURE_REPLY_{number}"
+            if server.tool_path is not None and number >= 4:
+                reply += (" The operator denied the requested write. The fixture has completed its permission check "
+                          "and will make no further tool calls. The requested file remains absent, the prior Settings "
+                          "surface is preserved, and control returns to the conversation for the next operator prompt.")
+            deltas = [({"content": reply}, None), ({}, "stop")]
+            if tool_probe:
+                call = {"index": 0, "id": "fixture-denied-write", "type": "function",
+                        "function": {"name": "write", "arguments": json.dumps({"path": server.tool_path, "content": "fixture only"})}}
+                deltas = [({"tool_calls": [call]}, None), ({}, "tool_calls")]
+            for delta, finish in deltas:
                 event = {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
                 self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
                 self.wfile.flush()
@@ -58,12 +74,16 @@ def fixture_provider():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.requests = 0
     server.request_lock = threading.Lock()
+    server.tool_path = None
+    server.tool_waiting = threading.Event()
+    server.release_tool = threading.Event()
     server.url = f"http://127.0.0.1:{server.server_port}"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         yield server
     finally:
+        server.release_tool.set()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
@@ -72,6 +92,13 @@ def fixture_provider():
 def digest(path):
     with Path(path).open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def group_exists(group: int) -> bool:
+    # Existence and signal permission are distinct. Read the process table;
+    # reserve signals for cleanup of the invocation's owned group.
+    groups = subprocess.check_output(["ps", "-axo", "pgid="], text=True, timeout=5)
+    return str(group) in groups.split()
 
 
 def run(binary: Path, output: Path):
@@ -116,7 +143,8 @@ def run(binary: Path, output: Path):
         workspace = root / "workspace"
         config = workspace / ".omegon"
         config.mkdir(parents=True)
-        (config / "profile.json").write_text("{}\n")
+        provider.tool_path = str(root / "outside-project" / "denied.txt")
+        (config / "profile.json").write_text(json.dumps({"permissions": {"tools": {"write": "prompt"}}}) + "\n")
         (config / "inference.toml").write_text(f'''schema_version = 1
 [[endpoints]]
 id = "acceptance"
@@ -154,6 +182,9 @@ reasoning = true
             if str(binary) not in ledger["process"]:
                 raise RuntimeError("running process does not identify the requested binary")
             wait_for(lambda: log.exists() and "terminal input boundary acquired" in log.read_text(), "TUI startup")
+            wait_for(lambda: "Ready for first turn" in screen(), "initial semantic view")
+            if "semantic frontend is unavailable" in screen():
+                raise AssertionError("startup exposed an unavailable session projection")
             capture("01-startup")
             for number in (1, 2):
                 action("send-keys", "-t", "run:0.0", "-l", f"fixture turn {number}")
@@ -163,28 +194,53 @@ reasoning = true
             action("resize-window", "-t", "run:0", "-x", "90", "-y", "30")
             wait_for(lambda: "TUI_FIXTURE_REPLY_2" in screen() and "ready · idle" in screen(), "reply survives resize and runtime becomes idle")
             capture("04-resize")
-            assert provider.requests == 2, f"unexpected inference requests: {provider.requests}"
+            action("send-keys", "-t", "run:0.0", "-l", "fixture permission probe")
+            action("send-keys", "-t", "run:0.0", "Enter")
+            wait_for(provider.tool_waiting.is_set, "provider reached permission probe barrier")
+            action("send-keys", "-t", "run:0.0", "-l", "/settings")
+            action("send-keys", "-t", "run:0.0", "Enter")
+            wait_for(lambda: "Settings" in screen(), "Settings opens during active turn")
+            capture("05-settings")
+            provider.release_tool.set()
+            wait_for(lambda: "Permission required" in screen(), "permission visible above Settings")
+            capture("06-permission")
+            action("send-keys", "-t", "run:0.0", "-l", "n")
+            wait_for(lambda: "Settings" in screen() and "Permission required" not in screen(), "return to Settings after denial")
+            capture("07-return-settings")
+            action("send-keys", "-t", "run:0.0", "Escape")
+            wait_for(lambda: "TUI_FIXTURE_REPLY_4" in screen() and "ready · idle" in screen(), "denied tool turn completes")
+            capture("08-denied-turn-complete")
+            assert not Path(provider.tool_path).exists(), "denied write changed the filesystem"
+            assert provider.requests == 4, f"unexpected inference requests: {provider.requests}"
             if digest(binary) != ledger["binary_sha256"]:
                 raise RuntimeError("binary changed during capture")
             ledger["passed"] = True
         finally:
             ledger["provider_requests"] = provider.requests
             ledger["finished"] = time.time()
-            # Only this invocation's private terminal server is terminated.
-            tmux("kill-server", check=False)
-            group = ledger.get("process_group")
-            if group:
-                deadline = time.monotonic() + 3
-                while time.monotonic() < deadline:
-                    try:
-                        os.killpg(group, 0)
-                    except ProcessLookupError:
-                        break
-                    time.sleep(0.05)
-                else:
-                    os.killpg(group, signal.SIGKILL)
-                    ledger["cleanup_forced"] = True
-            (output / "manifest.json").write_text(json.dumps(ledger, indent=2) + "\n")
+            try:
+                # Only this invocation's private terminal server is terminated.
+                tmux("kill-server", check=False)
+                group = ledger.get("process_group")
+                if group:
+                    deadline = time.monotonic() + 3
+                    while group_exists(group) and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    if group_exists(group):
+                        os.killpg(group, signal.SIGKILL)
+                        ledger["cleanup_forced"] = True
+                        deadline = time.monotonic() + 2
+                        while group_exists(group) and time.monotonic() < deadline:
+                            time.sleep(0.05)
+                        if group_exists(group):
+                            raise RuntimeError("owned process group survived forced cleanup")
+            except Exception as error:
+                ledger["passed"] = False
+                ledger["cleanup_error"] = str(error)
+                raise
+            finally:
+                (output / "manifest.json").write_text(json.dumps(ledger, indent=2) + "\n")
+
     print(json.dumps({"passed": ledger["passed"], "evidence": str(output), "provider_requests": ledger["provider_requests"]}))
 
 

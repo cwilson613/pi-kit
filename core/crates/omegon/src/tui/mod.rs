@@ -33,6 +33,7 @@ pub mod image;
 pub mod inline_render;
 mod input;
 pub mod instruments;
+mod interaction;
 pub mod layout_projection;
 #[cfg(test)]
 mod liveness_contract_tests;
@@ -566,6 +567,7 @@ struct App {
     >,
     /// Human-readable context for the pending permission prompt.
     pending_permission_context: Option<PendingPermissionContext>,
+    interaction: interaction::InteractionState,
     /// Pending manual-action wait prompt — waiting for operator confirmation.
     pending_operator_wait: Option<
         std::sync::Arc<
@@ -997,6 +999,7 @@ impl App {
             tutorial_overlay: None,
             pending_permission: None,
             pending_permission_context: None,
+            interaction: Default::default(),
             pending_operator_wait: None,
             pending_operator_wait_context: None,
             update_rx: None,

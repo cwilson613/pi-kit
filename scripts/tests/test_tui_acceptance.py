@@ -31,6 +31,19 @@ def test_provider_rejects_unknown_routes():
         else:
             raise AssertionError("unknown route accepted")
 
+def test_provider_can_request_a_bounded_permission_probe():
+    with runner.fixture_provider() as server:
+        server.tool_path = "/tmp/fixture-only/denied.txt"
+        server.requests = 2
+        server.release_tool.set()
+        request = Request(server.url + "/v1/chat/completions", data=b'{"messages": []}', headers={"Content-Type": "application/json"})
+        with urlopen(request, timeout=2) as response:
+            body = response.read().decode()
+        assert '"name": "write"' in body
+        assert '"finish_reason": "tool_calls"' in body
+        assert "denied.txt" in body
+
 if __name__ == "__main__":
     test_provider_streams_distinct_turns_without_external_inference()
     test_provider_rejects_unknown_routes()
+    test_provider_can_request_a_bounded_permission_probe()

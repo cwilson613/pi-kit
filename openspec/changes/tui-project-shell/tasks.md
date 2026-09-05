@@ -14,8 +14,10 @@
 - [x] Add regression scenarios for visible approval/input agreement while browsing and return to prior selection.
 - [x] Introduce responder-backed decision ownership with arrival ordering, bounded overflow, preserved passive state, and matching prompt/input precedence.
 - [x] Propagate profile permission policy into runtime settings; capture a real denied write above Settings and return to the prior surface.
-- [ ] Extend shared ownership to all passive navigation and extension interactions.
-- [ ] Adapt terminal ownership from the inline corpus with all terminal mode changes routed through one owner.
+- [x] Extend shared visible/input ownership to passive navigation and extension overlays.
+- [x] Adapt success-ordered terminal ownership from the inline corpus; route current fullscreen/native-export mode changes through one owner.
+- [ ] Add responder transport and provenance for extension actions; the client currently reports unsupported responses.
+- [ ] Implement the persistent inline viewport and bounded automatic transcript publication, with backlog/recovery acceptance.
 
 ## 3. Project and work vertical slice
 <!-- specs: tui-project-client -->

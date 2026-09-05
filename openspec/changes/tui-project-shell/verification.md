@@ -62,3 +62,37 @@ Concurrent test runs reported an extension handshake failure and a skills-menu i
 This delivery does not complete generic navigation ownership, extension interaction routing, stable selection across domain refresh, the inline/fullscreen terminal coordinator, or project/session/work navigation. Those tasks remain unchecked. The captured prompt still uses the existing compact layout and labels; broader layout and affordance review remains part of shell reconstruction.
 
 Implementation commits: `5d96f966` (startup view), `59c30d17` (profile policy), and `23640c20` (decision ownership and captured permission round trip). No installed launcher was changed.
+
+# Third delivery: navigation and terminal ownership
+
+Passive overlays now derive rendering and keyboard precedence from one navigation owner. Escape dismisses the visible extension overlay while preserving covered copy/Settings state; menu paging cannot scroll the background conversation. Extension action keys and paste cannot modify the composer. Unwired action responses report their limitation and retain the prompt instead of claiming success.
+
+Current fullscreen/native-export terminal mode changes now use one shared handle. It records successful mode operations, restores exact preferences around primary-screen operations, and forces a complete redraw after returning. Startup, mouse preferences, shell suspension, tutorial handoff, and shutdown use the same owner, with the existing nonblocking panic fallback retained. Mouse-mode UI state advances only after the mode operation succeeds. Ordinary shutdown attempts every release and retains failed modes for later cleanup instead of discarding ownership in advance.
+
+## Test-first evidence
+
+- The extension-over-copy Escape and Settings PageDown regressions failed before navigation ownership was shared (`/tmp/omegon-nav-red.log`).
+- Injected transition failures first failed against the placeholder terminal state machine (`/tmp/omegon-terminal-red.log`). Final cases cover partial entry, partial leave and retry, failed primary writes with mouse disabled, and failed suspension preventing the primary operation.
+- `shutdown_releases_other_modes_and_retains_only_failed_modes_for_retry` failed against the previous consume-before-release cleanup behavior (`/tmp/omegon-terminal-shutdown-red.log`), then drove success-ordered best-effort cleanup.
+- The TUI suite passed 1,248 tests, zero failures, one ignored before the final mouse-error reporting, registered-command wording, and shutdown retry adjustments. The final crate gate below covers those adjustments too.
+
+## Captured terminal evidence
+
+The agent inspected `/tmp/omegon-tui-navigation-terminal-03/`: native primary-screen transcript, restored fullscreen replies, permission ownership, restored Settings, and denied tool completion. Ten captures passed in 15.06 seconds with four local provider requests, no paid inference, no denied file created, and no forced cleanup. The owned process group was independently confirmed absent.
+
+Build: `just test-tui-captured /tmp/omegon-tui-navigation-terminal-03`. Binary SHA-256: `fa43d15cdea65e150c351fc123a2b9e3be21707a3f02e5c78c9ca30f7fca1db5`. The manifest records base revision `2d3a859a` plus dirty source state, process identity, actions, capture hashes and geometry. Before and after native export, tmux reported alternate screen enabled and mouse capture disabled (`1:0`). The restored framebuffer visibly contains both replies.
+
+The first run timed out because the runner used the stale `/print` name still present in an existing message. Inspection identified the registered `/session-export scrollback` command; the runner and message were corrected before the successful run. Its failed evidence remains in `/tmp/omegon-tui-navigation-terminal-01/`. Run `-02` then passed the registered-command scenario; final run `-03` repeated it against the completed shutdown implementation.
+
+## Remaining scope
+
+The current client still uses a fullscreen viewport. Persistent inline layout, automatic bounded transcript publication, extension action response transport, and project/session/work navigation remain unchecked in the task plan. Real OS job-control suspension, tutorial process replacement, and injected physical terminal I/O failures are not covered by the captured fixture. Narrow-layout clipping and transient completion footer wording remain existing presentation limitations visible in the captures.
+
+## Final validation
+
+- Final serialized `just test-crate omegon`: 5,118 passed, zero failed, 11 ignored across nine suites (`/tmp/omegon-navigation-terminal-crate-final.log`). Canonical glyph environment: `env -u NO_COLOR -u OMEGON_ASCII_GLYPHS OMEGON_NERD_FONT=1 RUST_TEST_THREADS=1`.
+- `just clippy-changed`: passed for Omegon/all targets (`/tmp/omegon-navigation-terminal-clippy-final.log`).
+- Terminal owner/input tests: 12 passed, zero failed (`/tmp/omegon-terminal-shutdown-green.log`).
+- Python fixture contracts and OpenSpec structural validation passed. The change remains implementing because the task plan retains the next reconstruction work.
+
+Implementation commit: `1718e546`. The final captured binary was built from these code changes before commit; its manifest retains the prior base revision and dirty-source inventory. No installed launcher was changed.

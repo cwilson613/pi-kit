@@ -69,3 +69,52 @@ Given the isolated profile declares write as prompt
 When a model requests the write tool
 Then a permission prompt is visible and receives operator input
 And denying the prompt prevents the write
+
+### Requirement: Passive overlays share navigation ownership
+
+Rendering and input dispatch derive their overlay precedence from the same owner. Covered surfaces retain state and cannot receive keyboard or paste input through the visible overlay. Ctrl+C can cancel an active turn while browsing a passive overlay.
+
+#### Scenario: Extension overlay above copy and Settings
+Given an extension modal covers a copy surface and Settings
+When the operator presses Escape
+Then the visible extension modal closes
+And the copy surface and Settings retain their state
+
+#### Scenario: Menu paging does not move conversation
+Given Settings owns input
+When the operator presses PageDown
+Then the background conversation scroll position remains unchanged
+
+#### Scenario: Unsupported extension response
+Given an extension action has no response transport
+When the operator selects its numbered action
+Then the client reports that limitation and retains the prompt
+And the key is not inserted into the composer
+
+### Requirement: Terminal modes have one success-ordered owner
+
+The fullscreen client routes terminal mode changes through one shared owner. Ownership advances only after successful terminal operations. Primary-screen operations restore the saved mode preferences and invalidate the fullscreen renderer. Emergency restoration must not wait for a held ownership lock.
+
+#### Scenario: Native transcript round trip
+Given a fullscreen client with mouse capture disabled and two completed replies
+When the operator invokes /session-export scrollback
+Then the native primary screen contains the transcript
+And the fullscreen client returns with both replies visible and mouse capture still disabled
+
+#### Scenario: Partial transition failure
+Given some terminal modes have changed successfully
+When a subsequent mode operation fails
+Then tracked state retains only successful changes
+And retry skips completed operations
+
+#### Scenario: Failed primary operation
+Given fullscreen mode ownership
+When a primary-screen write fails
+Then the owner attempts to restore the exact saved modes
+And it reports the failure without claiming publication success
+
+#### Scenario: Shutdown release failure
+Given several terminal modes are owned
+When one release operation fails during shutdown
+Then cleanup still attempts the other releases
+And a later cleanup retries only modes whose release failed

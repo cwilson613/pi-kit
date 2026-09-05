@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Native terminal compatibility trials can now be driven by the agent across Ghostty, WezTerm, iTerm2, kitty and Apple Terminal, with owned-window screenshots, current-view assertions and recorded fixture outcomes.
+
 - Added an operator terminal compatibility kit with fixed-build launchers for installed Ghostty, WezTerm, iTerm2, kitty and Apple Terminal clients. Trials use isolated local fixtures, preserve native terminal settings, record output locally, and retain build/client identity plus operator assessment sheets.
 
 - F2 opens a Project browser with Sessions and Work tabs. Operators can inspect the current or saved session, explicitly resume a saved session, read the current plan and workstream status, and return to their draft. Refresh preserves selection by item identity, approvals retain the browser underneath, and cancellation from the browser preserves the unsent draft. Captured terminal acceptance now exercises project navigation and a denied write while browsing Work.

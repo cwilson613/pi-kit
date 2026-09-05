@@ -53,8 +53,17 @@ class McpServer {
   /// Styrene mesh destination hash for remote MCP.
   styrene_dest: String?
 
-  /// Tool call timeout in seconds.
-  timeout_secs: Int(this > 0) = 30
+  /// Legacy timeout fallback in seconds.
+  timeout_secs: Int(this >= 0) = 30
+
+  /// Connection and initialization deadline; inherits timeout_secs when absent.
+  startup_timeout_secs: Int(this > 0 && this <= 18446744073)?
+
+  /// Complete catalog deadline, including pagination; inherits timeout_secs.
+  catalog_timeout_secs: Int(this > 0 && this <= 18446744073)?
+
+  /// Hard tool/resource/prompt deadline; progress does not extend it.
+  execution_timeout_secs: Int(this > 0 && this <= 18446744073)?
 }
 
 /// Named MCP server declarations.

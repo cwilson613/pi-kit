@@ -4591,6 +4591,9 @@ fn mcp_config(
         docker_mcp: None,
         styrene_dest: None,
         timeout_secs: 30,
+        startup_timeout_secs: None,
+        catalog_timeout_secs: None,
+        execution_timeout_secs: None,
         host_actions: crate::plugins::mcp::McpHostActionPolicy::default(),
     }
 }

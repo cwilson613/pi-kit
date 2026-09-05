@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- MCP servers can configure separate startup, catalog, and execution deadlines. Unset phases preserve legacy timeout behavior; execution progress cannot extend deadlines, cancellation leaves unrelated calls running, and shutdown releases the client registry before service cleanup.
+
 - Project instructions now include every AGENTS.md from the active worktree root through cwd, with source labels and complete UTF-8 content. Linked worktrees use their own policy files; explicit shared symlinks remain supported and canonical sources are deduplicated. Unreadable policy fails preparation, and fixed instructions plus tool schemas and reply reserve that exceed model capacity fail before provider dispatch instead of truncating required guidance.
 
 - Ranked the OpenCode2 beta parity backlog by expected return and narrowed the immediate OpenSpec pass to complete project instruction discovery and separate MCP phase deadlines. Durable refresh, context retention, model presets, and lifecycle investigations retain explicit follow-up criteria. Implementation remains planned.

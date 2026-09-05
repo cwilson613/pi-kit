@@ -167,7 +167,7 @@ use self::menu_effects::{
     MenuCommandOutcome, MenuRefreshTarget, SettingsRowAction, SettingsRowTarget,
 };
 use self::menu_surface::{ActiveMenu, MenuMode};
-use self::permission_lane::{format_permission_prompt, permission_response_for_key};
+use self::permission_lane::permission_response_for_key;
 use self::segments::{SegmentContent, SegmentExportMode, SegmentRenderMode};
 use self::settings_menu::SelectorKind;
 #[cfg(test)]
@@ -8606,8 +8606,8 @@ mod slash_command_parsing_tests {
         assert!(prompt.contains("Reason: grant required for this operation"));
         assert!(prompt.contains("Persist: project profile directory permission"));
         assert!(prompt.contains("Grant: /tmp"));
-        assert!(prompt.contains("[y] once"));
-        assert!(prompt.contains("[Shift+A] always for this directory"));
+        assert!(!prompt.contains("[y]"), "choices belong to prompt actions");
+        assert!(!prompt.contains("[Shift+A]"));
         assert!(!prompt.contains("[a] always + save"));
         assert!(!prompt.contains("outside trusted workspace"));
     }

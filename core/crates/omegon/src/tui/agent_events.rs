@@ -414,23 +414,13 @@ impl App {
             } => {
                 self.slim_turn_state = SlimTurnState::Finished("blocked");
                 // Show a blocking permission prompt in the TUI.
-                let prompt_text = format_permission_prompt(
+                self.command_prompt = Some(permission_lane::permission_prompt(
                     &tool_name,
                     &path,
                     kind,
                     persistence,
                     grant_path.as_deref(),
-                );
-                self.command_prompt = Some(
-                    CommandPrompt::new("Permission required", prompt_text.clone()).with_actions(
-                        vec![
-                            CommandPromptAction::new("y", "this operation"),
-                            CommandPromptAction::new("a", "this directory · session"),
-                            CommandPromptAction::new("Shift+A", "this directory · project"),
-                            CommandPromptAction::new("n", "deny"),
-                        ],
-                    ),
-                );
+                ));
 
                 // Store the responder — the next key event (y/a/n) will
                 // resolve it. See handle_permission_key below.

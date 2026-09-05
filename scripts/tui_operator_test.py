@@ -252,9 +252,9 @@ rendering fidelity. Record terminal profile/font, viewport, failed step and note
 in the run's RESULTS.md. Runs and recordings are under runs/<client>-<timestamp>.
 Replay: asciinema play /absolute/path/to/terminal.cast
 
-Known cross-client issue: the Project browser shows the generic / search hint,
-but search is not wired in this browser increment. Record it as known rather than
-a terminal-specific regression.
+Project browser search: / starts filtering; type to narrow rows and Backspace to
+edit. Enter inspects a match. Escape leaves search, clears an active filter, then
+returns to the conversation; F2 returns directly without losing the draft.
 
 Work currently shows Workbench summaries. Populated execution/evidence drill-down
 and persistent inline layout remain outside this first browser increment.

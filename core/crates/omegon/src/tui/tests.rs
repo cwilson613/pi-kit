@@ -11185,3 +11185,46 @@ async fn project_browser_work_inspection_shows_published_plan_tasks() {
         "{screen}"
     );
 }
+
+#[test]
+fn native_usability_permission_choices_are_unique_and_visible() {
+    for (width, height) in [(50, 18), (90, 30)] {
+        let mut app = test_app();
+        let (respond, _rx) = std::sync::mpsc::channel();
+        app.handle_agent_event(AgentEvent::PermissionRequest {
+            tool_name: "write".into(),
+            path: format!("/tmp/{}/denied.txt", "long-directory/".repeat(12)),
+            kind: omegon_traits::PermissionRequestKind::Policy,
+            persistence: omegon_traits::PermissionPersistence::None,
+            grant_path: None,
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(respond))),
+        });
+        let rendered = render_app_to_string(&mut app, width, height);
+        for key in ["[y]", "[a]", "[Shift+A]", "[n]"] {
+            assert_eq!(rendered.matches(key).count(), 1, "{key}: {rendered}");
+        }
+        assert!(rendered.contains("[n] deny"), "{rendered}");
+        assert!(
+            rendered.contains("[Shift+A] allow this operation"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("this directory · project"), "{rendered}");
+    }
+}
+
+#[test]
+fn native_usability_primary_composer_hint_survives_narrow_width() {
+    for width in [40, 56, 90] {
+        for (input, hint) in [
+            ("", "⏎ send"),
+            ("draft", "⏎ send"),
+            ("/usage", "⏎ run command"),
+            ("!pwd", "⏎ run directly"),
+        ] {
+            let mut app = test_app();
+            app.editor.set_text(input);
+            let rendered = render_app_to_string(&mut app, width, 24);
+            assert!(rendered.contains(hint), "{width}: {input}: {rendered}");
+        }
+    }
+}

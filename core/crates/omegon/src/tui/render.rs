@@ -7,6 +7,22 @@
 use super::interaction::NavigationOwner;
 use super::*;
 
+fn fit_composer_hint(hint: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let mut result = String::new();
+    for part in hint.trim().split("  ") {
+        let added = UnicodeWidthStr::width(part) + if result.is_empty() { 0 } else { 2 };
+        if UnicodeWidthStr::width(result.as_str()) + added > width {
+            break;
+        }
+        if !result.is_empty() {
+            result.push_str("  ");
+        }
+        result.push_str(part);
+    }
+    result
+}
+
 impl App {
     pub(super) fn draw(&mut self, frame: &mut Frame) {
         self.expire_navigation_overlay();
@@ -587,7 +603,7 @@ impl App {
                     .bg(t.surface_bg())
                     .add_modifier(Modifier::BOLD),
             );
-            let hint_text = if self.agent_active {
+            let hint_text: String = if self.agent_active {
                 String::new()
             } else {
                 "⏎ confirm  Esc cancel ".into()
@@ -654,7 +670,7 @@ impl App {
             } else {
                 t.accent_muted()
             };
-            let hint_text = if self.agent_active {
+            let hint_text: String = if self.agent_active {
                 String::new()
             } else if shell_primed {
                 if editor_text.trim() == "!" {
@@ -673,6 +689,8 @@ impl App {
             } else {
                 "⏎ send  ⇧⏎/⌥⏎ newline  ⌥↑/⌥↓ history ".into()
             };
+            let hint_text =
+                fit_composer_hint(&hint_text, usize::from(editor_area.width.saturating_sub(2)));
             let model_id = self.footer_data.model_id.as_str();
             let model_short = model_id
                 .split(':')

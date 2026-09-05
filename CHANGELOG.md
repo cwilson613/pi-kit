@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Permission prompts display one scope-correct set of choices and reserve space for them when context wraps. Project browser search now filters rows without losing drafts or covered selection, and narrow composers preserve the primary send/run hint before secondary help.
+
 - Native terminal compatibility trials can now be driven by the agent across Ghostty, WezTerm, iTerm2, kitty and Apple Terminal, with owned-window screenshots, current-view assertions and recorded fixture outcomes.
 
 - Added an operator terminal compatibility kit with fixed-build launchers for installed Ghostty, WezTerm, iTerm2, kitty and Apple Terminal clients. Trials use isolated local fixtures, preserve native terminal settings, record output locally, and retain build/client identity plus operator assessment sheets.

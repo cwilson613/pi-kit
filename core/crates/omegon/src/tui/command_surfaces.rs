@@ -26,25 +26,53 @@ pub(crate) fn command_modal_area(area: Rect) -> Rect {
     }
 }
 
+fn prompt_action_lines(prompt: &CommandPrompt, width: usize) -> Vec<String> {
+    prompt
+        .actions
+        .iter()
+        .flat_map(|action| {
+            super::menu_surface::wrap_display(&format!("[{}] {}", action.key, action.label), width)
+        })
+        .collect()
+}
+
+fn prompt_body_lines(prompt: &CommandPrompt, width: usize) -> Vec<String> {
+    prompt
+        .body
+        .lines()
+        .flat_map(|line| super::menu_surface::wrap_display(line, width))
+        .collect()
+}
+
 pub(crate) fn prompt_modal_area(area: Rect, prompt: &CommandPrompt) -> Rect {
+    use unicode_width::UnicodeWidthStr;
     let content_width = prompt
         .body
         .lines()
-        .map(|line| line.chars().count())
+        .map(UnicodeWidthStr::width)
         .max()
         .unwrap_or(0);
     let actions_width = prompt
         .actions
         .iter()
-        .map(|action| action.key.len() + action.label.len() + 3)
-        .sum::<usize>()
-        .saturating_add(prompt.actions.len().saturating_sub(1) * 3);
-    let desired_width = content_width.max(actions_width).saturating_add(4) as u16;
-    let desired_height = prompt.body.lines().count().saturating_add(5) as u16;
+        .map(|a| {
+            UnicodeWidthStr::width(a.key.as_str()) + UnicodeWidthStr::width(a.label.as_str()) + 3
+        })
+        .max()
+        .unwrap_or(0);
     let max_width = area.width.saturating_sub(COMMAND_MODAL_MARGIN).max(1);
     let max_height = area.height.saturating_sub(COMMAND_MODAL_MARGIN).max(1);
-    let width = desired_width.clamp(48.min(max_width), COMMAND_MODAL_WIDTH.min(max_width));
-    let height = desired_height.clamp(6.min(max_height), 14.min(max_height));
+    let width = content_width
+        .max(actions_width)
+        .saturating_add(4)
+        .min(usize::from(COMMAND_MODAL_WIDTH.min(max_width))) as u16;
+    let width = width.max(48.min(max_width));
+    let inner_width = usize::from(width.saturating_sub(2));
+    let desired_height = prompt_body_lines(prompt, inner_width).len()
+        + prompt_action_lines(prompt, inner_width).len()
+        + 3;
+    let height = desired_height.min(usize::from(max_height)) as u16;
+    let height = height.max(6.min(max_height));
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -54,28 +82,52 @@ pub(crate) fn prompt_modal_area(area: Rect, prompt: &CommandPrompt) -> Rect {
 }
 
 pub fn render_prompt(area: Rect, buf: &mut Buffer, theme: &dyn Theme, prompt: &CommandPrompt) {
-    let actions = prompt
-        .actions
-        .iter()
-        .map(|action| format!("[{}] {}", action.key, action.label))
-        .collect::<Vec<_>>()
-        .join("   ");
-    let body = if actions.is_empty() {
-        prompt.body.clone()
-    } else {
-        format!("{}\n\n{}", prompt.body, actions)
-    };
-    let panel = CommandPanel {
-        title: prompt.title.clone(),
-        body,
-        source: None,
-        severity: prompt.severity,
-        copyable: false,
-        scroll: 0,
-        return_target: None,
-    };
     let panel_area = prompt_modal_area(area, prompt);
-    render_panel_in(panel_area, buf, theme, &panel);
+    if panel_area.width < 4 || panel_area.height < 3 {
+        return;
+    }
+    Clear.render(panel_area, buf);
+    let border = match prompt.severity {
+        CommandSeverity::Info => theme.accent(),
+        CommandSeverity::Success => theme.success(),
+        CommandSeverity::Warning => theme.warning(),
+        CommandSeverity::Error => theme.error(),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .title(Span::styled(
+            format!(" {} ", prompt.title),
+            Style::default()
+                .fg(theme.accent_bright())
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(theme.card_bg()));
+    let inner = block.inner(panel_area);
+    block.render(panel_area, buf);
+    let width = usize::from(inner.width);
+    let actions = prompt_action_lines(prompt, width);
+    let body_budget = usize::from(inner.height).saturating_sub(actions.len() + 1);
+    let mut body = prompt_body_lines(prompt, width);
+    if body.len() > body_budget {
+        body.truncate(body_budget);
+        if let Some(last) = body.last_mut() {
+            *last = "… context truncated".into();
+        }
+    }
+    let mut lines: Vec<Line> = body.into_iter().map(Line::from).collect();
+    if !actions.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.extend(
+        actions
+            .into_iter()
+            .map(|text| Line::styled(text, Style::default().fg(theme.accent_bright()))),
+    );
+    Paragraph::new(lines)
+        .style(Style::default().fg(theme.fg()).bg(theme.card_bg()))
+        .render(inner, buf);
 }
 
 pub fn render_panel(area: Rect, buf: &mut Buffer, theme: &dyn Theme, panel: &CommandPanel) {
@@ -282,7 +334,7 @@ mod tests {
         let modal = prompt_modal_area(area, &prompt);
 
         assert!(modal.width < COMMAND_MODAL_WIDTH);
-        assert_eq!(modal.height, 8);
+        assert_eq!(modal.height, 10);
         assert_eq!(modal.x, (area.width - modal.width) / 2);
         assert_eq!(modal.y, (area.height - modal.height) / 2);
     }

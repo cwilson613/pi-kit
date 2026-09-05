@@ -226,7 +226,30 @@ impl App {
                 browser.detail = false;
                 browser.scroll = 0;
             }
+            KeyCode::Esc if browser.menu.state.exit_search() => {}
             KeyCode::Esc => self.project_browser = None,
+            KeyCode::Char('/')
+                if !browser.detail && browser.menu.state.mode == menu_surface::MenuMode::Browse =>
+            {
+                browser.menu.state.enter_search();
+            }
+            KeyCode::Char(ch)
+                if !browser.detail
+                    && browser.menu.state.mode == menu_surface::MenuMode::Search
+                    && !key.modifiers.intersects(
+                        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                    ) =>
+            {
+                browser
+                    .menu
+                    .state
+                    .push_filter_char(&browser.menu.projection, ch);
+            }
+            KeyCode::Backspace
+                if !browser.detail && browser.menu.state.mode == menu_surface::MenuMode::Search =>
+            {
+                browser.menu.state.pop_filter_char(&browser.menu.projection);
+            }
             KeyCode::Up if browser.detail => browser.scroll = browser.scroll.saturating_sub(1),
             KeyCode::Down if browser.detail => browser.scroll = browser.scroll.saturating_add(1),
             KeyCode::Up => browser.menu.state.move_up(),
@@ -237,7 +260,13 @@ impl App {
             KeyCode::BackTab if !browser.detail => {
                 browser.menu.state.previous_tab(&browser.menu.projection)
             }
-            KeyCode::Enter => {
+            KeyCode::Enter
+                if browser
+                    .menu
+                    .state
+                    .selected_row(&browser.menu.projection)
+                    .is_some() =>
+            {
                 browser.detail = true;
                 browser.scroll = 0;
             }
@@ -288,6 +317,108 @@ mod tests {
             }],
         });
         projection
+    }
+
+    #[test]
+    fn native_usability_search_filters_inspects_and_handles_empty_results() {
+        let mut app = super::super::tests::test_app();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        app.editor.set_text("preserved draft");
+        app.project_browser = Some(ProjectBrowser::new(inventory(&["alpha", "beta"])));
+        for ch in "/beta".chars() {
+            app.handle_project_browser_key(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                &tx,
+            );
+        }
+        let browser = app.project_browser.as_ref().unwrap();
+        assert_eq!(
+            browser
+                .menu
+                .state
+                .visible_rows(&browser.menu.projection)
+                .len(),
+            1
+        );
+        assert_eq!(browser.menu.state.filter, "beta");
+        app.project_browser
+            .as_mut()
+            .unwrap()
+            .refresh(inventory(&["new", "alpha", "beta"]));
+        let browser = app.project_browser.as_ref().unwrap();
+        assert_eq!(browser.menu.state.filter, "beta");
+        assert_eq!(
+            browser
+                .menu
+                .state
+                .selected_row(&browser.menu.projection)
+                .unwrap()
+                .row
+                .id,
+            "beta"
+        );
+        app.handle_project_browser_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        assert!(app.project_browser.as_ref().unwrap().detail);
+        app.handle_project_browser_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &tx);
+        assert!(!app.project_browser.as_ref().unwrap().detail);
+        app.handle_project_browser_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &tx);
+        app.handle_project_browser_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        assert!(
+            !app.project_browser.as_ref().unwrap().detail,
+            "empty results must not open an invisible detail"
+        );
+        app.handle_project_browser_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &tx);
+        assert_eq!(
+            app.project_browser.as_ref().unwrap().menu.state.filter,
+            "beta"
+        );
+        app.handle_project_browser_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE), &tx);
+        assert!(app.project_browser.is_none());
+        assert_eq!(app.editor.render_text(), "preserved draft");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn native_usability_permission_preserves_project_filter() {
+        let mut app = super::super::tests::test_app();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        app.project_browser = Some(ProjectBrowser::new(inventory(&["alpha", "beta"])));
+        for ch in "/beta".chars() {
+            app.handle_project_browser_key(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                &tx,
+            );
+        }
+        let (respond, response) = std::sync::mpsc::channel();
+        app.handle_agent_event(AgentEvent::PermissionRequest {
+            tool_name: "write".into(),
+            path: "/tmp/denied.txt".into(),
+            kind: omegon_traits::PermissionRequestKind::Policy,
+            persistence: omegon_traits::PermissionPersistence::None,
+            grant_path: None,
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(respond))),
+        });
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+        assert_eq!(
+            response.try_recv().unwrap(),
+            omegon_traits::PermissionResponse::Deny
+        );
+        let browser = app.project_browser.as_ref().unwrap();
+        assert_eq!(browser.menu.state.filter, "beta");
+        assert_eq!(
+            browser
+                .menu
+                .state
+                .selected_row(&browser.menu.projection)
+                .unwrap()
+                .row
+                .id,
+            "beta"
+        );
     }
 
     #[test]

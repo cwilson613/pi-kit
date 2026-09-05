@@ -116,7 +116,7 @@ pub fn render_permission_lane(
 pub fn format_permission_prompt(
     tool_name: &str,
     path: &str,
-    kind: PermissionRequestKind,
+    _kind: PermissionRequestKind,
     persistence: PermissionPersistence,
     grant_path: Option<&str>,
 ) -> String {
@@ -128,15 +128,36 @@ pub fn format_permission_prompt(
         PermissionPersistence::SessionDirectory => "session directory permission",
         PermissionPersistence::None => "no persisted permission",
     };
-    let scope = permission_persist_scope_label(tool_name, kind, persistence);
     format!(
         "Tool: {tool_name}\n\
          Target: {path}\n\
          Reason: grant required for this operation\n\
          Persist: {persist}\n\
-         {grant}\
-         [y] once · [a] this directory for this session · [Shift+A] {scope} · [n] deny"
+         {grant}"
     )
+}
+
+pub fn permission_prompt(
+    tool_name: &str,
+    path: &str,
+    kind: PermissionRequestKind,
+    persistence: PermissionPersistence,
+    grant_path: Option<&str>,
+) -> crate::surfaces::command::CommandPrompt {
+    use crate::surfaces::command::{CommandPrompt, CommandPromptAction};
+    CommandPrompt::new(
+        "Permission required",
+        format_permission_prompt(tool_name, path, kind, persistence, grant_path),
+    )
+    .with_actions(vec![
+        CommandPromptAction::new("y", "once"),
+        CommandPromptAction::new("a", "this directory · session"),
+        CommandPromptAction::new(
+            "Shift+A",
+            permission_persist_scope_label(tool_name, kind, persistence),
+        ),
+        CommandPromptAction::new("n", "deny (Esc)"),
+    ])
 }
 
 #[cfg(test)]

@@ -131,6 +131,15 @@ end tell''', shlex.join([str(run)]))
         if self.client=='kitty': return self.remote('send-text', '--match', 'id:'+self.id, '--bracketed-paste', 'enable', value)
         return self.remote('send-text', '--pane-id', self.id, value)
 
+    def raw(self, value):
+        """Send terminal input without bracketed-paste wrapping (for search keys)."""
+        if self.client == 'kitty':
+            return self.remote('send-text', '--match', 'id:'+self.id, '--bracketed-paste', 'disable', value)
+        if self.client == 'terminal':
+            return self.text(value)
+        for character in value:
+            self.key(character)
+
     def key(self, key):
         if self.client=='ghostty':
             if len(key)==1:
@@ -168,14 +177,14 @@ end tell''', shlex.join([str(run)]))
         command(['/usr/sbin/screencapture','-x','-o','-l'+str(self.window['kCGWindowNumber']),path])
 
 
-def run_trial(client, bundle, helper, output):
+def run_trial(client, bundle, helper, output, usability=False):
     output.mkdir(parents=True, exist_ok=False)
     metadata=verify_bundle(bundle)
     driver_source=Path(__file__).read_bytes()
     (output/'driver.py').write_bytes(driver_source)
     driver=NativeClient(client,bundle,helper,output)
     ledger={'client':client,'binary_sha256':metadata['binary_sha256'],'source_revision':metadata['revision'],
-            'driver_sha256':digest(output/'driver.py'), 'helper_sha256':digest(helper),'started':time.time(), 'captures':[], 'actions':[], 'passed':False}
+            'driver_sha256':digest(output/'driver.py'), 'helper_sha256':digest(helper),'started':time.time(), 'captures':[], 'actions':[], 'usability_checks':usability, 'passed':False}
     before=set((bundle/'runs').iterdir())
     def wait(marker):
         deadline=time.monotonic()+30
@@ -202,11 +211,20 @@ def run_trial(client, bundle, helper, output):
             step('paste multiline draft',lambda:driver.text('native first\npasted second line'))
             wait('pasted second line')
             driver.key('F2');wait('Project browser');capture('02-project')
+            if usability:
+                driver.raw('/zzzz');wait('No matching rows');capture('02-search-empty')
+                driver.key('Enter');wait('No matching rows')
+                driver.raw('\x7f'*4+'current');wait('filter: current');capture('02-search-match')
             driver.key('Enter');wait('Details');capture('03-detail')
-            driver.key('Escape');wait('Tab tabs');driver.key('Tab');wait('No active work');capture('04-work')
+            driver.key('Escape');wait('Tab tabs')
+            if usability:
+                driver.key('Escape')  # Search -> browse, retaining filter.
+                driver.key('Escape')  # Clear filter, retaining browser.
+            driver.key('Tab');wait('No active work');capture('04-work')
             driver.key('Escape');wait('native first');driver.key('Enter');wait('TUI_FIXTURE_REPLY_1')
         wait('ready · idle');driver.submit('native second');wait('TUI_FIXTURE_REPLY_2');wait('ready · idle')
         driver.resize(True);capture('05-resize')
+        if usability: wait('⏎ send')
         if client=='wezterm':
             driver.remote('kill-pane','--pane-id',driver.split_id)
             time.sleep(.25);capture('05-resize-restored')
@@ -214,7 +232,13 @@ def run_trial(client, bundle, helper, output):
         driver.submit('native permission probe')
         if client=='terminal':driver.text('\x1bOQ\t')
         else:driver.key('F2');wait('Project browser');driver.key('Tab')
-        wait('Permission required');capture('07-permission');driver.key('n');wait('No active work');capture('08-return-work')
+        wait('Permission required');capture('07-permission')
+        if usability:
+            current=driver.screen()
+            for key in ('[y]', '[a]', '[Shift+A]', '[n]'):
+                if current.count(key)!=1: raise RuntimeError('permission choice missing or repeated: '+key)
+            if '[n] deny' not in current: raise RuntimeError('deny label clipped')
+        driver.key('n');wait('No active work');capture('08-return-work')
         driver.key('F2' if client=='terminal' else 'Escape');wait('TUI_FIXTURE_REPLY_4');wait('ready · idle');capture('09-completed')
         driver.submit('/quit');wait('Press Enter to close this trial');capture('10-exit')
         runs=[p for p in (bundle/'runs').iterdir() if p not in before and p.name.startswith(client+'-')]
@@ -250,10 +274,11 @@ def main():
     p.add_argument('--bundle',type=Path,required=True)
     p.add_argument('--helper',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--usability', action='store_true', help='Verify functional search, unique permission choices and narrow send hints')
     p.add_argument('--clients',nargs='+',choices=['ghostty','iterm','kitty','wezterm','terminal'],default=['ghostty','iterm','kitty','wezterm','terminal'])
     args=p.parse_args()
     args.output.mkdir(parents=True,exist_ok=False)
-    results=[run_trial(c,args.bundle.resolve(),args.helper.resolve(),args.output/c) for c in args.clients]
+    results=[run_trial(c,args.bundle.resolve(),args.helper.resolve(),args.output/c,args.usability) for c in args.clients]
     (args.output/'summary.json').write_text(json.dumps(results,indent=2)+'\n')
     raise SystemExit(0 if all(r['passed'] for r in results) else 1)
 

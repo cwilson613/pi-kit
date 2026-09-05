@@ -1322,6 +1322,46 @@ mod tests {
 
     #[test]
     fn environment_credentials_preserve_declared_api_key_and_oauth_kinds() {
+        const ISOLATED_CASE: &str = "OMEGON_TEST_ROUTE_AUTH_ISOLATED_CASE";
+        let isolated_case = std::env::var(ISOLATED_CASE).ok();
+        if isolated_case.is_none() {
+            // The production probe also reads ~/.codex/auth.json. Isolate that
+            // store in a subprocess so a developer's logged-in CLI cannot
+            // override the fixture, and parallel tests retain their own home.
+            let isolated_home = tempfile::tempdir().unwrap();
+            for fixture in ["empty", "external"] {
+                if fixture == "external" {
+                    let codex = isolated_home.path().join(".codex");
+                    std::fs::create_dir_all(&codex).unwrap();
+                    std::fs::write(
+                        codex.join("auth.json"),
+                        serde_json::json!({
+                            "tokens": {"access_token": "fixture-access", "refresh_token": "fixture-refresh"},
+                            "last_refresh": chrono::Utc::now().timestamp() as u64,
+                        })
+                        .to_string(),
+                    )
+                    .unwrap();
+                }
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "route::tests::environment_credentials_preserve_declared_api_key_and_oauth_kinds",
+                        "--exact",
+                        "--nocapture",
+                    ])
+                    .env("HOME", isolated_home.path())
+                    .env(ISOLATED_CASE, fixture)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "isolated {fixture} credential fixture failed:\n{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
+            return;
+        }
         let path = temp_auth_path("environment-credential-kind");
 
         let api_key = with_auth_env(&path, "OPENAI_API_KEY", "test-api-key", || {
@@ -1341,7 +1381,11 @@ mod tests {
         assert_eq!(
             oauth,
             CredentialState::Valid {
-                source: CredentialSource::Environment,
+                source: if isolated_case.as_deref() == Some("external") {
+                    CredentialSource::External
+                } else {
+                    CredentialSource::Environment
+                },
                 oauth: true,
             }
         );

@@ -41,9 +41,5 @@
 - [x] Automate native input and owned-window screenshot capture, with current-view and fixture outcome assertions.
 - [x] Run installed clients, inspect native screenshots, and record supported checks and concrete limitations without delegating manual steps to the operator.
 
-## 6. Presentation findings from native trials
-<!-- specs: tui-project-client -->
-
-- [ ] Remove duplicated permission choices and keep the active decision controls readable at narrow widths.
-- [ ] Implement Project browser search or remove its unsupported search hint.
-- [ ] Preserve the primary send hint when the composer footer is narrower than its help text.
+Presentation findings from native trials: implementation and acceptance for duplicated permission choices, Project search,
+and narrow composer hints are tracked in [tui-native-usability](../tui-native-usability/tasks.md).

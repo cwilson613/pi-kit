@@ -47,8 +47,9 @@ the run directory. A terminal-byte recording does not prove fonts, colors or GUI
 rendering fidelity. Note the profile/font, viewport and failed step in RESULTS.md.
 Startup readiness is not a complete compatibility pass.
 
-Known browser limitation: the generic menu renders a `/` search hint, but this
-browser increment does not yet route search input. Work shows current Workbench
+Project browser filtering uses `/`, text entry and Backspace. Enter inspects a
+match; empty results remain navigable. Escape leaves search, clears the filter,
+and then closes the browser; F2 returns directly. Work shows current Workbench
 summaries; execution/evidence navigation and persistent inline layout remain pending.
 
 ## Automated native trials
@@ -85,3 +86,8 @@ Native screenshot inspection can identify clipping and glyph problems. The drive
 itself checks behavior and fixture results, not pixel aesthetics. A successful
 trial is scoped to its recorded actions; physical keyboard layouts, drag selection
 and system clipboard shortcuts are not implied by terminal input injection.
+
+Use `--usability` with a build containing `tui-native-usability` to assert browser
+search and empty results on the four clients with raw input controls, unique
+permission choices on all five, and the send hint after narrowing the viewport.
+The flag is explicit so older fixed kits remain usable as diagnostic baselines.

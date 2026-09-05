@@ -67,8 +67,16 @@ pub struct WebEditorSurface {
 #[derive(Debug, Clone, Serialize)]
 pub struct WebCommandSurface {
     pub pending_prompt: Option<String>,
+    pub pending_permissions: Vec<WebPendingPermission>,
     pub queue_depth: usize,
     pub active_turn: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WebPendingPermission {
+    pub request_id: String,
+    pub tool_name: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -274,6 +282,7 @@ pub fn project_web_surfaces(state: &WebState) -> WebSurfacesSnapshot {
                 supports_attachments: true,
             },
             command: WebCommandSurface {
+                pending_permissions: state.permission_snapshot(),
                 pending_prompt: queue["previews"]
                     .as_array()
                     .and_then(|previews| previews.first())
@@ -325,6 +334,7 @@ pub(crate) fn project_historical_web_surfaces(
     snapshot.surfaces.conversation.segments = super::durable_web_segments(&view);
     snapshot.surfaces.editor.accepts_prompt = false;
     snapshot.surfaces.command.pending_prompt = None;
+    snapshot.surfaces.command.pending_permissions.clear();
     snapshot.surfaces.command.queue_depth = view
         .frontend
         .as_ref()

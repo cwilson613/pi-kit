@@ -3210,7 +3210,7 @@ required = ["MISSING_REQUIRED_TOKEN"]
         let state = test_state();
         let (tx, rx) = std::sync::mpsc::channel();
         let respond = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
-        let request_id = state.register_permission(&respond);
+        let request_id = state.register_permission(&respond, "bash", "/tmp");
 
         let (status, response) = post_web_action(
             axum::extract::State(state),

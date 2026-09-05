@@ -58,6 +58,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Fixed
 
+- WebSocket clients subscribe before snapshot delivery so completions during reconnect remain observable. Snapshots replay captured web-owned approvals with session isolation and redacted metadata; the browser reconciles snapshot and live approval prompts by identity. Regression fixtures verify durable admission deduplication and detached delegate result retrieval, while legacy prompt retries still require a client identity contract.
+
 - The Nix host-only distribution smoke now allows enough time for an uncached package build instead of canceling a healthy final derivation at the previous job limit.
 
 - Unix terminal hangup now exits through the supervisor-owned terminal-loss boundary instead of racing a queued quit command, ensuring active turns settle as `revoked/terminal_lost`. The real PTY acceptance uses an admitted loopback inference route and waits for an in-flight provider request before detachment.

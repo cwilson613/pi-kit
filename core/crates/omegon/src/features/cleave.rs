@@ -2863,6 +2863,40 @@ mod tests {
     }
 
     #[test]
+    fn parity_pending_approval_reconnect_restores_actionable_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan_json = r#"{"children":[{"label":"one","description":"first","scope":["a.rs"]}]}"#;
+        {
+            let feature = CleaveFeature::new(dir.path(), vec![], false);
+            feature.record_pending_approval("reconnect", "inspect", plan_json, 1, 1);
+        }
+        let mut recovered = CleaveFeature::new(dir.path(), vec![], false);
+        // A newly attached surface can rebuild its menu without receiving the
+        // original approval event, and acts on the same persisted approval.
+        let workstreams = recovered.pending_approval_workstreams();
+        assert_eq!(workstreams.len(), 1);
+        assert_eq!(workstreams[0].id, "cleave:reconnect");
+        assert_eq!(workstreams[0].status, "pending_approval");
+        assert!(
+            recovered
+                .approved_run_args_for_pending_approval("reconnect")
+                .is_none()
+        );
+        recovered.handle_command("cleave", "approve reconnect");
+        let approved = recovered
+            .approved_run_args_for_pending_approval("reconnect")
+            .unwrap();
+        assert_eq!(approved["directive"], "inspect");
+        assert_eq!(approved["plan_json"], plan_json);
+        recovered.handle_command("cleave", "approve reconnect");
+        assert_eq!(
+            recovered.approved_run_args_for_pending_approval("reconnect"),
+            Some(approved)
+        );
+        assert!(recovered.pending_approval_workstreams().is_empty());
+    }
+
+    #[test]
     fn persisted_modified_approval_survives_reload() {
         let dir = tempfile::tempdir().unwrap();
         let feature = CleaveFeature::new(dir.path(), vec![], false);

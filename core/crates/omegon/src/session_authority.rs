@@ -7615,6 +7615,46 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn parity_duplicate_prompt_command_survives_authority_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let command_id = Uuid::new_v4();
+        let admission = PromptAdmitted {
+            submission_id: Uuid::new_v4(),
+            prompt_id: Uuid::new_v4(),
+            principal: "operator".into(),
+            ingress: "ipc".into(),
+            queue_mode: QueueMode::UntilReady,
+            content: PromptContent {
+                text: "inspect".into(),
+                attachments: Vec::new(),
+            },
+            metadata: serde_json::json!({}),
+        };
+        let sequence = {
+            let mut authority = test_authority(&directory);
+            assert!(
+                authority
+                    .admit_prompt(command_id, NOW, admission.clone())
+                    .unwrap()
+            );
+            authority.state().last_sequence
+        };
+        let mut reopened = test_authority(&directory);
+        assert!(
+            !reopened
+                .admit_prompt(command_id, NOW, admission.clone())
+                .unwrap()
+        );
+        assert_eq!(reopened.state().last_sequence, sequence);
+        assert_eq!(reopened.state().queued_prompts.len(), 1);
+        let mut conflicting = admission;
+        conflicting.content.text = "different side effect".into();
+        assert!(reopened.admit_prompt(command_id, NOW, conflicting).is_err());
+        assert_eq!(reopened.state().last_sequence, sequence);
+        assert_eq!(reopened.state().queued_prompts.len(), 1);
+    }
+
     fn begin_test_turn(authority: &mut SessionAuthority) -> (Uuid, Uuid) {
         let prompt_id = Uuid::new_v4();
         let turn_id = Uuid::new_v4();

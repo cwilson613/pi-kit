@@ -3247,6 +3247,56 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn parity_detached_client_recovers_delegate_result_without_completion_event() {
+        let directory = TempDir::new().unwrap();
+        let feature = DelegateFeature::new(directory.path(), vec![], false);
+        feature.result_store.store_task(DelegateTask {
+            label: Some("verify/tests".into()),
+            task_id: "detached-result".into(),
+            agent_name: None,
+            task_description: "Run tests".into(),
+            status: DelegateTaskStatus::Running,
+            result: None,
+            result_viewed: false,
+            started_at: SystemTime::now(),
+            completed_at: None,
+            last_tool: None,
+            last_tool_activity: None,
+            last_turn: None,
+            tasks: Vec::new(),
+            route_decision: None,
+        });
+        // The runtime remains alive while the client is detached. No frontend
+        // completion event is delivered; the result owner is the recovery source.
+        feature.result_store.update_task_status(
+            "detached-result",
+            DelegateTaskStatus::Completed { success: true },
+            Some("all tests passed".into()),
+        );
+        let snapshot = feature.result_store.progress_snapshot();
+        assert_eq!(snapshot.completed, 1);
+        assert_eq!(snapshot.pending_results, 1);
+        assert!(!snapshot.active);
+        for call in ["first-read", "retry-after-lost-response"] {
+            let result = feature
+                .execute(
+                    "delegate_result",
+                    call,
+                    json!({"task_id": "detached-result"}),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.details["status"], "completed");
+            assert!(
+                matches!(&result.content[0], ContentBlock::Text { text } if text == "all tests passed")
+            );
+            assert_eq!(feature.result_store.pending_terminal_count(), 0);
+            assert_eq!(feature.result_store.progress_snapshot().completed, 1);
+        }
+    }
+
     #[test]
     fn test_provide_context_lists_agents() {
         let temp_dir = TempDir::new().unwrap();

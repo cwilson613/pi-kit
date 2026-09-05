@@ -29,6 +29,7 @@ For user-facing docs, edit `site/src/pages/docs/` and the command snippets in `s
 - `docs/omegon-browser-extension.md`: native browser automation extension backed by Vercel agent-browser.
 - `docs/armory-discovery.md`: unified discovery model for browsing upstream extensions, plugins, skills, and catalog agents.
 - `docs/project-memory.md`: project memory behavior.
+- [`docs/context-retention.md`](context-retention.md): token-budgeted compaction, complete exchanges, and retained-context limits.
 - [`docs/project-instructions.md`](project-instructions.md): scoped AGENTS.md discovery, source completeness, and preparation errors.
 - [`docs/mcp-phase-deadlines.md`](mcp-phase-deadlines.md): startup, inventory, and execution budgets with legacy fallback.
 - [`docs/reconnect-parity-verification.md`](reconnect-parity-verification.md): reconnect fixes, approval replay, and duplicate-input evidence boundaries.

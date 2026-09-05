@@ -234,7 +234,7 @@ reasoning = true
             wait_for(lambda: "No active work" in screen(), "project browsing during active turn")
             capture("05a-project-during-turn")
             provider.release_tool.set()
-            wait_for(lambda: "Permission required" in screen(), "permission visible above Settings")
+            wait_for(lambda: "Permission required" in screen(), "permission visible above the Project browser")
             capture("06-permission")
             action("send-keys", "-t", "run:0.0", "-l", "n")
             wait_for(lambda: "Project browser" in screen() and "No active work" in screen() and "Permission required" not in screen(), "return to project work tab after denial")

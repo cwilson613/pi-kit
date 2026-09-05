@@ -22,6 +22,8 @@
 ## 3. Project and work vertical slice
 <!-- specs: tui-project-client -->
 
-- [ ] Specify project/session/work composition using existing semantic and runtime read models before implementation.
+- [x] Specify the first project/session/work composition using existing session inventory and Workbench read models.
+- [x] Implement F2 Sessions/Work browsing, item inspection, stable refresh, draft preservation, approval return, and explicit idle resume; verify focused TUI regressions.
+- [ ] Complete the final crate gate and capture the F2 browser scenario after the host executable-loader stall is resolved.
 - [ ] Implement project → session/work → execution/evidence → decision/cancel → conversation navigation.
 - [ ] Extend captured acceptance for recovery, queued decisions, cancellation, and preserved drafts/selections.

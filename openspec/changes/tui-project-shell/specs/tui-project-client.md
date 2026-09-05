@@ -118,3 +118,41 @@ Given several terminal modes are owned
 When one release operation fails during shutdown
 Then cleanup still attempts the other releases
 And a later cleanup retries only modes whose release failed
+
+### Requirement: Project browser preserves conversation context
+
+F2 opens a local project browser with Sessions and Work tabs. It uses the existing workspace context, session inventory, and Workbench projections. Enter inspects an item; session resume is a separate explicit action routed through the existing session command. Escape returns from detail to the selected row, then to the untouched composer. Refresh preserves selection by stable item identity and returns to the list if that item disappears.
+
+#### Scenario: Inspect and return with a draft
+Given the composer contains an unsent draft
+When the operator opens F2 and inspects the current session
+Then the browser displays session identity and current turn information
+And returning to the conversation preserves the draft
+
+#### Scenario: Approval above project browsing
+Given a project item is selected
+When a permission request arrives
+Then the permission owns input above the browser
+And resolving it restores the same project selection
+
+#### Scenario: Work refresh preserves identity
+Given a workstream is selected in the Work tab
+When a refresh inserts a different workstream before it
+Then the original workstream remains selected by ID
+
+#### Scenario: Selected work disappears
+Given a workstream detail is open
+When refresh removes that workstream
+Then the browser returns to the work list without displaying stale detail
+
+#### Scenario: Cancel while retaining the next draft
+Given an active turn and an unsent draft while the Project browser is open
+When the operator presses Ctrl+C
+Then the existing runtime cancellation command is sent
+And the browser and unsent draft remain intact
+
+#### Scenario: Saved session inspection is read-only
+Given a saved session is selected in the browser
+When the operator presses Enter
+Then its metadata opens without sending a resume command
+And resuming requires a separate R action while no turn is active

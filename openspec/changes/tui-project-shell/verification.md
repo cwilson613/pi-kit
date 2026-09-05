@@ -96,3 +96,29 @@ The current client still uses a fullscreen viewport. Persistent inline layout, a
 - Python fixture contracts and OpenSpec structural validation passed. The change remains implementing because the task plan retains the next reconstruction work.
 
 Implementation commit: `1718e546`. The final captured binary was built from these code changes before commit; its manifest retains the prior base revision and dirty-source inventory. No installed launcher was changed.
+
+# Fourth delivery: F2 Project browser
+
+F2 now opens Sessions and Work tabs for the current workspace. Enter inspects the current session, saved-session metadata, the active plan's tasks, or a published workstream summary. Saved-session resume requires R from its details and is refused while a turn is active; the request uses the existing session-control route. A successful session view replacement closes the old browser. Escape backs out of details and then returns to the preserved composer. F5 refreshes the snapshot while retaining a surviving row by stable ID. A missing row closes stale detail. Permission decisions leave the browser mounted, and Ctrl+C from the browser cancels without erasing the next draft.
+
+## Verification completed
+
+- The initial `project_browser_inspection_preserves_composer_draft` regression failed before implementation (`/tmp/omegon-project-red.log`).
+- Four focused browser tests passed for draft/inspection return, permission return, stable refresh after insertion, and removal of an inspected row (`/tmp/omegon-project-green.log`).
+- The subsequent serialized TUI suite passed 1,255 tests, zero failed, one ignored (`/tmp/omegon-project-tui-final.log`). It also includes explicit idle-only saved-session resume and cancellation preserving the browser/draft. Two earlier assertions for the old `/ui surfaces` footer hint were updated to require the new F2 project hint; the detail hotkey remains required.
+- A final test for populated plan task details was added and compiled after that TUI run; it has not executed because of the host launch problem below.
+- Python fixture contracts and OpenSpec structural validation passed. The extended runner now navigates Sessions/detail/Work with an unsent draft, then denies a write over the Work tab and checks return to that tab.
+
+## Interactive capture and final gate blocked at executable startup
+
+The real terminal attempt `/tmp/omegon-tui-project-browser-01/` timed out before application startup. It produced no application log and made zero provider requests. Its only terminal capture is blank. The manifest records the executable/source identity and failed run; this is not successful browser acceptance.
+
+A macOS process sample (`/tmp/omegon-project-startup-sample.txt`) placed the executable at `_dyld_start + 0`, with a 128 KiB footprint and no application frames. `codesign --verify --verbose=2 target/debug/omegon` succeeded. Standalone `--version` launches of both the original artifact and an identical copy outside the checkout also stalled before entry. Those owned probes were terminated; no host security service or policy was changed.
+
+The final `just test-crate omegon` compiled successfully but its test executable also stopped at `_dyld_start + 0` before announcing or running tests (`/tmp/omegon-project-test-loader-sample.txt`, `/tmp/omegon-project-crate.log`). After sampling the same pre-entry state, the owned test process was terminated. This gate is indeterminate, not a passed gate or a test assertion failure. Do not archive this change or mark captured project acceptance complete until the real run and final gate execute on a functioning host.
+
+Work remains a snapshot of current Workbench plan/workstream summaries. Full work-source inventory, execution/evidence navigation, populated-work runtime capture, persistent inline layout, and the other unchecked reconstruction tasks remain pending.
+
+The `just clippy-changed` generated script launcher also stalled before execution. Its checks were then run directly: `python3 scripts/affected_crates.py --format shell` selected only `omegon`; `cargo fmt --all --check` passed; and `cargo clippy -p omegon --all-targets -- -D warnings` passed on the final source (`/tmp/omegon-project-clippy-direct.log`). This satisfies the same formatting/Clippy checks without claiming the stalled wrapper completed.
+
+Implementation commit: `0fbee274`. No installed launcher was changed. The project browser is implemented in this checkout; interactive acceptance and the final full crate gate remain pending, as reflected in tasks.md.

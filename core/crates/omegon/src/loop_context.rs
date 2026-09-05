@@ -10,6 +10,32 @@ use crate::util::estimate_chars_to_tokens;
 pub(crate) struct LoopContextWindows {
     pub(crate) provider_window: usize,
     pub(crate) assembly_window: usize,
+    pub(crate) reply_reserve: usize,
+}
+
+impl LoopContextWindows {
+    pub(crate) fn validate_fixed_context(
+        &self,
+        system_prompt: &str,
+        tools: &[omegon_traits::ToolDefinition],
+    ) -> anyhow::Result<()> {
+        // Mandatory instructions must remain complete. Conversation compaction
+        // cannot repair a request whose fixed context alone exceeds capacity.
+        // Reuse the composition estimator and reserve actual schema cost here,
+        // rather than charging both actual schemas and the planning reserve.
+        let system_tokens = estimate_chars_to_tokens(system_prompt.len());
+        let schema_tokens = estimate_tool_schema_tokens(tools);
+        let required = system_tokens
+            .saturating_add(schema_tokens)
+            .saturating_add(self.reply_reserve);
+        anyhow::ensure!(
+            required <= self.provider_window,
+            "Fixed context exceeds model capacity: estimated system instructions {system_tokens} + tool schemas {schema_tokens} + reply reserve {} = {required} tokens, model window {}. Reduce instruction or tool content, or select a larger-context model; required instructions were not truncated.",
+            self.reply_reserve,
+            self.provider_window,
+        );
+        Ok(())
+    }
 }
 
 pub(crate) struct LoopContextAssembly {
@@ -53,6 +79,7 @@ impl<'a> LoopContextCompatibilityAdapter<'a> {
             let windows = LoopContextWindows {
                 provider_window: settings.context_window,
                 assembly_window: policy.assembly_window(),
+                reply_reserve: policy.reply_reserve,
             };
             self.manager.set_selector_policy(policy);
             windows
@@ -61,6 +88,7 @@ impl<'a> LoopContextCompatibilityAdapter<'a> {
             LoopContextWindows {
                 provider_window: 200_000,
                 assembly_window: 200_000,
+                reply_reserve: 8_192,
             }
         }
     }
@@ -400,6 +428,121 @@ fn is_declared_memory_tool(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn fixed_context_budget_stops_loop_before_provider_dispatch() {
+        struct CountingBridge(std::sync::atomic::AtomicUsize);
+        #[async_trait::async_trait]
+        impl crate::bridge::LlmBridge for CountingBridge {
+            fn serving_model_hint(&self) -> Option<&str> {
+                Some("anthropic:claude-sonnet-4-6")
+            }
+
+            async fn stream(
+                &self,
+                _system: &str,
+                _messages: &[LlmMessage],
+                _tools: &[omegon_traits::ToolDefinition],
+                _options: &crate::bridge::StreamOptions,
+            ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::bridge::LlmEvent>> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                anyhow::bail!("oversized context reached provider")
+            }
+        }
+
+        let bridge = CountingBridge(std::sync::atomic::AtomicUsize::new(0));
+        let mut bus = crate::bus::EventBus::new();
+        bus.finalize();
+        let mut manager = ContextManager::new("required policy ".repeat(100_000), vec![]);
+        let mut conversation = ConversationState::new();
+        conversation.push_user("Hello".into());
+        let (events, _) = tokio::sync::broadcast::channel(32);
+        let config = LoopConfig {
+            model: "anthropic:claude-sonnet-4-6".into(),
+            max_retries: 1,
+            ..Default::default()
+        };
+        let turn = crate::loop_driver::LoopDriverTurn::new(
+            &bridge,
+            &mut bus,
+            &mut manager,
+            &mut conversation,
+            &events,
+            tokio_util::sync::CancellationToken::new(),
+            &config,
+            std::sync::Arc::new(crate::provider_route_service::ProviderRouteService),
+        );
+        let execution = crate::loop_driver::ReleaseCoupledLoopDriver.run(turn).await;
+        let error = execution
+            .result
+            .expect_err("oversized fixed context must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Fixed context exceeds model capacity"),
+            "{error:#}"
+        );
+        assert_eq!(bridge.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            execution.terminal.outcome,
+            crate::runtime_turn::RuntimeTurnOutcome::Failed
+        );
+        assert_eq!(execution.terminal.reason_code, "loop_failed");
+    }
+
+    #[test]
+    fn fixed_context_budget_rejects_complete_oversized_instructions() {
+        let instructions = format!("{}\nRequired final instruction.", "policy ".repeat(10_000));
+        let mut manager = ContextManager::new(instructions.clone(), vec![]);
+        manager.set_context_window(16_000);
+        let assembly = compose_with_manager(&mut manager, &ConversationState::new(), &[], 16_000);
+        assert!(assembly.system_prompt.contains(&instructions));
+        let windows = LoopContextWindows {
+            provider_window: 16_000,
+            assembly_window: 16_000,
+            reply_reserve: 8_192,
+        };
+        let error = windows
+            .validate_fixed_context(&assembly.system_prompt, &[])
+            .expect_err("required instructions exceeding model capacity must fail before dispatch");
+        assert!(
+            error
+                .to_string()
+                .contains("Fixed context exceeds model capacity")
+        );
+    }
+
+    #[test]
+    fn fixed_context_budget_counts_actual_schemas_and_reply_reserve() {
+        let tools = vec![omegon_traits::ToolDefinition {
+            name: "large_schema".into(),
+            label: "Large schema".into(),
+            description: "tool description ".repeat(1_000),
+            parameters: serde_json::json!({"type": "object"}),
+            capabilities: vec![],
+        }];
+        let system_prompt = "required instruction".repeat(100);
+        let required = estimate_chars_to_tokens(system_prompt.len())
+            + estimate_tool_schema_tokens(&tools)
+            + 8_192;
+        let mut windows = LoopContextWindows {
+            provider_window: required,
+            // Working-set breadth does not authorize truncating fixed instructions.
+            assembly_window: 1_000,
+            reply_reserve: 8_192,
+        };
+        windows
+            .validate_fixed_context(&system_prompt, &tools)
+            .unwrap();
+        windows.provider_window -= 1;
+        assert!(
+            windows
+                .validate_fixed_context(&system_prompt, &tools)
+                .is_err()
+        );
+        // Removing the schema makes the same complete instructions fit again.
+        windows.validate_fixed_context(&system_prompt, &[]).unwrap();
+    }
 
     #[test]
     fn memory_attribution_uses_declared_tools_not_name_prefixes() {

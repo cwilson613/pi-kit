@@ -1506,21 +1506,29 @@ impl AgentSetup {
                 (t.name.len() + t.description.len() + schema.len()) / 4
             })
             .sum();
-        let base_prompt = settings
-            .as_ref()
-            .and_then(|s| s.lock().ok().map(|g| g.automation_level))
-            .map(|level| {
-                prompt::build_base_prompt_for_mode_with_subagent_policy(
-                    &cwd,
-                    &tool_defs,
-                    prompt_mode,
-                    crate::autonomy::subagent_policy_for_automation(level),
-                )
-                .prompt
-            })
-            .unwrap_or_else(|| {
-                prompt::build_base_prompt_for_mode(&cwd, &tool_defs, prompt_mode).prompt
-            });
+        let automation_level = settings.as_ref().and_then(|settings| {
+            settings
+                .lock()
+                .ok()
+                .map(|settings| settings.automation_level)
+        });
+        let assembly = match automation_level {
+            Some(level) => prompt::build_base_prompt_for_mode_with_subagent_policy(
+                &cwd,
+                &tool_defs,
+                prompt_mode,
+                crate::autonomy::subagent_policy_for_automation(level),
+            ),
+            None => prompt::build_base_prompt_for_mode(&cwd, &tool_defs, prompt_mode),
+        };
+        let base_prompt = match assembly {
+            Ok(assembly) => assembly.prompt,
+            Err(error) => {
+                return Err(
+                    published_setup_error(&mut bus, &mut dynamic_contributions, error).await,
+                );
+            }
+        };
         let prompt_tokens = base_prompt.len() / 4;
 
         tracing::info!(

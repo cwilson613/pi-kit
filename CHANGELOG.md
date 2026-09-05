@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Project instructions now include every AGENTS.md from the active worktree root through cwd, with source labels and complete UTF-8 content. Linked worktrees use their own policy files; explicit shared symlinks remain supported and canonical sources are deduplicated. Unreadable policy fails preparation, and fixed instructions plus tool schemas and reply reserve that exceed model capacity fail before provider dispatch instead of truncating required guidance.
+
 - Ranked the OpenCode2 beta parity backlog by expected return and narrowed the immediate OpenSpec pass to complete project instruction discovery and separate MCP phase deadlines. Durable refresh, context retention, model presets, and lifecycle investigations retain explicit follow-up criteria. Implementation remains planned.
 
 - Added direct Anthropic support for Claude Fable 5.1 and restricted-access Claude Mythos 5.1, promoting Fable 5.1 as the Anthropic S-grade default and curated model. Requests use the line's required adaptive thinking, map Omegon thinking levels onto output effort, opt into safe thinking-block drops when mutable session prefixes invalidate bound reasoning, and automatically cache growing conversations to benefit from Fable 5.1's lower cache-read price. Cache reads and writes reported at stream start now remain visible in turn usage. The Claude Code OAuth user-agent now matches upstream 2.1.258, and provider drift checks follow the current Anthropic model section and current grade schema.

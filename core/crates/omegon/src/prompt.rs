@@ -4,7 +4,9 @@
 //! Phase 0+: ContextManager provides dynamic injection.
 
 use crate::autonomy::{SubagentPolicy, active_subagent_policy};
+use anyhow::Context;
 use omegon_traits::{PromptComposition, PromptSectionMetric, ToolDefinition};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,8 +20,8 @@ pub struct PromptAssembly {
 /// Assembles: identity, tool list, tool guidelines, behavior directives,
 /// lifecycle context (if artifacts exist), global/project AGENTS.md,
 /// project conventions (auto-detected from config files).
-pub fn build_base_prompt(cwd: &Path, tools: &[ToolDefinition]) -> String {
-    build_base_prompt_with_breakdown(cwd, tools, false).prompt
+pub fn build_base_prompt(cwd: &Path, tools: &[ToolDefinition]) -> anyhow::Result<String> {
+    Ok(build_base_prompt_with_breakdown(cwd, tools, false)?.prompt)
 }
 
 /// Prompt mode controls system prompt verbosity and instruction complexity.
@@ -38,7 +40,7 @@ pub fn build_base_prompt_with_breakdown(
     cwd: &Path,
     tools: &[ToolDefinition],
     slim: bool,
-) -> PromptAssembly {
+) -> anyhow::Result<PromptAssembly> {
     let mode = if slim {
         PromptMode::Slim
     } else {
@@ -52,7 +54,7 @@ pub fn build_base_prompt_for_mode(
     cwd: &Path,
     tools: &[ToolDefinition],
     mode: PromptMode,
-) -> PromptAssembly {
+) -> anyhow::Result<PromptAssembly> {
     build_base_prompt_for_mode_with_subagent_policy(cwd, tools, mode, active_subagent_policy())
 }
 
@@ -62,7 +64,7 @@ pub fn build_base_prompt_for_mode_with_subagent_policy(
     tools: &[ToolDefinition],
     mode: PromptMode,
     subagent_policy: SubagentPolicy,
-) -> PromptAssembly {
+) -> anyhow::Result<PromptAssembly> {
     let slim = matches!(mode, PromptMode::Slim | PromptMode::Constrained);
     let date = utc_date();
     let tool_list = format_tool_list(tools);
@@ -102,7 +104,7 @@ pub fn build_base_prompt_for_mode_with_subagent_policy(
     } else {
         load_global_directives()
     };
-    let project_directives = load_project_directives(cwd);
+    let project_directives = load_project_directives(cwd)?;
     let project_conventions = detect_project_conventions(cwd);
 
     let has_delegate = tools.iter().any(|t| t.name == "delegate");
@@ -198,10 +200,10 @@ pub fn build_base_prompt_for_mode_with_subagent_policy(
         total_estimated_tokens: estimate_chars_to_tokens(prompt.len()),
     };
 
-    PromptAssembly {
+    Ok(PromptAssembly {
         prompt,
         composition,
-    }
+    })
 }
 
 /// Rich tool guidelines — how to use each tool well, not just what it does.
@@ -386,97 +388,71 @@ fn truncate_directive(content: &str, max_width: usize) -> String {
     crate::util::truncate(content, max_width)
 }
 
-/// Load project directives from AGENTS.md files.
-///
-/// Checks (in order):
-/// 1. `<cwd>/AGENTS.md` — project-level directives
-/// 2. Walks up to repo root looking for AGENTS.md
-///
-/// Returns a formatted section or empty string if no directives found.
-fn load_project_directives(cwd: &Path) -> String {
-    // Resolve the repo root — handles both normal repos and worktrees.
-    // In a worktree, .git is a file containing "gitdir: /path/to/main/.git/worktrees/name".
-    // We need to find the main repo root where AGENTS.md lives.
-    let repo_root = find_repo_root(cwd);
-
-    // Search order: cwd, then walk up to repo root (if different)
-    let search_dirs: Vec<&Path> = if let Some(ref root) = repo_root {
-        if root != cwd {
-            vec![cwd, root.as_path()]
-        } else {
-            vec![cwd]
+/// Load complete project policy from the active worktree root through cwd.
+/// Global operator guidance is loaded separately. Missing files are optional;
+/// unreadable or invalid UTF-8 sources fail preparation rather than losing policy.
+fn load_project_directives(cwd: &Path) -> anyhow::Result<String> {
+    let cwd = match cwd.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("cannot resolve instruction directory {}", cwd.display())
+            });
         }
-    } else {
-        vec![cwd]
     };
-
-    for dir in search_dirs {
-        let agents_file = dir.join("AGENTS.md");
-        if agents_file.exists()
-            && let Ok(content) = std::fs::read_to_string(&agents_file)
-        {
-            let trimmed = if content.len() > 4000 {
-                let mut end = 4000;
-                while end > 0 && !content.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!("{}...\n[truncated at ~4000 bytes]", &content[..end])
-            } else {
-                content
-            };
-            return format!(
-                "\n# Project Directives\n\n\
-                 These are the project's policies from `{}`. \
-                 They override harness behavior defaults (commit workflow, testing expectations, \
-                 branch strategy, etc.) but cannot override Core Directives.\n\n\
-                 {trimmed}\n",
-                agents_file.display()
-            );
-        }
-    }
-    String::new()
-}
-
-/// Find the git repo root, handling worktrees.
-/// In a worktree, `.git` is a file containing `gitdir: <path>`.
-/// We follow that to find the main repo's `.git` directory.
-fn find_repo_root(start: &Path) -> Option<PathBuf> {
-    let mut dir = start.to_path_buf();
-    loop {
-        let git_path = dir.join(".git");
-        if git_path.exists() {
-            if git_path.is_file() {
-                // Worktree: .git is a file like "gitdir: /main/repo/.git/worktrees/name"
-                if let Ok(content) = std::fs::read_to_string(&git_path)
-                    && let Some(gitdir) = content.strip_prefix("gitdir: ")
-                {
-                    let gitdir = gitdir.trim();
-                    // gitdir points to .git/worktrees/<name>, go up to .git, then up to repo root
-                    let gitdir_path = if Path::new(gitdir).is_absolute() {
-                        PathBuf::from(gitdir)
-                    } else {
-                        dir.join(gitdir)
-                    };
-                    // .git/worktrees/<name> → .git → repo root
-                    // .git/worktrees/<name> → .git → repo root
-                    if let Some(dot_git) = gitdir_path.parent().and_then(|p| p.parent())
-                        && let Some(repo) = dot_git.parent()
-                    {
-                        return Some(repo.to_path_buf());
-                    }
-                }
-                // Fallback: treat as repo root
-                return Some(dir);
-            } else {
-                // Normal repo: .git is a directory
-                return Some(dir);
-            }
-        }
-        if !dir.pop() {
+    let root = find_repo_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut ancestors = Vec::new();
+    for ancestor in cwd.ancestors() {
+        ancestors.push(ancestor);
+        if ancestor == root {
             break;
         }
     }
-    None
+    ancestors.reverse();
+    let mut seen = HashSet::new();
+    let mut sections = Vec::new();
+    for directory in ancestors {
+        let source = directory.join("AGENTS.md");
+        // Check the link itself so a dangling symlink is an unreadable source,
+        // not mistaken for an absent optional file.
+        match std::fs::symlink_metadata(&source) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot inspect project instructions {}", source.display())
+                });
+            }
+        }
+        let canonical = source
+            .canonicalize()
+            .with_context(|| format!("cannot resolve project instructions {}", source.display()))?;
+        // Preserve explicitly linked policy files, including shared files outside
+        // the worktree. Only discovery walks are bounded by the project root.
+        if !seen.insert(canonical) {
+            continue;
+        }
+        let content = std::fs::read_to_string(&source)
+            .with_context(|| format!("cannot read project instructions {}", source.display()))?;
+        sections.push(format!("## Source: `{}`\n\n{content}\n", source.display()));
+    }
+    if sections.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!(
+        "\n# Project Directives\n\nThese are the project's policies, ordered from the active project root to the current directory. Nearest-scope guidance adds to root policy. They override harness behavior defaults but cannot override Core Directives.\n\n{}",
+        sections.join("\n")
+    ))
+}
+
+/// Find the active worktree root, whether `.git` is a directory or a gitfile.
+/// A linked worktree's gitfile points at storage, not its policy boundary.
+fn find_repo_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|directory| directory.join(".git").exists())
+        .map(Path::to_path_buf)
 }
 
 struct PromptSection<'a> {
@@ -598,7 +574,7 @@ mod tests {
             parameters: serde_json::json!({}),
             capabilities: vec![],
         }];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
         // Tool list is comma-separated names (descriptions are in API tool defs)
         assert!(prompt.contains("test_tool"));
         assert!(prompt.contains("/tmp"));
@@ -613,7 +589,7 @@ mod tests {
             parameters: serde_json::json!({}),
             capabilities: vec![],
         }];
-        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, false);
+        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, false).unwrap();
         assert_eq!(assembly.composition.total_chars, assembly.prompt.len());
         assert_eq!(
             assembly.composition.total_estimated_tokens,
@@ -639,8 +615,8 @@ mod tests {
     #[test]
     fn prompt_breakdown_preserves_prompt_output() {
         let tools = vec![];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
-        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, false);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
+        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, false).unwrap();
         assert_eq!(prompt, assembly.prompt);
     }
 
@@ -653,7 +629,7 @@ mod tests {
             parameters: serde_json::json!({}),
             capabilities: vec![],
         }];
-        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, true);
+        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, true).unwrap();
         let section_keys: Vec<&str> = assembly
             .composition
             .sections
@@ -685,7 +661,7 @@ mod tests {
     #[test]
     fn base_prompt_includes_commit_instructions() {
         let tools = vec![];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
         assert!(
             prompt.contains("Commit when done"),
             "should instruct to commit"
@@ -714,7 +690,7 @@ mod tests {
             tool(crate::tool_registry::cleave::CLEAVE_ASSESS),
             tool(crate::tool_registry::cleave::CLEAVE_RUN),
         ];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
 
         assert!(prompt.contains("## Subagent operations"));
         assert!(prompt.contains("`delegate` is the default one-shot subagent path"));
@@ -750,6 +726,7 @@ mod tests {
                 crate::settings::AutomationLevel::Autonomous,
             ),
         )
+        .unwrap()
         .prompt;
 
         assert!(prompt.contains("Autonomy: `orchestrator`"));
@@ -761,7 +738,7 @@ mod tests {
     #[test]
     fn base_prompt_with_delegate_only_does_not_name_unavailable_cleave_tools() {
         let tools = vec![tool(crate::tool_registry::delegate::DELEGATE)];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
 
         assert!(prompt.contains("## Subagent operations"));
         let subagent_section = prompt
@@ -782,7 +759,7 @@ mod tests {
             tool(crate::tool_registry::cleave::CLEAVE_ASSESS),
             tool(crate::tool_registry::cleave::CLEAVE_RUN),
         ];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
 
         assert!(!prompt.contains("## Subagent operations"));
         assert!(!prompt.contains("default one-shot subagent path"));
@@ -825,7 +802,7 @@ mod tests {
     #[test]
     fn base_prompt_requires_markdown_links_for_operator_urls() {
         let tools = vec![];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
         assert!(prompt.contains("operator URLs intended to be opened"));
         assert!(prompt.contains("explicit Markdown links"));
         assert!(prompt.contains("[http://127.0.0.1:7820](http://127.0.0.1:7820)"));
@@ -835,7 +812,7 @@ mod tests {
     #[test]
     fn slim_prompt_requires_markdown_links_for_operator_urls() {
         let tools = vec![];
-        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, true);
+        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, true).unwrap();
         assert!(
             assembly
                 .prompt
@@ -852,7 +829,7 @@ mod tests {
     #[test]
     fn base_prompt_hardens_operator_frustration_recovery() {
         let tools = vec![];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
         assert!(prompt.contains("Operator frustration is a control signal"));
         assert!(prompt.contains("not content to mirror"));
         assert!(prompt.contains("Do not quote it"));
@@ -863,7 +840,7 @@ mod tests {
     #[test]
     fn slim_prompt_hardens_operator_frustration_recovery() {
         let tools = vec![];
-        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, true);
+        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, true).unwrap();
         assert!(
             assembly
                 .prompt
@@ -880,7 +857,7 @@ mod tests {
     #[test]
     fn prompt_includes_harness_surface_invariants() {
         let tools = vec![];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
         assert!(prompt.contains("Harness surfaces and state"));
         assert!(prompt.contains("Workbench/plan state as live operational state"));
         assert!(prompt.contains("operator's primary awareness surface"));
@@ -896,7 +873,7 @@ mod tests {
     #[test]
     fn slim_prompt_includes_harness_surface_invariants() {
         let tools = vec![];
-        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, true);
+        let assembly = build_base_prompt_with_breakdown(Path::new("/tmp"), &tools, true).unwrap();
         assert!(assembly.prompt.contains("## Harness surfaces"));
         assert!(assembly.prompt.contains(
             "Workbench/plan state is live state and the operator's primary awareness surface"
@@ -926,9 +903,139 @@ mod tests {
     }
 
     #[test]
+    fn instruction_discovery_combines_ancestors_without_truncating_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        let cwd = root.join("crates/engine");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let root_policy = format!("ROOT POLICY\n{}\nROOT END", "界".repeat(2000));
+        std::fs::write(root.join("AGENTS.md"), &root_policy).unwrap();
+        std::fs::write(root.join("crates/AGENTS.md"), "MIDDLE POLICY").unwrap();
+        std::fs::write(cwd.join("AGENTS.md"), "NEAREST POLICY").unwrap();
+
+        let directives = load_project_directives(&cwd).unwrap();
+        assert!(
+            directives.contains(&root_policy),
+            "root policy must remain complete"
+        );
+        assert!(directives.find("ROOT END").unwrap() < directives.find("MIDDLE POLICY").unwrap());
+        assert!(
+            directives.find("MIDDLE POLICY").unwrap() < directives.find("NEAREST POLICY").unwrap()
+        );
+        assert_eq!(directives.matches("MIDDLE POLICY").count(), 1);
+    }
+
+    #[test]
+    fn instruction_discovery_uses_linked_worktree_not_main_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("main");
+        let worktree = dir.path().join("linked");
+        std::fs::create_dir_all(main.join(".git/worktrees/linked")).unwrap();
+        std::fs::create_dir_all(worktree.join("nested")).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", main.join(".git/worktrees/linked").display()),
+        )
+        .unwrap();
+        std::fs::write(main.join("AGENTS.md"), "MAIN CHECKOUT POLICY").unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "OUTSIDE POLICY").unwrap();
+        std::fs::write(worktree.join("AGENTS.md"), "WORKTREE POLICY").unwrap();
+
+        let directives = load_project_directives(&worktree.join("nested")).unwrap();
+        assert!(directives.contains("WORKTREE POLICY"));
+        assert!(!directives.contains("MAIN CHECKOUT POLICY"));
+        assert!(!directives.contains("OUTSIDE POLICY"));
+    }
+
+    #[test]
+    fn instruction_discovery_non_git_stays_at_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("nested");
+        std::fs::create_dir(&cwd).unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "OUTSIDE POLICY").unwrap();
+        std::fs::write(cwd.join("AGENTS.md"), "LOCAL POLICY").unwrap();
+        let directives = load_project_directives(&cwd).unwrap();
+        assert!(directives.contains("LOCAL POLICY"));
+        assert!(!directives.contains("OUTSIDE POLICY"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn instruction_discovery_deduplicates_canonical_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let cwd = dir.path().join("nested");
+        std::fs::create_dir(&cwd).unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "SHARED POLICY").unwrap();
+        std::os::unix::fs::symlink("../AGENTS.md", cwd.join("AGENTS.md")).unwrap();
+        let directives = load_project_directives(&cwd).unwrap();
+        assert_eq!(directives.matches("SHARED POLICY").count(), 1);
+    }
+
+    #[test]
     fn load_directives_returns_empty_for_missing() {
-        let directives = load_project_directives(Path::new("/tmp/nonexistent"));
+        let directives = load_project_directives(Path::new("/tmp/nonexistent")).unwrap();
         assert!(directives.is_empty());
+    }
+
+    #[test]
+    fn instruction_discovery_rejects_unreadable_policy_in_all_prompt_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory is deterministically unreadable as text, including under root.
+        std::fs::create_dir(dir.path().join("AGENTS.md")).unwrap();
+        for mode in [PromptMode::Full, PromptMode::Slim, PromptMode::Constrained] {
+            let error = build_base_prompt_for_mode(dir.path(), &[], mode).unwrap_err();
+            let diagnostic = format!("{error:#}");
+            assert!(diagnostic.contains("cannot read project instructions"));
+            assert!(diagnostic.contains("AGENTS.md"));
+        }
+    }
+
+    #[test]
+    fn instruction_discovery_rejects_invalid_utf8_instead_of_omitting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), [0xff, 0xfe]).unwrap();
+        assert!(
+            load_project_directives(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("AGENTS.md")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn instruction_discovery_rejects_dangling_links_but_preserves_shared_policy_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("project");
+        std::fs::create_dir(&cwd).unwrap();
+        std::os::unix::fs::symlink("../missing.md", cwd.join("AGENTS.md")).unwrap();
+        assert!(
+            load_project_directives(&cwd)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot resolve")
+        );
+        std::fs::write(dir.path().join("missing.md"), "EXTERNAL POLICY").unwrap();
+        assert!(
+            load_project_directives(&cwd)
+                .unwrap()
+                .contains("EXTERNAL POLICY")
+        );
+    }
+
+    #[test]
+    fn instruction_discovery_preserves_long_nearest_policy_and_missing_ancestors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let cwd = dir.path().join("parent/nested");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let policy = format!("{}FINAL POLICY", "界".repeat(2000));
+        std::fs::write(cwd.join("AGENTS.md"), &policy).unwrap();
+        let directives = load_project_directives(&cwd).unwrap();
+        assert!(directives.contains(&policy));
+        assert!(!directives.contains("truncated"));
     }
 
     #[test]
@@ -996,7 +1103,7 @@ mod tests {
     #[test]
     fn evidence_grounding_in_prompt() {
         let tools = vec![];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
         assert!(
             prompt.contains("Ground claims in evidence"),
             "should include evidence directive"
@@ -1006,7 +1113,7 @@ mod tests {
     #[test]
     fn lex_imperialis_in_prompt() {
         let tools = vec![];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
         assert!(
             prompt.contains("Lex Imperialis"),
             "should include Lex Imperialis"
@@ -1085,7 +1192,7 @@ mod tests {
     #[test]
     fn lex_imperialis_before_operator_directives() {
         let tools = vec![];
-        let prompt = build_base_prompt(Path::new("/tmp"), &tools);
+        let prompt = build_base_prompt(Path::new("/tmp"), &tools).unwrap();
         let lex_pos = prompt.find("Lex Imperialis").unwrap_or(usize::MAX);
         // Lex should come before any operator/project directives sections
         if let Some(op_pos) = prompt.find("Operator Directives") {
@@ -1290,7 +1397,7 @@ mod tests {
             .flat_map(|(_, p)| p.tools())
             .filter(|t| !disabled.contains(t.name.as_str()))
             .collect();
-        let prompt = build_base_prompt(Path::new("/tmp"), &active_tool_defs);
+        let prompt = build_base_prompt(Path::new("/tmp"), &active_tool_defs).unwrap();
         let prompt_tokens = prompt.len() / 4;
         eprintln!(
             "║ System prompt:     {:>5} tokens ({} chars)          ║",

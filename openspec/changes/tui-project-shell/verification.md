@@ -122,3 +122,48 @@ Work remains a snapshot of current Workbench plan/workstream summaries. Full wor
 The `just clippy-changed` generated script launcher also stalled before execution. Its checks were then run directly: `python3 scripts/affected_crates.py --format shell` selected only `omegon`; `cargo fmt --all --check` passed; and `cargo clippy -p omegon --all-targets -- -D warnings` passed on the final source (`/tmp/omegon-project-clippy-direct.log`). This satisfies the same formatting/Clippy checks without claiming the stalled wrapper completed.
 
 Implementation commit: `0fbee274`. No installed launcher was changed. The project browser is implemented in this checkout; interactive acceptance and the final full crate gate remain pending, as reflected in tasks.md.
+
+# Fifth delivery: native operator testing (2026-09-05)
+
+The previous host loader block cleared. The final serialized `just test-crate omegon`
+completed: 5,125 passed, zero failed, 11 ignored across nine suites
+(`/tmp/omegon-project-recovered-crate.log`). This includes the populated plan-detail
+regression that previously compiled without executing. Final Rust Clippy evidence
+above still applies; this delivery changes Python tooling and documentation.
+
+`just test-tui-captured /tmp/omegon-tui-project-browser-recovered-01` passed with
+15 captures in 14.95 seconds and four local provider requests. The agent inspected
+Sessions, session detail, Work return and the completed denied-write scenario.
+Binary SHA-256: `441d165712f32488d4f5bc996350f0e4d91aa7c48f43a49033b95d804448b6cc`.
+The manifest retains source base `b2235e23` and the preparation's dirty inventory.
+This resolves the fourth delivery's pending crate and captured-browser gates.
+
+The operator kit is `/Users/wilson/workspace/styrene-labs/omegon-terminal-operator-kit`.
+It freezes that executable and the fixture/runner, verifies their hashes, provides
+native launchers, isolates configuration and credentials, and records local
+asciinema output with client/environment/process identity and assessment sheets.
+No stable installed launcher was changed. `scripts/tests/test_tui_operator_test.py`
+passes four contracts covering isolation, literal shell arguments, changed artifact
+rejection and cleanup across descendant process sessions. Fixture contracts also pass.
+
+Native startup reached TUI readiness in Ghostty 1.3.1, WezTerm
+20240203-110809-5046fc22, iTerm2 3.6.11, kitty 0.48.2 and Apple Terminal 2.15.
+The kit's STARTUP-CHECKS.md links the retained probe evidence. Startup alone is
+not a full client compatibility pass.
+
+The final kit's `runs/iterm-20260905T203846.319022Z/` contains a complete native
+iTerm2 trial driven through its owned window's AppleScript session: F2/detail/Work,
+preserved draft, two turns, resize from 120x40 to 90x30, native transcript export,
+permission denial above Work, return to Work and graceful `/quit`. The manifest
+confirms four local requests, no denied file, TUI readiness and recorder exit zero.
+Ten timestamped session-text captures supplement terminal.cast. iTerm's text includes
+retained history; these files are not isolated framebuffers or GUI screenshots.
+Font/color fidelity, paste/clipboard, cancellation and other clients' full behavior
+remain operator checks. Earlier idle startup probes were stopped after recording.
+
+Preparation exposed an asciinema-under-tmux startup terminal-query stall; the kit
+uses native clients directly. The direct tmux acceptance runner above passed.
+The browser also displays a generic search hint without implementing search;
+this is documented as a known cross-client limitation. Remaining project execution/
+evidence navigation, extension response transport and persistent inline layout
+stay unchecked; this OpenSpec change remains implementing.

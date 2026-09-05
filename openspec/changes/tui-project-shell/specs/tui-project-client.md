@@ -156,3 +156,24 @@ Given a saved session is selected in the browser
 When the operator presses Enter
 Then its metadata opens without sending a resume command
 And resuming requires a separate R action while no turn is active
+
+### Requirement: Attributable native terminal operator kit
+
+The operator kit provides launchers for installed supported native terminal clients, a fixed executable/runner identity, isolated fixture state, local output recordings and an explicit unassessed results sheet. Native terminal capability settings are retained. GUI/font fidelity remains an operator screenshot check rather than an inferred result from terminal bytes.
+
+#### Scenario: Launch a client trial
+Given a prepared kit and an installed supported terminal client
+When the operator opens that client's launcher
+Then a new client window starts the isolated fixture against the recorded executable
+And the trial stores client identity, terminal environment, dimensions and local evidence
+
+#### Scenario: Changed prepared artifact
+Given a prepared kit whose executable has been modified
+When a trial is requested
+Then verification rejects the changed artifact before launch
+
+#### Scenario: Trial cancellation cleanup
+Given a trial owns child processes including a separate process session
+When the runner is terminated
+Then cleanup targets that owned descendant tree
+And unrelated terminal sessions remain outside the cleanup set

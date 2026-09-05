@@ -17,7 +17,7 @@
 - [x] Extend shared visible/input ownership to passive navigation and extension overlays.
 - [x] Adapt success-ordered terminal ownership from the inline corpus; route current fullscreen/native-export mode changes through one owner.
 - [ ] Add responder transport and provenance for extension actions; the client currently reports unsupported responses.
-- [ ] Implement the persistent inline viewport and bounded automatic transcript publication, with backlog/recovery acceptance.
+- [ ] Implement the persistent inline viewport and bounded automatic transcript publication, with backlog/recovery acceptance; detailed TDD ownership is in [tui-dual-presentation](../tui-dual-presentation/tasks.md).
 
 ## 3. Project and work vertical slice
 <!-- specs: tui-project-client -->

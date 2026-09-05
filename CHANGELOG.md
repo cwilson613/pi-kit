@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Specified the shared inline/fullscreen TUI implementation and TDD acceptance plan: `om` defaults to inline/Active, `omegon` to fullscreen/Full, with independent preferences, reused components, bounded publication, and automated terminal captures. These defaults remain planned, not yet enabled.
+
 - Permission prompts display one scope-correct set of choices and reserve space for them when context wraps. Project browser search now filters rows without losing drafts or covered selection, and narrow composers preserve the primary send/run hint before secondary help.
 
 - Native terminal compatibility trials can now be driven by the agent across Ghostty, WezTerm, iTerm2, kitty and Apple Terminal, with owned-window screenshots, current-view assertions and recorded fixture outcomes.

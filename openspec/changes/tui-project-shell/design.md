@@ -28,6 +28,13 @@ A primary-screen scope suspends the exact tracked modes, executes its operation,
 
 This is an adaptation of the ownership invariant, not installation of the neighboring two-Terminal coordinator. Persistent inline viewport layout, automatic bounded transcript publication, and publication backlog recovery remain pending. The current scope exercises explicit `/session-export scrollback` through the actual terminal. OS job-control suspension and tutorial process replacement remain unit/code-path coverage rather than captured acceptance.
 
+The detailed implementation contract for that pending inline work is now
+[tui-dual-presentation](../tui-dual-presentation/design.md). It specifies `om`
+inline/Active and `omegon` fullscreen/Full defaults, independent configuration,
+shared components, terminal ownership, bounded publication, and captured TDD
+acceptance. This parent retains the broader reconstruction scope; its inline
+task stays open until the child implementation and applicable evidence are complete.
+
 ## Project browser increment
 
 F2 is a frontend-local navigation action, so it does not introduce another domain slash command. The browser composes the existing session inventory menu and Workbench projections into a project surface. Sessions includes the current session even before it appears in saved inventory. Enter inspects metadata; resuming a saved session requires a separate R action through the existing session command and its busy/session lifecycle checks. Work exposes the current plan and workstreams without inventing persisted work objects or execution evidence.

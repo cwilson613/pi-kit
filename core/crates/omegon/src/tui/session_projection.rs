@@ -41,7 +41,13 @@ impl App {
                     SessionViewKind::New => "New session",
                     SessionViewKind::ContextClear => "Context cleared into new session",
                 };
-                conversation.push_system(&format!(
+                if target.kind == SessionViewKind::New && view.frontier_sequence == 1 {
+                    conversation.push_system(&format!(
+                        "New session {}. Ready for first turn. No semantic steps recorded yet.",
+                        target.session_id
+                    ));
+                } else {
+                    conversation.push_system(&format!(
                     "{action} {}. Semantic view: {}. Frontier {}. Queue {}; turn {}; context revision {} ({} items).",
                     target.session_id,
                     view.status.label(),
@@ -59,6 +65,7 @@ impl App {
                         .as_ref()
                         .map_or(0, |snapshot| snapshot.context.items.len()),
                 ));
+                }
             }
             Err(error) => {
                 self.session_projection_frontier = None;

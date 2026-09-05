@@ -5310,6 +5310,70 @@ fn build_tui_secret_readiness_snapshot(
         settings::StartupSplashMode::Always => true,
         settings::StartupSplashMode::Never => false,
     };
+    // Establish authority and its first semantic view before exposing any client.
+    let session_authority = if cli.no_session {
+        None
+    } else {
+        let session_snapshot = match session::sessions_dir(&agent.cwd) {
+            Some(directory) => directory.join(format!("{}.json", agent.session_id)),
+            None => {
+                return setup::finalize_agent_error(
+                    &mut agent,
+                    anyhow::anyhow!("cannot determine interactive session directory"),
+                )
+                .await;
+            }
+        };
+        let composition_generation_id = match agent.bus.composition_generation_id() {
+            Some(generation_id) => generation_id.as_str().to_string(),
+            None => {
+                return setup::finalize_agent_error(
+                    &mut agent,
+                    anyhow::anyhow!("interactive composition was not published"),
+                )
+                .await;
+            }
+        };
+        let recorded_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let mut authority = match session_authority::SessionAuthority::open(
+            &session_snapshot,
+            &agent.session_id,
+            &agent.workspace_state.lease.workspace_id,
+            &composition_generation_id,
+            session_authority::ActorIdentity {
+                principal: "local-operator".into(),
+                ingress: "interactive".into(),
+            },
+            &recorded_at,
+        ) {
+            Ok(authority) => authority,
+            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+        };
+        if let Some(metadata) = agent.resume_meta.as_ref()
+            && let Err(error) = session::import_legacy_resume(
+                &mut authority,
+                &agent.conversation,
+                metadata,
+                &session_snapshot,
+                &agent.cwd,
+                &recorded_at,
+            ) {
+            return setup::finalize_agent_error(&mut agent, error).await;
+        }
+        if let Err(error) = session_consumers::prepare_initial_view(&agent.session_view_binding.snapshot()) {
+            return setup::finalize_agent_error(&mut agent, error.into()).await;
+        }
+        Some(authority)
+    };
+
+    let mut runtime = match session_authority {
+        Some(authority) => match InteractiveRuntimeSupervisor::with_authority(authority) {
+            Ok(runtime) => runtime,
+            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+        },
+        None => InteractiveRuntimeSupervisor::default(),
+    };
+
     let tui_config = tui::TuiConfig {
         cwd: agent.cwd.to_string_lossy().to_string(),
         is_oauth,
@@ -5397,66 +5461,6 @@ fn build_tui_secret_readiness_snapshot(
 
     let _mqtt_bridge =
         maybe_start_mqtt_bridge(&agent.cwd, agent.session_id.clone(), events_tx.clone());
-
-    let session_authority = if cli.no_session {
-        None
-    } else {
-        let session_snapshot = match session::sessions_dir(&agent.cwd) {
-            Some(directory) => directory.join(format!("{}.json", agent.session_id)),
-            None => {
-                return setup::finalize_agent_error(
-                    &mut agent,
-                    anyhow::anyhow!("cannot determine interactive session directory"),
-                )
-                .await;
-            }
-        };
-        let composition_generation_id = match agent.bus.composition_generation_id() {
-            Some(generation_id) => generation_id.as_str().to_string(),
-            None => {
-                return setup::finalize_agent_error(
-                    &mut agent,
-                    anyhow::anyhow!("interactive composition was not published"),
-                )
-                .await;
-            }
-        };
-        let recorded_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let mut authority = match session_authority::SessionAuthority::open(
-            &session_snapshot,
-            &agent.session_id,
-            &agent.workspace_state.lease.workspace_id,
-            &composition_generation_id,
-            session_authority::ActorIdentity {
-                principal: "local-operator".into(),
-                ingress: "interactive".into(),
-            },
-            &recorded_at,
-        ) {
-            Ok(authority) => authority,
-            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
-        };
-        if let Some(metadata) = agent.resume_meta.as_ref()
-            && let Err(error) = session::import_legacy_resume(
-                &mut authority,
-                &agent.conversation,
-                metadata,
-                &session_snapshot,
-                &agent.cwd,
-                &recorded_at,
-            ) {
-            return setup::finalize_agent_error(&mut agent, error).await;
-        }
-        Some(authority)
-    };
-
-    let mut runtime = match session_authority {
-        Some(authority) => match InteractiveRuntimeSupervisor::with_authority(authority) {
-            Ok(runtime) => runtime,
-            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
-        },
-        None => InteractiveRuntimeSupervisor::default(),
-    };
 
     let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 

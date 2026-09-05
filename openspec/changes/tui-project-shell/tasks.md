@@ -10,9 +10,11 @@
 ## 2. Client interaction ownership
 <!-- specs: tui-project-client -->
 
-- [ ] Resolve the isolated fresh-session semantic projection warning before using it as the project read model.
-- [ ] Add regression scenarios for visible approval/input agreement while browsing and return to prior selection.
-- [ ] Introduce one client navigation/interaction owner and route existing UI-local input through it.
+- [x] Initialize and validate fresh-session projections before launching interactive clients; render an explicit empty-session ready state.
+- [x] Add regression scenarios for visible approval/input agreement while browsing and return to prior selection.
+- [x] Introduce responder-backed decision ownership with arrival ordering, bounded overflow, preserved passive state, and matching prompt/input precedence.
+- [x] Propagate profile permission policy into runtime settings; capture a real denied write above Settings and return to the prior surface.
+- [ ] Extend shared ownership to all passive navigation and extension interactions.
 - [ ] Adapt terminal ownership from the inline corpus with all terminal mode changes routed through one owner.
 
 ## 3. Project and work vertical slice

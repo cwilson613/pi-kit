@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Session-backed TUI startup prepares a validated semantic view before exposing clients, and new empty sessions display readiness without a missing-projection warning. Permission and manual-action prompts share visible/input ownership, queue arrivals, and preserve passive surface state. Profile application now propagates declared permission policy into runtime admission. Captured terminal acceptance exercises a denied write above Settings and return to the prior surface.
+
 - TUI deferred stream events now replay without requeueing behind their successors, preventing a completed answer from freezing input. Added an isolated tmux acceptance runner with a local streaming provider and attributable terminal captures for project-shell reconstruction.
 
 - Conversation compaction now budgets the retained recent suffix by estimated tokens as well as age, preserving complete turns and connected tool exchanges. Loop and manual callers apply the selected boundary, prior summaries feed subsequent compactions, and effective context policy reserves system and summary headroom. Oversized active groups remain intact with explicit planning diagnostics. Durable compaction now aligns current semantic sources instead of slicing stale request items, preserves post-request results, and validates retained-source replay. Incompatible or legacy/mixed projections fail admission before mutation.

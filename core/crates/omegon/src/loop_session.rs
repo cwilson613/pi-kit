@@ -2385,6 +2385,154 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn token_retention_preserves_tool_results_after_last_prepared_request() {
+        let (_directory, authority, scope) = authority_scope();
+        let mut adapter = LoopSemanticFactAdapter::new(&scope);
+        let request = capture_request(&mut adapter, "system", &[], &[]);
+        commit_request(&adapter, &scope, &request, None, 2);
+        let calls = vec![
+            ToolCall {
+                id: "call-1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"z": 1, "a": "exact"}),
+            },
+            ToolCall {
+                id: "call-2".into(),
+                name: "write".into(),
+                arguments: serde_json::json!({"path": "denied"}),
+            },
+        ];
+        let receipts = adapter.record_tool_calls(&request, &calls).unwrap();
+        adapter
+            .close_request(
+                &request,
+                0,
+                crate::loop_driver::LoopRequestTerminal::ResponseCompleted,
+                "provider_done",
+            )
+            .unwrap();
+        let results = vec![
+            ToolResultEntry {
+                call_id: "call-1".into(),
+                tool_name: "read".into(),
+                content: vec![ContentBlock::Text {
+                    text: "[REDACTED] final enriched".into(),
+                }],
+                is_error: true,
+                args_summary: None,
+            },
+            ToolResultEntry {
+                call_id: "call-2".into(),
+                tool_name: "write".into(),
+                content: vec![ContentBlock::Text {
+                    text: "not dispatched".into(),
+                }],
+                is_error: true,
+                args_summary: None,
+            },
+        ];
+        adapter
+            .record_tool_results(
+                &crate::loop_driver::LoopStepIdentity {
+                    step_id: request.step_id,
+                    turn_id: request.turn_id,
+                    step_ordinal: 0,
+                },
+                &receipts,
+                &results,
+                &[
+                    crate::loop_driver::LoopInvocationTerminal::Denied {
+                        reason_code: "permission_denied".into(),
+                    },
+                    crate::loop_driver::LoopInvocationTerminal::NotDispatched {
+                        reason_code: "tool_execution_limit".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        let mut conversation = ConversationState::new();
+        conversation.push_user("capture".into());
+        conversation.intent.stats.turns = 1;
+        conversation.push_assistant(crate::conversation::AssistantMessage {
+            tool_calls: calls.clone(),
+            ..Default::default()
+        });
+        for result in results {
+            conversation.push_tool_result(result);
+        }
+        conversation.intent.stats.turns = 2;
+        let plan = crate::context_compaction_service::ContextCompactionBinding::direct_for_test()
+            .plan(
+                conversation
+                    .context_compaction_snapshot()
+                    .with_retained_token_budget(0),
+                crate::context_compaction_service::ContextCompactionModeV1::Pressure,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.evict_count, 1);
+        let compaction = crate::session_compaction::SessionCompaction::begin_turn(
+            authority.clone(),
+            request.turn_id,
+            request.step_id,
+            crate::session_authority::CompactionTrigger::ContextPressure,
+            &plan,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(compaction.provider_payload().contains("capture"));
+        assert!(!compaction.provider_payload().contains("final enriched"));
+        let lease_id = uuid::Uuid::new_v4();
+        authority
+            .record_route_lease(
+                "2026-08-21T12:00:02Z",
+                crate::session_authority::RouteLeaseRecorded {
+                    lease_id,
+                    request_id: compaction.compaction_request_id(),
+                    turn_id: request.turn_id,
+                    selected_provider_id: "anthropic".into(),
+                    selected_model_id: route().selected_model,
+                    serving_provider_id: "anthropic".into(),
+                    serving_model_id: route().serving_model,
+                    schema_dialect: route().schema_dialect,
+                    credential_source_class: "test".into(),
+                    fallback_reason: None,
+                    contribution_generation_id: "provider:anthropic/v1".into(),
+                    route_policy: "direct".into(),
+                },
+            )
+            .unwrap();
+        compaction
+            .prepare(crate::session_authority::CompactionRoute::TurnLease { lease_id })
+            .unwrap();
+        compaction.commit_done("compacted summary", None).unwrap();
+        plan.apply(&mut conversation, "compacted summary".into());
+        assert_eq!(conversation.message_count(), 3);
+        let descriptor = authority.projection_worker_descriptor();
+        let replay = crate::session_replay::SessionReplay::replay_prefix(
+            &descriptor.session_snapshot,
+            &descriptor.session_id,
+            descriptor.stream_id,
+            crate::session_replay::ReplayEnd::Event(authority.state().last_event_id.unwrap()),
+        )
+        .unwrap();
+        let current =
+            crate::session_current_context::CurrentContextDraftV1::derive(&replay).unwrap();
+        assert_eq!(current.items.len(), 4);
+        assert!(matches!(&current.items[1].message,
+            crate::bridge::LlmMessage::Assistant { tool_calls, .. } if tool_calls.len() == 2));
+        assert!(matches!(&current.items[2].message,
+            crate::bridge::LlmMessage::ToolResult { call_id, content, .. }
+                if call_id == "call-1" && content.contains("final enriched")));
+        assert!(matches!(&current.items[3].message,
+            crate::bridge::LlmMessage::ToolResult { call_id, .. } if call_id == "call-2"));
+        let mut next = LoopSemanticFactAdapter::new(&scope);
+        assert_eq!(next.current_context_messages(&[]).unwrap().len(), 4);
+    }
+
     #[test]
     fn tool_facts_preserve_provider_order_cardinality_and_final_content() {
         let (directory, authority, scope) = authority_scope();
@@ -2862,7 +3010,15 @@ mod tests {
             second.turn_id,
             second.step_id,
             crate::session_authority::CompactionTrigger::ContextOverflow,
-            1,
+            &crate::context_compaction_service::ContextCompactionPlanV1 {
+                payload: String::new(),
+                evict_count: 1,
+                source_is_prefix: true,
+                reason: None,
+                application: crate::context_compaction_service::ContextCompactionApplicationV1::KeepRecent(0),
+                source_messages: history.clone(),
+                previous_summary: None,
+            },
         )
         .unwrap()
         .unwrap();

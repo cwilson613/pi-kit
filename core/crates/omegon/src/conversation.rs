@@ -872,6 +872,8 @@ impl ConversationState {
             messages: self.canonical.clone(),
             current_turn: self.intent.stats.turns,
             decay_window: self.decay_window as u32,
+            retained_token_budget: None,
+            previous_summary: self.compaction_summary.clone(),
         }
     }
 
@@ -1422,7 +1424,7 @@ impl ConversationState {
             if turn_age > effective_window {
                 messages.push(self.decay_message(msg));
             } else {
-                messages.push(self.to_llm_message(msg));
+                messages.push(Self::to_llm_message(msg));
             }
         }
 
@@ -1979,7 +1981,7 @@ impl ConversationState {
     }
 
     /// Convert a canonical message to Omegon's wire format.
-    fn to_llm_message(&self, msg: &AgentMessage) -> LlmMessage {
+    pub(crate) fn to_llm_message(msg: &AgentMessage) -> LlmMessage {
         match msg {
             AgentMessage::User { text, images, .. } => LlmMessage::User {
                 content: text.clone(),

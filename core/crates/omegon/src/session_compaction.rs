@@ -8,11 +8,55 @@ use crate::session_authority::{
     CompactionRequestOutcome, CompactionRequestPrepared, CompactionResponseAttemptFailed,
     CompactionResponseAttemptFailure, CompactionRetryDisposition, CompactionRoute,
     CompactionStarted, CompactionSummaryCommitted, CompactionTrigger, CompactionUsage,
-    ModelContextRole, ProjectionClass, ProviderCompletionEvidence, SessionAuthorityHandle,
+    ModelContextSourceKind, ProjectionClass, ProviderCompletionEvidence, SessionAuthorityHandle,
     compaction_input_manifest_id,
 };
 
 const SUMMARY_PROMPT_PATH: &str = "prompts/session-compaction.md";
+
+fn same_semantic_message(
+    left: &crate::bridge::LlmMessage,
+    right: &crate::bridge::LlmMessage,
+) -> Result<bool, AuthorityError> {
+    fn normalize(message: &crate::bridge::LlmMessage) -> crate::bridge::LlmMessage {
+        let mut message = message.clone();
+        match &mut message {
+            crate::bridge::LlmMessage::User { images, .. } => {
+                for image in images {
+                    image.source_path = None;
+                }
+            }
+            crate::bridge::LlmMessage::Assistant {
+                text,
+                thinking,
+                raw,
+                ..
+            } => {
+                for blocks in [text, thinking] {
+                    let content = blocks.concat();
+                    *blocks = if content.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![content]
+                    };
+                }
+                *raw = None;
+            }
+            crate::bridge::LlmMessage::ToolResult {
+                images,
+                args_summary,
+                ..
+            } => {
+                for image in images {
+                    image.source_path = None;
+                }
+                *args_summary = None;
+            }
+        }
+        message
+    }
+    Ok(serde_json::to_value(normalize(left))? == serde_json::to_value(normalize(right))?)
+}
 
 pub(crate) fn summary_prompt() -> anyhow::Result<(String, String, String)> {
     let pack = crate::content_pack::boot_pack();
@@ -55,25 +99,25 @@ impl SessionCompaction {
         turn_id: Uuid,
         step_id: Uuid,
         trigger: CompactionTrigger,
-        evict_count: usize,
+        plan: &crate::context_compaction_service::ContextCompactionPlanV1,
     ) -> Result<Option<Self>, AuthorityError> {
         Self::begin(
             authority,
             CompactionOwnerScope::Turn { turn_id, step_id },
             trigger,
-            evict_count,
+            plan,
         )
     }
 
     pub(crate) fn begin_idle(
         authority: SessionAuthorityHandle,
-        evict_count: usize,
+        plan: &crate::context_compaction_service::ContextCompactionPlanV1,
     ) -> Result<Option<Self>, AuthorityError> {
         Self::begin(
             authority,
             CompactionOwnerScope::SessionIdle,
             CompactionTrigger::ManualIdle,
-            evict_count,
+            plan,
         )
     }
 
@@ -81,55 +125,129 @@ impl SessionCompaction {
         authority: SessionAuthorityHandle,
         owner_scope: CompactionOwnerScope,
         trigger: CompactionTrigger,
-        evict_count: usize,
+        plan: &crate::context_compaction_service::ContextCompactionPlanV1,
     ) -> Result<Option<Self>, AuthorityError> {
+        let evict_count = plan.evict_count;
         let state = authority.state();
-        let Some((request_id, request)) = state
-            .model_requests
-            .iter()
-            .filter_map(|(request_id, request)| {
-                let event_id = state.model_request_source_events.get(request_id)?;
-                let sequence = state
-                    .command_receipts
-                    .values()
-                    .find(|receipt| receipt.event_id == *event_id)?
-                    .sequence;
-                Some((sequence, *request_id, request.preparation()))
-            })
-            .max_by_key(|(sequence, _, _)| *sequence)
-            .map(|(_, request_id, request)| (request_id, request))
-        else {
-            return Ok(None);
-        };
-        let source_event_id = state.model_request_source_events[&request_id];
-        let conversation_items = request
-            .context_items
-            .iter()
-            .filter(|item| item.role != ModelContextRole::System)
-            .collect::<Vec<_>>();
-        if evict_count == 0 || conversation_items.len() <= evict_count {
+        if state.lineage_level != crate::session_authority::AuthorityLineageLevel::FullSpine {
+            return Err(AuthorityError::Invalid(
+                "compaction requires aligned full semantic lineage; legacy or mixed context is preserved".into(),
+            ));
+        }
+        if evict_count == 0 {
             return Ok(None);
         }
+        if !plan.source_is_prefix {
+            return Err(AuthorityError::Invalid(
+                "compaction selection is not a chronological source prefix".into(),
+            ));
+        }
+        if evict_count > plan.source_messages.len() {
+            return Err(AuthorityError::Invalid(
+                "compaction boundary exceeds canonical source".into(),
+            ));
+        }
+        let descriptor = authority.projection_worker_descriptor();
+        let replay = crate::session_replay::SessionReplay::replay_prefix(
+            &descriptor.session_snapshot,
+            &descriptor.session_id,
+            descriptor.stream_id,
+            crate::session_replay::ReplayEnd::Event(state.last_event_id.ok_or_else(|| {
+                AuthorityError::Invalid("compaction source frontier is empty".into())
+            })?),
+        )
+        .map_err(|error| AuthorityError::Invalid(error.to_string()))?;
+        let draft = crate::session_current_context::CurrentContextDraftV1::derive(&replay)
+            .map_err(|error| AuthorityError::Invalid(error.to_string()))?;
+        let mut canonical_index = 0;
+        let mut summary_count = 0;
+        let mut conversation_items = Vec::with_capacity(draft.items.len());
+        for (index, item) in draft.items.into_iter().enumerate() {
+            let event_id = item.provenance.source_event_id.ok_or_else(|| {
+                AuthorityError::Invalid("compaction source event is absent".into())
+            })?;
+            let identity = item.provenance.source_identity.as_deref().ok_or_else(|| {
+                AuthorityError::Invalid("compaction source identity is absent".into())
+            })?;
+            let (message, provenance) = crate::session_current_context::compaction_source_message(
+                &replay, event_id, identity,
+            )
+            .map_err(|error| AuthorityError::Invalid(error.to_string()))?;
+            if provenance.source_kind != item.provenance.source_kind
+                || !same_semantic_message(&message, &item.message)?
+            {
+                return Err(AuthorityError::Invalid(
+                    "compaction draft differs from its semantic source".into(),
+                ));
+            }
+            if provenance.source_kind == ModelContextSourceKind::CompactionSummary {
+                let previous = plan.previous_summary.as_deref().ok_or_else(|| {
+                    AuthorityError::Invalid("compaction canonical summary is missing".into())
+                })?;
+                let expected = crate::bridge::LlmMessage::User {
+                    content: format!(
+                        "[Previous conversation summary]\n{previous}\n[End summary - continue from here]"
+                    ),
+                    images: Vec::new(),
+                };
+                if index != 0 || summary_count != 0 || !same_semantic_message(&message, &expected)?
+                {
+                    return Err(AuthorityError::Invalid(
+                        "compaction previous summary does not align with authority".into(),
+                    ));
+                }
+                summary_count += 1;
+            } else {
+                let expected = plan.source_messages.get(canonical_index).ok_or_else(|| {
+                    AuthorityError::Invalid(
+                        "compaction authority has additional canonical messages".into(),
+                    )
+                })?;
+                if !same_semantic_message(&message, expected)? {
+                    return Err(AuthorityError::Invalid(format!(
+                        "compaction canonical message {canonical_index} does not align with authority"
+                    )));
+                }
+                canonical_index += 1;
+            }
+            conversation_items.push((message, event_id, identity.to_string()));
+        }
+        if canonical_index != plan.source_messages.len()
+            || usize::from(plan.previous_summary.is_some()) != summary_count
+        {
+            return Err(AuthorityError::Invalid(
+                "compaction canonical source does not cover the exact authority draft".into(),
+            ));
+        }
+        // Validate the full projection before writing any content or authority
+        // facts. The cut now counts actual authority items, including summary.
+        let cut = evict_count + summary_count;
         let (prompt_owner, prompt_generation, summary_prompt) =
             summary_prompt().map_err(|error| AuthorityError::Invalid(error.to_string()))?;
         let make_item = |ordinal: usize,
-                         item: &crate::session_authority::ModelContextItem|
+                         item: &(crate::bridge::LlmMessage, Uuid, String)|
          -> Result<CompactionContextItem, AuthorityError> {
+            let bytes = crate::surfaces::session::canonical_json_bytes(&item.0)
+                .map_err(|error| AuthorityError::Invalid(error.to_string()))?;
             Ok(CompactionContextItem {
                 ordinal: u32::try_from(ordinal).map_err(|_| {
                     AuthorityError::Invalid("compaction item ordinal exceeds u32".into())
                 })?,
-                source_event_id,
-                source_identity: format!("{request_id}:{}", item.ordinal),
-                content_ref: item.content_ref.clone(),
+                source_event_id: item.1,
+                source_identity: item.2.clone(),
+                content_ref: authority.write_content(
+                    &bytes,
+                    "application/json",
+                    ProjectionClass::Default,
+                )?,
             })
         };
-        let input_items = conversation_items[..evict_count]
+        let input_items = conversation_items[..cut]
             .iter()
             .enumerate()
             .map(|(ordinal, item)| make_item(ordinal, item))
             .collect::<Result<Vec<_>, _>>()?;
-        let retained_items = conversation_items[evict_count..]
+        let retained_items = conversation_items[cut..]
             .iter()
             .enumerate()
             .map(|(ordinal, item)| make_item(ordinal, item))
@@ -474,6 +592,196 @@ impl crate::loop_driver::LoopCompactionAuthority for SessionCompaction {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::session_authority::{
+        ActorIdentity, PromptAdmitted, PromptContent, QueueMode, SessionAuthority, TurnClosed,
+        TurnOutcome,
+    };
+
+    const NOW: &str = "2026-09-05T12:00:00Z";
+
+    fn authority(directory: &tempfile::TempDir) -> SessionAuthorityHandle {
+        SessionAuthorityHandle::new(
+            SessionAuthority::open(
+                &directory.path().join("session.json"),
+                "retention",
+                "workspace",
+                "composition:test",
+                ActorIdentity {
+                    principal: "operator".into(),
+                    ingress: "test".into(),
+                },
+                NOW,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn admitted_prompt(authority: &SessionAuthorityHandle, text: &str) {
+        let prompt_id = Uuid::new_v4();
+        authority
+            .admit_prompt(
+                Uuid::new_v4(),
+                NOW,
+                PromptAdmitted {
+                    submission_id: Uuid::new_v4(),
+                    prompt_id,
+                    principal: "operator".into(),
+                    ingress: "test".into(),
+                    queue_mode: QueueMode::UntilReady,
+                    content: PromptContent {
+                        text: text.into(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        let turn_id = Uuid::new_v4();
+        authority
+            .start_turn(Uuid::new_v4(), NOW, turn_id, prompt_id)
+            .unwrap();
+        authority
+            .start_step(
+                Uuid::new_v4(),
+                NOW,
+                crate::session_authority::StepStarted {
+                    step_id: Uuid::new_v4(),
+                    turn_id,
+                    step_ordinal: 0,
+                },
+            )
+            .unwrap();
+        authority
+            .terminalize_active_semantic_step(
+                NOW,
+                crate::session_authority::SemanticTerminalization {
+                    turn_id,
+                    request_outcome: crate::session_authority::ModelRequestOutcome::Cancelled,
+                    reason_code: "fixture_no_provider".into(),
+                    rule_version: 1,
+                },
+            )
+            .unwrap();
+        authority
+            .close_turn(
+                Uuid::new_v4(),
+                NOW,
+                TurnClosed {
+                    turn_id,
+                    outcome: TurnOutcome::Cancelled,
+                    reason_code: "fixture_no_provider".into(),
+                    recovery_rule_version: None,
+                },
+            )
+            .unwrap();
+    }
+
+    fn plan(
+        messages: &[&str],
+        previous_summary: Option<&str>,
+    ) -> crate::context_compaction_service::ContextCompactionPlanV1 {
+        crate::context_compaction_service::ContextCompactionPlanV1 {
+            payload: "compatibility payload must not replace authority".into(),
+            evict_count: 1,
+            source_is_prefix: true,
+            reason: None,
+            application:
+                crate::context_compaction_service::ContextCompactionApplicationV1::KeepRecent(0),
+            source_messages: messages
+                .iter()
+                .map(|text| crate::bridge::LlmMessage::User {
+                    content: (*text).into(),
+                    images: Vec::new(),
+                })
+                .collect(),
+            previous_summary: previous_summary.map(str::to_string),
+        }
+    }
+
+    fn finish(compaction: &SessionCompaction, summary: &str) {
+        compaction
+            .prepare(CompactionRoute::SessionIdle {
+                selected_provider_id: "test".into(),
+                selected_model_id: "test:model".into(),
+                serving_provider_id: "test".into(),
+                serving_model_id: "test:model".into(),
+                schema_dialect: "test".into(),
+                credential_source_class: "test".into(),
+                fallback_reason: None,
+                contribution_generation_id: "provider:test/v1".into(),
+                route_policy: "exact".into(),
+            })
+            .unwrap();
+        compaction.commit_done(summary, None).unwrap();
+    }
+
+    #[test]
+    fn token_retention_authority_compacts_current_semantic_suffix_and_repeated_summary() {
+        let directory = tempfile::tempdir().unwrap();
+        let handle = authority(&directory);
+        admitted_prompt(&handle, "old");
+        admitted_prompt(&handle, "retained");
+        let first =
+            SessionCompaction::begin_idle(handle.clone(), &plan(&["old", "retained"], None))
+                .unwrap()
+                .expect("current semantic context must not require a stale prepared request");
+        assert!(first.provider_payload().contains("old"));
+        assert!(!first.provider_payload().contains("retained"));
+        finish(&first, "first summary");
+        drop(first);
+        admitted_prompt(&handle, "newest");
+        let second = SessionCompaction::begin_idle(
+            handle.clone(),
+            &plan(&["retained", "newest"], Some("first summary")),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(second.provider_payload().contains("first summary"));
+        assert!(second.provider_payload().contains("retained"));
+        assert!(!second.provider_payload().contains("newest"));
+        finish(&second, "second summary");
+        drop(second);
+        drop(handle);
+        let reopened = authority(&directory);
+        let descriptor = reopened.projection_worker_descriptor();
+        let replay = crate::session_replay::SessionReplay::replay_prefix(
+            &descriptor.session_snapshot,
+            &descriptor.session_id,
+            descriptor.stream_id,
+            crate::session_replay::ReplayEnd::Event(reopened.state().last_event_id.unwrap()),
+        )
+        .unwrap();
+        let draft = crate::session_current_context::CurrentContextDraftV1::derive(&replay).unwrap();
+        assert_eq!(draft.items.len(), 2);
+        assert!(
+            matches!(&draft.items[0].message, crate::bridge::LlmMessage::User { content, .. } if content.contains("second summary"))
+        );
+        assert!(
+            matches!(&draft.items[1].message, crate::bridge::LlmMessage::User { content, .. } if content == "newest")
+        );
+    }
+
+    #[test]
+    fn token_retention_authority_rejects_mismatched_content_without_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let handle = authority(&directory);
+        admitted_prompt(&handle, "old");
+        admitted_prompt(&handle, "retained");
+        let before = handle.state().last_sequence;
+        assert!(
+            SessionCompaction::begin_idle(handle.clone(), &plan(&["wrong", "retained"], None))
+                .is_err()
+        );
+        assert_eq!(handle.state().last_sequence, before);
+        assert!(handle.state().active_compaction.is_none());
+        let mut nonprefix = plan(&["old", "retained"], None);
+        nonprefix.source_is_prefix = false;
+        let error = SessionCompaction::begin_idle(handle.clone(), &nonprefix).unwrap_err();
+        assert!(error.to_string().contains("chronological source prefix"));
+        assert_eq!(handle.state().last_sequence, before);
+    }
+
     #[test]
     fn summary_prompt_carries_admitted_content_generation() {
         let (owner, generation, body) = super::summary_prompt().unwrap();

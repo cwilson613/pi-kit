@@ -6206,22 +6206,26 @@ fn build_tui_secret_readiness_snapshot(
                         ..Default::default()
                     }
                 };
+                runtime_state.context_manager.set_selector_policy(
+                    shared_settings.lock().unwrap().selector_policy(),
+                );
+                let retained_budget = runtime_state.context_manager.retained_context_budget();
                 let planning = runtime_state
                     .context_compaction
                     .plan(
-                        runtime_state.conversation.context_compaction_snapshot(),
-                        context_compaction_service::ContextCompactionModeV1::Pressure,
+                        runtime_state.conversation.context_compaction_snapshot().with_retained_token_budget(retained_budget),
+                        context_compaction_service::ContextCompactionModeV1::Manual,
                         CancellationToken::new(),
                     )
                     .await;
                 if let Ok(Some(plan)) = planning {
-                    let payload = plan.payload;
+                    let payload = &plan.payload;
                     match session_execution::boot_execution_binding()
-                        .compact(bridge_guard.as_ref(), &payload, &stream_options)
+                        .compact(bridge_guard.as_ref(), payload, &stream_options)
                         .await
                     {
                         Ok(summary) => {
-                            runtime_state.conversation.apply_compaction(summary);
+                            plan.apply(&mut runtime_state.conversation, summary);
                             let est = runtime_state.conversation.estimate_tokens();
                             if let Ok(s) = shared_settings.lock() {
                                 let ctx_window = s.context_window;

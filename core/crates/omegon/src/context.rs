@@ -141,6 +141,38 @@ impl ContextManager {
         self.shadow.set_selector_policy(policy);
     }
 
+    /// Target for verbatim history after compaction. This is planning headroom,
+    /// not an exact tokenizer or a hard bound on the generated summary.
+    pub(crate) fn retained_context_budget(&self) -> usize {
+        let policy = self.shadow.selector_policy();
+        let known_chars = self
+            .active_injections
+            .iter()
+            .fold(self.base_prompt.len(), |total, active| {
+                total.saturating_add(active.injection.content.len())
+            });
+        let telemetry = &self.last_prompt_telemetry;
+        let observed_chars = [
+            telemetry.base_prompt_chars,
+            telemetry.session_hud_chars,
+            telemetry.intent_chars,
+            telemetry.external_injection_chars,
+            telemetry.tool_guidance_chars,
+            telemetry.file_guidance_chars,
+        ]
+        .into_iter()
+        .fold(0usize, usize::saturating_add);
+        // Planning precedes this turn's prompt assembly. Reserve at least the
+        // normal system share, plus any larger known or last-observed prompt.
+        let system_reserve = (policy.assembly_window() / 5).max(
+            crate::util::estimate_chars_to_tokens(known_chars.max(observed_chars)),
+        );
+        policy
+            .assembly_budget()
+            .saturating_sub(system_reserve)
+            .saturating_sub(policy.reply_reserve)
+    }
+
     /// Context budget in tokens available for injections this turn.
     /// Reserve ~80% of the context window for conversation, 20% for system prompt.
     /// System prompt budget = context_window * 0.2 minus the base prompt size.
@@ -542,6 +574,40 @@ impl ContextManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_retention_budget_reserves_system_and_summary_under_requested_class() {
+        let mut manager = ContextManager::new("policy".into(), vec![]);
+        let policy = crate::settings::SelectorPolicy {
+            model_window: 1_000_000,
+            requested_class: crate::settings::ContextClass::from_tokens(200_000),
+            reply_reserve: 8_192,
+            tool_schema_reserve: 4_096,
+        };
+        let effective = policy.assembly_window();
+        let expected = policy.assembly_budget() - effective / 5 - policy.reply_reserve;
+        manager.set_selector_policy(policy);
+        assert_eq!(manager.retained_context_budget(), expected);
+        assert!(manager.retained_context_budget() < effective);
+    }
+
+    #[test]
+    fn token_retention_budget_charges_large_known_injections_and_saturates() {
+        let mut manager = ContextManager::new("p".repeat(40_000), vec![]);
+        manager.set_selector_policy(crate::settings::SelectorPolicy {
+            model_window: 32_000,
+            requested_class: crate::settings::ContextClass::from_tokens(200_000),
+            reply_reserve: 8_192,
+            tool_schema_reserve: 4_096,
+        });
+        manager.inject_external(vec![omegon_traits::ContextInjection {
+            source: "project-policy".into(),
+            content: "x".repeat(80_000),
+            priority: 200,
+            ttl_turns: 50,
+        }]);
+        assert_eq!(manager.retained_context_budget(), 0);
+    }
 
     /// A provider that injects a distinct persistent payload every turn,
     /// mirroring `PersonaFeature` under progressive disclosure.

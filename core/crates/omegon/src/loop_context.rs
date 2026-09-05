@@ -184,7 +184,7 @@ impl<'a> LoopContextCompatibilityAdapter<'a> {
     > {
         self.compaction
             .plan(
-                snapshot,
+                snapshot.with_retained_token_budget(self.manager.retained_context_budget()),
                 crate::context_compaction_service::ContextCompactionModeV1::Pressure,
                 cancellation,
             )
@@ -203,7 +203,7 @@ impl<'a> LoopContextCompatibilityAdapter<'a> {
     > {
         self.compaction
             .plan(
-                snapshot,
+                snapshot.with_retained_token_budget(self.manager.retained_context_budget()),
                 crate::context_compaction_service::ContextCompactionModeV1::Overflow,
                 cancellation,
             )
@@ -216,16 +216,7 @@ impl<'a> LoopContextCompatibilityAdapter<'a> {
         plan: LoopCompactionPlan,
         summary: String,
     ) {
-        match plan.application {
-            crate::context_compaction_service::ContextCompactionApplicationV1::DecayWindow => {
-                conversation.apply_compaction(summary);
-            }
-            crate::context_compaction_service::ContextCompactionApplicationV1::KeepRecent(
-                turns,
-            ) => {
-                conversation.apply_compaction_keeping_recent(summary, turns);
-            }
-        }
+        plan.apply(conversation, summary);
     }
 
     pub(crate) fn decay_failed_compaction(
@@ -610,6 +601,44 @@ mod tests {
         assert_eq!(evicted, before / 2);
         assert_eq!(conversation.message_count(), before - evicted);
         assert_eq!(conversation.last_user_prompt(), "newest");
+    }
+
+    #[tokio::test]
+    async fn token_retention_loop_adapter_budgets_pressure_and_overflow() {
+        let mut manager = ContextManager::new(String::new(), vec![]);
+        manager.set_selector_policy(crate::settings::SelectorPolicy {
+            model_window: 32_000,
+            requested_class: crate::settings::ContextClass::from_tokens(200_000),
+            reply_reserve: 8_192,
+            tool_schema_reserve: 4_096,
+        });
+        let adapter = LoopContextCompatibilityAdapter::new(
+            &mut manager,
+            crate::context_compaction_service::ContextCompactionBinding::direct_for_test(),
+        );
+        for overflow in [false, true] {
+            let mut conversation = ConversationState::new();
+            conversation.push_user("large recent history ".repeat(8_000));
+            conversation.intent.stats.turns = 1;
+            conversation.push_user("current task".into());
+            let snapshot = conversation.context_compaction_snapshot();
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            let plan = if overflow {
+                adapter
+                    .overflow_compaction_plan(snapshot, cancellation)
+                    .await
+            } else {
+                adapter
+                    .pressure_compaction_plan(snapshot, cancellation)
+                    .await
+            }
+            .unwrap()
+            .expect("recent history must yield a budgeted plan");
+            assert_eq!(plan.evict_count, 1);
+            adapter.apply_compaction(&mut conversation, plan, "previous work".into());
+            assert_eq!(conversation.message_count(), 1);
+            assert_eq!(conversation.last_user_prompt(), "current task");
+        }
     }
 
     #[test]

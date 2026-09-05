@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Conversation compaction now budgets the retained recent suffix by estimated tokens as well as age, preserving complete turns and connected tool exchanges. Loop and manual callers apply the selected boundary, prior summaries feed subsequent compactions, and effective context policy reserves system and summary headroom. Oversized active groups remain intact with explicit planning diagnostics. Durable compaction now aligns current semantic sources instead of slicing stale request items, preserves post-request results, and validates retained-source replay. Incompatible or legacy/mixed projections fail admission before mutation.
+
 - MCP servers can configure separate startup, catalog, and execution deadlines. Unset phases preserve legacy timeout behavior; execution progress cannot extend deadlines, cancellation leaves unrelated calls running, and shutdown releases the client registry before service cleanup.
 
 - Project instructions now include every AGENTS.md from the active worktree root through cwd, with source labels and complete UTF-8 content. Linked worktrees use their own policy files; explicit shared symlinks remain supported and canonical sources are deduplicated. Unreadable policy fails preparation, and fixed instructions plus tool schemas and reply reserve that exceed model capacity fail before provider dispatch instead of truncating required guidance.

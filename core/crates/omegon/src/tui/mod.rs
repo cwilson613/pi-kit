@@ -5169,13 +5169,12 @@ warning: {warning}"
             .acknowledge_draw(generation, revision);
         let mut released = false;
         while let Some(event) = self.stream_presentation.take_drawn_event() {
-            self.handle_agent_event(event);
+            self.handle_drawn_agent_event(event);
             released = true;
         }
-        debug_assert!(
-            !self.stream_presentation.has_blocked_events(),
-            "drawn deferred events must drain completely"
-        );
+        // Replayed chunks may require another publication/draw before the
+        // remaining completion events can be released.
+
         released
     }
 

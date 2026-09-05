@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- TUI deferred stream events now replay without requeueing behind their successors, preventing a completed answer from freezing input. Added an isolated tmux acceptance runner with a local streaming provider and attributable terminal captures for project-shell reconstruction.
+
 - Conversation compaction now budgets the retained recent suffix by estimated tokens as well as age, preserving complete turns and connected tool exchanges. Loop and manual callers apply the selected boundary, prior summaries feed subsequent compactions, and effective context policy reserves system and summary headroom. Oversized active groups remain intact with explicit planning diagnostics. Durable compaction now aligns current semantic sources instead of slicing stale request items, preserves post-request results, and validates retained-source replay. Incompatible or legacy/mixed projections fail admission before mutation.
 
 - MCP servers can configure separate startup, catalog, and execution deadlines. Unset phases preserve legacy timeout behavior; execution progress cannot extend deadlines, cancellation leaves unrelated calls running, and shutdown releases the client registry before service cleanup.

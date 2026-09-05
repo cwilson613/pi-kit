@@ -10921,3 +10921,20 @@ fn init_menu_recommends_matching_user_skill_for_project_copy() {
             .starts_with("/skills import --project ")
     );
 }
+
+#[test]
+fn drawn_completion_backlog_releases_app_without_requeueing() {
+    let mut app = active_test_app();
+    app.handle_agent_event(AgentEvent::MessageStart {
+        role: "assistant".into(),
+    });
+    app.handle_agent_event(AgentEvent::MessageChunk {
+        text: "captured reply".into(),
+    });
+    app.handle_agent_event(AgentEvent::MessageEnd);
+    app.handle_agent_event(AgentEvent::AgentEnd);
+    draw_published_stream(&mut app, 120, 40);
+    assert!(!app.stream_presentation.has_blocked_events());
+    assert!(!app.agent_active);
+    assert!(!app.conversation.is_streaming());
+}

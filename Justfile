@@ -749,6 +749,11 @@ run *args:
     export OMEGON_EXPECTED_CHECKOUT="$checkout"
     exec "$binary" {{args}}
 
+# Build and capture a deterministic two-turn real TUI scenario (Python 3.11+, tmux).
+test-tui-captured output:
+    {{cargo}} build -p omegon --locked
+    python3 scripts/tui_acceptance.py --binary target/debug/omegon --output {{quote(output)}}
+
 # Run this checkout with live TUI performance tracing enabled.
 trace-tui *args:
     #!/usr/bin/env bash

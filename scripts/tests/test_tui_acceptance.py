@@ -1,0 +1,36 @@
+"""Contract tests for the captured TUI runner's local provider."""
+import importlib.util
+import json
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+spec = importlib.util.spec_from_file_location("tui_acceptance", Path(__file__).parents[1] / "tui_acceptance.py")
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+
+
+def test_provider_streams_distinct_turns_without_external_inference():
+    with runner.fixture_provider() as server:
+        for number in (1, 2):
+            request = Request(server.url + "/v1/chat/completions", data=json.dumps({"messages": []}).encode(), headers={"Content-Type": "application/json"})
+            with urlopen(request, timeout=2) as response:
+                body = response.read().decode()
+            assert f"TUI_FIXTURE_REPLY_{number}" in body
+            assert '"finish_reason": "stop"' in body
+            assert "data: [DONE]" in body
+        assert server.requests == 2
+
+
+def test_provider_rejects_unknown_routes():
+    from urllib.error import HTTPError
+    with runner.fixture_provider() as server:
+        try:
+            urlopen(server.url + "/unexpected", timeout=2)
+        except HTTPError as error:
+            assert error.code == 404
+        else:
+            raise AssertionError("unknown route accepted")
+
+if __name__ == "__main__":
+    test_provider_streams_distinct_turns_without_external_inference()
+    test_provider_rejects_unknown_routes()

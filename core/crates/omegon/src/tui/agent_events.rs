@@ -130,6 +130,14 @@ impl App {
     }
 
     pub(super) fn handle_agent_event(&mut self, event: AgentEvent) {
+        self.handle_presented_agent_event(event, false);
+    }
+
+    pub(super) fn handle_drawn_agent_event(&mut self, event: AgentEvent) {
+        self.handle_presented_agent_event(event, true);
+    }
+
+    fn handle_presented_agent_event(&mut self, event: AgentEvent, replaying: bool) {
         // Runtime authority events must bypass stream-presentation buffering:
         // buffering a terminal supervisor/queue snapshot can strand the TUI in
         // a locally active state after the worker has already returned.
@@ -137,9 +145,15 @@ impl App {
             event,
             AgentEvent::RuntimeTurnLifecycleUpdated { .. } | AgentEvent::RuntimeQueueUpdated { .. }
         );
-        let decision = self.stream_presentation.classify(event.clone());
-        if !decision.apply_now && !authoritative_runtime_event {
-            return;
+        if !authoritative_runtime_event {
+            let decision = if replaying {
+                self.stream_presentation.classify_drawn_event(event.clone())
+            } else {
+                self.stream_presentation.classify(event.clone())
+            };
+            if !decision.apply_now {
+                return;
+            }
         }
         match event {
             AgentEvent::TurnStart { turn } => {

@@ -14,4 +14,4 @@
 <!-- specs: tui-native-usability -->
 
 - [x] Reproduce and repair primary-hint clipping using display-width budgets.
-- [ ] Complete crate and Clippy gates, rebuild, and inspect automated native screenshots.
+- [x] Complete crate and Clippy gates, rebuild, and inspect automated native screenshots; final evidence is linked from verification.md.

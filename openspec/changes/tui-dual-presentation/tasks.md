@@ -1,72 +1,52 @@
 # Implementation tasks
 
-All tasks are intentionally unchecked: this change is planned, not implemented.
-For each group, first run the proposed regression against existing behavior and
-record the expected assertion failure. A compile error is not the red evidence.
-Names below are proposed test names, not claims that these tests already exist.
+Task wording was refined during implementation to reuse existing suites and record
+actual test owners rather than require duplicate tests under proposed names. Red
+assertions and native/PTY discoveries are recorded in verification.md. Checked
+items include their focused validation; final landing work is tracked separately.
 
-## 1. Resolve the two independent preferences
+## 1. Independent preferences
 <!-- specs: tui-presentation -->
 
-- [ ] Add failing `entry_defaults_resolve_independently`, `explicit_ui_overrides_win`, `unrelated_profile_save_preserves_absent_ui_preferences`, `explicit_default_detail_is_persisted`, and `legacy_density_maps_to_active` tests in main/settings/layout owners.
-- [ ] Add launcher regressions in `scripts/tests/test_omegon_launcher.py` for basename handoff, stale inherited marker, exact literal arguments, direct binary fallback, maintenance, --which, and headless/help/version behavior.
-- [ ] Implement the pure resolution/explicitness model and opt-in `--tui`/`--ui` flags in `main.rs`, `settings.rs`, `surfaces/layout.rs`, and TuiConfig. Preserve existing launch defaults until task group 7.
-- [ ] Extend existing UI routing/reporting for independent axes and session-local base switching; maintain surface preferences independently from layout eligibility. Add `ui_full_does_not_enter_alternate_screen` and `base_change_waits_for_mounted_root` tests.
-- [ ] Run focused settings/layout/CLI/launcher checks and record red/green evidence.
+- [x] Add red/green coverage for legacy density, launcher marker/literal arguments, preference explicitness and Ctrl+G migration.
+- [x] Resolve entry/profile/CLI axes independently; expose global --tui/--ui flags; preserve absent and explicitly saved preferences across unrelated saves.
+- [x] Extend UI routing, status and menu controls; base switches remain session-local and mounted roots retain fullscreen until closed.
+- [x] Enable om inline/Active and omegon fullscreen/Full after the first successful PTY/native slice; verify actual fixed-build launcher defaults and all four combinations.
 
-## 2. Prove terminal ownership before App integration
+## 2. One terminal owner and shared rendering
 <!-- specs: tui-presentation, tui-inline-publication -->
 
-- [ ] Add failing coordinator tests: `inline_start_preserves_primary_history`, `inactive_terminal_cannot_write`, `covered_root_retains_fullscreen`, `resize_precedes_inline_insert`, and `fullscreen_insert_cannot_commit`.
-- [ ] Add fault-injection tests for each acquisition/release, failed terminal creation, failed rollback, failed geometry restoration, and subsequent cleanup. Assert actual operation order and ledger state, not only the final presentation enum.
-- [ ] Extend `terminal_session.rs` and `terminal_presentation.rs` with active-surface validation and coordinated Terminal buffers, retaining the current mode ledger, lock, and emergency restoration path.
-- [ ] Add `inline_startup_never_flashes_fullscreen` and output-attribute restoration regressions; bypass unconditional alternate-screen clearing/splash and defer image probing for inline startup. Keep live diagnostic writes within existing notification/logging ownership.
-- [ ] Add an isolated PTY contract using the locked Ratatui backend: preexisting primary text, eight-row nonzero origin, insert_before, alternate round trip, resize, and exit. Verify primary history separately from the current screen.
-- [ ] Verify mouse-disabled and mouse-enabled fullscreen preferences with native mouse ownership in inline. Keep dependency versions/features unchanged for the first captured slice.
+- [x] Add active-surface I/O validation and two coordinated Ratatui buffers under the existing terminal mode ledger; reject inactive writes.
+- [x] Exercise acquisition/release failure for every tracked mode and retained-mode cleanup; review terminal creation/geometry errors propagating to the same guard without another rollback ledger.
+- [x] Reuse frame preparation, composer, input/navigation precedence and rich widgets. Decisions and file pickers borrow the complete shared fullscreen widget.
+- [x] Verify nonzero-origin geometry at 40/56/90 columns and short heights for both detail levels, multiline Unicode drafts, covered decisions, cancellation and second-turn recovery for both bases.
+- [x] Keep primary history at inline startup and across repeated visits; defer splash/image probing; re-anchor after explicit primary output and restore output attributes on exit.
 
-## 3. Reuse rendering and navigation
-<!-- specs: tui-presentation -->
+## 3. Bounded publication and authoritative lifecycle
+<!-- specs: tui-inline-publication, tui-presentation -->
 
-- [ ] Capture existing fullscreen component expectations, then add failing `inline_composer_respects_nonzero_origin`, `multiline_draft_survives_layout_switch`, `shared_preparation_runs_under_inspector`, and `inline_decision_reserves_all_actions` tests.
-- [ ] Extract shared frame preparation and composer/activity/decision composition from `tui/render.rs`; wire two small layouts without another editor, App, or navigation precedence chain.
-- [ ] Reuse Project, menu, panel, inspector, extension, and tutorial components; derive temporary fullscreen requirements from mounted interaction state, including covered roots and undersized decisions.
-- [ ] Add `permission_round_trip_preserves_filtered_project`, `queued_decisions_keep_root_mounted`, and `paste_never_reaches_covered_composer` tests parameterized over both bases.
-- [ ] Retain and run completion regressions for supervisor_completed without AgentEnd, idle-queue recovery, and second-turn submission in both presentations. Verify cancellation during browsing preserves the draft.
-- [ ] Verify 40/56/90-column and short-height geometry, wide/combining Unicode, autocomplete, text image references, and scope-correct permission labels using shared widget tests.
+- [x] Implement canonical generation/index/field/byte cursors, incremental Active outcome reduction, bounded Full evidence, and mutable live previews without a duplicate transcript.
+- [x] Verify byte/record/row/cell limits, injected cooperative clock, large-prefix skipping, oversized Unicode, zero geometry and partial-record continuation across resize/detail changes.
+- [x] Commit only after guarded insert/flush success; preserve known non-writes, reject stale settlement and disable replay after ambiguous output. Verify terminal-control sanitization.
+- [x] Separate explicit snapshot export from automatic delivery; preserve cursor and re-anchor geometry; keep exit draining bounded and identify unprinted output.
+- [x] Fix the captured active Ctrl+C failure by polling priority ingress during the active supervisor wait, retaining durable admission and the cancellation deadline.
+- [x] Fix the captured /new publication failure by invalidating generation at both source-replacement owners before subsequent events arrive; publish bounded resume/replacement notices.
+- [x] Finalize cancelled/failed/timed-out supervisor outcomes, show their truthful terminal notice once, and retain existing lost-AgentEnd/idle-queue recovery.
+- [x] Reproduce the release first-turn route race; admit local manifests/cached evidence before background discovery, pass inference-runtime tests and the four-request headless fixture.
 
-## 4. Make publication incremental and bounded
-<!-- specs: tui-inline-publication -->
-
-- [ ] Add failing tests for prompt-once, finalized-group order, no partial-response publication, cancellation/failure outcomes, resume boundary, and fullscreen-first backlog in `native_publication.rs` and relevant projection owners.
-- [ ] Add deterministic budget tests using injected time/work accounting: `large_history_does_not_scan_committed_prefix`, `oversized_record_is_chunked_before_formatting`, `wrapped_rows_and_cells_bound_insert`, and `zero_geometry_does_not_advance`.
-- [ ] Extend the existing publication owner with generation/range/within-record cursors and bounded projection preparation. Add mutation-owner invalidation for session replacement and compaction. Do not add a duplicate transcript or durable segment-ID protocol.
-- [ ] Integrate one automatic batch after input/lifecycle admission per cycle, bounded live previews during streaming, and progress indication during backlog. Guard insertion and flush through the active terminal owner.
-- [ ] Add `write_failure_degrades_without_replay`, `known_nonwrite_preserves_cursor`, `stale_generation_cannot_settle`, and `resize_detail_change_preserves_partial_record` fault/state regressions.
-- [ ] Separate explicit snapshot-export bookkeeping from automatic delivery within the existing publication owner; verify labeled export, geometry restoration, preserved cursor, and bounded normal-exit draining.
-- [ ] Verify escaped/untrusted control content follows existing safe display/export treatment and cannot inject terminal mode commands through the new publication path.
-
-## 5. Capture the first complete interaction
+## 4. Automated terminal evidence
 <!-- specs: tui-presentation, tui-inline-publication -->
 
-- [ ] Add failing fixture/observation contracts before extending `scripts/tui_acceptance.py`: explicit surface flags, deterministic stream/tool gates, distinct historical/current-view markers, and scenario-specific request counts.
-- [ ] Automate inline startup with shell-history marker, submit/stream, preserved next draft, F2 filtered detail, permission denial above Project, return inline, second successful turn, resize, and clean exit.
-- [ ] Add a large-output/background scenario with deterministic cancellation and generation replacement; assert input admission without draining the whole backlog first.
-- [ ] Build once through the repository workflow, freeze the binary/runner with source and hash provenance, run the first PTY and native trial, and inspect the actual captures. Record failures and do not substitute older screenshots.
-- [ ] Resolve demonstrated geometry, priority, or duplication failures before enabling entry defaults. If portable insertion flickers, compare scrolling-regions in a separately identified build and adopt it only with evidence.
+- [x] Extend the fixture and kit to record both axes, actual launcher entry, frozen binary/support hashes, shell-history markers, exactly-once replies and clean exit.
+- [x] Capture the normal four-request sequence and the six-request stress sequence with gated large streaming output, unsent draft, browsing, denial, cancellation, reset and successful subsequent turn.
+- [x] Run all four combinations in the PTY and both defaults in the five installed native clients; cover mixed combinations in Ghostty. Inspect attributable screenshots and distinguish native input limitations.
+- [x] Extend and run real PTY detachment during idle/active work for both bases; answer the bare fixture's cursor query without claiming it is a terminal emulator.
+- [x] Address operator disruption: make GUI trials explicitly opt-in with selected clients, attempt ownership-checked window closure in finally, verify its result, and test cleanup/opt-in contracts headlessly. No further GUI launches are authorized for routine iteration.
 
-## 6. Native compatibility and recovery acceptance
+## 5. Documentation and landing
 <!-- specs: tui-presentation, tui-inline-publication -->
 
-- [ ] Extend `scripts/tui_native_acceptance.py`, operator-kit arguments, and their tests to select both presentations and record active buffer, current view, and history observations independently.
-- [ ] Run the acceptance matrix in verification.md using owned Ghostty, iTerm2, kitty, WezTerm, and Apple Terminal windows, automated input, screenshot inspection, fixture outcomes, and process-tree cleanup.
-- [ ] Exercise startup near the terminal bottom, repeated alternate visits, width/height changes, multiline paste, cancellation, explicit export, shell handoff, normal exit, and catchable termination at their appropriate test layers.
-- [ ] Classify unsupported native controls as unverified cells and use the PTY harness for those controls; never claim a native key/paste check that the adapter cannot perform.
-
-## 7. Enable defaults, document migration, and land
-<!-- specs: tui-presentation, tui-inline-publication -->
-
-- [ ] Enable tested om inline/Active and omegon fullscreen/Full defaults and the installed launcher marker. Re-run entry-point acceptance through fixed-build wrappers rather than only direct --tui flags.
-- [ ] Update `pkl/Profile.pkl`, UI help/settings menus, applicable public CLI/config docs, root TUI directives, and CHANGELOG Unreleased for shipped behavior and compatibility aliases.
-- [ ] Run serialized omegon crate tests, `just clippy-changed`, focused script tests, and `just test-dev-scripts`; broaden only if implementation touches shared crates/contracts. Complete required schema/document checks for changed surfaces.
-- [ ] Run OpenSpec validation, reconcile this change's evidence and parent pending tasks, inspect the final diff, and create logical commits. Record exact incomplete gates without checking their tasks.
-- [ ] Verify every scenario against implementation and recorded evidence. Leave archival for actual completion and the intended lifecycle close; do not close the parent reconstruction's unrelated pending work.
+- [x] Update Pkl vocabulary, public controls/migration docs, root directives and Unreleased. Record decorative telemetry retirement as a separate planned change.
+- [x] Finish serialized crate/Clippy/script/schema checks, copy final evidence and inspect the complete diff.
+- [x] Reconcile this change and parent pending items, create logical commits, and rebuild/install the current launcher pair without launching GUI windows; record the catalog/home-identity blocker separately.
+- [x] Verify scenarios against the recorded evidence and mark completion truthfully. Leave archival and the separately planned telemetry retirement open.

@@ -18,7 +18,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
-- Specified the shared inline/fullscreen TUI implementation and TDD acceptance plan: `om` defaults to inline/Active, `omegon` to fullscreen/Full, with independent preferences, reused components, bounded publication, and automated terminal captures. These defaults remain planned, not yet enabled.
+- Native GUI acceptance now requires explicit `--interactive-gui` and client selection. Routine testing stays in a headless PTY. Native cleanup checks window closure separately from process exit, refuses shared-window closure, and stops the matrix if cleanup fails.
+
+- Interactive startup admits local inference manifests and cached evidence before selecting its first provider route. Slow background discovery no longer leaves faster release builds with an unavailable project route on the first turn.
+
+- Marked decorative footer inference/tool telemetry as superseded and planned its core retirement, with a future optional TUI addon boundary. The retirement plan includes code and animation-state removal; it does not claim those deletions are implemented yet.
+
+- `om` now opens a small inline TUI with Active detail; `omegon` opens the fullscreen workspace with Full detail. Both share the editor, navigation, runtime, and decision widgets. `--tui` and `--ui` override independent profile preferences; `/ui terminal` changes the session layout. Inline output publishes incrementally to shell history, and rich views temporarily borrow fullscreen. Legacy `om`/`lean`/`slim` detail values resolve to Active.
 
 - Permission prompts display one scope-correct set of choices and reserve space for them when context wraps. Project browser search now filters rows without losing drafts or covered selection, and narrow composers preserve the primary send/run hint before secondary help.
 

@@ -35,7 +35,7 @@ assertions and existing permission routing, navigation and lifecycle regressions
 Cargo formatting passed. The four operator-kit Python contracts and three native
 observation contracts passed; fixture contracts passed. Both OpenSpec changes validate.
 
-## Broader gates and native acceptance remain open
+## Earlier indeterminate gates (resolved by the subsequent campaign)
 
 The full serialized `just test-crate omegon` compiled successfully and executed
 through the surface tests, then stalled while a switch test launched its temporary
@@ -49,7 +49,7 @@ assertion failures or passes.
 `just clippy-changed` stopped in its generated shell launcher, also before entry
 (`/tmp/omegon-usability-clippy-loader.txt`). The equivalent direct path identified
 only omegon, passed formatting, then stopped in the Clippy build-script executable
-(`/tmp/omegon-usability-clippy-direct.log`). Clippy has not completed. Owned stalled
+(`/tmp/omegon-usability-clippy-direct.log`). At that point Clippy had not completed. Owned stalled
 gate trees were terminated after diagnosis; host security policy was not changed.
 
 The rebuilt executable was frozen in
@@ -63,6 +63,17 @@ The owned stalled native launcher was stopped. The prior 50 native screenshots
 are baseline findings, not acceptance of this rebuilt interface.
 
 The native driver now has an explicit `--usability` mode for empty/matching search,
-unique permission choices and narrow send-hint assertions. Its new live assertions
-remain pending until the host can start the rebuilt application. Do not archive or
-mark this change fully verified until the full gates and native trial complete.
+unique permission choices and narrow send-hint assertions. The subsequent campaign
+exercised these live assertions with the working build;
+see the completion evidence below. The failed startup remains diagnostic evidence.
+
+## Completion evidence
+
+The subsequent dual-presentation campaign completed the omegon crate suite, final
+TUI regression suite, Clippy and developer-script gates. Native usability trials
+passed in both default presentations across all five installed clients, with
+current-view assertions and inspected screenshots. See
+[the attributed gate and capture ledger](../tui-dual-presentation/verification.md).
+The old pre-entry stalls no longer block these gates. Apple Terminal input limits
+remain explicit. The later GUI cleanup corrections have headless coverage only;
+the native PASS records do not establish window closure. Archival remains open.

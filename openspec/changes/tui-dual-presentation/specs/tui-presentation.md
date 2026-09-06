@@ -164,3 +164,37 @@ When an owned shell handoff, normal exit, catchable termination, or panic cleanu
 Then the existing cleanup owner restores the appropriate modes and cursor
 And recoverable handoff re-anchors the active viewport without clearing prior history
 And unrelated terminal processes are untouched
+
+### Requirement: Routine terminal acceptance does not interrupt the desktop
+
+Routine acceptance uses a private headless PTY. Native GUI acceptance requires an
+explicit compatibility invocation and selected clients. Cleanup is separately
+recorded from application exit and must not close unrelated operator sessions.
+
+#### Scenario: No implicit native matrix
+Given the native runner has no explicit GUI opt-in
+When the runner parses its invocation
+Then it rejects the invocation before launching a client or creating trial output
+
+#### Scenario: Cleanup cannot close another session
+Given a recorded trial window and native session identity
+When cleanup detects other tabs or sessions or cannot establish ownership
+Then it refuses window closure and records cleanup failure
+And it launches no subsequent client in the matrix
+
+#### Scenario: Failed process cleanup still attempts window cleanup
+Given a trial that failed and process cleanup that raises an error
+When the trial unwinds
+Then it still attempts owned-window cleanup and writes the failure record
+
+### Requirement: Initial interactive routing includes local declarations
+
+Interactive setup admits local inference manifests and cached evidence before
+selecting the first route. Network discovery enriches that inventory in the
+background and does not gate visibility of local declarations.
+
+#### Scenario: First turn precedes network discovery
+Given a valid project inference offering and unfinished background discovery
+When the initial interactive route is selected
+Then the local offering is available to admission
+And the first turn can reach its declared endpoint

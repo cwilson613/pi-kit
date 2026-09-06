@@ -63,9 +63,10 @@ Omegon is a Rust-native agent loop and lifecycle engine. You are working on the 
 ## TUI
 
 - `core/crates/omegon/src/tui/mod.rs` owns top-level native TUI orchestration and remains large. Prefer the extracted owners for rendering, input, agent-event projection, semantic actions, slash routing, native I/O, Auspex, workspace context, and conversation/operation projections rather than adding new policy to the monolith.
-- Presentation levels are `Om` (default), `Active`, and `Full`; `lean`/`slim` remain compatibility aliases. `/ui full` reveals the complete presentation.
+- `om` defaults to an eight-row inline TUI with `Active` detail; `omegon` defaults to fullscreen with `Full` detail. Layout and detail are independent (`--tui`, `--ui`); legacy `om`/`lean`/`slim` detail values mean `Active`. `/ui terminal inline|fullscreen` changes the session base, and `/ui active|full` persists detail.
 - Shared semantic projections live under `core/crates/omegon/src/surfaces/`. Keep producer/provenance independent from content form and avoid renderer-specific policy.
 - Table rendering uses `markdown_display_width` for column measurement so Markdown emphasis/code markers do not distort padding.
+- Routine captured TUI tests use the private headless PTY runner. Reserve native GUI trials for an explicitly selected compatibility session; do not launch terminal matrices on the operator's active desktop during routine iteration. Track and verify owned-window cleanup separately from child-process exit, and stop the matrix if cleanup fails.
 
 
 ## Current harness surfaces

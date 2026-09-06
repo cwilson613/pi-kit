@@ -13,8 +13,9 @@ new public runtime protocol or shared-contract crate in this change.
 
 Add interactive CLI overrides `--tui inline|fullscreen` and `--ui active|full`.
 Resolve each axis independently: explicit CLI value, explicit selected-profile
-value, entry default. Preserve existing profile selection/precedence. Proposed
-profile fields are `ui_terminal` and existing `ui_presentation`; update the
+value, entry default. Preserve existing profile selection/precedence. Rust
+profile fields are `ui_terminal` and existing `ui_presentation` (JSON
+`uiTerminal` and `uiPresentation`); update the
 editor-facing Pkl vocabulary alongside the runtime parser.
 
 The installed launcher sets an internal entry marker, `OMEGON_LAUNCH_NAME`, to
@@ -56,11 +57,12 @@ Continue existing stream acknowledgement semantics only after a successful activ
 draw. Runtime completion must remain independent of whether text was displayed.
 
 Inline initially reserves eight rows, clipped to actual terminal height. Give the
-editor up to three rows, preserve its primary hint where it fits, and allocate the
-remaining rows to status and bounded live preview. Long drafts scroll inside the
-same editor. A decision replaces the live content with the existing decision widget;
-reserve action rows before context. If all actions cannot fit, temporarily use the
-fullscreen decision composition with scrolling context. At unusably tiny geometry,
+shared editor up to four rows including its borders and primary hint, and allocate
+the remaining rows to status and bounded live preview. Long drafts scroll inside
+the same editor. Decisions use the existing fullscreen composition with scrolling
+context. The first implementation always borrows fullscreen for a decision: the
+complete shared widget needs more than the remaining live rows. This avoids a
+second permission layout or input policy. At unusably tiny geometry,
 show a resize indication and never render misleading partial action labels.
 
 Inline Full increases evidence/detail in live preview, newly published completed
@@ -70,8 +72,8 @@ surface visibility remains stored independently of layout eligibility; returning
 fullscreen restores those preferences. Existing `/ui show|hide|toggle` must explain
 when a requested panel is available in the fullscreen workspace.
 
-Autocomplete stays attached to the shared composer with geometry clamped to the
-live area. Rich navigation (Project, menus, process/diff/copy inspectors, extension
+Slash autocomplete stays attached to the shared composer with geometry clamped to
+the live area. File-reference pickers use their existing fullscreen selector. Rich navigation (Project, menus, process/diff/copy inspectors, extension
 modals, tutorial, command panels) borrows fullscreen from inline. Images use textual
 alt/path references in published history and existing rich inspection when available.
 
@@ -185,3 +187,32 @@ No speculative dependency update, protocol change, plugin framework, or universa
 widget abstraction is required. Empirical flicker and terminal geometry questions
 are acceptance work. The prior macOS loader stall can block runtime verification,
 but does not require a different TUI architecture or prevent implementation start.
+
+## Implementation refinements
+
+Automatic delivery stores a generation, canonical segment index, field/byte cursor,
+and a bounded operation-summary accumulator. The shared semantic outcome reducer
+consumes at most 512 bytes from each tool name/result. Active aggregation scans
+incrementally, preserving its scan position between budgets; no committed prefix
+is exported or hashed. Source rewrites after the unpublished frontier invalidate
+only unfinished scanning. Rewrites touching committed content establish a new
+boundary and show a notice without replaying previous history.
+
+Explicit primary output clears the owned live rows first. It increments the
+existing presentation revision, causing the coordinator to acquire a new inline
+anchor at the resulting cursor. Ordinary alternate visits retain the original
+inline Terminal and resize it before insertion. A failed acquisition propagates
+to the existing session cleanup; there is no speculative second rollback ledger.
+
+Normal exit performs the ordinary one-batch publication opportunity and reports
+remaining completed output if the bounded cursor has not caught up. It does not
+block shutdown until an arbitrary transcript has drained.
+
+## Subsequent operator direction
+
+Decorative footer inference/tool telemetry is now OBE. The current shared-layout
+slice preserves existing Full widgets only as a migration baseline. Their core
+retirement, including exclusive code and animation scheduling, is planned in
+[tui-telemetry-addon-retirement](../tui-telemetry-addon-retirement/proposal.md).
+Active/Full remain evidence preferences; future telemetry is an optional addon
+capability rather than a reason to retain core instrument panels.

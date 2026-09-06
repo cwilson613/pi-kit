@@ -47,6 +47,7 @@ class NativeClient:
         self.rows = 40
         self.id = None
         self.session_id = None
+        self.split_id = None
         self.window = None
         self.gui = None
         self.notes = []
@@ -95,15 +96,20 @@ end tell''', self.id, self.session_id)
         elif self.client == 'kitty':
             self.remote('close-window', '--match', 'id:'+self.id)
         else:
+            self.close_resize_pane()
             self.remote('kill-pane', '--pane-id', self.id)
-            if getattr(self, 'split_id', None) is not None:
-                self.remote('kill-pane', '--pane-id', self.split_id)
         if self.window is not None:
             deadline = time.monotonic()+5
             while process_exists(key[1]) and any((w['kCGWindowNumber'], w['kCGWindowOwnerPID']) == key for w in self.windows(True)):
                 if time.monotonic() >= deadline:
                     raise RuntimeError('owned native window survived cleanup')
                 time.sleep(.1)
+
+    def close_resize_pane(self):
+        if self.split_id is not None:
+            self.remote('kill-pane', '--pane-id', self.split_id)
+            # Retain ownership on failure; forget it only after successful removal.
+            self.split_id = None
 
     def launch(self):
         before = {w['kCGWindowNumber'] for w in self.windows(True)}
@@ -294,7 +300,7 @@ def run_trial(client, bundle, helper, output, usability=False):
         driver.resize(True);capture('05-resize')
         if usability: wait('⏎ send')
         if client=='wezterm':
-            driver.remote('kill-pane','--pane-id',driver.split_id)
+            driver.close_resize_pane()
             time.sleep(.25);capture('05-resize-restored')
         driver.submit('/session-export scrollback');wait('Transcript printed');capture('06-native-print-return')
         driver.submit('native permission probe')

@@ -6,11 +6,67 @@ from unittest import mock
 import contextlib
 import io
 import tempfile
+import json
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from tui_native_acceptance import visible_tail, trial_outcome
 import tui_native_acceptance as native
 
 class NativeObservationTests(unittest.TestCase):
+    def test_wezterm_resize_cleanup_failure_preserves_ownership_for_retry(self):
+        driver = native.NativeClient('wezterm', Path('/bundle'), Path('/helper'), Path('/output'))
+        driver.split_id = 'resize'
+        with mock.patch.object(driver, 'remote', side_effect=[RuntimeError('cleanup failed'), None]) as calls:
+            with self.assertRaisesRegex(RuntimeError, 'cleanup failed'):
+                driver.close_resize_pane()
+            self.assertEqual(driver.split_id, 'resize')
+            driver.close_resize_pane()
+        self.assertEqual(calls.call_args_list, [mock.call('kill-pane', '--pane-id', 'resize')] * 2)
+        self.assertIsNone(driver.split_id)
+
+    def test_wezterm_cleanup_closes_resize_pane_before_last_main_pane(self):
+        owned = {'kCGWindowNumber': 42, 'kCGWindowOwnerPID': 99}
+        driver = native.NativeClient('wezterm', Path('/bundle'), Path('/helper'), Path('/output'))
+        driver.id, driver.split_id, driver.window = 'main', 'resize', owned
+        panes = {'main', 'resize'}
+        def remote(operation, flag, pane):
+            self.assertEqual((operation, flag), ('kill-pane', '--pane-id'))
+            if not panes:
+                raise RuntimeError('private GUI socket is closed')
+            panes.remove(pane)
+        with mock.patch.object(native, 'process_exists', return_value=True), mock.patch.object(driver, 'windows', side_effect=lambda *_: [owned] if panes else []), mock.patch.object(driver, 'remote', side_effect=remote) as calls:
+            driver.close()
+        self.assertEqual(calls.call_args_list, [mock.call('kill-pane', '--pane-id', 'resize'), mock.call('kill-pane', '--pane-id', 'main')])
+        self.assertIsNone(driver.split_id)
+
+    def test_wezterm_trial_does_not_reclose_restored_resize_pane(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bundle = root / 'bundle'
+            (bundle / 'runs').mkdir(parents=True)
+            owned = {'kCGWindowNumber': 42, 'kCGWindowOwnerPID': 99, 'kCGWindowBounds': {}}
+            driver = native.NativeClient('wezterm', bundle, root / 'helper', root / 'output')
+            driver.id, driver.window = 'main', owned
+            panes = {'main'}
+            def launch():
+                run = bundle / 'runs' / 'wezterm-one'
+                run.mkdir()
+                (run / 'manifest.json').write_text(json.dumps(dict(tui_started=True, provider_requests=4, fixture_write_exists=False, recorder_exit_code=0)))
+            def remote(operation, *args):
+                if operation == 'split-pane':
+                    panes.add('resize')
+                    return 'resize'
+                if operation == 'kill-pane':
+                    if not panes:
+                        raise RuntimeError('private GUI socket is closed')
+                    panes.remove(args[1])
+            screen = 'Ready for first turn\nready · idle\npasted second line\nProject browser\nDetails\nTab tabs\nNo active work\nnative first\nTUI_FIXTURE_REPLY_1\nTUI_FIXTURE_REPLY_2\nTranscript printed\nPermission required\nTUI_FIXTURE_REPLY_4\nPress Enter to close this trial'
+            with mock.patch.object(native, 'NativeClient', return_value=driver), mock.patch.object(native, 'verify_bundle', return_value={'binary_sha256':'fixture', 'revision':'fixture'}), mock.patch.object(native, 'digest', return_value='fixture'), mock.patch.object(native, 'process_exists', return_value=True), mock.patch.object(native.time, 'sleep'), mock.patch.object(driver, 'launch', side_effect=launch), mock.patch.object(driver, 'remote', side_effect=remote) as calls, mock.patch.object(driver, 'screen', return_value=screen), mock.patch.object(driver, 'windows', side_effect=lambda *_: [owned] if panes else []), mock.patch.object(driver, 'screenshot'), contextlib.redirect_stdout(io.StringIO()):
+                result = native.run_trial('wezterm', bundle, root / 'helper', root / 'output')
+            self.assertTrue(result['passed'], result)
+            self.assertEqual(result['window_cleanup'], 'closed or already absent')
+            self.assertEqual(calls.call_args_list.count(mock.call('kill-pane', '--pane-id', 'resize')), 1)
+            self.assertFalse(panes)
+
     def test_cleanup_failure_stops_matrix_before_another_window_opens(self):
         with tempfile.TemporaryDirectory() as folder:
             with mock.patch.object(native, 'run_trial', return_value={'passed':False, 'window_cleanup':'failed'}) as trial:

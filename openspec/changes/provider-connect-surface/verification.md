@@ -138,3 +138,6 @@ phase deadlines, reconnect/duplicate-action handling, token-budgeted retention,
 terminal ownership and Project navigation. The broader scope was disclosed and
 authorized. The future `/login` renewal semantics and optional decorative telemetry
 addon remain deferred. No merge is performed by this task.
+
+PR handoff: [#233](https://github.com/styrene-lab/omegon/pull/233) is open against
+`main` from `feature/provider-connect-surface`. It has not been merged.

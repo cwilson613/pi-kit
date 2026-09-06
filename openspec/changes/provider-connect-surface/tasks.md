@@ -1,6 +1,6 @@
 # Implementation tasks
 
-Implementation and captured acceptance are complete. Final workspace validation passed and PR handoff is in progress; see verification.md for evidence and limitations.
+Implementation and captured acceptance are complete. Final workspace validation passed and PR #233 is open against main; see verification.md for evidence and limitations.
 
 ## 1. Quiet startup and failure guidance
 <!-- specs: provider-connections -->
@@ -33,4 +33,4 @@ Implementation and captured acceptance are complete. Final workspace validation 
 - [x] Reproduce and fix WezTerm double-removal of its temporary resize pane with headless mocked trial and failure-retention tests; keep the correction in its own commit.
 - [x] Reproduce and fix abandoned active/queued runtime decisions on authoritative completion, idle, and session reset; preserve drafts/menus and ignore advisory/stale completion.
 - [x] Correlate operator-wait completion with its tool-call identity so timeout promotes the next queued decision and stale completion cannot dismiss a newer wait; preserve external wire behavior.
-- [ ] Obtain independent rereview of provider connections and integration corrections, run final current-source gates, and describe inherited parity/TUI scope accurately in the PR against main.
+- [x] Obtain independent rereview of provider connections and integration corrections, run final current-source gates, and describe inherited parity/TUI scope accurately in the PR against main.

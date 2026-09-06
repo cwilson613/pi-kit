@@ -18,9 +18,11 @@ import threading
 import time
 import uuid
 
+FIXTURE_MODEL = "openai:omegon-tui-fixture"
+
 
 def tui_command(binary, workspace, log, presentation="fullscreen", detail="active"):
-    command = [str(binary), "--cwd", str(workspace), "--model", "openai:gpt-5.4", "--no-splash", "--fresh", "--log-level", "debug", "--log-file", str(log)]
+    command = [str(binary), "--cwd", str(workspace), "--model", FIXTURE_MODEL, "--no-splash", "--fresh", "--log-level", "debug", "--log-file", str(log)]
     if presentation is not None:
         command += ["--tui", presentation]
     if detail is not None:
@@ -156,9 +158,9 @@ secret_refs = ["OMEGON_PROJECT_ENDPOINT_616363657074616E6365_TOKEN"]
 kind = "http"
 base_url = "{provider.url}/v1"
 [[offerings]]
-id = "openai:gpt-5.4"
+id = "{FIXTURE_MODEL}"
 endpoint = "acceptance"
-native_model_id = "gpt-5.4"
+native_model_id = "local"
 input_modalities = ["text"]
 output_modalities = ["text"]
 [offerings.capabilities]

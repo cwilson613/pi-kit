@@ -1,6 +1,8 @@
 """Contract tests for the captured TUI runner's local provider."""
 import importlib.util
 import json
+import tempfile
+import tomllib
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -48,6 +50,12 @@ if __name__ == "__main__":
     assert "--tui" in command and "--ui" in command, "fixture must select both axes explicitly"
     assert command[command.index("--tui") + 1] == "inline"
     assert command[command.index("--ui") + 1] == "full"
+    with tempfile.TemporaryDirectory() as folder, runner.fixture_provider() as provider:
+        workspace = runner.prepare_fixture_workspace(Path(folder), provider)
+        manifest = tomllib.loads((workspace / '.omegon/inference.toml').read_text())
+        offering = manifest['offerings'][0]
+        assert command[command.index('--model') + 1] == offering['id']
+        assert offering['id'] == 'openai:omegon-tui-fixture', 'fixture must use a distinct offering with a supported provider prefix'
     test_provider_streams_distinct_turns_without_external_inference()
     test_provider_rejects_unknown_routes()
     test_provider_can_request_a_bounded_permission_probe()

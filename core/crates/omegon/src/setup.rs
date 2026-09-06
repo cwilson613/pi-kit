@@ -823,6 +823,12 @@ impl AgentSetup {
 
         // ─── Cleave + delegate shared inference runtime ────────────────
         let inference_runtime = crate::inference_runtime::InferenceRuntimeState::new(&project_root);
+        // Local manifests and cached evidence must be admitted before the first
+        // route is selected. Network discovery must not gate their visibility.
+        let startup_report = inference_runtime.refresh().await;
+        inference_runtime
+            .record_refresh_report(&startup_report)
+            .await;
         // Startup discovery is deliberately backgrounded: catalog reads project
         // the persisted cache immediately and never wait on provider networks.
         // The non-forced pass respects per-endpoint TTL; successful updates are

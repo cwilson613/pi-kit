@@ -4197,13 +4197,14 @@ fn empty_editor_hint_mentions_tool_detail_hotkey() {
     let area = app.editor_area.expect("rendered editor area");
     let input = rendered.lines().nth(usize::from(area.y) + 1).unwrap();
     assert!(
-        input.trim().is_empty(),
-        "empty input row contains help: {input}"
+        input.contains("Ask anything"),
+        "placeholder is not in the input row: {input}"
     );
+    assert_eq!(area.height, 2, "plain composer needs only border and input");
 }
 
 #[test]
-fn draw_owns_full_root_background() {
+fn draw_uses_terminal_default_background() {
     let mut app = test_app();
     let backend = ratatui::backend::TestBackend::new(40, 8);
     let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -4218,10 +4219,10 @@ fn draw_owns_full_root_background() {
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
             let cell = buffer.cell((x, y)).expect("cell in bounds");
-            assert_ne!(
+            assert_eq!(
                 cell.bg,
                 Color::Reset,
-                "cell ({x},{y}) retained Reset background; root draw left a transparent hole"
+                "cell ({x},{y}) overrides the terminal background"
             );
         }
     }
@@ -8312,6 +8313,7 @@ fn editor_top_line_preserves_route_badge_contrast_after_bg_cleanup() {
     let mut settings = Settings::new("openai-codex:gpt-5.5");
     settings.thinking = ThinkingLevel::Minimal;
     let mut app = App::new(std::sync::Arc::new(std::sync::Mutex::new(settings)));
+    app.theme = Box::new(crate::tui::theme::Alpharius);
     app.apply_ui_preset(UiSurfaces::lean());
     app.footer_data.context_window = 1_048_576;
     app.footer_data.context_percent = 0.0;
@@ -8332,6 +8334,7 @@ fn editor_top_line_dividers_bridge_gradient_segment_backgrounds() {
     let mut settings = Settings::new("openai-codex:gpt-5.5");
     settings.thinking = ThinkingLevel::Minimal;
     let mut app = App::new(std::sync::Arc::new(std::sync::Mutex::new(settings)));
+    app.theme = Box::new(crate::tui::theme::Alpharius);
     app.apply_ui_preset(UiSurfaces::lean());
     app.footer_data.context_window = 1_048_576;
     app.footer_data.context_percent = 0.0;
@@ -8414,7 +8417,7 @@ fn editor_top_line_grades_actual_model_not_route_intent() {
     let rendered = render_app_to_string(&mut app, 140, 18);
 
     assert!(
-        rendered.contains("openai-codex/gpt-5.6-sol  󰿃 S  default   low   ctx:"),
+        rendered.contains("openai-codex/gpt-5.6-sol  ·  󰿃 S  ·  default  ·   low  ·   ctx:"),
         "{rendered}"
     );
 }
@@ -8434,7 +8437,7 @@ fn active_turn_keeps_engine_ribbon_and_moves_spinner_to_status_row() {
     let rendered = render_app_to_string(&mut app, 160, 20);
 
     assert!(
-        rendered.contains("openai-codex/gpt-5.5  󰿃 S  default   high   ctx:"),
+        rendered.contains("openai-codex/gpt-5.5  ·  󰿃 S  ·  default  ·   high  ·   ctx:"),
         "active turn must keep engine route/grade/thinking/context visible: {rendered}"
     );
     assert!(
@@ -11448,7 +11451,6 @@ fn native_usability_primary_composer_hint_survives_narrow_width() {
     for width in [40, 56, 90] {
         for (input, hint) in [
             ("", "⏎ send"),
-            ("draft", "⏎ send"),
             ("/usage", "⏎ run command"),
             ("!pwd", "⏎ run directly"),
         ] {
@@ -11456,6 +11458,39 @@ fn native_usability_primary_composer_hint_survives_narrow_width() {
             app.editor.set_text(input);
             let rendered = render_app_to_string(&mut app, width, 24);
             assert!(rendered.contains(hint), "{width}: {input}: {rendered}");
+        }
+    }
+}
+
+#[test]
+fn terminal_composer_placeholder_is_dim_and_disappears_when_typing() {
+    for presentation in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        for width in [40, 80, 120] {
+            let mut app = test_app();
+            app.inline_active = presentation == TerminalPresentation::Inline;
+            let backend = ratatui::backend::TestBackend::new(width, 24);
+            let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| app.draw(frame))
+                .expect("empty editor draw");
+            let area = app.editor_area.expect("editor area");
+            let cell = &terminal.backend().buffer()[(area.x, area.y + 1)];
+            assert!(
+                cell.modifier.contains(Modifier::DIM),
+                "placeholder must be faint"
+            );
+            assert_eq!(cell.fg, Color::Reset);
+            assert_eq!(cell.bg, Color::Reset);
+            assert_eq!(area.height, 2);
+            app.editor.set_text("A real message");
+            let rendered = render_app_to_string(&mut app, width, 24);
+            assert!(rendered.contains("A real message"), "{rendered}");
+            for hint in ["Ask anything", "⏎ send", "/ commands", "newline", "history"] {
+                assert!(!rendered.contains(hint), "{hint}: {rendered}");
+            }
         }
     }
 }

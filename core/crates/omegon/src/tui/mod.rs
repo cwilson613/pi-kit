@@ -696,7 +696,11 @@ fn editor_height_for(editor: &Editor, main_area: Rect) -> u16 {
     let content_width = main_area.width.saturating_sub(2).max(1);
     let editor_rows = editor.visual_line_count(content_width) as u16;
     let max_editor = (main_area.height * 40 / 100).clamp(5, 20);
-    (editor_rows + 2).clamp(3, max_editor) // +2 for border
+    let text = editor.render_text();
+    let contextual_help = !matches!(editor.mode(), editor::EditorMode::Normal)
+        || text.trim_start().starts_with(['/', '!']);
+    let chrome_rows = 1 + u16::from(contextual_help);
+    (editor_rows + chrome_rows).clamp(1 + chrome_rows, max_editor)
 }
 
 enum CommandAdmission {

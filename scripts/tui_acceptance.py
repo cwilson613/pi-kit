@@ -255,6 +255,18 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             if "semantic frontend is unavailable" in screen():
                 raise AssertionError("startup exposed an unavailable session projection")
             capture("01-startup")
+            styled = output / "01-startup-styled.ansi"
+            styled.write_text(tmux("capture-pane", "-p", "-e", "-t", "run:0.0"))
+            ledger["style_capture"] = {"file": styled.name, "sha256": digest(styled)}
+            assert "38;2;" not in styled.read_text() and "48;2;" not in styled.read_text(), "startup overrides terminal colors"
+            assert "Ask anything" in screen() and "⏎ send" in screen()
+            action("send-keys", "-t", "run:0.0", "-l", "EDITOR_PLACEHOLDER_PROBE")
+            wait_for(lambda: "EDITOR_PLACEHOLDER_PROBE" in screen(), "message replaces placeholder")
+            assert "Ask anything" not in screen() and "⏎ send" not in screen(), "message retains editor hints"
+            capture("01a-message-without-hints")
+            action("send-keys", "-t", "run:0.0", "C-u")
+            wait_for(lambda: "Ask anything" in screen(), "cleared editor restores placeholder")
+            assert provider.requests == 0, "placeholder probe submitted a message"
             capture("00-startup-primary", primary=True)
             assert_quiet_startup((output / "00-startup-primary.txt").read_text(), entry or "omegon")
             action("send-keys", "-t", "run:0.0", "-l", "/connect")
@@ -376,9 +388,7 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
                 wait_for(lambda: "Project browser" in screen(), "Project during cancel probe")
                 action("send-keys", "-t", "run:0.0", "C-c")
                 action("send-keys", "-t", "run:0.0", "Escape")
-                wait_for(lambda: ready_marker(presentation, detail) in screen(), "cancel releases composer")
-                wait_for(lambda: "CANCEL_DRAFT_SURVIVES" in screen(), "cancel preserves unsent draft")
-                wait_for(lambda: "Turn cancelled or revoked." in history(), "cancellation outcome in history")
+                wait_for(lambda: "CANCEL_DRAFT_SURVIVES" in screen() and "Turn cancelled or revoked." in history(), "cancel preserves draft and reports terminal outcome")
                 capture("stress-cancel-draft")
                 provider.release_cancel.set()
                 action("send-keys", "-t", "run:0.0", "C-u")

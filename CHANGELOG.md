@@ -18,7 +18,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
-- Empty composers combine the input hint and keyboard legend on one bottom line, keeping the input row clear and retaining primary hints in narrow terminals.
+- The TUI defaults to terminal foreground/background colors and ANSI signal colors instead of loading Alpharius. Composer guidance is a dim placeholder inside the empty input, disappears while typing a message, and no longer reserves a separate help row.
 
 - Authoritative TUI completion, idle reconciliation, and session reset now release abandoned permission and operator-wait queues while preserving the operator's draft and covered menu.
 

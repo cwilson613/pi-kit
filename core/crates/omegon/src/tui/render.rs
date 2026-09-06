@@ -41,6 +41,7 @@ impl App {
 
         if self.inline_active {
             self.draw_inline(frame);
+            self.theme.finish_frame(frame.buffer_mut());
             return;
         }
 
@@ -692,6 +693,7 @@ impl App {
         {
             command_surfaces::render_prompt(area, frame.buffer_mut(), self.theme.as_ref(), prompt);
         }
+        self.theme.finish_frame(frame.buffer_mut());
         self.last_draw_phase_timings = draw_phases;
     }
 }
@@ -861,7 +863,7 @@ impl App {
                         .into()
                 }
             } else {
-                "⏎ send  ⇧⏎/⌥⏎ newline  ⌥↑/⌥↓ history ".into()
+                String::new()
             };
             let hint_text =
                 fit_composer_hint(&hint_text, usize::from(editor_area.width.saturating_sub(2)));
@@ -993,10 +995,14 @@ impl App {
                                     style: Style,
                                     previous_bg: Color,
                                     segment_bg: Color| {
-                    spans.push(Span::styled(
-                        route_glyph,
-                        Style::default().fg(previous_bg).bg(segment_bg),
-                    ));
+                    if previous_bg == Color::Reset && segment_bg == Color::Reset {
+                        spans.push(Span::styled(" · ", t.style_dim()));
+                    } else {
+                        spans.push(Span::styled(
+                            route_glyph,
+                            Style::default().fg(previous_bg).bg(segment_bg),
+                        ));
+                    }
                     spans.push(Span::styled(format!(" {text} "), style.bg(segment_bg)));
                 };
                 let tail_fields = [
@@ -1028,26 +1034,23 @@ impl App {
                         previous_bg = segment_bg;
                     }
                 }
-                title_spans.push(Span::styled(
-                    route_glyph,
-                    Style::default().fg(previous_bg).bg(t.surface_bg()),
-                ));
+                if previous_bg != Color::Reset {
+                    title_spans.push(Span::styled(
+                        route_glyph,
+                        Style::default().fg(previous_bg).bg(t.surface_bg()),
+                    ));
+                }
                 Line::from(title_spans)
             };
-            let editor_block = Block::default()
+            let mut editor_block = Block::default()
                 .borders(Borders::TOP)
                 .border_type(ratatui::widgets::BorderType::Rounded)
                 .border_style(Style::default().fg(intent_color).bg(intent_bg))
-                .title(editor_title)
-                .title_bottom({
-                    let help =
-                        Line::from(Span::styled(hint_text, Style::default().fg(intent_color)));
-                    if self.editor.is_empty() {
-                        help.left_aligned()
-                    } else {
-                        help.right_aligned()
-                    }
-                });
+                .title(editor_title);
+            if shell_primed || command_primed {
+                editor_block = editor_block
+                    .title_bottom(Line::styled(hint_text.clone(), t.style_dim()).right_aligned());
+            }
 
             let editor_rect = editor_area;
             // Pre-split using char-boundary wrapping (same algorithm as
@@ -1074,7 +1077,7 @@ impl App {
                         ),
                     ])]
                 } else {
-                    vec![Line::default()]
+                    vec![Line::styled(hint_text, t.style_dim())]
                 }
             } else {
                 self.editor

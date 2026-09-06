@@ -10998,6 +10998,7 @@ async fn blocking_decisions_preserve_copy_surface_and_resolve_in_arrival_order()
         let (wait_tx, wait_rx) = std::sync::mpsc::channel();
         let (ack_tx, _ack_rx) = std::sync::mpsc::channel();
         app.handle_agent_event(AgentEvent::OperatorWaitRequest {
+            call_id: None,
             prompt: "Second decision".into(),
             timeout_secs: 60,
             acknowledge: std::sync::Arc::new(std::sync::Mutex::new(Some(ack_tx))),

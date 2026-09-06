@@ -129,7 +129,13 @@ impl LoopInvocationFrontend {
                 .downcast::<crate::tools::OperatorWaitRequired>()
                 .expect("checked operator wait downcast");
             let result = self
-                .present_operator_wait(wait, request.events, request.cancel, request.sink)
+                .present_operator_wait(
+                    wait,
+                    Some(request.visible_call_id),
+                    request.events,
+                    request.cancel,
+                    request.sink,
+                )
                 .await;
             let is_error = result
                 .details
@@ -283,6 +289,7 @@ impl LoopInvocationFrontend {
     async fn present_operator_wait(
         &self,
         wait: crate::tools::OperatorWaitRequired,
+        call_id: Option<&str>,
         events: &tokio::sync::broadcast::Sender<AgentEvent>,
         cancel: tokio_util::sync::CancellationToken,
         sink: omegon_traits::ToolProgressSink,
@@ -297,6 +304,7 @@ impl LoopInvocationFrontend {
         let (tx, rx) = std::sync::mpsc::channel();
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         let _ = events.send(AgentEvent::OperatorWaitRequest {
+            call_id: call_id.map(str::to_owned),
             prompt: wait.prompt.clone(),
             timeout_secs: wait.timeout_secs,
             acknowledge: Arc::new(std::sync::Mutex::new(Some(ack_tx))),
@@ -531,6 +539,7 @@ mod tests {
                     prompt: "restart service".into(),
                     timeout_secs: 30,
                 },
+                None,
                 &events,
                 tokio_util::sync::CancellationToken::new(),
                 omegon_traits::ToolProgressSink::noop(),
@@ -549,6 +558,7 @@ mod tests {
                 prompt: "restart service".into(),
                 timeout_secs: 30,
             },
+            Some("wait-call-1"),
             &events,
             tokio_util::sync::CancellationToken::new(),
             omegon_traits::ToolProgressSink::noop(),
@@ -556,7 +566,8 @@ mod tests {
         tokio::pin!(wait);
         tokio::select! {
             event = event_rx.recv() => match event.unwrap() {
-                AgentEvent::OperatorWaitRequest { acknowledge, respond, .. } => {
+                AgentEvent::OperatorWaitRequest { call_id, acknowledge, respond, .. } => {
+                    assert_eq!(call_id.as_deref(), Some("wait-call-1"));
                     acknowledge.lock().unwrap().take().unwrap().send(()).unwrap();
                     respond.lock().unwrap().take().unwrap()
                         .send(omegon_traits::OperatorWaitResponse::Completed).unwrap();

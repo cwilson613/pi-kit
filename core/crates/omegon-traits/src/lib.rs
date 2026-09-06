@@ -3278,6 +3278,9 @@ pub enum AgentEvent {
     /// The TUI renders a blocking prompt and sends the response when the
     /// operator confirms completion or cancels.
     OperatorWaitRequest {
+        /// Visible tool-call identity for matching completion. Legacy producers
+        /// may omit correlation; clients must not guess ownership from the prompt.
+        call_id: Option<String>,
         prompt: String,
         timeout_secs: u64,
         acknowledge: std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>>,

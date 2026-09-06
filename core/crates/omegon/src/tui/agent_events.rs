@@ -436,6 +436,7 @@ impl App {
                 });
             }
             AgentEvent::OperatorWaitRequest {
+                call_id,
                 prompt,
                 timeout_secs,
                 acknowledge,
@@ -460,6 +461,7 @@ impl App {
                     let _ = tx.send(());
                 }
                 self.interaction.prompt = self.command_prompt.clone();
+                self.interaction.wait_call_id = call_id;
                 self.pending_operator_wait = Some(respond.clone());
                 self.pending_operator_wait_context = Some(prompt);
             }
@@ -476,12 +478,8 @@ impl App {
                 // the event boundary instead of retaining the startup snapshot.
                 self.workbench_state.workspace = self.current_workbench_workspace_context();
 
-                if name == crate::tool_registry::core::WAIT_FOR_OPERATOR
-                    && self.pending_operator_wait.is_some()
-                {
-                    self.pending_operator_wait = None;
-                    self.pending_operator_wait_context = None;
-                    self.command_prompt = None;
+                if name == crate::tool_registry::core::WAIT_FOR_OPERATOR {
+                    self.finish_operator_wait_call(&id);
                 }
 
                 let text_blocks: Vec<&str> = result
@@ -724,6 +722,9 @@ impl App {
                     .get("active")
                     .is_some_and(serde_json::Value::is_null);
                 self.runtime_queue_snapshot = Some(snapshot_json);
+                if runtime_idle {
+                    self.cancel_blocking_interactions();
+                }
                 if runtime_idle && (self.runtime_turn_id.is_some() || self.agent_active) {
                     self.terminalize_runtime_turn();
                 }
@@ -891,6 +892,7 @@ impl App {
                         .get("turn_id")
                         .and_then(serde_json::Value::as_u64);
                     if self.runtime_turn_id.is_none() || advised_turn == self.runtime_turn_id {
+                        self.cancel_blocking_interactions();
                         let notice = match phase {
                             "supervisor_revoked" => Some("Turn cancelled or revoked."),
                             "supervisor_failed" => Some("Turn failed."),
@@ -956,6 +958,8 @@ impl App {
                 }
             }
             AgentEvent::SessionReset => {
+                self.cancel_blocking_interactions();
+                self.terminalize_runtime_turn();
                 self.terminal_outcome_notice = None;
                 if self.session_view_binding.is_some() {
                     self.refresh_semantic_session_view();

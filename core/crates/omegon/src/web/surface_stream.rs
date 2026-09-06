@@ -323,6 +323,7 @@ fn surface_stream_event(
             timeout_secs,
             acknowledge,
             respond,
+            ..
         } => {
             // Acknowledge immediately (2s producer deadline) and capture the
             // responder so POST /api/web/actions can deliver the decision.
@@ -758,6 +759,7 @@ mod tests {
             &state,
             5,
             AgentEvent::OperatorWaitRequest {
+                call_id: None,
                 prompt: "swap the cable".into(),
                 timeout_secs: 120,
                 acknowledge: acknowledge.clone(),

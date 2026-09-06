@@ -1270,6 +1270,15 @@ Scroll transcript:
 
             "ui" => {
                 let args = args.trim();
+                if let Some(terminal) = args.strip_prefix("terminal ") {
+                    return match TerminalPresentation::parse(terminal.trim()) {
+                        Ok(value) => {
+                            self.base_terminal = value;
+                            SlashResult::Display(format!("Terminal → {} (this session); detail: {}", value.name(), self.ui_presentation.level.name()))
+                        }
+                        Err(message) => SlashResult::Display(message),
+                    };
+                }
                 if let Some(density) = args
                     .strip_prefix("detail ")
                     .or_else(|| args.strip_prefix("density "))
@@ -1286,11 +1295,11 @@ Scroll transcript:
                     SlashResult::Display(self.ui_status_text())
                 } else if matches!(args, "om" | "lean" | "slim") {
                     let outcome = self.handle_ui_preset_action(SetUiPresetAction {
-                        level: UiPresentationLevel::Om,
+                        level: UiPresentationLevel::Active,
                     });
                     match outcome {
                         UiActionOutcome::Accepted { message } => {
-                            SlashResult::Display(message.unwrap_or_else(|| "UI → om".into()))
+                            SlashResult::Display(message.unwrap_or_else(|| "UI → active".into()))
                         }
                         other => SlashResult::Display(format!("UI action failed: {other:?}")),
                     }

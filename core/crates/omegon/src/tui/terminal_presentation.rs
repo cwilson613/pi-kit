@@ -138,6 +138,65 @@ mod tests {
         }
     }
     #[test]
+    fn every_mode_failure_retains_only_successful_operations_for_cleanup() {
+        for failed in [
+            TerminalMode::Raw,
+            TerminalMode::AlternateScreen,
+            TerminalMode::MouseCapture,
+            TerminalMode::BracketedPaste,
+            TerminalMode::KeyboardEnhancement,
+        ] {
+            let mut state = TerminalModes::default();
+            let mut acquired = Vec::new();
+            assert!(
+                transition(&mut state, fullscreen(), &mut |mode, enabled| {
+                    assert!(enabled);
+                    if mode == failed {
+                        Err(io::Error::other("injected acquisition failure"))
+                    } else {
+                        acquired.push(mode);
+                        Ok(())
+                    }
+                })
+                .is_err()
+            );
+            assert!(!state.get(failed));
+            let mut released = Vec::new();
+            restore(&mut state, &mut |mode, enabled| {
+                assert!(!enabled);
+                released.push(mode);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(acquired.len(), released.len());
+            assert!(acquired.iter().all(|mode| released.contains(mode)));
+            assert_eq!(state, TerminalModes::default());
+
+            let mut state = fullscreen();
+            assert!(
+                restore(&mut state, &mut |mode, _| {
+                    if mode == failed {
+                        Err(io::Error::other("injected release failure"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err()
+            );
+            let mut expected = TerminalModes::default();
+            expected.set(failed, true);
+            assert_eq!(state, expected);
+            let mut retried = Vec::new();
+            restore(&mut state, &mut |mode, _| {
+                retried.push(mode);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(retried, vec![failed]);
+        }
+    }
+
+    #[test]
     fn failed_primary_write_restores_exact_modes_including_mouse_disabled() {
         let mut state = fullscreen();
         state.mouse_capture = false;

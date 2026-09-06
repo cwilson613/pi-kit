@@ -278,6 +278,14 @@ struct Cli {
     #[arg(long, global = true)]
     debug_tui: bool,
 
+    /// Interactive terminal layout (independent of detail).
+    #[arg(long, global = true, value_parser = surfaces::layout::TerminalPresentation::parse)]
+    tui: Option<surfaces::layout::TerminalPresentation>,
+
+    /// Interactive detail: active or full (legacy om/lean/slim mean active).
+    #[arg(long, global = true, value_parser = surfaces::layout::UiPresentationLevel::parse)]
+    ui: Option<surfaces::layout::UiPresentationLevel>,
+
     /// Model identifier (provider:model format)
     #[arg(
         short,
@@ -2135,6 +2143,8 @@ async fn main() -> anyhow::Result<()> {
                 slim,
             } => {
                 let mut bench_cli = Cli {
+                    tui: None,
+                    ui: None,
                     command: None,
                     cwd: cli.cwd.clone(),
                     debug_tui: cli.debug_tui,
@@ -4860,6 +4870,17 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         apply_profile_posture: true,
     });
 
+    {
+        let mut settings = shared_settings.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let marker = std::env::var("OMEGON_LAUNCH_NAME").ok();
+        let argv0 = std::env::args().next().unwrap_or_default();
+        let entry = surfaces::layout::ui_entry_name(marker.as_deref(), &argv0);
+        let (terminal, detail) = surfaces::layout::resolve_ui_preferences(
+            entry, settings.ui_terminal_preference, settings.ui_detail_preference, cli.tui, cli.ui);
+        settings.ui_terminal = terminal;
+        settings.ui_presentation = detail;
+    }
+
     // Walk the system temp dir for `omegon-clipboard-*` files older
     // than `Settings.clipboard_retention_hours` (default 24h, 0 to
     // disable) and delete them. Without this sweep clipboard image
@@ -7205,6 +7226,25 @@ fn build_tui_secret_readiness_snapshot(
 
                     loop {
                         tokio::select! {
+                            interrupt = runtime_interrupt_rx.recv() => {
+                                if let Some(identity) = interrupt {
+                                    match runtime.request_durable_interrupt(identity, RuntimeActor::tui(), ControlSurface::Tui) {
+                                        Ok(InterruptAdmission::Admitted) => {
+                                            turn_cancel.cancel();
+                                            if cancellation_deadline.is_none() {
+                                                cancellation_deadline = Some(Box::pin(tokio::time::sleep(std::time::Duration::from_secs(2))));
+                                            }
+                                        }
+                                        Ok(_) => {},
+                                        Err(error) => {
+                                            tracing::error!(%error, "failed to durably admit active TUI interrupt");
+                                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                                message: format!("Interrupt was not accepted because session authority could not be updated: {error}"),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                             _ = tui_exit.cancelled() => {
                                 quit_after_turn = true;
                                 ipc_cancel.cancel();

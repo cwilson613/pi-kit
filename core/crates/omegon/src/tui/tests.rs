@@ -2669,61 +2669,95 @@ fn turn_terminal_reasons_release_active_gate_and_remain_visible() {
 
 #[tokio::test]
 async fn supervisor_completion_without_agent_end_allows_second_submission() {
-    let mut app = active_test_app();
-    app.handle_agent_event(AgentEvent::RuntimePromptStarted {
-        runtime_turn_id: 41,
-        text: "do work".into(),
-        image_paths: Vec::new(),
-    });
-    app.handle_agent_event(AgentEvent::TurnStart { turn: 1 });
-    app.handle_agent_event(AgentEvent::MessageStart {
-        role: "assistant".into(),
-    });
-    app.handle_agent_event(AgentEvent::MessageChunk {
-        text: "finished response".into(),
-    });
+    for base in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        let mut app = active_test_app();
+        app.base_terminal = base;
+        app.handle_agent_event(AgentEvent::RuntimePromptStarted {
+            runtime_turn_id: 41,
+            text: "do work".into(),
+            image_paths: Vec::new(),
+        });
+        app.handle_agent_event(AgentEvent::TurnStart { turn: 1 });
+        app.handle_agent_event(AgentEvent::MessageStart {
+            role: "assistant".into(),
+        });
+        app.handle_agent_event(AgentEvent::MessageChunk {
+            text: "finished response".into(),
+        });
 
-    assert!(app.agent_active);
+        assert!(app.agent_active);
 
-    app.handle_agent_event(AgentEvent::RuntimeTurnLifecycleUpdated {
-        snapshot_json: serde_json::json!({
-            "phase": "supervisor_completed",
-            "turn_id": 41,
-        }),
-    });
-
-    assert!(!app.agent_active);
-    assert!(!app.conversation.is_streaming());
-    assert_eq!(app.runtime_turn_id, None);
-    assert_eq!(app.slim_turn_state, SlimTurnState::Ready);
-    let rendered = render_app_to_string(&mut app, 140, 18);
-    assert!(!rendered.contains("active turn"), "{rendered}");
-    assert!(!rendered.contains("streaming answer"), "{rendered}");
-
-    // A delayed duplicate AgentEnd must remain harmless.
-    app.handle_agent_event(AgentEvent::AgentEnd);
-    assert!(!app.agent_active);
-    assert!(!app.conversation.is_streaming());
-
-    let (tx, mut rx) = test_tx_with_rx();
-    assert_eq!(
-        app.handle_ui_action(
-            UiAction::SubmitPrompt(SubmitPromptAction {
-                text: "next turn".into(),
-                attachments: Vec::new(),
-                source: PromptSource::LocalTui,
-                queue_mode: app.queue_mode,
-                metadata: PromptMetadata::default(),
+        app.handle_agent_event(AgentEvent::RuntimeTurnLifecycleUpdated {
+            snapshot_json: serde_json::json!({
+                "phase": "supervisor_completed",
+                "turn_id": 41,
             }),
-            &tx,
-        )
-        .await,
-        UiActionOutcome::accepted()
-    );
-    assert!(matches!(
-        rx.recv().await,
-        Some(TuiCommand::SubmitPrompt(PromptSubmission { text, .. })) if text == "next turn"
-    ));
+        });
+
+        assert!(!app.agent_active);
+        assert!(!app.conversation.is_streaming());
+        assert_eq!(app.runtime_turn_id, None);
+        assert_eq!(app.slim_turn_state, SlimTurnState::Ready);
+        let rendered = render_app_to_string(&mut app, 140, 18);
+        assert!(!rendered.contains("active turn"), "{rendered}");
+        assert!(!rendered.contains("streaming answer"), "{rendered}");
+
+        // A delayed duplicate AgentEnd must remain harmless.
+        app.handle_agent_event(AgentEvent::AgentEnd);
+        assert!(!app.agent_active);
+        assert!(!app.conversation.is_streaming());
+
+        let (tx, mut rx) = test_tx_with_rx();
+        assert_eq!(
+            app.handle_ui_action(
+                UiAction::SubmitPrompt(SubmitPromptAction {
+                    text: "next turn".into(),
+                    attachments: Vec::new(),
+                    source: PromptSource::LocalTui,
+                    queue_mode: app.queue_mode,
+                    metadata: PromptMetadata::default(),
+                }),
+                &tx,
+            )
+            .await,
+            UiActionOutcome::accepted()
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(TuiCommand::SubmitPrompt(PromptSubmission { text, .. })) if text == "next turn"
+        ));
+    }
+}
+
+#[test]
+fn authoritative_failure_outcomes_finalize_once_without_agent_end() {
+    for phase in [
+        "supervisor_revoked",
+        "supervisor_failed",
+        "supervisor_timed_out",
+    ] {
+        for base in [
+            TerminalPresentation::Inline,
+            TerminalPresentation::Fullscreen,
+        ] {
+            let mut app = active_test_app();
+            app.base_terminal = base;
+            app.runtime_turn_id = Some(73);
+            let event = || AgentEvent::RuntimeTurnLifecycleUpdated {
+                snapshot_json: serde_json::json!({"phase": phase, "turn_id": 73}),
+            };
+            app.handle_agent_event(event());
+            assert!(!app.agent_active);
+            let count = app.conversation.segments().len();
+            assert!(count > 0);
+            assert_eq!(app.publication_boundary, count);
+            app.handle_agent_event(event());
+            assert_eq!(app.conversation.segments().len(), count);
+        }
+    }
 }
 
 #[test]
@@ -3660,8 +3694,8 @@ fn ui_command_switches_between_om_active_and_full_presentations() {
     for alias in ["om", "lean", "slim"] {
         let result = app.handle_slash_command(&format!("/ui {alias}"), &tx);
         assert!(matches!(result, SlashResult::Display(_)));
-        assert_eq!(app.ui_presentation.level, UiPresentationLevel::Om);
-        assert_eq!(app.ui_presentation.preset_name(), "om");
+        assert_eq!(app.ui_presentation.level, UiPresentationLevel::Active);
+        assert_eq!(app.ui_presentation.preset_name(), "active");
         assert!(app.ui_surfaces.is_compact());
     }
 
@@ -3940,7 +3974,7 @@ fn ctrl_g_presentation_cycle_includes_active() {
     policy = policy.next();
     assert_eq!(policy.preset_name(), "full");
     policy = policy.next();
-    assert_eq!(policy.preset_name(), "om");
+    assert_eq!(policy.preset_name(), "active");
 
     let custom_surfaces = UiSurfaces {
         dashboard: false,
@@ -10941,60 +10975,66 @@ fn drawn_completion_backlog_releases_app_without_requeueing() {
 
 #[tokio::test]
 async fn blocking_decisions_preserve_copy_surface_and_resolve_in_arrival_order() {
-    let mut app = test_app();
-    let tx = test_tx();
-    app.open_settings_menu();
-    app.active_menu.as_mut().unwrap().state.selected_row = 2;
-    let prior_menu = app.active_menu.clone();
-    app.copy_text_modal = Some(CopyTextModal::new("Prior copy", "prior selection"));
-    let (permission_tx, permission_rx) = std::sync::mpsc::channel();
-    app.handle_agent_event(AgentEvent::PermissionRequest {
-        tool_name: "write".into(),
-        path: "src/allowed.rs".into(),
-        kind: omegon_traits::PermissionRequestKind::PathBoundary,
-        persistence: omegon_traits::PermissionPersistence::ProjectDirectory,
-        grant_path: None,
-        respond: std::sync::Arc::new(std::sync::Mutex::new(Some(permission_tx))),
-    });
-    let (wait_tx, wait_rx) = std::sync::mpsc::channel();
-    let (ack_tx, _ack_rx) = std::sync::mpsc::channel();
-    app.handle_agent_event(AgentEvent::OperatorWaitRequest {
-        prompt: "Second decision".into(),
-        timeout_secs: 60,
-        acknowledge: std::sync::Arc::new(std::sync::Mutex::new(Some(ack_tx))),
-        respond: std::sync::Arc::new(std::sync::Mutex::new(Some(wait_tx))),
-    });
-    let rendered = render_app_to_string(&mut app, 120, 40);
-    assert!(
-        rendered.contains("Permission required"),
-        "first decision must remain visible: {rendered}"
-    );
-    app.handle_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
-        &tx,
-    )
-    .await;
-    assert_eq!(
-        permission_rx.try_recv().unwrap(),
-        omegon_traits::PermissionResponse::Allow
-    );
-    assert!(wait_rx.try_recv().is_err());
-    let rendered = render_app_to_string(&mut app, 120, 40);
-    assert!(rendered.contains("Second decision"));
-    app.handle_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        &tx,
-    )
-    .await;
-    assert_eq!(
-        wait_rx.try_recv().unwrap(),
-        omegon_traits::OperatorWaitResponse::Completed
-    );
-    assert!(
-        app.copy_text_modal.is_some(),
-        "resolving decisions preserves prior surface state"
-    );
-    assert_eq!(app.active_menu, prior_menu);
+    for base in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        let mut app = test_app();
+        app.base_terminal = base;
+        let tx = test_tx();
+        app.open_settings_menu();
+        app.active_menu.as_mut().unwrap().state.selected_row = 2;
+        let prior_menu = app.active_menu.clone();
+        app.copy_text_modal = Some(CopyTextModal::new("Prior copy", "prior selection"));
+        let (permission_tx, permission_rx) = std::sync::mpsc::channel();
+        app.handle_agent_event(AgentEvent::PermissionRequest {
+            tool_name: "write".into(),
+            path: "src/allowed.rs".into(),
+            kind: omegon_traits::PermissionRequestKind::PathBoundary,
+            persistence: omegon_traits::PermissionPersistence::ProjectDirectory,
+            grant_path: None,
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(permission_tx))),
+        });
+        let (wait_tx, wait_rx) = std::sync::mpsc::channel();
+        let (ack_tx, _ack_rx) = std::sync::mpsc::channel();
+        app.handle_agent_event(AgentEvent::OperatorWaitRequest {
+            prompt: "Second decision".into(),
+            timeout_secs: 60,
+            acknowledge: std::sync::Arc::new(std::sync::Mutex::new(Some(ack_tx))),
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(wait_tx))),
+        });
+        let rendered = render_app_to_string(&mut app, 120, 40);
+        assert!(
+            rendered.contains("Permission required"),
+            "first decision must remain visible: {rendered}"
+        );
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+        assert_eq!(
+            permission_rx.try_recv().unwrap(),
+            omegon_traits::PermissionResponse::Allow
+        );
+        assert!(wait_rx.try_recv().is_err());
+        let rendered = render_app_to_string(&mut app, 120, 40);
+        assert!(rendered.contains("Second decision"));
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+        assert_eq!(
+            wait_rx.try_recv().unwrap(),
+            omegon_traits::OperatorWaitResponse::Completed
+        );
+        assert!(
+            app.copy_text_modal.is_some(),
+            "resolving decisions preserves prior surface state"
+        );
+        assert_eq!(app.active_menu, prior_menu);
+    }
 }
 
 #[tokio::test]
@@ -11098,59 +11138,71 @@ async fn project_browser_inspection_preserves_composer_draft() {
 
 #[tokio::test]
 async fn project_browser_detail_survives_permission_decision() {
-    let mut app = test_app();
-    let tx = test_tx();
-    app.open_project_browser();
-    app.handle_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        &tx,
-    )
-    .await;
-    let (respond, response) = std::sync::mpsc::channel();
-    app.handle_agent_event(AgentEvent::PermissionRequest {
-        tool_name: "write".into(),
-        path: "outside/project".into(),
-        kind: omegon_traits::PermissionRequestKind::PathBoundary,
-        persistence: omegon_traits::PermissionPersistence::ProjectDirectory,
-        grant_path: None,
-        respond: std::sync::Arc::new(std::sync::Mutex::new(Some(respond))),
-    });
-    assert!(render_app_to_string(&mut app, 120, 40).contains("Permission required"));
-    app.handle_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
-        &tx,
-    )
-    .await;
-    assert_eq!(
-        response.try_recv().unwrap(),
-        omegon_traits::PermissionResponse::Deny
-    );
-    let screen = render_app_to_string(&mut app, 120, 40);
-    assert!(screen.contains("Project browser · Details"), "{screen}");
-    assert!(screen.contains("Current session"));
+    for base in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        let mut app = test_app();
+        app.base_terminal = base;
+        let tx = test_tx();
+        app.open_project_browser();
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+        let (respond, response) = std::sync::mpsc::channel();
+        app.handle_agent_event(AgentEvent::PermissionRequest {
+            tool_name: "write".into(),
+            path: "outside/project".into(),
+            kind: omegon_traits::PermissionRequestKind::PathBoundary,
+            persistence: omegon_traits::PermissionPersistence::ProjectDirectory,
+            grant_path: None,
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(respond))),
+        });
+        assert!(render_app_to_string(&mut app, 120, 40).contains("Permission required"));
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+        assert_eq!(
+            response.try_recv().unwrap(),
+            omegon_traits::PermissionResponse::Deny
+        );
+        let screen = render_app_to_string(&mut app, 120, 40);
+        assert!(screen.contains("Project browser · Details"), "{screen}");
+        assert!(screen.contains("Current session"));
+    }
 }
 
 #[tokio::test]
 async fn project_browser_cancel_reaches_runtime_and_preserves_draft() {
-    let mut app = test_app();
-    let (tx, mut rx) = test_tx_with_rx();
-    app.agent_active = true;
-    app.editor.set_text("next question remains unsent");
-    app.open_project_browser();
-    app.handle_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-        &tx,
-    )
-    .await;
-    assert!(matches!(
-        rx.try_recv(),
-        Ok(TuiCommand::CancelActiveTurn { .. })
-    ));
-    assert_eq!(app.editor.render_text(), "next question remains unsent");
-    assert_eq!(
-        app.navigation_owner(),
-        interaction::NavigationOwner::Project
-    );
+    for base in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        let mut app = test_app();
+        app.base_terminal = base;
+        let (tx, mut rx) = test_tx_with_rx();
+        app.agent_active = true;
+        app.editor.set_text("next question remains unsent");
+        app.open_project_browser();
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            &tx,
+        )
+        .await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TuiCommand::CancelActiveTurn { .. })
+        ));
+        assert_eq!(app.editor.render_text(), "next question remains unsent");
+        assert_eq!(
+            app.navigation_owner(),
+            interaction::NavigationOwner::Project
+        );
+    }
 }
 
 #[tokio::test]

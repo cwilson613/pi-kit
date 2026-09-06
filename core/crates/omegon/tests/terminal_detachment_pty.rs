@@ -146,7 +146,11 @@ struct PtyOmegon {
 }
 
 impl PtyOmegon {
-    fn spawn(initial_prompt: Option<&str>, provider: &HoldingProvider) -> Result<Self> {
+    fn spawn(
+        initial_prompt: Option<&str>,
+        provider: &HoldingProvider,
+        presentation: &str,
+    ) -> Result<Self> {
         let root = tempfile::tempdir().context("create isolated acceptance root")?;
         let workspace = root.path().join("workspace");
         let project_config = workspace.join(".omegon");
@@ -196,6 +200,8 @@ reasoning = true
             "openai:gpt-5.4",
             "--no-splash",
             "--fresh",
+            "--tui",
+            presentation,
             "--log-level",
             "debug",
             "--log-file",
@@ -303,7 +309,23 @@ reasoning = true
         loop {
             let read = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
             if read > 0 {
+                let previous_len = output.len();
                 output.extend_from_slice(&buffer[..read as usize]);
+                // This fixture owns a bare PTY, not an emulator. Answer the
+                // cursor query needed to acquire Ratatui's inline viewport.
+                // Geometry/scrollback fidelity is exercised by the tmux/native runners.
+                let start = previous_len.saturating_sub(3);
+                for (offset, bytes) in output[start..].windows(4).enumerate() {
+                    if bytes == b"\x1b[6n" && start + offset + 4 > previous_len {
+                        let response = b"\x1b[1;1R";
+                        let written =
+                            unsafe { libc::write(fd, response.as_ptr().cast(), response.len()) };
+                        if written != response.len() as isize {
+                            return Err(std::io::Error::last_os_error())
+                                .context("answer fixture cursor query");
+                        }
+                    }
+                }
                 if output.len() > 1024 * 1024 {
                     output.drain(..output.len() - 1024 * 1024);
                 }
@@ -368,49 +390,55 @@ impl Drop for PtyOmegon {
 #[test]
 #[ignore = "real PTY/process acceptance; run in the authoritative Unix CI lane"]
 fn real_terminal_detachment_terminalizes_idle_and_active_sessions() -> Result<()> {
-    let provider = HoldingProvider::start()?;
+    for presentation in ["inline", "fullscreen"] {
+        let provider = HoldingProvider::start()?;
 
-    let mut idle = PtyOmegon::spawn(None, &provider)?;
-    idle.wait_for_tui_output()?;
-    let idle_status = idle.detach_and_wait()?;
-    assert!(
-        idle_status.success(),
-        "idle terminalization: {idle_status}; log:\n{}",
-        idle.log_text()?
-    );
-    assert!(
-        idle.retained_session_count()? >= 1,
-        "idle terminal loss must retain a session snapshot"
-    );
-    assert_last_boundary(&idle.log_text()?).context("idle terminal-loss boundary")?;
+        let mut idle = PtyOmegon::spawn(None, &provider, presentation)?;
+        idle.wait_for_tui_output()?;
+        let idle_status = idle.detach_and_wait()?;
+        assert!(
+            idle_status.success(),
+            "idle terminalization: {idle_status}; log:\n{}",
+            idle.log_text()?
+        );
+        assert!(
+            idle.retained_session_count()? >= 1,
+            "idle terminal loss must retain a session snapshot"
+        );
+        assert_last_boundary(&idle.log_text()?).context("idle terminal-loss boundary")?;
 
-    let mut active = PtyOmegon::spawn(Some("remain active until terminal loss"), &provider)?;
-    active.wait_for_authority_event("turn.started")?;
-    active
-        .wait_for_provider_request(&provider)
-        .with_context(|| {
+        let mut active = PtyOmegon::spawn(
+            Some("remain active until terminal loss"),
+            &provider,
+            presentation,
+        )?;
+        active.wait_for_authority_event("turn.started")?;
+        active
+            .wait_for_provider_request(&provider)
+            .with_context(|| {
+                format!(
+                    "active request log:\n{}",
+                    active.log_text().unwrap_or_else(|error| error.to_string())
+                )
+            })?;
+        let active_status = active.detach_and_wait()?;
+        assert!(
+            active_status.success(),
+            "active terminalization: {active_status}; log:\n{}",
+            active.log_text()?
+        );
+        assert_last_boundary(&active.log_text()?).context("active terminal-loss boundary")?;
+        assert_generation_scoped_revocation(&active.retained_authority()?).with_context(|| {
             format!(
-                "active request log:\n{}",
+                "active terminal-loss log:\n{}",
                 active.log_text().unwrap_or_else(|error| error.to_string())
             )
         })?;
-    let active_status = active.detach_and_wait()?;
-    assert!(
-        active_status.success(),
-        "active terminalization: {active_status}; log:\n{}",
-        active.log_text()?
-    );
-    assert_last_boundary(&active.log_text()?).context("active terminal-loss boundary")?;
-    assert_generation_scoped_revocation(&active.retained_authority()?).with_context(|| {
-        format!(
-            "active terminal-loss log:\n{}",
-            active.log_text().unwrap_or_else(|error| error.to_string())
-        )
-    })?;
-    assert!(
-        active.retained_session_count()? >= 1,
-        "active terminal loss must retain a session snapshot"
-    );
+        assert!(
+            active.retained_session_count()? >= 1,
+            "active terminal loss must retain a session snapshot"
+        );
+    }
 
     Ok(())
 }

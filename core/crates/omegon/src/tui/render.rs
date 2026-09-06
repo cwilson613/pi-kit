@@ -37,61 +37,11 @@ impl App {
             area,
         );
 
-        // Check for available update (non-blocking)
-        let update_toast: Option<(String, UpdateSeverity)> = self.update_rx.as_ref().and_then(|rx| {
-            let info = rx.borrow();
-            let info = info.as_ref()?;
-            if info.is_newer && self.footer_data.update_available.as_deref() != Some(info.latest.as_str()) {
-                let severity = Self::update_severity(&info.current, &info.latest);
-                let msg = match severity {
-                    UpdateSeverity::Available => format!(
-                        "🆕 Update available: v{} → v{} — run /update",
-                        info.current, info.latest
-                    ),
-                    UpdateSeverity::StaleMinor => format!(
-                        "⚠ Version lag: v{} → v{} — you are more than one minor behind. Run /update",
-                        info.current, info.latest
-                    ),
-                };
-                Some((msg, severity))
-            } else {
-                None
-            }
-        });
-        if let Some((msg, severity)) = update_toast {
-            // Extract version before mutable borrow
-            let version = self
-                .update_rx
-                .as_ref()
-                .and_then(|rx| rx.borrow().as_ref().map(|i| i.latest.clone()));
-            if let Some(v) = version {
-                self.footer_data.update_available = Some(v);
-            }
-            let toast_kind = match severity {
-                UpdateSeverity::Available => ratatui_toaster::ToastType::Info,
-                UpdateSeverity::StaleMinor => ratatui_toaster::ToastType::Warning,
-            };
-            self.show_toast(&msg, toast_kind);
-        }
+        self.prepare_shared_frame();
 
-        // Update dashboard stats
-        self.dashboard.turns = self.turn;
-        self.dashboard.tool_calls = self.tool_calls;
-
-        // Refresh dashboard from shared feature handles (throttled)
-        if self.turn != self.dashboard_refresh_turn {
-            self.dashboard_refresh_turn = self.turn;
-            self.dashboard_handles.refresh_into(&mut self.dashboard);
-            // Write session stats for the web API
-            self.dashboard_handles.session().update_counters(
-                self.turn,
-                self.tool_calls,
-                self.dashboard.compactions,
-            );
-
-            // Feed context gauge into dashboard
-            self.dashboard.context_used_pct = self.footer_data.context_percent;
-            self.dashboard.context_window_k = self.footer_data.context_window;
+        if self.inline_active {
+            self.draw_inline(frame);
+            return;
         }
 
         let area = frame.area();
@@ -591,6 +541,224 @@ impl App {
 
         let inst_area = self.render_bottom_footer(footer_area, frame, t.as_ref());
 
+        self.render_shared_composer(frame, editor_area);
+        let t = &self.theme;
+
+        if owner == NavigationOwner::Composer
+            && let Some(ref picker) = self.at_picker
+        {
+            picker.render(area, frame, t.as_ref());
+        }
+
+        if owner == NavigationOwner::Project
+            && let Some(browser) = &self.project_browser
+        {
+            browser.render(frame, self.theme.as_ref());
+        }
+
+        if let Some(menu) = &self.active_menu
+            && owner == NavigationOwner::Menu
+        {
+            menu_surface::render_menu_surface(
+                frame,
+                area,
+                self.theme.as_ref(),
+                &menu.projection,
+                &menu.state,
+            );
+        }
+
+        if let Some(viewer) = &self.process_viewer
+            && owner == NavigationOwner::Process
+        {
+            process_viewer::render_process_viewer(frame, area, self.theme.as_ref(), viewer);
+        }
+
+        // Selector popup (overlays everything when active)
+        if let Some(ref sel) = self.selector
+            && owner == NavigationOwner::Selector
+        {
+            sel.render(area, frame, t.as_ref());
+        }
+
+        // ── Post-render effects (tachyonfx) — each zone processed separately ──
+        self.effects.process(
+            frame.buffer_mut(),
+            conversation_area,
+            footer_area,
+            editor_area,
+        );
+
+        // ── Tutorial overlay — rendered on top of everything except toasts ──
+        if let Some(ref overlay) = self.tutorial_overlay
+            && owner == NavigationOwner::Tutorial
+        {
+            let footer_h = footer_area.height;
+            overlay.render(main_area, frame.buffer_mut(), self.theme.as_ref(), footer_h);
+        }
+
+        // ── Toast notifications — rendered last, on top of everything ──
+        let now = std::time::Instant::now();
+        self.operator_events.retain(|e| e.expires_at > now);
+        self.footer_data.operator_events = self
+            .operator_events
+            .iter()
+            .rev()
+            .take(2)
+            .map(|e| crate::tui::footer::OperatorEventLine {
+                icon: e.icon,
+                message: e.message.clone(),
+                color: e.color,
+            })
+            .collect();
+
+        // ── Final bg cleanup pass ───────────────────────────────────
+        // Normalize unowned/default background leakage without erasing
+        // intentional theme-backed badges or panels. This pass started as a
+        // guard against Color::Reset bleed-through from widgets/temp buffers;
+        // keep that fence, but make the allow-list semantic instead of a stale
+        // hand-picked subset of theme colors.
+        {
+            let base = self.theme.surface_bg();
+            let intentional_backgrounds = self.theme.intentional_backgrounds();
+            // inst_area already computed above — no duplicate layout calc
+            let buf = frame.buffer_mut();
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    // Skip instrument panel — it owns its pixels
+                    if inst_area.width > 0
+                        && x >= inst_area.x
+                        && x < inst_area.right()
+                        && y >= inst_area.y
+                        && y < inst_area.bottom()
+                    {
+                        continue;
+                    }
+                    let cell = &mut buf[(x, y)];
+                    if cell.bg == Color::Reset || !intentional_backgrounds.contains(&cell.bg) {
+                        cell.set_bg(base);
+                    }
+                }
+            }
+        }
+
+        // Render command panel above the main surfaces and below blocking prompts/modals.
+        if let Some(panel) = &self.command_panel
+            && owner == NavigationOwner::Panel
+        {
+            command_surfaces::render_panel(area, frame.buffer_mut(), self.theme.as_ref(), panel);
+        }
+
+        // Render responder-backed blocking prompts above passive command panels.
+        if let Some(prompt) = &self.command_prompt
+            && owner == NavigationOwner::Prompt
+        {
+            command_surfaces::render_prompt(area, frame.buffer_mut(), self.theme.as_ref(), prompt);
+        }
+
+        // Render first-class copy text surface above command prompts/panels.
+        if self.copy_text_modal.is_some() && owner == NavigationOwner::Copy {
+            self.render_copy_text_modal(frame);
+        }
+
+        // Render operator toast above normal TUI surfaces and copy text surfaces, but below
+        // blocking extension overlays/prompts so confirmations never obscure required choices.
+        self.render_operator_event_toast(frame);
+
+        if owner == NavigationOwner::ExtensionModal
+            && let Some((widget_id, data, _, _)) = &self.active_modal
+        {
+            extension_overlays::render_modal(frame, self.theme.as_ref(), widget_id, data);
+        }
+        // Render action prompt if active
+        if let Some((widget_id, actions)) = &self.active_action_prompt
+            && owner == NavigationOwner::ExtensionAction
+        {
+            extension_overlays::render_action_prompt(
+                frame,
+                self.theme.as_ref(),
+                widget_id,
+                actions,
+            );
+        }
+        // The same owner used by keyboard routing paints above every passive
+        // surface. Those surfaces retain their selection and scroll state.
+        if owner == NavigationOwner::Decision
+            && let Some(prompt) = self
+                .interaction
+                .prompt
+                .as_ref()
+                .or(self.command_prompt.as_ref())
+        {
+            command_surfaces::render_prompt(area, frame.buffer_mut(), self.theme.as_ref(), prompt);
+        }
+        self.last_draw_phase_timings = draw_phases;
+    }
+}
+
+impl App {
+    fn prepare_shared_frame(&mut self) {
+        // Check for available update (non-blocking)
+        let update_toast: Option<(String, UpdateSeverity)> = self.update_rx.as_ref().and_then(|rx| {
+            let info = rx.borrow();
+            let info = info.as_ref()?;
+            if info.is_newer && self.footer_data.update_available.as_deref() != Some(info.latest.as_str()) {
+                let severity = Self::update_severity(&info.current, &info.latest);
+                let msg = match severity {
+                    UpdateSeverity::Available => format!(
+                        "🆕 Update available: v{} → v{} — run /update",
+                        info.current, info.latest
+                    ),
+                    UpdateSeverity::StaleMinor => format!(
+                        "⚠ Version lag: v{} → v{} — you are more than one minor behind. Run /update",
+                        info.current, info.latest
+                    ),
+                };
+                Some((msg, severity))
+            } else {
+                None
+            }
+        });
+        if let Some((msg, severity)) = update_toast {
+            // Extract version before mutable borrow
+            let version = self
+                .update_rx
+                .as_ref()
+                .and_then(|rx| rx.borrow().as_ref().map(|i| i.latest.clone()));
+            if let Some(v) = version {
+                self.footer_data.update_available = Some(v);
+            }
+            let toast_kind = match severity {
+                UpdateSeverity::Available => ratatui_toaster::ToastType::Info,
+                UpdateSeverity::StaleMinor => ratatui_toaster::ToastType::Warning,
+            };
+            self.show_toast(&msg, toast_kind);
+        }
+
+        // Update dashboard stats
+        self.dashboard.turns = self.turn;
+        self.dashboard.tool_calls = self.tool_calls;
+
+        // Refresh dashboard from shared feature handles (throttled)
+        if self.turn != self.dashboard_refresh_turn {
+            self.dashboard_refresh_turn = self.turn;
+            self.dashboard_handles.refresh_into(&mut self.dashboard);
+            // Write session stats for the web API
+            self.dashboard_handles.session().update_counters(
+                self.turn,
+                self.tool_calls,
+                self.dashboard.compactions,
+            );
+
+            // Feed context gauge into dashboard
+            self.dashboard.context_used_pct = self.footer_data.context_percent;
+            self.dashboard.context_window_k = self.footer_data.context_window;
+        }
+    }
+
+    pub(super) fn render_shared_composer(&mut self, frame: &mut Frame, editor_area: Rect) {
+        let t = &self.theme;
+        self.editor_area = Some(editor_area);
         // Apply theme to textarea each frame (in case theme changed)
         self.editor.apply_theme(t.as_ref());
 
@@ -961,7 +1129,8 @@ impl App {
             self.matching_commands()
         };
         if !matches.is_empty() {
-            let palette_height = matches.len().min(8) as u16 + 2; // +2 for borders
+            let palette_height =
+                (matches.len().min(8) as u16 + 2).min(editor_area.y.saturating_sub(frame.area().y)); // +2 for borders
             let _editor_area_inner = editor_area;
             let palette_area = Rect {
                 x: editor_area.x,
@@ -1004,155 +1173,5 @@ impl App {
             frame.render_widget(ratatui::widgets::Clear, palette_area);
             frame.render_widget(palette, palette_area);
         }
-
-        if owner == NavigationOwner::Composer
-            && let Some(ref picker) = self.at_picker
-        {
-            picker.render(area, frame, t.as_ref());
-        }
-
-        if owner == NavigationOwner::Project
-            && let Some(browser) = &self.project_browser
-        {
-            browser.render(frame, self.theme.as_ref());
-        }
-
-        if let Some(menu) = &self.active_menu
-            && owner == NavigationOwner::Menu
-        {
-            menu_surface::render_menu_surface(
-                frame,
-                area,
-                self.theme.as_ref(),
-                &menu.projection,
-                &menu.state,
-            );
-        }
-
-        if let Some(viewer) = &self.process_viewer
-            && owner == NavigationOwner::Process
-        {
-            process_viewer::render_process_viewer(frame, area, self.theme.as_ref(), viewer);
-        }
-
-        // Selector popup (overlays everything when active)
-        if let Some(ref sel) = self.selector
-            && owner == NavigationOwner::Selector
-        {
-            sel.render(area, frame, t.as_ref());
-        }
-
-        // ── Post-render effects (tachyonfx) — each zone processed separately ──
-        self.effects.process(
-            frame.buffer_mut(),
-            conversation_area,
-            footer_area,
-            editor_area,
-        );
-
-        // ── Tutorial overlay — rendered on top of everything except toasts ──
-        if let Some(ref overlay) = self.tutorial_overlay
-            && owner == NavigationOwner::Tutorial
-        {
-            let footer_h = footer_area.height;
-            overlay.render(main_area, frame.buffer_mut(), self.theme.as_ref(), footer_h);
-        }
-
-        // ── Toast notifications — rendered last, on top of everything ──
-        let now = std::time::Instant::now();
-        self.operator_events.retain(|e| e.expires_at > now);
-        self.footer_data.operator_events = self
-            .operator_events
-            .iter()
-            .rev()
-            .take(2)
-            .map(|e| crate::tui::footer::OperatorEventLine {
-                icon: e.icon,
-                message: e.message.clone(),
-                color: e.color,
-            })
-            .collect();
-
-        // ── Final bg cleanup pass ───────────────────────────────────
-        // Normalize unowned/default background leakage without erasing
-        // intentional theme-backed badges or panels. This pass started as a
-        // guard against Color::Reset bleed-through from widgets/temp buffers;
-        // keep that fence, but make the allow-list semantic instead of a stale
-        // hand-picked subset of theme colors.
-        {
-            let base = self.theme.surface_bg();
-            let intentional_backgrounds = self.theme.intentional_backgrounds();
-            // inst_area already computed above — no duplicate layout calc
-            let buf = frame.buffer_mut();
-            for y in area.top()..area.bottom() {
-                for x in area.left()..area.right() {
-                    // Skip instrument panel — it owns its pixels
-                    if inst_area.width > 0
-                        && x >= inst_area.x
-                        && x < inst_area.right()
-                        && y >= inst_area.y
-                        && y < inst_area.bottom()
-                    {
-                        continue;
-                    }
-                    let cell = &mut buf[(x, y)];
-                    if cell.bg == Color::Reset || !intentional_backgrounds.contains(&cell.bg) {
-                        cell.set_bg(base);
-                    }
-                }
-            }
-        }
-
-        // Render command panel above the main surfaces and below blocking prompts/modals.
-        if let Some(panel) = &self.command_panel
-            && owner == NavigationOwner::Panel
-        {
-            command_surfaces::render_panel(area, frame.buffer_mut(), self.theme.as_ref(), panel);
-        }
-
-        // Render responder-backed blocking prompts above passive command panels.
-        if let Some(prompt) = &self.command_prompt
-            && owner == NavigationOwner::Prompt
-        {
-            command_surfaces::render_prompt(area, frame.buffer_mut(), self.theme.as_ref(), prompt);
-        }
-
-        // Render first-class copy text surface above command prompts/panels.
-        if self.copy_text_modal.is_some() && owner == NavigationOwner::Copy {
-            self.render_copy_text_modal(frame);
-        }
-
-        // Render operator toast above normal TUI surfaces and copy text surfaces, but below
-        // blocking extension overlays/prompts so confirmations never obscure required choices.
-        self.render_operator_event_toast(frame);
-
-        if owner == NavigationOwner::ExtensionModal
-            && let Some((widget_id, data, _, _)) = &self.active_modal
-        {
-            extension_overlays::render_modal(frame, self.theme.as_ref(), widget_id, data);
-        }
-        // Render action prompt if active
-        if let Some((widget_id, actions)) = &self.active_action_prompt
-            && owner == NavigationOwner::ExtensionAction
-        {
-            extension_overlays::render_action_prompt(
-                frame,
-                self.theme.as_ref(),
-                widget_id,
-                actions,
-            );
-        }
-        // The same owner used by keyboard routing paints above every passive
-        // surface. Those surfaces retain their selection and scroll state.
-        if owner == NavigationOwner::Decision
-            && let Some(prompt) = self
-                .interaction
-                .prompt
-                .as_ref()
-                .or(self.command_prompt.as_ref())
-        {
-            command_surfaces::render_prompt(area, frame.buffer_mut(), self.theme.as_ref(), prompt);
-        }
-        self.last_draw_phase_timings = draw_phases;
     }
 }

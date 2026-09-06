@@ -24,6 +24,7 @@ impl App {
         }
         self.dashboard_handles.session().set_busy(false);
         self.conversation.finalize_message();
+        self.publication_boundary = self.conversation.segments().len();
         self.effects.stop_spinner_glow();
         self.effects.stop_border_pulse();
         if was_active {
@@ -879,11 +880,29 @@ impl App {
                     .get("phase")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("active");
-                if phase == "supervisor_completed" {
+                if matches!(
+                    phase,
+                    "supervisor_completed"
+                        | "supervisor_revoked"
+                        | "supervisor_failed"
+                        | "supervisor_timed_out"
+                ) {
                     let advised_turn = snapshot_json
                         .get("turn_id")
                         .and_then(serde_json::Value::as_u64);
                     if self.runtime_turn_id.is_none() || advised_turn == self.runtime_turn_id {
+                        let notice = match phase {
+                            "supervisor_revoked" => Some("Turn cancelled or revoked."),
+                            "supervisor_failed" => Some("Turn failed."),
+                            "supervisor_timed_out" => Some("Turn timed out."),
+                            _ => None,
+                        };
+                        if let (Some(turn), Some(notice)) = (advised_turn, notice)
+                            && self.terminal_outcome_notice != Some((turn, notice))
+                        {
+                            self.conversation.push_system(notice);
+                            self.terminal_outcome_notice = Some((turn, notice));
+                        }
                         self.terminalize_runtime_turn();
                     }
                 } else {
@@ -937,10 +956,11 @@ impl App {
                 }
             }
             AgentEvent::SessionReset => {
+                self.terminal_outcome_notice = None;
                 if self.session_view_binding.is_some() {
                     self.refresh_semantic_session_view();
                 } else {
-                    self.conversation = ConversationView::new();
+                    self.replace_conversation(ConversationView::new());
                     self.conversation
                         .push_system("New session started. Previous session saved.");
                 }

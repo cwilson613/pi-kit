@@ -164,4 +164,8 @@ esac
 
 resolved="$(resolve_target)"
 target="${resolved#*$'\t'}"
+case "$invocation_name" in
+    om|omegon) export OMEGON_LAUNCH_NAME="$invocation_name" ;;
+    *) unset OMEGON_LAUNCH_NAME ;;
+esac
 exec "$target" "$@"

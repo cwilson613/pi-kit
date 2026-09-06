@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import os
+import json
+import sys
 import stat
 import subprocess
 import tempfile
@@ -54,6 +56,22 @@ def test_env_omegon_bin_wins():
         assert "reason: env:OMEGON_BIN" in res.stdout
         assert same_target(res.stdout, exact)
         assert "omegon test exact" in res.stdout
+
+
+def test_entry_marker_and_literal_arguments():
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        target = base / "target"
+        target.write_text(f"#!{sys.executable}\nimport json, os, sys\nprint(json.dumps([os.environ.get('OMEGON_LAUNCH_NAME'), sys.argv[1:]]))\n")
+        target.chmod(0o700)
+        args = ["--initial-prompt", "literal $HOME `pwd` ; spaces", "--ui", "full"]
+        for name in ("om", "omegon"):
+            launcher = base / name
+            launcher.write_bytes(LAUNCHER.read_bytes())
+            launcher.chmod(0o700)
+            result = run(args, base, base, {"OMEGON_BIN": str(target), "OMEGON_LAUNCH_NAME": "stale"}, launcher)
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout) == [name, args]
 
 
 def test_env_dev_root_wins_over_nearest_checkout():

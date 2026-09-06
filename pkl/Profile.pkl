@@ -89,3 +89,9 @@ persona: String?
 
 /// Active tone to restore on session start.
 tone: String?
+
+/// Optional interactive base. Missing preserves the entry default: om inline, omegon fullscreen.
+uiTerminal: ("inline"|"fullscreen")?
+
+/// Detail independent of terminal layout. Legacy om/lean/slim resolve to active.
+uiPresentation: ("active"|"full"|"om"|"lean"|"slim")?

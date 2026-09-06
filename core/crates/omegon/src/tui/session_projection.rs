@@ -8,6 +8,15 @@ use crate::{
 };
 
 impl App {
+    pub(super) fn replace_conversation(&mut self, conversation: ConversationView) {
+        self.conversation.replace_source(conversation);
+        self.publication_boundary = self.conversation.segments().len();
+        self.native_publication.automatic.source_replaced(
+            self.conversation.publication_generation(),
+            self.publication_boundary,
+        );
+    }
+
     pub(super) fn refresh_semantic_session_view(&mut self) {
         let Some(binding) = self.session_view_binding.clone() else {
             return;
@@ -77,7 +86,7 @@ impl App {
                 ));
             }
         }
-        self.conversation = conversation;
+        self.replace_conversation(conversation);
     }
 
     pub(super) fn write_exact_semantic_transcript(

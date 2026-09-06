@@ -12,13 +12,52 @@ use super::terminal_presentation::{self, TerminalMode, TerminalModes};
 pub(crate) struct TerminalSessionHandle {
     modes: Arc<Mutex<TerminalModes>>,
     presentation_revision: Arc<AtomicU64>,
+    inline_area: Arc<Mutex<Option<ratatui::layout::Rect>>>,
 }
 
 impl TerminalSessionHandle {
+    pub(super) fn track_inline_area(&self, area: Option<ratatui::layout::Rect>) {
+        *self
+            .inline_area
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = area;
+    }
+    pub(super) fn select_presentation(
+        &self,
+        presentation: crate::surfaces::layout::TerminalPresentation,
+        mouse: bool,
+    ) -> io::Result<()> {
+        let mut state = self
+            .modes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut target = *state;
+        target.alternate_screen =
+            presentation == crate::surfaces::layout::TerminalPresentation::Fullscreen;
+        target.mouse_capture = target.alternate_screen && mouse;
+        terminal_presentation::transition(&mut state, target, &mut apply_mode)
+    }
+
+    pub(super) fn with_presentation_io<T>(
+        &self,
+        presentation: crate::surfaces::layout::TerminalPresentation,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        let state = self
+            .modes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fullscreen = presentation == crate::surfaces::layout::TerminalPresentation::Fullscreen;
+        if !state.raw || state.alternate_screen != fullscreen {
+            return Err(io::Error::other("active terminal ownership was lost"));
+        }
+        operation()
+    }
     pub(crate) fn new() -> Self {
         Self {
             modes: Arc::new(Mutex::new(TerminalModes::default())),
             presentation_revision: Arc::new(AtomicU64::new(0)),
+            inline_area: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -40,7 +79,26 @@ impl TerminalSessionHandle {
             .modes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let result = terminal_presentation::primary_scope(&mut state, &mut apply_mode, operation);
+        let inline_area = if state.alternate_screen {
+            None
+        } else {
+            *self
+                .inline_area
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let result = terminal_presentation::primary_scope(&mut state, &mut apply_mode, || {
+            if let Some(area) = inline_area {
+                use crossterm::{
+                    cursor::MoveTo,
+                    terminal::{Clear, ClearType},
+                };
+                io::stdout()
+                    .execute(MoveTo(area.x, area.y))?
+                    .execute(Clear(ClearType::FromCursorDown))?;
+            }
+            operation()
+        });
         // Re-entering the alternate screen destroys its physical contents.
         // Invalidate the renderer even when publication or restoration failed.
         self.presentation_revision.fetch_add(1, Ordering::Release);
@@ -216,6 +274,7 @@ fn restore_snapshot(modes: TerminalModes) {
     if modes.alternate_screen {
         let _ = stdout.execute(LeaveAlternateScreen);
     }
+    let _ = stdout.execute(crossterm::style::ResetColor);
     let _ = stdout.flush();
 }
 
@@ -278,6 +337,50 @@ impl TerminationSignals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inactive_terminal_cannot_write_or_commit_an_insert() {
+        use crate::surfaces::layout::TerminalPresentation;
+        let session = TerminalSessionHandle::new();
+        let mut called = false;
+        assert!(
+            session
+                .with_presentation_io(TerminalPresentation::Inline, || {
+                    called = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!called);
+        session.modes.lock().unwrap().raw = true;
+        assert!(
+            session
+                .with_presentation_io(TerminalPresentation::Fullscreen, || {
+                    called = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!called);
+        session
+            .with_presentation_io(TerminalPresentation::Inline, || {
+                called = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(called);
+        called = false;
+        session.modes.lock().unwrap().alternate_screen = true;
+        assert!(
+            session
+                .with_presentation_io(TerminalPresentation::Inline, || {
+                    called = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!called);
+    }
 
     #[test]
     fn restore_consumes_tracked_modes_and_is_idempotent() {

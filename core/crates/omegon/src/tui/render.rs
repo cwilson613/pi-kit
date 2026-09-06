@@ -839,7 +839,11 @@ impl App {
                 t.accent_muted()
             };
             let hint_text: String = if self.agent_active {
-                String::new()
+                if self.editor.is_empty() {
+                    "Ask anything  / commands".into()
+                } else {
+                    String::new()
+                }
             } else if shell_primed {
                 if editor_text.trim() == "!" {
                     "⏎ hand off to shell  type a command to run here  Esc clear ".into()
@@ -850,9 +854,11 @@ impl App {
                 "⏎ run command  Tab accept suggestion  ↑/↓ browse  Esc clear ".into()
             } else if self.editor.is_empty() {
                 if self.ui_surfaces.dashboard {
-                    "⏎ send  ⇧⏎/⌥⏎ newline  ^O/Tab details  ^D tree  / commands ".into()
+                    "Ask anything  ⏎ send  / commands  ⇧⏎/⌥⏎ newline  ^O/Tab details  ^D tree "
+                        .into()
                 } else {
-                    "⏎ send  ⇧⏎/⌥⏎ newline  ^O/Tab details  F2 project  / commands ".into()
+                    "Ask anything  ⏎ send  / commands  ⇧⏎/⌥⏎ newline  ^O/Tab details  F2 project "
+                        .into()
                 }
             } else {
                 "⏎ send  ⇧⏎/⌥⏎ newline  ⌥↑/⌥↓ history ".into()
@@ -1033,10 +1039,15 @@ impl App {
                 .border_type(ratatui::widgets::BorderType::Rounded)
                 .border_style(Style::default().fg(intent_color).bg(intent_bg))
                 .title(editor_title)
-                .title_bottom(
-                    Line::from(Span::styled(hint_text, Style::default().fg(intent_color)))
-                        .right_aligned(),
-                );
+                .title_bottom({
+                    let help =
+                        Line::from(Span::styled(hint_text, Style::default().fg(intent_color)));
+                    if self.editor.is_empty() {
+                        help.left_aligned()
+                    } else {
+                        help.right_aligned()
+                    }
+                });
 
             let editor_rect = editor_area;
             // Pre-split using char-boundary wrapping (same algorithm as
@@ -1063,10 +1074,7 @@ impl App {
                         ),
                     ])]
                 } else {
-                    vec![Line::from(Span::styled(
-                        "Ask anything, or type / for commands",
-                        Style::default().fg(t.dim()),
-                    ))]
+                    vec![Line::default()]
                 }
             } else {
                 self.editor

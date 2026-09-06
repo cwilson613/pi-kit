@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Empty composers combine the input hint and keyboard legend on one bottom line, keeping the input row clear and retaining primary hints in narrow terminals.
+
 - Authoritative TUI completion, idle reconciliation, and session reset now release abandoned permission and operator-wait queues while preserving the operator's draft and covered menu.
 
 - WezTerm compatibility trials release temporary resize panes once, before closing the main pane, and retain pane ownership when cleanup fails. Validation of this correction uses headless mocked trials.

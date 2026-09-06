@@ -468,7 +468,7 @@ fn compact_interaction_surfaces_remain_visible_during_publication() {
         "status line missing\n{rendered}"
     );
     assert!(
-        rendered.contains("Ask anything, or type / for commands"),
+        rendered.contains("Ask anything"),
         "composer missing\n{rendered}"
     );
     assert!(
@@ -4185,9 +4185,21 @@ fn slash_help_opens_command_inventory_menu() {
 fn empty_editor_hint_mentions_tool_detail_hotkey() {
     let mut app = test_app();
     let rendered = render_app_to_string(&mut app, 100, 20);
-    assert!(rendered.contains("^O/Tab details"), "{rendered}");
-    assert!(!rendered.contains("^D tree"), "{rendered}");
-    assert!(rendered.contains("F2 project"), "{rendered}");
+    let help = rendered
+        .lines()
+        .find(|line| line.contains("Ask anything"))
+        .expect("empty composer help");
+    assert!(help.contains("⏎ send"), "{rendered}");
+    assert!(help.contains("/ commands"), "{rendered}");
+    assert!(help.contains("^O/Tab details"), "{rendered}");
+    assert!(!help.contains("^D tree"), "{rendered}");
+    assert!(help.contains("F2 project"), "{rendered}");
+    let area = app.editor_area.expect("rendered editor area");
+    let input = rendered.lines().nth(usize::from(area.y) + 1).unwrap();
+    assert!(
+        input.trim().is_empty(),
+        "empty input row contains help: {input}"
+    );
 }
 
 #[test]

@@ -22,6 +22,11 @@ related = []
 
 # Footer redesign — engine display + linked minds
 
+> **OBE — core-product direction superseded (2026-09-05 operator decision).**
+> Decorative inference symbols and tool telemetry animations are planned for
+> removal from the core TUI. This document records the historical design.
+> See [telemetry retirement and optional addon plan](../openspec/changes/tui-telemetry-addon-retirement/proposal.md).
+
 ## Overview
 
 Merge the current 4-card footer into a denser, more meaningful layout:

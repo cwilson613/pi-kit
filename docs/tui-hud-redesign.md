@@ -20,6 +20,11 @@ related = []
 
 # TUI HUD redesign — game-inspired operator interface
 
+> **OBE — core-product direction superseded (2026-09-05 operator decision).**
+> Decorative inference symbols and tool telemetry animations are planned for
+> removal from the core TUI. This document records the historical design.
+> See [telemetry retirement and optional addon plan](../openspec/changes/tui-telemetry-addon-retirement/proposal.md).
+
 ## Overview
 
 Fundamental rethink of the Omegon TUI layout. The current footer/sidebar are TS harness holdovers — flat lists and separate boxes for related data. The redesign takes video game HUD inspiration: information density, spatial meaning, interactive focus, and visual hierarchy that communicates state at a glance.

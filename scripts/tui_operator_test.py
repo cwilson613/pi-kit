@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 
-from tui_acceptance import digest, fixture_provider, prepare_fixture_workspace
+from tui_acceptance import digest, fixture_provider, prepare_fixture_workspace, tui_command
 
 APPS = {
     "ghostty": "/Applications/Ghostty.app",
@@ -73,7 +73,7 @@ def write_command(path, arguments):
     path.chmod(0o755)
 
 
-def prepare(binary, output):
+def prepare(binary, output, presentation="fullscreen", detail="active", entry=None):
     output = output.resolve()
     checkout = Path(__file__).resolve().parents[1]
     if output.is_relative_to(checkout):
@@ -90,7 +90,10 @@ def prepare(binary, output):
     shutil.copy2(binary, output / "omegon")
     for name in ("tui_operator_test.py", "tui_acceptance.py"):
         shutil.copy2(Path(__file__).with_name(name), output / "support" / name)
-    metadata = {"created": time.time(), "source": str(checkout),
+    if entry:
+        shutil.copy2(Path(__file__).with_name("omegon-launcher.sh"), output / "support" / entry)
+        (output / "support" / entry).chmod(0o755)
+    metadata = {"entry": entry, "created": time.time(), "source": str(checkout), "tui": presentation, "ui": detail,
                 "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip(),
                 "dirty": subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout, text=True),
                 "binary_sha256": digest(output / "omegon"), "python": sys.executable,
@@ -166,7 +169,7 @@ def run(bundle, client):
           "Exit with /quit. This records output locally; nothing is uploaded.\n")
     ledger = {"client": client, "installed_client": metadata["clients"][client], "started": time.time(),
               "binary_sha256": metadata["binary_sha256"], "revision": metadata["revision"],
-              "support_sha256": metadata["support_sha256"],
+              "support_sha256": metadata["support_sha256"], "tui": metadata.get("tui"), "ui": metadata.get("ui"), "entry": metadata.get("entry"),
               "terminal_environment": {key: os.environ.get(key) for key in TERMINAL_ENV},
               "initial_size": list(os.get_terminal_size()), "multiplexer": bool(os.environ.get("TMUX") or os.environ.get("STY")), "status": "starting"}
     recorder = None
@@ -185,8 +188,11 @@ def run(bundle, client):
                         return
             worker = threading.Thread(target=release_probe, daemon=True)
             worker.start()
-            command = [str(bundle / "omegon"), "--cwd", str(workspace), "--model", "openai:gpt-5.4",
-                       "--fresh", "--no-splash", "--log-level", "debug", "--log-file", str(output / "omegon.log")]
+            entry = metadata.get("entry")
+            executable = bundle / "support" / entry if entry else bundle / "omegon"
+            if entry:
+                environment["OMEGON_BIN"] = str(bundle / "omegon")
+            command = tui_command(executable, workspace, output / "omegon.log", None if entry else metadata.get("tui", "fullscreen"), None if entry else metadata.get("ui", "active"))
             child = [metadata["python"], str(bundle / "support/tui_operator_test.py"), "child",
                      "--identity", str(output / "process.json"), "--", *command]
             # asciinema's documented command API takes shell text, so use shlex quoting.
@@ -265,6 +271,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     p = sub.add_parser("prepare")
+    p.add_argument("--tui", choices=["inline", "fullscreen"], default="fullscreen")
+    p.add_argument("--ui", choices=["active", "full"], default="active")
+    p.add_argument("--entry", choices=["om", "omegon"])
     p.add_argument("--binary", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     for action in ("launch", "run"):
@@ -276,7 +285,7 @@ def main():
     p.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.action == "prepare":
-        prepare(args.binary.resolve(strict=True), args.output)
+        prepare(args.binary.resolve(strict=True), args.output, args.tui, args.ui, args.entry)
     elif args.action == "launch":
         bundle = args.bundle.resolve(strict=True)
         metadata = verify_bundle(bundle)

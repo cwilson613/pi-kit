@@ -30,23 +30,83 @@ def apple(body, *args):
     return command(['/usr/bin/osascript', '-e', 'on run argv\n'+body+'\nend run', *args])
 
 
+def process_exists(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 class NativeClient:
     def __init__(self, client, bundle, helper, output):
         self.client, self.bundle, self.helper, self.output = client, bundle, helper, output
         self.token = 'og-native-' + uuid.uuid4().hex[:10]
         self.rows = 40
         self.id = None
+        self.session_id = None
         self.window = None
         self.gui = None
         self.notes = []
         self.wez = '/Applications/WezTerm.app/Contents/MacOS/wezterm'
         self.kitty = '/Applications/kitty.app/Contents/MacOS/kitty'
 
-    def windows(self):
-        return json.loads(command([self.helper, 'windows']))
+    def windows(self, all_spaces=False):
+        return json.loads(command([self.helper, 'windows', *(['--all'] if all_spaces else [])]))
+
+    def close(self):
+        """Close the exact trial surface without activating an application."""
+        if self.id is None:
+            if self.gui is not None and self.gui.poll() is None:
+                cleanup_tree(self.gui.pid)
+            return
+        if self.window is None:
+            if self.gui is not None and self.gui.poll() is None:
+                cleanup_tree(self.gui.pid)
+                return
+            raise RuntimeError('native window ownership was not established; refusing window closure')
+        if self.window is not None:
+            key = (self.window['kCGWindowNumber'], self.window['kCGWindowOwnerPID'])
+            if not process_exists(key[1]) or not any((w['kCGWindowNumber'], w['kCGWindowOwnerPID']) == key for w in self.windows(True)):
+                return
+        if self.client == 'ghostty':
+            apple('tell application id "com.mitchellh.ghostty" to close terminal id (item 1 of argv)', self.id)
+        elif self.client == 'iterm':
+            if self.session_id is None:
+                raise RuntimeError('native session ownership was not established')
+            apple('''tell application id "com.googlecode.iterm2"
+set w to window id (item 1 of argv as integer)
+if (count of tabs of w) is not 1 then error "trial window contains other tabs; refusing closure"
+if (count of sessions of current tab of w) is not 1 then error "trial tab contains other sessions; refusing closure"
+if (unique ID of current session of w) is not (item 2 of argv) then error "trial session changed; refusing closure"
+close w
+end tell''', self.id, self.session_id)
+        elif self.client == 'terminal':
+            if self.session_id is None:
+                raise RuntimeError('native session ownership was not established')
+            apple('''tell application id "com.apple.Terminal"
+set w to window id (item 1 of argv as integer)
+if (count of tabs of w) is not 1 then error "trial window contains other tabs; refusing closure"
+if (tty of selected tab of w) is not (item 2 of argv) then error "trial session changed; refusing closure"
+close w saving no
+end tell''', self.id, self.session_id)
+        elif self.client == 'kitty':
+            self.remote('close-window', '--match', 'id:'+self.id)
+        else:
+            self.remote('kill-pane', '--pane-id', self.id)
+            if getattr(self, 'split_id', None) is not None:
+                self.remote('kill-pane', '--pane-id', self.split_id)
+        if self.window is not None:
+            deadline = time.monotonic()+5
+            while process_exists(key[1]) and any((w['kCGWindowNumber'], w['kCGWindowOwnerPID']) == key for w in self.windows(True)):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('owned native window survived cleanup')
+                time.sleep(.1)
 
     def launch(self):
-        before = {w['kCGWindowNumber'] for w in self.windows()}
+        before = {w['kCGWindowNumber'] for w in self.windows(True)}
         run = self.bundle / self.client / 'Run.command'
         if self.client == 'ghostty':
             self.id = apple('''tell application id "com.mitchellh.ghostty"
@@ -56,17 +116,23 @@ set w to new window with configuration cfg
 return id of focused terminal of selected tab of w
 end tell''', shlex.join([str(run)]))
         elif self.client == 'iterm':
-            self.id = apple('''tell application id "com.googlecode.iterm2"
+            identity = apple('''tell application id "com.googlecode.iterm2"
 set w to create window with default profile command (item 1 of argv)
-activate
-return id of w
+return (id of w as text) & linefeed & (unique ID of current session of w)
 end tell''', shlex.join([str(run)]))
+            self.id, self.session_id = identity.splitlines()
         elif self.client == 'terminal':
-            self.id = apple('''tell application id "com.apple.Terminal"
-do script (item 1 of argv)
-activate
-return id of front window
+            identity = apple('''tell application id "com.apple.Terminal"
+set t to do script (item 1 of argv)
+set trialTTY to tty of t
+repeat with w in windows
+repeat with candidate in tabs of w
+if tty of candidate is trialTTY then return (id of w as text) & linefeed & trialTTY
+end repeat
+end repeat
+error "cannot find trial terminal"
 end tell''', shlex.join([str(run)]))
+            self.id, self.session_id = identity.splitlines()
             self.notes.append('Terminal do script appends Return; navigation uses combined sequences. Physical key mapping and native paste are not covered.')
         else:
             if self.client == 'kitty':
@@ -187,6 +253,8 @@ def run_trial(client, bundle, helper, output, usability=False):
             'driver_sha256':digest(output/'driver.py'), 'helper_sha256':digest(helper),'started':time.time(), 'captures':[], 'actions':[], 'usability_checks':usability, 'passed':False}
     before=set((bundle/'runs').iterdir())
     def wait(marker):
+        if marker == 'ready · idle' and metadata.get('tui') == 'fullscreen' and metadata.get('ui') == 'full':
+            marker = '⏎ send'
         deadline=time.monotonic()+30
         while True:
             screen=driver.screen()
@@ -201,8 +269,8 @@ def run_trial(client, bundle, helper, output, usability=False):
     def step(name, fn):
         ledger['actions'].append({'name':name,'time':time.time()});fn()
     try:
-        driver.launch();ledger['window']=driver.window;ledger['native_target']=driver.id
-        wait('Ready for first turn');driver.resize();capture('01-ready')
+        driver.launch();ledger['window']=driver.window;ledger['native_target']=driver.id;ledger['native_session']=driver.session_id
+        wait('ready · idle' if metadata.get('tui') == 'inline' else 'Ready for first turn');driver.resize();capture('01-ready')
         if client=='terminal':
             driver.text('\x1bOQ');wait('Details');capture('02-detail')
             driver.text('\x1bOQ');driver.submit('native first');wait('TUI_FIXTURE_REPLY_1')
@@ -246,7 +314,6 @@ def run_trial(client, bundle, helper, output, usability=False):
         ledger['recording']=str(runs[0]);manifest=json.loads((runs[0]/'manifest.json').read_text())
         if not trial_outcome(manifest):raise RuntimeError('fixture outcome failed: '+json.dumps(manifest))
         ledger['passed']=True
-        driver.key('Enter')
     except Exception as error:
         ledger['error']=str(error)
         if driver.id is not None:
@@ -254,14 +321,26 @@ def run_trial(client, bundle, helper, output, usability=False):
             except Exception as capture_error:ledger['capture_error']=str(capture_error)
     finally:
         # A failed native probe must not leave a permission prompt waiting behind.
-        runs=[p for p in (bundle/'runs').iterdir() if p not in before and p.name.startswith(client+'-')]
-        if len(runs)==1:
-            ledger['recording']=str(runs[0])
-            identity=runs[0]/'process.json'
-            if not ledger['passed'] and identity.exists():
-                ident=json.loads(identity.read_text())
-                actual=subprocess.run(['ps','-p',str(ident['pid']),'-o','command='],capture_output=True,text=True).stdout
-                if actual.startswith(ident['executable']+' '):cleanup_tree(ident['pid'])
+        try:
+            runs=[p for p in (bundle/'runs').iterdir() if p not in before and p.name.startswith(client+'-')]
+            if len(runs)==1:
+                ledger['recording']=str(runs[0])
+                identity=runs[0]/'process.json'
+                if not ledger['passed'] and identity.exists():
+                    ident=json.loads(identity.read_text())
+                    actual=subprocess.run(['ps','-p',str(ident['pid']),'-o','command='],capture_output=True,text=True,timeout=5).stdout
+                    if actual.startswith(ident['executable']+' ') or actual.startswith(str(bundle/'omegon')+' '):
+                        cleanup_tree(ident['pid'])
+        except Exception as error:
+            ledger['passed'] = False
+            ledger['process_cleanup_error'] = str(error)
+        try:
+            driver.close()
+            ledger['window_cleanup'] = 'closed or already absent'
+        except Exception as error:
+            ledger['passed'] = False
+            ledger['window_cleanup'] = 'failed'
+            ledger['cleanup_error'] = str(error)
         ledger['notes']=driver.notes
         ledger['finished']=time.time()
         (output/'native-trial.json').write_text(json.dumps(ledger,indent=2)+'\n')
@@ -269,16 +348,24 @@ def run_trial(client, bundle, helper, output, usability=False):
     return ledger
 
 
-def main():
+def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--bundle',type=Path,required=True)
     p.add_argument('--helper',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--usability', action='store_true', help='Verify functional search, unique permission choices and narrow send hints')
-    p.add_argument('--clients',nargs='+',choices=['ghostty','iterm','kitty','wezterm','terminal'],default=['ghostty','iterm','kitty','wezterm','terminal'])
-    args=p.parse_args()
+    p.add_argument('--clients',nargs='+',choices=['ghostty','iterm','kitty','wezterm','terminal'],required=True)
+    p.add_argument('--interactive-gui', action='store_true', help='Explicitly open native windows; use only during a dedicated compatibility session')
+    args=p.parse_args(argv)
+    if not args.interactive_gui:
+        p.error('Native trials open GUI windows. Use scripts/tui_acceptance.py for routine headless testing; --interactive-gui explicitly selects disruptive native compatibility testing.')
     args.output.mkdir(parents=True,exist_ok=False)
-    results=[run_trial(c,args.bundle.resolve(),args.helper.resolve(),args.output/c,args.usability) for c in args.clients]
+    results=[]
+    for client in args.clients:
+        result=run_trial(client,args.bundle.resolve(),args.helper.resolve(),args.output/client,args.usability)
+        results.append(result)
+        if result.get('window_cleanup') == 'failed' or result.get('process_cleanup_error'):
+            break
     (args.output/'summary.json').write_text(json.dumps(results,indent=2)+'\n')
     raise SystemExit(0 if all(r['passed'] for r in results) else 1)
 

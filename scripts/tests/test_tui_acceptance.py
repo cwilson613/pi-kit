@@ -44,6 +44,10 @@ def test_provider_can_request_a_bounded_permission_probe():
         assert "denied.txt" in body
 
 if __name__ == "__main__":
+    command = runner.tui_command(Path("/binary with spaces"), Path("/workspace"), Path("/log"), "inline", "full")
+    assert "--tui" in command and "--ui" in command, "fixture must select both axes explicitly"
+    assert command[command.index("--tui") + 1] == "inline"
+    assert command[command.index("--ui") + 1] == "full"
     test_provider_streams_distinct_turns_without_external_inference()
     test_provider_rejects_unknown_routes()
     test_provider_can_request_a_bounded_permission_probe()

@@ -4,7 +4,7 @@ import Foundation
 import CoreGraphics
 let args = Array(CommandLine.arguments.dropFirst())
 if args.first == "windows" {
-    let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    let windows = CGWindowListCopyWindowInfo(args.contains("--all") ? [.excludeDesktopElements] : [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
     let selected = windows.filter { ["Ghostty", "iTerm2", "kitty", "WezTerm", "Terminal"].contains($0["kCGWindowOwnerName"] as? String ?? "") }
     let data = try JSONSerialization.data(withJSONObject: selected, options: [.sortedKeys])
     print(String(data: data, encoding: .utf8)!)

@@ -10,12 +10,28 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import signal
 import subprocess
 import tempfile
 import threading
 import time
 import uuid
+
+
+def tui_command(binary, workspace, log, presentation="fullscreen", detail="active"):
+    command = [str(binary), "--cwd", str(workspace), "--model", "openai:gpt-5.4", "--no-splash", "--fresh", "--log-level", "debug", "--log-file", str(log)]
+    if presentation is not None:
+        command += ["--tui", presentation]
+    if detail is not None:
+        command += ["--ui", detail]
+    return command
+
+
+def ready_marker(presentation, detail):
+    # Full detail exposes readiness through its composer. The subsequent distinct
+    # provider request proves submission; the compact idle label is not mounted.
+    return "⏎ send" if (presentation, detail) == ("fullscreen", "full") else "ready · idle"
 
 
 @contextmanager
@@ -46,6 +62,11 @@ def fixture_provider():
             with server.request_lock:
                 server.requests += 1
                 number = server.requests
+            if server.stress and number == 5:
+                server.cancel_waiting.set()
+                if not server.release_cancel.wait(timeout=60):
+                    self.send_error(504)
+                    return
             tool_probe = number == 3 and server.tool_path is not None
             if tool_probe:
                 server.tool_waiting.set()
@@ -60,18 +81,35 @@ def fixture_provider():
                 reply += (" The operator denied the requested write. The fixture has completed its permission check "
                           "and will make no further tool calls. The requested file remains absent, the prior project "
                           "surface is preserved, and control returns to the conversation for the next operator prompt.")
+            if server.stress and number == 1:
+                reply = f"TUI_FIXTURE_REPLY_{number} " + "bounded-output 界é " * 5000
             deltas = [({"content": reply}, None), ({}, "stop")]
             if tool_probe:
                 call = {"index": 0, "id": "fixture-denied-write", "type": "function",
                         "function": {"name": "write", "arguments": json.dumps({"path": server.tool_path, "content": "fixture only"})}}
                 deltas = [({"tool_calls": [call]}, None), ({}, "tool_calls")]
-            for delta, finish in deltas:
-                event = {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
-                self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
-                self.wfile.flush()
-            self.wfile.write(b"data: [DONE]\n\n")
+            try:
+                for delta, finish in deltas:
+                    event = {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+                    self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+                    self.wfile.flush()
+                    if server.stress and number == 1 and finish is None:
+                        server.stream_waiting.set()
+                        if not server.release_stream.wait(timeout=60):
+                            return
+                self.wfile.write(b"data: [DONE]\n\n")
+            except (BrokenPipeError, ConnectionResetError):
+                # The cancellation fixture deliberately disconnects before release.
+                if not (server.stress and number == 5):
+                    raise
+
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.stress = False
+    server.stream_waiting = threading.Event()
+    server.release_stream = threading.Event()
+    server.cancel_waiting = threading.Event()
+    server.release_cancel = threading.Event()
     server.requests = 0
     server.request_lock = threading.Lock()
     server.tool_path = None
@@ -84,6 +122,8 @@ def fixture_provider():
         yield server
     finally:
         server.release_tool.set()
+        server.release_stream.set()
+        server.release_cancel.set()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
@@ -128,7 +168,7 @@ reasoning = true
     return workspace
 
 
-def run(binary: Path, output: Path):
+def run(binary: Path, output: Path, presentation="fullscreen", detail="active", entry=None, stress=False):
     binary = binary.resolve(strict=True)
     checkout = Path(__file__).resolve().parents[1]
     if output.resolve().is_relative_to(checkout):
@@ -138,7 +178,7 @@ def run(binary: Path, output: Path):
     ledger = {"binary": str(binary), "binary_sha256": digest(binary), "started": time.time(),
               "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip(),
               "dirty": subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout, text=True),
-              "captures": [], "passed": False}
+              "captures": [], "passed": False, "tui": presentation, "ui": detail, "entry": entry, "stress": stress}
 
     def tmux(*args, check=True):
         return subprocess.run(["tmux", "-L", socket, *args], check=check, capture_output=True, text=True, timeout=10).stdout
@@ -150,9 +190,12 @@ def run(binary: Path, output: Path):
     def screen():
         return tmux("capture-pane", "-p", "-t", "run:0.0")
 
+    def history():
+        return tmux("capture-pane", "-p", "-S", "-", "-t", "run:0.0") if presentation == "inline" else screen()
+
     def capture(name, *, primary=False):
         path = output / (name + ".txt")
-        path.write_text(tmux("capture-pane", "-p", "-a", "-t", "run:0.0") if primary else screen())
+        path.write_text((history() if presentation == "inline" else tmux("capture-pane", "-p", "-a", "-t", "run:0.0")) if primary else screen())
         ledger["captures"].append({"name": name, "time": time.time(), "sha256": digest(path),
                                    "geometry": tmux("display-message", "-p", "-t", "run:0.0", "#{pane_width}x#{pane_height}").strip()})
 
@@ -167,18 +210,28 @@ def run(binary: Path, output: Path):
 
     with tempfile.TemporaryDirectory(prefix="omegon-tui-") as temporary, fixture_provider() as provider:
         root = Path(temporary)
+        provider.stress = stress
         workspace = prepare_fixture_workspace(root, provider)
         log = output / "omegon.log"
-        command = [str(binary), "--cwd", str(workspace), "--model", "openai:gpt-5.4", "--no-splash", "--fresh", "--log-level", "debug", "--log-file", str(log)]
+        executable = binary
+        if entry:
+            executable = root / entry
+            shutil.copy2(checkout / "scripts/omegon-launcher.sh", executable)
+            executable.chmod(0o755)
+        command = tui_command(executable, workspace, log, None if entry else presentation, None if entry else detail)
         # Start with an explicit environment, so real credentials/plugins cannot leak into the fixture.
         environment = {"PATH": os.environ["PATH"], "HOME": str(root), "OMEGON_HOME": str(root / "omegon-home"),
                        "XDG_CONFIG_HOME": str(root / ".config"), "TERM": "xterm-256color", "LANG": "en_US.UTF-8",
                        "OMEGON_CHILD": "1", "NO_COLOR": "1", "OPENAI_API_KEY": "local-only",
                        "OMEGON_PROJECT_ENDPOINT_616363657074616E6365_TOKEN": "local-only"}
+        if entry:
+            environment["OMEGON_BIN"] = str(binary)
         launch = ["env", "-i", *(f"{key}={value}" for key, value in environment.items()), *command]
         ledger["command"] = command
         try:
-            tmux("-f", "/dev/null", "new-session", "-d", "-s", "run", "-c", str(workspace), "-x", "120", "-y", "40", shlex.join(launch))
+            # A primary marker and short shell trailer establish preservation and clean exit.
+            shell = "printf '%s\n' TUI_PRIMARY_BEFORE; " + shlex.join(launch) + "; result=$?; printf '\nTUI_EXIT_%s\n' \"$result\"; sleep 30"
+            tmux("-f", "/dev/null", "new-session", "-d", "-s", "run", "-c", str(workspace), "-x", "120", "-y", "40", shell)
             ledger["pid"] = tmux("display-message", "-p", "-t", "run:0.0", "#{pane_pid}").strip()
             ledger["process_group"] = os.getpgid(int(ledger["pid"]))
             if ledger["process_group"] != int(ledger["pid"]):
@@ -187,7 +240,8 @@ def run(binary: Path, output: Path):
             if str(binary) not in ledger["process"]:
                 raise RuntimeError("running process does not identify the requested binary")
             wait_for(lambda: log.exists() and "terminal input boundary acquired" in log.read_text(), "TUI startup")
-            wait_for(lambda: "Ready for first turn" in screen(), "initial semantic view")
+            wait_for(lambda: ("ready · idle" if presentation == "inline" else "Ready for first turn") in screen(), "initial semantic view")
+            assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}").strip() == ("0" if presentation == "inline" else "1")
             if "semantic frontend is unavailable" in screen():
                 raise AssertionError("startup exposed an unavailable session projection")
             capture("01-startup")
@@ -209,17 +263,41 @@ def run(binary: Path, output: Path):
                 if number != 1:
                     action("send-keys", "-t", "run:0.0", "-l", f"fixture turn {number}")
                 action("send-keys", "-t", "run:0.0", "Enter")
-                wait_for(lambda: f"TUI_FIXTURE_REPLY_{number}" in screen(), f"visible reply {number}")
+                if stress and number == 1:
+                    wait_for(provider.stream_waiting.is_set, "held streaming response")
+                    action("send-keys", "-t", "run:0.0", "-l", "UNSENT_DRAFT_SURVIVES")
+                    action("send-keys", "-t", "run:0.0", "F2")
+                    wait_for(lambda: "Project browser" in screen(), "Project admits input during large stream")
+                    capture("stress-streaming-project")
+                    prior = tmux("capture-pane", "-p", "-a", "-S", "-", "-t", "run:0.0")
+                    assert "TUI_FIXTURE_REPLY_1" not in prior, "unfinalized response entered primary history"
+                    provider.release_stream.set()
+                    action("send-keys", "-t", "run:0.0", "Escape")
+                    wait_for(lambda: "UNSENT_DRAFT_SURVIVES" in screen(), "draft survives active browsing")
+                    capture("stress-return-draft")
+                    action("send-keys", "-t", "run:0.0", "C-u")
+                wait_for(lambda: f"TUI_FIXTURE_REPLY_{number}" in history(), f"visible reply {number}")
                 capture(f"0{number + 1}-turn-{number}")
             action("resize-window", "-t", "run:0", "-x", "90", "-y", "30")
-            wait_for(lambda: "TUI_FIXTURE_REPLY_2" in screen() and "ready · idle" in screen(), "reply survives resize and runtime becomes idle")
+            wait_for(lambda: "TUI_FIXTURE_REPLY_2" in history() and ready_marker(presentation, detail) in screen(), "reply survives resize and runtime becomes idle")
             capture("04-resize")
+            if presentation == "inline":
+                prior = history()
+                assert "TUI_PRIMARY_BEFORE" in prior, "inline startup erased primary text"
+                for number in (1, 2):
+                    assert prior.count(f"TUI_FIXTURE_REPLY_{number}") == 1, "automatic publication duplicated a reply"
+                capture("04-primary-before-export", primary=True)
             before_modes = tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}:#{mouse_any_flag}").strip()
             action("send-keys", "-t", "run:0.0", "-l", "/session-export scrollback")
             action("send-keys", "-t", "run:0.0", "Enter")
-            wait_for(lambda: "Transcript printed" in screen() and "TUI_FIXTURE_REPLY_2" in screen(), "fullscreen redraw after native publication")
+            if stress:
+                wait_for(lambda: "Transcript chunk printed" in screen(), "bounded explicit export")
+                capture("stress-export-chunk")
+                action("send-keys", "-t", "run:0.0", "-l", "/session-export scrollback")
+                action("send-keys", "-t", "run:0.0", "Enter")
+            wait_for(lambda: "Transcript printed" in screen() and "TUI_FIXTURE_REPLY_2" in history(), "fullscreen redraw after native publication")
             after_modes = tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}:#{mouse_any_flag}").strip()
-            assert before_modes.startswith("1:"), "TUI must own the alternate screen"
+            assert before_modes.startswith("0:" if presentation == "inline" else "1:"), "unexpected active buffer"
             assert after_modes == before_modes, "native publication changed terminal mode preferences"
             ledger["terminal_modes"] = {"before_print": before_modes, "after_print": after_modes}
             capture("04a-print-return")
@@ -245,12 +323,41 @@ def run(binary: Path, output: Path):
             wait_for(lambda: "Project browser" in screen() and "No active work" in screen() and "Permission required" not in screen(), "return to project work tab after denial")
             capture("07-return-project-work")
             action("send-keys", "-t", "run:0.0", "Escape")
-            wait_for(lambda: "TUI_FIXTURE_REPLY_4" in screen() and "ready · idle" in screen(), "denied tool turn completes")
+            wait_for(lambda: "TUI_FIXTURE_REPLY_4" in history() and ready_marker(presentation, detail) in screen(), "denied tool turn completes")
             capture("08-denied-turn-complete")
             assert not Path(provider.tool_path).exists(), "denied write changed the filesystem"
             assert provider.requests == 4, f"unexpected inference requests: {provider.requests}"
+            if stress:
+                action("send-keys", "-t", "run:0.0", "-l", "fixture cancellation probe")
+                action("send-keys", "-t", "run:0.0", "Enter")
+                wait_for(provider.cancel_waiting.is_set, "cancellation provider gate")
+                action("send-keys", "-t", "run:0.0", "-l", "CANCEL_DRAFT_SURVIVES")
+                action("send-keys", "-t", "run:0.0", "F2")
+                wait_for(lambda: "Project browser" in screen(), "Project during cancel probe")
+                action("send-keys", "-t", "run:0.0", "C-c")
+                action("send-keys", "-t", "run:0.0", "Escape")
+                wait_for(lambda: ready_marker(presentation, detail) in screen(), "cancel releases composer")
+                wait_for(lambda: "CANCEL_DRAFT_SURVIVES" in screen(), "cancel preserves unsent draft")
+                wait_for(lambda: "Turn cancelled or revoked." in history(), "cancellation outcome in history")
+                capture("stress-cancel-draft")
+                provider.release_cancel.set()
+                action("send-keys", "-t", "run:0.0", "C-u")
+                action("send-keys", "-t", "run:0.0", "-l", "/new")
+                action("send-keys", "-t", "run:0.0", "Enter")
+                wait_for(lambda: "Context cleared" in screen() or "Conversation boundary changed" in history(), "generation replacement")
+                capture("stress-new-boundary")
+                action("send-keys", "-t", "run:0.0", "-l", "fixture after cancellation and reset")
+                action("send-keys", "-t", "run:0.0", "Enter")
+                wait_for(lambda: "TUI_FIXTURE_REPLY_6" in history() and ready_marker(presentation, detail) in screen(), "next turn after cancel and reset")
+                assert provider.requests == 6
+                capture("stress-recovered")
             if digest(binary) != ledger["binary_sha256"]:
                 raise RuntimeError("binary changed during capture")
+            action("send-keys", "-t", "run:0.0", "-l", "/quit")
+            action("send-keys", "-t", "run:0.0", "Enter")
+            wait_for(lambda: "TUI_EXIT_0" in screen(), "clean TUI exit")
+            assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}:#{mouse_any_flag}").strip() == "0:0"
+            capture("09-shell-return")
             ledger["passed"] = True
         finally:
             ledger["provider_requests"] = provider.requests
@@ -285,5 +392,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True, help="freshly built Omegon executable")
     parser.add_argument("--output", type=Path, required=True, help="new evidence directory outside the checkout")
+    parser.add_argument("--tui", choices=["inline", "fullscreen"], default="fullscreen")
+    parser.add_argument("--ui", choices=["active", "full"], default="active")
+    parser.add_argument("--entry", choices=["om", "omegon"], help="test the fixed-build launcher default without UI flags")
+    parser.add_argument("--stress", action="store_true", help="gate a large stream, cancel from Project, and replace the conversation")
     arguments = parser.parse_args()
-    run(arguments.binary, arguments.output.resolve())
+    run(arguments.binary, arguments.output.resolve(), arguments.tui, arguments.ui, arguments.entry, arguments.stress)

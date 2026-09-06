@@ -2,7 +2,8 @@
 
 use crate::surfaces::menu::{
     MenuActionProjection, MenuBadgeProjection, MenuBadgeTone, MenuGroupProjection, MenuProjection,
-    MenuRowKind, MenuRowProjection, MenuTabProjection, ProviderStatusProjection,
+    MenuRowKind, MenuRowProjection, MenuTabProjection, ProviderAvailabilityProjection,
+    ProviderStatusProjection,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,7 +34,7 @@ pub(super) fn build_provider_status_rows(
             let login_command = status
                 .remediation_command
                 .clone()
-                .unwrap_or_else(|| format!("/login {provider}"));
+                .unwrap_or_else(|| format!("/connect {provider}"));
             let logout_command = format!("/logout {provider}");
             let mut badges = vec![MenuBadgeProjection {
                 label: status.badge_label().into(),
@@ -80,17 +81,17 @@ pub(super) fn build_provider_status_rows(
                 metadata,
                 primary_action: Some(MenuActionProjection::command(
                     format!("{row_prefix}.{provider}.login"),
-                    "Login",
+                    "Connect",
                     login_command.clone(),
                 )),
                 actions: vec![
                     {
                         let mut action = MenuActionProjection::command(
                             format!("{row_prefix}.{provider}.login.action"),
-                            "Login",
+                            "Connect",
                             login_command,
                         );
-                        action.key = Some("l".into());
+                        action.key = Some("c".into());
                         action
                     },
                     {
@@ -102,7 +103,23 @@ pub(super) fn build_provider_status_rows(
                         action.key = Some("o".into());
                         action
                     },
-                ],
+                ]
+                .into_iter()
+                .chain(
+                    crate::auth::provider_by_id(&provider)
+                        .and_then(crate::auth::operator_api_key_name)
+                        .and_then(crate::capabilities::secrets::secret_console_url)
+                        .map(|_| {
+                            let mut action = MenuActionProjection::command(
+                                format!("{row_prefix}.{provider}.console"),
+                                "Open key console",
+                                format!("/connect {provider} --console"),
+                            );
+                            action.key = Some("b".into());
+                            action
+                        }),
+                )
+                .collect(),
                 safety: None,
                 availability: None,
             }
@@ -111,8 +128,33 @@ pub(super) fn build_provider_status_rows(
 }
 
 pub(super) fn build_authentication_menu(inputs: AuthenticationMenuInputs) -> MenuProjection {
-    let mut menu = MenuProjection::new("auth", "Authentication");
-    let mut summary = "Provider authentication status. Enter logs into the selected provider; l login; o logout; / filters providers.".to_string();
+    build_connection_menu(inputs, false)
+}
+
+pub(super) fn build_available_provider_menu(inputs: AuthenticationMenuInputs) -> MenuProjection {
+    build_connection_menu(inputs, true)
+}
+
+fn build_connection_menu(inputs: AuthenticationMenuInputs, available: bool) -> MenuProjection {
+    let mut menu = MenuProjection::new(
+        if available { "auth.providers" } else { "auth" },
+        if available {
+            "Add provider"
+        } else {
+            "Connections"
+        },
+    );
+    let mut summary = if available {
+        "Choose a provider to configure. / filters providers."
+    } else {
+        "Provider credentials. Use /model to select a route."
+    }
+    .to_string();
+    if inputs.providers.iter().any(|provider| {
+        provider.availability == ProviderAvailabilityProjection::CredentialStoreUnavailable
+    }) {
+        summary.push_str("\nCredential store unavailable. Use /auth status for details.");
+    }
     if inputs.route.route_state.is_some()
         || inputs.selected_model.is_some()
         || inputs.serving_model.is_some()
@@ -132,16 +174,54 @@ pub(super) fn build_authentication_menu(inputs: AuthenticationMenuInputs) -> Men
     }
     menu.summary = Some(summary);
     menu.footer = Some(
-        "↑/↓ navigate · Enter login · l login · o logout · / filter · Esc close · /auth status for text readout".into(),
+        "↑/↓ navigate · Enter select · c connect · o logout · / filter · Esc close · /auth status for details".into(),
     );
+    let providers = inputs
+        .providers
+        .into_iter()
+        .filter(|provider| {
+            let existing = matches!(
+                provider.availability,
+                ProviderAvailabilityProjection::Available
+                    | ProviderAvailabilityProjection::ExpiredCredentials
+                    | ProviderAvailabilityProjection::UnreadableCredentials
+            );
+            if available { !existing } else { existing }
+        })
+        .collect();
+    let mut rows = build_provider_status_rows("auth.provider", providers, &inputs.route);
+    if !available {
+        rows.push(MenuRowProjection {
+            id: "auth.add".into(),
+            label: "Add provider".into(),
+            description: "Search available providers and choose a connection method.".into(),
+            value: None,
+            kind: MenuRowKind::Action,
+            badges: vec![],
+            metadata: vec![],
+            primary_action: Some(MenuActionProjection::open_selector(
+                "auth.add.open",
+                "Add provider",
+                "auth.providers",
+            )),
+            actions: vec![],
+            safety: None,
+            availability: None,
+        });
+    }
     menu.tabs = vec![MenuTabProjection {
         id: "providers".into(),
         label: "Providers".into(),
         groups: vec![MenuGroupProjection {
             id: "auth.providers".into(),
-            label: "Provider credentials".into(),
-            description: Some("Credential probe status and login/logout actions.".into()),
-            rows: build_provider_status_rows("auth.provider", inputs.providers, &inputs.route),
+            label: if available {
+                "Available providers"
+            } else {
+                "Existing connections"
+            }
+            .into(),
+            description: None,
+            rows,
         }],
     }];
     menu
@@ -161,6 +241,73 @@ mod tests {
             availability: ProviderAvailabilityProjection::Available,
             remediation_command: None,
         }
+    }
+
+    #[test]
+    fn connect_initial_view_does_not_dump_unconfigured_catalog() {
+        let mut missing = provider("openrouter");
+        missing.credential_available = false;
+        missing.availability = ProviderAvailabilityProjection::MissingCredentials;
+        let menu = build_authentication_menu(AuthenticationMenuInputs {
+            providers: vec![provider("openai"), missing],
+            ..Default::default()
+        });
+        assert_eq!(menu.title, "Connections");
+        let rows: Vec<_> = menu.tabs[0].groups.iter().flat_map(|g| &g.rows).collect();
+        assert!(rows.iter().any(|r| r.value.as_deref() == Some("openai")));
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.value.as_deref() == Some("openrouter"))
+        );
+        assert!(rows.iter().any(|r| r.label == "Add provider"));
+        assert!(
+            !rows
+                .iter()
+                .flat_map(|r| &r.badges)
+                .any(|b| b.label == "valid")
+        );
+    }
+
+    #[test]
+    fn connect_expired_connections_stay_existing_and_catalog_is_searchable() {
+        let mut expired = provider("anthropic");
+        expired.availability = ProviderAvailabilityProjection::ExpiredCredentials;
+        expired.credential_available = false;
+        let mut missing = provider("openrouter");
+        missing.availability = ProviderAvailabilityProjection::MissingCredentials;
+        missing.credential_available = false;
+        let inputs = AuthenticationMenuInputs {
+            providers: vec![expired, missing],
+            ..Default::default()
+        };
+        let menu = build_authentication_menu(inputs.clone());
+        assert_eq!(
+            menu.tabs[0].groups[0].rows[0].value.as_deref(),
+            Some("anthropic")
+        );
+        let catalog = build_available_provider_menu(inputs);
+        let mut state = crate::tui::menu_surface::MenuState::new(&catalog);
+        state.enter_search();
+        for ch in "router".chars() {
+            state.push_filter_char(&catalog, ch);
+        }
+        let rows = state.visible_rows(&catalog);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].row.value.as_deref(), Some("openrouter"));
+    }
+
+    #[test]
+    fn connect_empty_state_has_one_deliberate_add_action() {
+        let menu = build_authentication_menu(Default::default());
+        let rows = &menu.tabs[0].groups[0].rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "Add provider");
+        let action = rows[0].primary_action.as_ref().unwrap();
+        assert_eq!(
+            action.command, None,
+            "discovery cannot dispatch authentication"
+        );
     }
 
     #[test]

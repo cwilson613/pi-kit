@@ -53,12 +53,19 @@ import { snippet } from "../../lib/snippets";
   </table>
 
   <h2>Authentication</h2>
+  <p>
+    Use <code>/connect</code> to inspect existing connections. Choose <strong>Add provider</strong>
+    to search available providers. Startup shows the current route and actionable problems;
+    unused providers do not produce a startup checklist.
+  </p>
   <table>
     <thead><tr><th>Command</th><th>Description</th></tr></thead>
     <tbody>
+      <tr><td><code>/connect [provider]</code></td><td>Manage provider connections. API keys use hidden input; supported OAuth providers use their existing authorization flow. Secure setup requires the TUI; remote CLI and ACP return terminal setup guidance.</td></tr>
+      <tr><td><code>/connect &lt;provider&gt; --console</code></td><td>Explicitly open an API-key provider's console. Opening the connection menu or key input does not open a browser.</td></tr>
       <tr><td><code>/auth [status|login|logout|unlock]</code></td><td>Inspect or change provider authentication.</td></tr>
       <tr><td><code>/logout [provider]</code></td><td>Log out of a provider.</td></tr>
-      <tr><td><code>/auth [action]</code></td><td>Authentication management: <code>status</code>, <code>unlock</code>.</td></tr>
+      <tr><td><code>/login [provider]</code></td><td>Compatibility entry for provider setup. Use <code>/connect</code> for new workflows; credential renewal under <code>/login</code> is planned separately.</td></tr>
       <tr><td><code>/secrets [action]</code></td><td>Manage stored secrets: <code>list</code>, <code>set</code>, <code>get</code>, <code>delete</code>. <code>/secrets set NAME</code> opens hidden input for raw values; <code>/secrets get NAME</code> checks resolution without printing the value.</td></tr>
       <tr><td><code>/vault [action]</code></td><td>HashiCorp Vault integration: <code>status</code>, <code>unseal</code>, <code>login</code>, <code>configure</code>, <code>init-policy</code>.</td></tr>
     </tbody>

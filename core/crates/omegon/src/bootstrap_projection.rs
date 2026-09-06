@@ -10,6 +10,73 @@
 
 use crate::status::*;
 
+/// Interactive startup consumes only the resolved route, never the provider catalog.
+pub(crate) fn interactive_startup(
+    entry: &str,
+    route: &crate::route::ProviderRoute,
+    bridge_ready: bool,
+) -> (String, Option<String>) {
+    use crate::route::{DisconnectedReason, ProviderRoute};
+    // Model identifiers can originate in configuration. Keep the startup line
+    // bounded and prevent terminal control characters from becoming output.
+    fn label(value: &str) -> String {
+        value
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .take(128)
+            .collect()
+    }
+    let entry = if entry == "om" { "om" } else { "omegon" };
+    let (selected, serving) = match route {
+        ProviderRoute::Serving { model } => (model.as_str(), None),
+        ProviderRoute::Fallback {
+            selected, serving, ..
+        } => (selected.as_str(), Some(serving.as_str())),
+        ProviderRoute::Disconnected { selected, .. } => (selected.as_str(), None),
+        ProviderRoute::LoginPending { prior, .. } => {
+            let (summary, _) = interactive_startup(entry, prior, false);
+            return (summary, Some("Provider connection in progress.".into()));
+        }
+    };
+    let route_label = if selected.trim().is_empty() {
+        "No provider selected".into()
+    } else if let Some(serving) = serving {
+        format!(
+            "selected {} · {} {}",
+            label(selected),
+            if bridge_ready {
+                "serving"
+            } else {
+                "fallback unavailable"
+            },
+            label(serving)
+        )
+    } else {
+        label(selected)
+    };
+    let summary = format!("{entry} · {route_label} · /connect · /settings");
+    let diagnostic = if bridge_ready {
+        None
+    } else if selected.trim().is_empty() {
+        Some("Use /connect to configure a provider.".into())
+    } else {
+        let provider = label(&crate::providers::infer_provider_id(selected));
+        let problem = match route {
+            ProviderRoute::Disconnected { reason, .. } => match reason {
+                DisconnectedReason::ExpiredCredentials { .. } => "Credentials expired",
+                DisconnectedReason::MissingCredentials { .. } => "Credentials missing",
+                DisconnectedReason::FallbackExhausted { .. } => "Configured fallbacks unavailable",
+                DisconnectedReason::ProviderUnavailable { .. } => "Selected provider unavailable",
+            },
+            _ => "Selected route could not start",
+        };
+        Some(format!(
+            "{problem}. Use /connect {provider} or /model to choose a route."
+        ))
+    };
+    (summary, diagnostic)
+}
+
 /// Render the bootstrap panel to a String.
 /// Uses ANSI colors when `color` is true.
 pub fn render_bootstrap(status: &HarnessStatus, color: bool) -> String {
@@ -65,7 +132,7 @@ pub fn render_bootstrap(status: &HarnessStatus, color: bool) -> String {
     }
     if !has_providers {
         out.push_str(&format!(
-            "  {dim}no providers — /login to configure{reset}\n"
+            "  {dim}no providers — /connect to configure{reset}\n"
         ));
     }
 
@@ -165,6 +232,111 @@ mod tests {
     #![allow(clippy::field_reassign_with_default)]
 
     use super::*;
+
+    #[test]
+    fn connect_startup_shows_only_resolved_route_and_scoped_problem() {
+        use crate::route::{DisconnectedReason, FallbackReason, ModelRouteSpec, ProviderRoute};
+        let model = ModelRouteSpec::parse("openai:fixture");
+        for entry in ["om", "omegon"] {
+            let (summary, diagnostic) = interactive_startup(
+                entry,
+                &ProviderRoute::Serving {
+                    model: model.clone(),
+                },
+                true,
+            );
+            assert!(summary.starts_with(entry));
+            assert!(summary.contains("openai:fixture"));
+            assert_eq!(summary.lines().count(), 1);
+            assert_eq!(diagnostic, None);
+
+            let (_, diagnostic) = interactive_startup(
+                entry,
+                &ProviderRoute::Disconnected {
+                    selected: model.clone(),
+                    reason: DisconnectedReason::ExpiredCredentials {
+                        provider: "openai".into(),
+                        refreshable: true,
+                    },
+                },
+                false,
+            );
+            let diagnostic = diagnostic.expect("expired route needs one action");
+            assert!(diagnostic.contains("expired"));
+            assert!(diagnostic.contains("/connect openai"));
+            assert_eq!(diagnostic.lines().count(), 1);
+
+            let (summary, diagnostic) = interactive_startup(
+                entry,
+                &ProviderRoute::Fallback {
+                    selected: model.clone(),
+                    serving: ModelRouteSpec::parse("anthropic:fixture"),
+                    reason: FallbackReason::MissingCredentials {
+                        provider: "openai".into(),
+                    },
+                },
+                true,
+            );
+            assert!(summary.contains("selected openai:fixture"));
+            assert!(summary.contains("serving anthropic:fixture"));
+            assert!(diagnostic.is_none());
+        }
+    }
+
+    #[test]
+    fn connect_startup_does_not_echo_raw_credential_errors() {
+        use crate::route::{DisconnectedReason, ModelRouteSpec, ProviderRoute};
+        let (_, diagnostic) = interactive_startup(
+            "om",
+            &ProviderRoute::Disconnected {
+                selected: ModelRouteSpec::parse("openai:fixture"),
+                reason: DisconnectedReason::ProviderUnavailable {
+                    provider: "openai".into(),
+                    detail: "invalid value: secret-canary".into(),
+                },
+            },
+            false,
+        );
+        let diagnostic = diagnostic.expect("unavailable route action");
+        assert!(diagnostic.contains("/connect openai"));
+        assert!(!diagnostic.contains("secret-canary"));
+    }
+
+    #[test]
+    fn connect_startup_handles_missing_selection_and_failed_bridge() {
+        use crate::route::{DisconnectedReason, ModelRouteSpec, ProviderRoute};
+        let (summary, problem) = interactive_startup(
+            "om",
+            &ProviderRoute::Disconnected {
+                selected: ModelRouteSpec::parse(""),
+                reason: DisconnectedReason::MissingCredentials {
+                    provider: String::new(),
+                    probed_sources: vec![],
+                },
+            },
+            false,
+        );
+        assert!(summary.contains("No provider selected"));
+        assert_eq!(
+            problem.as_deref(),
+            Some("Use /connect to configure a provider.")
+        );
+
+        let (summary, problem) = interactive_startup(
+            "omegon",
+            &ProviderRoute::Serving {
+                model: ModelRouteSpec::parse("openai:fixture"),
+            },
+            false,
+        );
+        assert!(summary.contains("openai:fixture"));
+        assert_eq!(
+            problem.as_deref(),
+            Some(
+                "Selected route could not start. Use /connect openai or /model to choose a route."
+            )
+        );
+    }
 
     #[test]
     fn bootstrap_renders_without_panic() {

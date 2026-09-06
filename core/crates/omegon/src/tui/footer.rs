@@ -261,14 +261,14 @@ impl FooterData {
                 .map(|p| p.display_name)
                 .unwrap_or(self.model_provider.as_str());
             let status_text = if self.model_provider.trim().is_empty() {
-                "⚠ provider login required".to_string()
+                "⚠ provider connection required".to_string()
             } else {
-                format!("⚠ {provider_label} login required")
+                format!("⚠ {provider_label} connection required")
             };
             let action_text = if self.model_provider.trim().is_empty() {
-                "/login <provider>".to_string()
+                "/connect <provider>".to_string()
             } else {
-                format!("/login {}", self.model_provider)
+                format!("/connect {}", self.model_provider)
             };
             push_row(
                 &mut lines,
@@ -1782,8 +1782,11 @@ mod tests {
             .unwrap();
 
         let text = render_to_string(&terminal);
-        assert!(text.contains("OpenAI API login required"), "got {text}");
-        assert!(text.contains("/login openai"), "got {text}");
+        assert!(
+            text.contains("OpenAI API connection required"),
+            "got {text}"
+        );
+        assert!(text.contains("/connect openai"), "got {text}");
         assert!(!text.contains("stale row sentinel"), "got {text}");
         assert!(!text.contains("codex 0%"), "got {text}");
         assert!(!text.contains("T9"), "got {text}");
@@ -1799,9 +1802,12 @@ mod tests {
         };
         let text = render_engine_fallback_panel_text(&data, 72, 6);
 
-        assert!(text.contains("OpenAI/Codex login required"), "got {text}");
-        assert!(text.contains("/login openai-codex"), "got {text}");
-        assert!(!text.contains("/login to connect"), "got {text}");
+        assert!(
+            text.contains("OpenAI/Codex connection required"),
+            "got {text}"
+        );
+        assert!(text.contains("/connect openai-codex"), "got {text}");
+        assert!(!text.contains("/connect to connect"), "got {text}");
     }
 
     #[test]

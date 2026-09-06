@@ -1504,7 +1504,7 @@ impl App {
             || lower.contains("invalid api key")
             || lower.contains("invalid_api_key")
         {
-            return "Authentication failed. Use /auth login <provider> to re-authenticate.";
+            return "Authentication failed. Use /connect <provider> to re-authenticate.";
         }
         if lower.contains("status 403")
             || lower.contains("http 403")
@@ -2349,7 +2349,7 @@ impl App {
                 value: None,
                 kind: MenuRowKind::Object,
                 badges: vec![MenuBadgeProjection { label: "metadata only".into(), tone: MenuBadgeTone::Neutral }],
-                metadata: vec!["values never displayed".into(), "provider auth lives under /auth".into()],
+                metadata: vec!["values never displayed".into(), "provider connections live under /connect".into()],
                 primary_action: None,
                 actions: vec![],
                 safety: None,
@@ -2365,7 +2365,7 @@ impl App {
                 value: None,
                 kind: MenuRowKind::Object,
                 badges: vec![MenuBadgeProjection { label: "empty".into(), tone: MenuBadgeTone::Neutral }],
-                metadata: vec!["values never displayed".into(), "provider auth lives under /auth".into()],
+                metadata: vec!["values never displayed".into(), "provider connections live under /connect".into()],
                 primary_action: None,
                 actions: vec![],
                 safety: None,
@@ -4189,20 +4189,28 @@ impl App {
     }
 
     fn open_auth_menu(&mut self) {
-        let providers = crate::auth::operator_auth_provider_ids()
-            .into_iter()
-            .map(crate::auth::provider_status_projection)
-            .collect();
-        let menu = auth_menu_projection::build_authentication_menu(
-            auth_menu_projection::AuthenticationMenuInputs {
-                providers,
-                route: self.provider_route_snapshot(),
-                selected_model: self.route_selected_model.clone(),
-                serving_model: self.route_serving_model.clone(),
-                route_warning: self.footer_data.route_warning.clone(),
-            },
-        );
+        let menu =
+            auth_menu_projection::build_authentication_menu(self.authentication_menu_inputs());
         self.open_menu_projection(menu);
+    }
+
+    fn open_auth_provider_menu(&mut self) {
+        let menu =
+            auth_menu_projection::build_available_provider_menu(self.authentication_menu_inputs());
+        self.open_menu_projection(menu);
+    }
+
+    fn authentication_menu_inputs(&self) -> auth_menu_projection::AuthenticationMenuInputs {
+        auth_menu_projection::AuthenticationMenuInputs {
+            providers: crate::auth::operator_auth_provider_ids()
+                .into_iter()
+                .map(crate::auth::provider_status_projection)
+                .collect(),
+            route: self.provider_route_snapshot(),
+            selected_model: self.route_selected_model.clone(),
+            serving_model: self.route_serving_model.clone(),
+            route_warning: self.footer_data.route_warning.clone(),
+        }
     }
 
     fn open_model_menu(&mut self) {
@@ -4938,26 +4946,12 @@ warning: {warning}"
                             "huggingface" => "HUGGING_FACE_TOKEN",
                             _ => unreachable!(),
                         };
-                        let acquisition =
-                            crate::capabilities::secrets::secret_console_url(key_name);
-                        if let Some(url) = acquisition {
-                            let url = url.to_string();
-                            std::thread::spawn(move || {
-                                let _ = open::that(url);
-                            });
-                        }
                         self.editor.start_secret_input(key_name);
                         // A login selector can be opened from the auth menu. Once hidden
                         // input owns the keyboard, remove that underlying menu so the
                         // first pasted character/Enter is not intercepted by stale UI.
                         self.active_menu = None;
-                        Some(if acquisition.is_some() {
-                            format!(
-                                "Opening the {value} key console… 🔒 paste {key_name} here (input is hidden):"
-                            )
-                        } else {
-                            format!("🔒 Paste your {value} API key (input is hidden):")
-                        })
+                        Some(format!("Paste {key_name} — input hidden"))
                     }
                     "github" => {
                         // GitHub uses dynamic resolution via gh CLI
@@ -5556,7 +5550,7 @@ warning: {warning}"
                             "\n\nℹ Anthropic subscription detected. Type /help tutorial consent\nto enable interactive agent steps (uses subscription quota)."
                         }
                         tutorial::TutorialMode::OrientationOnly => {
-                            "\n\nℹ No B-grade cloud model found. Add an API key or\n/auth login openai-codex for the full interactive tutorial."
+                            "\n\nℹ No B-grade cloud model found. Add an API key or\n/connect openai-codex for the full interactive tutorial."
                         }
                         tutorial::TutorialMode::Interactive => "",
                     };
@@ -5579,14 +5573,14 @@ warning: {warning}"
                          Anthropic subscription detected. Omegon's ToS restricts automated use\n\
                          of subscriptions without your explicit consent.\n\n\
                          Type /help tutorial consent to enable interactive agent steps,\n\
-                         or add an API key / /auth login openai-codex for automatic access.\n\n\
+                         or add an API key / /connect openai-codex for automatic access.\n\n\
                          Tab to advance orientation steps, Esc to dismiss."
                             .to_string()
                     }
                     tutorial::TutorialMode::OrientationOnly => {
                         "Tutorial started (orientation mode).\n\n\
                          No B-grade cloud model found. Add an API key or\n\
-                         /auth login openai-codex for the full interactive tutorial.\n\n\
+                         /connect openai-codex for the full interactive tutorial.\n\n\
                          Tab to advance, Esc to dismiss."
                             .to_string()
                     }

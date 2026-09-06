@@ -516,7 +516,9 @@ pub(crate) fn canonical_slash_command(cmd: &str, args: &str) -> Option<Canonical
             }
             _ => None,
         },
-        "login" if !args.is_empty() => Some(CanonicalSlashCommand::AuthLogin(args.to_string())),
+        "connect" | "login" if !args.is_empty() => {
+            Some(CanonicalSlashCommand::AuthLogin(args.to_string()))
+        }
         "logout" if !args.is_empty() => Some(CanonicalSlashCommand::AuthLogout(args.to_string())),
         "skills" | "skill" => {
             if args.is_empty() || args == "list" {

@@ -81,17 +81,30 @@ When no CLI, env var, or vault path exists, store the raw value. It goes into th
 
 This creates a `keyring:NAME` recipe pointing to the OS keyring entry.
 
-### `/login` for provider credentials
+### `/connect` for provider credentials
 
-Provider API keys have a dedicated flow that handles OAuth, token refresh, and credential storage:
+Use `/connect` to inspect existing connections. Choose **Add provider** to search
+available providers, or name a provider directly:
 
 ```
-/login anthropic    OAuth flow → browser → callback → auth.json
-/login openai       OAuth flow → browser → callback → auth.json
-/login openrouter   API key prompt → auth.json (encrypted, 0600)
+/connect anthropic    OAuth flow → browser → callback → auth.json
+/connect openai       Hidden API-key input
+/connect openrouter   Hidden API-key input
 ```
 
-Use `/login` for provider keys. Use `/secrets` for everything else.
+API-key entry does not open a browser. Use the **Open key console** row action or
+`/connect <provider> --console` to open the provider's key page explicitly.
+Canceling entry preserves the draft and does not save the key. Use `/model` to
+select a model route after configuring credentials.
+
+Expired credentials remain in Connections. A configured badge means credentials
+are present; it does not guarantee that the service is reachable or authorized.
+Local endpoints and externally managed providers retain their configuration paths.
+
+`/login` and `/auth login` remain compatibility entries during migration. Future
+credential renewal under `/login` is separate work. Remote CLI and ACP clients
+currently return terminal setup guidance because they lack this secure input flow.
+Use `/secrets` for credentials outside the provider connection flow.
 
 ## Architecture
 

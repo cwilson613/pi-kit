@@ -1968,7 +1968,7 @@ async fn handle_control_request(
                         let creds = crate::auth::read_credentials(crate::auth::auth_json_key(p));
                         match creds {
                             Some(c) if c.is_expired() => {
-                                ("expired", "token expired — /login to refresh".into())
+                                ("expired", "token expired — /connect for setup guidance".into())
                             }
                             Some(_) => ("error", "credentials found but resolution failed".into()),
                             None => ("missing", "not configured".into()),
@@ -2102,7 +2102,7 @@ fn humanize_agent_error(raw: &str, model: &str) -> String {
         };
         return format!(
             "{provider} connection failed — your token may be expired.\n\
-             Use /login in the agent panel to re-authenticate, \
+             Use /connect for terminal setup instructions, \
              or switch to a local model via the model dropdown.\n\
              Model: {model}"
         );
@@ -2111,7 +2111,7 @@ fn humanize_agent_error(raw: &str, model: &str) -> String {
     if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid.*key") {
         return format!(
             "Authentication failed — your API key or token is invalid or expired.\n\
-             Use /login to re-authenticate.\n\
+             Use /connect for terminal setup instructions.\n\
              Model: {model}"
         );
     }
@@ -2135,7 +2135,7 @@ fn humanize_agent_error(raw: &str, model: &str) -> String {
     if lower.contains("no llm provider") || lower.contains("no executable provider") {
         return format!(
             "No provider available for {model}.\n\
-             Configure an API key with /login, or start Ollama: `ollama serve`"
+             Use /connect for terminal setup instructions, or start Ollama: `ollama serve`"
         );
     }
 

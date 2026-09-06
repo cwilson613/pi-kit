@@ -18,6 +18,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Authoritative TUI completion, idle reconciliation, and session reset now release abandoned permission and operator-wait queues while preserving the operator's draft and covered menu.
+
+- WezTerm compatibility trials release temporary resize panes once, before closing the main pane, and retain pane ownership when cleanup fails. Validation of this correction uses headless mocked trials.
+
+- Interactive startup now shows the resolved provider route and one scoped problem instead of a provider checklist. `/connect` opens existing connections with an explicit searchable Add provider view, preserves expired credentials, and reuses hidden API-key entry and supported OAuth flows. Key consoles open only on explicit request. `/login` remains compatible; remote CLI and ACP provide terminal setup guidance.
+
 - Native GUI acceptance now requires explicit `--interactive-gui` and client selection. Routine testing stays in a headless PTY. Native cleanup checks window closure separately from process exit, refuses shared-window closure, and stops the matrix if cleanup fails.
 
 - Interactive startup admits local inference manifests and cached evidence before selecting its first provider route. Slow background discovery no longer leaves faster release builds with an unavailable project route on the first turn.

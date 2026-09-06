@@ -569,6 +569,14 @@ pub(crate) const BUILTIN_COMMANDS: &[BuiltinCommandSpec] = &[
         &["status"],
     ),
     BuiltinCommandSpec::with_metadata(
+        "connect",
+        "manage provider connections (secure setup in the TUI)",
+        &[],
+        BuiltinCommandSpec::TUI_CLI_AND_ACP,
+        omegon_traits::CommandSafety::EXTERNAL_SIDE_EFFECT,
+    )
+    .panel(),
+    BuiltinCommandSpec::with_metadata(
         "auth",
         "authentication management",
         &["status", "unlock", "login", "logout"],

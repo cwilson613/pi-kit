@@ -136,6 +136,14 @@ def digest(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
+def assert_quiet_startup(text, entry="omegon"):
+    summaries = [line for line in text.splitlines() if f"{entry} · {FIXTURE_MODEL}" in line]
+    assert len(summaries) == 1, f"expected one resolved route summary, got {summaries}"
+    assert "/connect" in summaries[0]
+    for old_output in ("(none)", "Suggested routes:", "No LLM provider detected", "Git:"):
+        assert old_output not in text, f"startup still dumps bootstrap/provider diagnostics: {old_output}"
+
+
 def group_exists(group: int) -> bool:
     # Existence and signal permission are distinct. Read the process table;
     # reserve signals for cleanup of the invocation's owned group.
@@ -247,6 +255,36 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             if "semantic frontend is unavailable" in screen():
                 raise AssertionError("startup exposed an unavailable session projection")
             capture("01-startup")
+            capture("00-startup-primary", primary=True)
+            assert_quiet_startup((output / "00-startup-primary.txt").read_text(), entry or "omegon")
+            action("send-keys", "-t", "run:0.0", "-l", "/connect")
+            action("send-keys", "-t", "run:0.0", "Enter")
+            wait_for(lambda: "Existing connections" in screen(), "Connections opens")
+            capture("connect-01-existing")
+            assert "OpenAI API" in screen(), "fixture connection must be configured"
+            assert "OpenRouter" not in screen(), "unconfigured catalog leaked into Connections"
+            action("send-keys", "-t", "run:0.0", "/")
+            action("send-keys", "-t", "run:0.0", "-l", "Add provider")
+            action("send-keys", "-t", "run:0.0", "Enter")
+            wait_for(lambda: "Available providers" in screen(), "Add provider opens catalog")
+            action("send-keys", "-t", "run:0.0", "/")
+            action("send-keys", "-t", "run:0.0", "-l", "openrouter")
+            wait_for(lambda: "OpenRouter" in screen() and "Anthropic" not in screen(), "provider search filters catalog")
+            capture("connect-02-search")
+            action("send-keys", "-t", "run:0.0", "Enter")
+            wait_for(lambda: "OPENROUTER_API_KEY" in screen() and "Available providers" not in screen(), "hidden API-key entry owns input")
+            action("send-keys", "-t", "run:0.0", "-l", "CONNECT_SECRET_CANARY")
+            wait_for(lambda: "OPENROUTER_API_KEY" in screen(), "secret entry remains active")
+            assert "CONNECT_SECRET_CANARY" not in screen(), "secret leaked onto terminal"
+            capture("connect-03-masked-key")
+            action("send-keys", "-t", "run:0.0", "Escape")
+            wait_for(lambda: "Secret input cancelled" in screen(), "key entry cancels")
+            assert provider.requests == 0, "connection browsing invoked inference"
+            assert not (root / ".config/omegon/auth.json").exists(), "cancelled connection wrote credentials"
+            assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}").strip() == ("0" if presentation == "inline" else "1")
+            capture("connect-04-cancelled")
+            ledger["connection_checks"] = {"quiet_startup": True, "catalog_on_demand": True,
+                                            "masked_input_cancelled": True, "inference_requests": provider.requests}
             action("send-keys", "-t", "run:0.0", "-l", "fixture turn 1")
             action("send-keys", "-t", "run:0.0", "F2")
             wait_for(lambda: "Project browser" in screen(), "project browser opens")

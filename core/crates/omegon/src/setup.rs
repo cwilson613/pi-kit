@@ -1473,27 +1473,14 @@ impl AgentSetup {
             "harness status assembled"
         );
 
-        // Print bootstrap panel if running interactively
-        let use_color = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
-        if use_color || std::io::stderr().is_terminal() {
-            let inline = settings
-                .as_ref()
-                .and_then(|settings| settings.lock().ok())
-                .is_some_and(|settings| {
-                    settings.ui_terminal == crate::surfaces::layout::TerminalPresentation::Inline
-                });
-            if inline {
-                let route = harness_status
-                    .dispatcher
-                    .active_model
-                    .as_deref()
-                    .unwrap_or("not selected");
-                eprintln!("om · {route} · /settings for harness details");
-            } else {
-                let panel =
-                    crate::bootstrap_projection::render_bootstrap(&harness_status, use_color);
-                eprint!("{panel}");
-            }
+        // The TUI prints its compact summary after route/bridge resolution in
+        // main. Explicit status and other interactive consumers keep diagnostics.
+        if runtime_mode != "tui" && std::io::stderr().is_terminal() {
+            let use_color = std::env::var("NO_COLOR").is_err();
+            eprint!(
+                "{}",
+                crate::bootstrap_projection::render_bootstrap(&harness_status, use_color)
+            );
         }
 
         // Emit BusEvent for features

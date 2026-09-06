@@ -45,6 +45,18 @@ def test_provider_can_request_a_bounded_permission_probe():
         assert '"finish_reason": "tool_calls"' in body
         assert "denied.txt" in body
 
+
+def test_quiet_startup_gate_rejects_catalog_and_duplicate_summary():
+    summary = f"omegon · {runner.FIXTURE_MODEL} · /connect · /settings\n"
+    runner.assert_quiet_startup(summary)
+    for invalid in [summary * 2, summary + "  ⚠ OpenRouter (none)\n", "No LLM provider detected\n", summary + "Git: main\n"]:
+        try:
+            runner.assert_quiet_startup(invalid)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("startup output violation was accepted")
+
 if __name__ == "__main__":
     command = runner.tui_command(Path("/binary with spaces"), Path("/workspace"), Path("/log"), "inline", "full")
     assert "--tui" in command and "--ui" in command, "fixture must select both axes explicitly"
@@ -59,3 +71,4 @@ if __name__ == "__main__":
     test_provider_streams_distinct_turns_without_external_inference()
     test_provider_rejects_unknown_routes()
     test_provider_can_request_a_bounded_permission_probe()
+    test_quiet_startup_gate_rejects_catalog_and_duplicate_summary()

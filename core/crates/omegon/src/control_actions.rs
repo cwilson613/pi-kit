@@ -358,7 +358,7 @@ pub fn classify_slash_command(name: &str, args: &str) -> ClassifiedAction {
             }
             _ => (CanonicalAction::Unknown, ControlRole::Admin, false),
         },
-        "login" => (CanonicalAction::AuthLogin, ControlRole::Admin, false),
+        "connect" | "login" => (CanonicalAction::AuthLogin, ControlRole::Admin, false),
         "logout" => (CanonicalAction::AuthLogout, ControlRole::Admin, false),
         "variables" | "vars" => match args.split_whitespace().next().unwrap_or("") {
             "" | "list" | "status" => (CanonicalAction::VariablesView, ControlRole::Read, false),
@@ -427,6 +427,20 @@ pub fn classify_remote_slash_command(name: &str, args: &str) -> ClassifiedAction
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_preserves_authentication_authority() {
+        let action = classify_slash_command("connect", "openai");
+        assert_eq!(action.action, CanonicalAction::AuthLogin);
+        assert_eq!(action.role, ControlRole::Admin);
+        assert!(!action.remote_safe);
+        assert_eq!(
+            canonical_slash_command("connect", "openai"),
+            Some(crate::runtime_commands::CanonicalSlashCommand::AuthLogin(
+                "openai".into()
+            ))
+        );
+    }
 
     #[test]
     fn session_new_action_has_cross_surface_parity() {

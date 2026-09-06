@@ -172,26 +172,8 @@ pub fn run_interactive(_cwd: &Path, shared_settings: &settings::SharedSettings) 
         "    Or set in \x1b[2m~/.omegon/profile.json\x1b[0m → \x1b[2m\"defaultPosture\": \"...\"\x1b[0m"
     );
 
-    // ─── Auth check ────────────────────────────────────────────
-    let has_provider = std::env::var("ANTHROPIC_API_KEY").is_ok()
-        || std::env::var("OPENAI_API_KEY").is_ok()
-        || std::env::var("OPENROUTER_API_KEY").is_ok()
-        || crate::auth::any_oauth_token_exists();
-    if !has_provider {
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            "  \x1b[33m⚠\x1b[0m  No LLM provider detected. You'll need one before your first session."
-        );
-        let _ = writeln!(
-            out,
-            "    \x1b[2mRun:\x1b[0m  omegon auth login anthropic   \x1b[2m(OAuth — recommended)\x1b[0m"
-        );
-        let _ = writeln!(
-            out,
-            "    \x1b[2m  or:\x1b[0m  export ANTHROPIC_API_KEY=sk-ant-..."
-        );
-    }
+    // Provider readiness is diagnosed after route admission by interactive
+    // startup. A partial env-var check here misreports local/external routes.
 
     // ─── Auto-migrate if sources detected ──────────────────────
     if !found.is_empty() {

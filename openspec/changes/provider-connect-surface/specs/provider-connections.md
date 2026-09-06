@@ -78,6 +78,17 @@ When the operator invokes /connect with that provider identifier
 Then the existing provider authentication flow runs under its established authorization
 And any resulting route change still passes existing route admission
 
+#### Scenario: Local or externally managed provider
+Given a provider whose configuration is local or whose interactive authentication handler is unavailable
+When the operator invokes /connect with its identifier
+Then the TUI gives external-configuration guidance without dispatching authentication
+And endpoint URLs are never treated as API-key fields
+
+#### Scenario: Provider aliases
+Given a supported provider alias or differently cased provider identifier
+When the operator invokes /connect with that identifier
+Then the canonical provider determines the authentication method and secret name
+
 #### Scenario: API key entry
 Given a provider that accepts an API key
 When the operator starts its connection flow

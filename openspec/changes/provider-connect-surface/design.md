@@ -54,8 +54,21 @@ Use existing provider/session status and credential provenance. Expired credenti
 remain an existing connection. Configured means credentials are present according
 to the existing resolver; it does not assert verified service health. Preserve
 selected, serving, and fallback badges separately. Do not store a second connection
-ledger or probe every provider when opening the menu. Honor existing inventory and
+ledger or contact provider services when opening the menu. Local credential sources
+are inspected through the existing resolver. Honor existing inventory and
 authentication coverage; local endpoints must not acquire a fictitious login flow.
+
+Adversarial review identified DwarfStar's endpoint URLs among its authentication
+environment variables and Google Antigravity's lack of an interactive OAuth handler.
+Both receive external-configuration guidance. Only supported OAuth handlers and
+actual API-key names can start a connection flow. Credential parsing errors are
+not projected into connection-row descriptions because they can contain secret values.
+
+`CredentialState::Unreadable` now records whether a parsed store contained the
+provider entry. A broken whole store does not establish a connection for every
+known provider. The menu shows one store warning and keeps discovery available.
+The credential probe reports parser error categories without offending values,
+which also protects existing route-warning consumers.
 
 `/connect <provider>` enters that provider's existing setup flow. Opening and searching
 the menu are read-only. Credential submission or explicit OAuth selection may perform
@@ -77,6 +90,11 @@ Keep `/login` and `/auth login` working during this stage and identify `/login` 
 compatibility entry in help. Do not add it as a permanent synonym in new interfaces.
 Keep `/logout` behavior and `/model` selection unchanged.
 
+The current remote CLI coordinator and ACP transport reject `/connect` before
+canonical authentication dispatch and return terminal setup guidance. This limit
+holds with permission bypass enabled. Existing `/auth login` transport behavior is
+outside this migration; the new spelling does not grant additional remote access.
+
 Future `/login` will target existing connections that need renewal. No-argument use
 should expose those targets; scoped use should renew or reauthenticate one target.
 API keys need replacement rather than token refresh. Plugin participation requires
@@ -90,6 +108,24 @@ No architectural blocker was found for the first stage. The future plugin renewa
 contract and `/login` cutover are deliberately outside it. During implementation,
 verify connection grouping against external credentials and local route admission;
 do not infer connection state from display strings.
+
+First-run posture setup no longer makes its own partial provider-credential diagnosis.
+Interactive startup emits its summary after credential refresh/adoption and route
+admission, then projects a single optional problem into the TUI notification stream.
+
+Existing API-key submission persists credentials but does not promise immediate
+route replacement. `/model` remains the explicit route-selection operation. Tests
+intercept the secrets-service request and use an isolated auth store for submission;
+PTY captures exercise masked input and cancellation without accessing the OS keychain.
+
+## PR integration scope
+
+This branch inherits the earlier parity, retention, and shared TUI work, which was
+not yet merged into main. Independent integration review found two prerequisite
+corrections: temporary WezTerm panes were removed twice, and queued runtime decisions
+could survive their authoritative turn/session. Separate corrective commits and
+the `tui-review-regressions` scenarios track these fixes. The PR must describe the
+accumulated work; connection-only review is not evidence for every inherited line.
 
 Use regression tests before changing startup, dispatch, and secret-input behavior.
 Capture the shared interaction through isolated headless PTYs for both layouts and

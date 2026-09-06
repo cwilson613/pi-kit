@@ -144,6 +144,13 @@ import { snippet } from "../../lib/snippets";
 
   <h2>Authentication and credential evidence</h2>
   <p>
+    Open <code>/connect</code> in the TUI to inspect existing connections or choose
+    <strong>Add provider</strong>. Expired credentials stay in the existing connections list.
+    Use <code>/model</code> to select a model route. Opening or searching the menu does not
+    authenticate, contact provider services, or open a browser. Local endpoints and externally
+    managed credentials keep their existing configuration paths.
+  </p>
+  <p>
     A provider contribution declares an authentication class such as API key, OAuth,
     API-key-or-OAuth, OAuth token exchange, credentialless local, or optional-key local. This is a
     compatibility constraint, not a secret and not proof that a usable credential exists.

@@ -4944,16 +4944,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         );
     }
 
-    let mut startup_auth_warnings = Vec::new();
-    let selected_provider_status = auth::provider_by_id(&requested_provider)
-        .map(auth::provider_session_status);
-    if selected_provider_status == Some(auth::ProviderSessionStatus::Expired) {
-        startup_auth_warnings.push(format!(
-            "Credentials for {} are expired. Run /login {} to refresh them before continuing with that profile model.",
-            requested_start_model, requested_provider
-        ));
-    }
-
     let fallback_providers = shared_settings
         .lock()
         .ok()
@@ -5033,9 +5023,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 reason = ?reason,
                 "selected interactive model unavailable; using explicitly configured fallback provider"
             );
-            startup_auth_warnings.push(format!(
-                "Selected profile model {selected} is unavailable for this session; explicitly configured fallback {serving} is serving. Remove `fallbackProviders` or refresh credentials to stop fallback."
-            ));
             startup_decision.bridge_model = serving.as_str().to_string();
             startup_decision.provider_connected = true;
             startup_decision.use_null_bridge = false;
@@ -5043,38 +5030,18 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         }
         (route::ProviderRoute::Fallback { selected, serving, .. }, None) => {
             tracing::warn!(selected = %selected, serving = %serving, "configured fallback provider resolved but bridge detection failed");
-            startup_auth_warnings.push(format!(
-                "Configured fallback {serving} for {selected} could not start. Run /login {} or update fallbackProviders.",
-                providers::infer_provider_id(serving)
-            ));
             startup_decision.provider_connected = false;
             startup_decision.use_null_bridge = true;
             (serving.as_str().to_string(), Box::new(bridge::NullBridge) as Box<dyn LlmBridge>)
         }
         (route::ProviderRoute::Serving { model }, None) => {
             tracing::warn!(model = %model, "startup credential probe passed but bridge detection failed");
-            startup_auth_warnings.push(format!(
-                "LLM provider credentials were detected for {model}, but the provider bridge could not start. Run /login {} or check provider configuration.",
-                providers::infer_provider_id(model)
-            ));
             startup_decision.provider_connected = false;
             startup_decision.use_null_bridge = true;
             (model.as_str().to_string(), Box::new(bridge::NullBridge) as Box<dyn LlmBridge>)
         }
         (route::ProviderRoute::Disconnected { selected, reason }, _) => {
             tracing::warn!(selected = %selected, reason = ?reason, "no LLM provider available for selected interactive model and no explicit fallback engaged");
-            startup_auth_warnings.push(reason.operator_message(selected));
-            if fallback_providers.is_empty()
-                && let Some(legacy_fallback) = providers::automation_safe_model()
-                && providers::infer_provider_id(&legacy_fallback)
-                    != providers::infer_provider_id(selected)
-            {
-                startup_auth_warnings.push(format!(
-                    "Omegon no longer silently falls back from {selected} to {legacy_fallback}. To opt into that route, add `fallbackProviders = [\"{}\"]` to the profile, or run `/login {}` to use the selected provider.",
-                    providers::infer_provider_id(&legacy_fallback),
-                    providers::infer_provider_id(selected)
-                ));
-            }
             startup_decision.provider_connected = false;
             startup_decision.use_null_bridge = true;
             (
@@ -5084,6 +5051,14 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         }
         (route::ProviderRoute::LoginPending { .. }, _) => unreachable!("startup route cannot be login-pending"),
     };
+    let marker = std::env::var("OMEGON_LAUNCH_NAME").ok();
+    let argv0 = std::env::args().next().unwrap_or_default();
+    let entry = surfaces::layout::ui_entry_name(marker.as_deref(), &argv0);
+    let (startup_summary, startup_diagnostic) = bootstrap_projection::interactive_startup(
+        entry, &startup_route, startup_decision.provider_connected);
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        eprintln!("{startup_summary}");
+    }
     // Update settings with selected-model provider status before TUI reads it.
     if let Ok(mut s) = shared_settings.lock() {
         s.provider_connected = startup_decision.provider_connected;
@@ -5160,7 +5135,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     if let Ok(status_json) = serde_json::to_value(&agent.initial_harness_status) {
         let _ = events_tx.send(AgentEvent::HarnessStatusChanged { status_json });
     }
-    for message in startup_auth_warnings {
+    if let Some(message) = startup_diagnostic {
         let _ = events_tx.send(AgentEvent::SystemNotification { message });
     }
     match &agent.workspace_state.admission {
@@ -7766,7 +7741,7 @@ fn format_agent_error(
             if raw.contains("api.responses.write") || raw.contains("insufficient permissions") {
                 return format!(
                     "⚠ Authentication error ({who}) — your session may have expired or \
-                     lacks required permissions. Re-authenticate with /login and retry."
+                     lacks required permissions. Re-authenticate with /connect and retry."
                 );
             }
 
@@ -7781,7 +7756,7 @@ fn format_agent_error(
             return format!(
                 "⚠ Authentication error ({who}) — credentials were rejected.\n\
                  Raw: {truncated}\n\
-                 Re-authenticate with /login or check your API key."
+                 Re-authenticate with /connect or check your API key."
             );
         }
         _ => {}
@@ -9134,6 +9109,13 @@ async fn execute_remote_slash_command_with_supervisor(
     args: &str,
 ) -> omegon_traits::SlashCommandResponse {
     use crate::runtime_commands::canonical_slash_command;
+    if name == "connect" {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(auth::operator_remote_connect_guidance().into()),
+        };
+    }
+
     use omegon_traits::SlashCommandResponse;
 
     if is_capacity_slash_command(name) {
@@ -9279,6 +9261,9 @@ fn remote_builtin_policy(
     name: &str,
     command: &crate::runtime_commands::CanonicalSlashCommand,
 ) -> RemoteBuiltinPolicy {
+    if name == "connect" {
+        return RemoteBuiltinPolicy::Deny;
+    }
     let registry_name = remote_registry_name_for_command(name, command);
     let Some(definition) = crate::command_registry::builtin_command_definitions()
         .into_iter()
@@ -10985,7 +10970,7 @@ mod tests {
             "got: {result}"
         );
         assert!(
-            result.contains("Re-authenticate with /login"),
+            result.contains("Re-authenticate with /connect"),
             "got: {result}"
         );
         // Should NOT expose internal scope names to the user
@@ -12302,6 +12287,16 @@ mod tests {
             ),
             RemoteBuiltinPolicy::RequiresBypass
         );
+    }
+
+    #[test]
+    fn connect_remote_setup_cannot_bypass_secure_interaction_requirement() {
+        let mut cli = Cli::try_parse_from(["omegon"]).unwrap();
+        cli.dangerously_bypass_permissions = true;
+        let command = crate::runtime_commands::CanonicalSlashCommand::AuthLogin("anthropic".into());
+        let rejection = reject_remote_builtin_command("connect", &command, &cli)
+            .expect("secure input is required even with bypass");
+        assert!(!rejection.accepted);
     }
 
     #[test]

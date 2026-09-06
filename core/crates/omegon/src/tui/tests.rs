@@ -8166,7 +8166,7 @@ fn login_selector_ollama_cloud_opens_hidden_api_key_entry() {
     assert_eq!(label, "OLLAMA_API_KEY");
     assert!(masked.is_empty(), "secret buffer should start empty");
     assert!(
-        message.contains("ollama-cloud") && message.contains("input is hidden"),
+        message.contains("OLLAMA_API_KEY") && message.contains("input hidden"),
         "unexpected message: {message}"
     );
 }
@@ -8206,7 +8206,7 @@ fn recovery_hint_rate_limit() {
 #[test]
 fn recovery_hint_unauthorized() {
     let hint = App::recovery_hint(None, "HTTP 401 Unauthorized");
-    assert!(hint.contains("/auth login"), "should suggest login: {hint}");
+    assert!(hint.contains("/connect"), "should suggest login: {hint}");
 }
 
 #[test]
@@ -9692,7 +9692,7 @@ fn settings_configuration_tab_routes_to_canonical_submenus() {
     let rows = &tab.groups[0].rows;
     for (id, command) in [
         ("skills", "/skills"),
-        ("auth", "/auth"),
+        ("auth", "/connect"),
         ("model", "/model"),
         ("extensions", "/extension"),
     ] {
@@ -10017,12 +10017,21 @@ fn auth_menu_rows_cover_operator_auth_providers() {
     let mut app = test_app();
     app.open_auth_menu();
     let menu = app.active_menu.as_ref().expect("auth menu");
-    let row_ids: std::collections::HashSet<_> = menu
+    let mut row_ids: std::collections::HashSet<_> = menu
         .state
         .visible_rows(&menu.projection)
         .into_iter()
         .map(|row| row.row.id.clone())
         .collect();
+
+    app.open_auth_provider_menu();
+    let menu = app.active_menu.as_ref().unwrap();
+    row_ids.extend(
+        menu.state
+            .visible_rows(&menu.projection)
+            .into_iter()
+            .map(|row| row.row.id.clone()),
+    );
 
     for provider in crate::auth::operator_auth_provider_ids() {
         let expected = format!("auth.provider.{provider}");
@@ -10097,26 +10106,8 @@ fn slash_auth_opens_provider_auth_menu() {
     let menu = app.active_menu.as_ref().expect("auth menu");
     assert_eq!(menu.projection.id, "auth");
     let rows = menu.state.visible_rows(&menu.projection);
-    assert!(
-        rows.iter()
-            .any(|row| row.row.id == "auth.provider.anthropic")
-    );
-    assert!(
-        rows.iter()
-            .any(|row| row.row.metadata.iter().any(|m| m == "/login openai"))
-    );
-    let copilot = rows
-        .iter()
-        .find(|row| row.row.id == "auth.provider.github-copilot")
-        .expect("github copilot auth row");
-    assert_eq!(copilot.row.label, "GitHub Copilot");
-    assert!(
-        copilot
-            .row
-            .metadata
-            .iter()
-            .any(|m| m == "/login github-copilot")
-    );
+    assert!(rows.iter().any(|row| row.row.id == "auth.add"));
+    assert_eq!(menu.projection.title, "Connections");
 }
 
 #[test]
@@ -10135,9 +10126,184 @@ fn bare_login_opens_provider_auth_menu() {
 }
 
 #[test]
+fn connect_opens_shared_menu_without_dispatching_authentication() {
+    let mut app = test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    app.editor.set_text("keep my draft");
+    let before = app.settings().model.clone();
+    assert!(matches!(
+        app.handle_slash_command("/connect", &tx),
+        SlashResult::Handled
+    ));
+    assert_eq!(
+        app.active_menu
+            .as_ref()
+            .expect("connection menu")
+            .projection
+            .title,
+        "Connections"
+    );
+    assert_eq!(app.editor.render_text(), "keep my draft");
+    assert_eq!(app.settings().model, before);
+    assert!(rx.try_recv().is_err(), "opening must not dispatch auth");
+}
+
+#[tokio::test]
+async fn connect_discovery_and_secret_cancel_preserve_drafts_and_routes_in_both_layouts() {
+    use crate::surfaces::layout::TerminalPresentation;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    for terminal in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        for detail in [
+            crate::surfaces::layout::UiPresentationLevel::Active,
+            crate::surfaces::layout::UiPresentationLevel::Full,
+        ] {
+            let mut app = test_app();
+            app.update_settings(|settings| {
+                settings.ui_terminal = terminal;
+                settings.ui_presentation = detail;
+            });
+            let (tx, mut rx) = test_tx_with_rx();
+            app.editor.set_text("draft survives connections");
+            let model = app.settings().model.clone();
+            app.handle_slash_command("/connect", &tx);
+            let add = app.active_menu.as_ref().unwrap().projection.tabs[0].groups[0]
+                .rows
+                .iter()
+                .find(|r| r.id == "auth.add")
+                .unwrap()
+                .primary_action
+                .clone()
+                .unwrap();
+            app.execute_active_menu_action(add, &tx);
+            assert_eq!(
+                app.active_menu.as_ref().unwrap().projection.title,
+                "Add provider"
+            );
+            app.handle_terminal_event(
+                Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                &tx,
+            )
+            .await;
+            assert!(app.active_menu.is_none());
+            let result = app.handle_slash_command("/connect OPENAI", &tx);
+            assert!(matches!(result, SlashResult::Display(_)));
+            assert!(
+                matches!(app.editor.mode(), editor::EditorMode::SecretInput { label, .. } if label == "OPENAI_API_KEY")
+            );
+            app.handle_terminal_event(Event::Paste("secret-canary-connect".into()), &tx)
+                .await;
+            let capture = render_app_to_string(&mut app, 120, 40);
+            assert!(!capture.contains("secret-canary-connect"));
+            assert!(
+                !app.history
+                    .iter()
+                    .any(|line| line.contains("secret-canary-connect"))
+            );
+            app.handle_terminal_event(
+                Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                &tx,
+            )
+            .await;
+            assert_eq!(app.editor.render_text(), "draft survives connections");
+            assert_eq!(app.settings().model, model);
+            assert_eq!(app.settings().ui_terminal, terminal);
+            assert!(
+                rx.try_recv().is_err(),
+                "browse/cancel must not dispatch credentials"
+            );
+        }
+    }
+}
+
+#[test]
+fn connect_local_and_external_only_providers_do_not_start_credential_flows() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+    for provider in [
+        "dwarfstar",
+        "ollama",
+        "google-antigravity",
+        "unknown-fixture-provider",
+    ] {
+        let result = app.handle_slash_command(&format!("/connect {provider}"), &tx);
+        assert!(matches!(result, SlashResult::Display(_)));
+        assert!(
+            !matches!(app.editor.mode(), editor::EditorMode::SecretInput { .. }),
+            "{provider} cannot accept API-key input"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "{provider} must not dispatch an unsupported login"
+        );
+    }
+}
+
+#[tokio::test]
+async fn connect_secret_submission_is_persisted_without_history_or_transcript_leak() {
+    const ISOLATED: &str = "OMEGON_CONNECT_SECRET_FIXTURE";
+    if std::env::var_os(ISOLATED).is_none() {
+        let root = tempfile::tempdir().unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tui::tests::connect_secret_submission_is_persisted_without_history_or_transcript_leak", "--nocapture"])
+            .env(ISOLATED, "1")
+            .env("HOME", root.path())
+            .env("OMEGON_HOME", root.path().join("omegon"))
+            .env("OMEGON_AUTH_JSON_PATH", root.path().join("auth.json"))
+            .output().unwrap();
+        assert!(
+            result.status.success(),
+            "isolated credential test failed: {}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        return;
+    }
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+    app.handle_slash_command("/connect openai", &tx);
+    app.handle_terminal_event(Event::Paste("fixture-secret-canary".into()), &tx)
+        .await;
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    // Inspect the queued write without executing the machine's secrets/keychain service.
+    assert!(
+        matches!(rx.try_recv().unwrap(), TuiCommand::ExecuteControl {
+        request: crate::operator_commands::InterfaceControlRequest::SecretsSet { name, value }, ..
+    } if name == "OPENAI_API_KEY" && value == "fixture-secret-canary")
+    );
+    let credentials: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(crate::auth::auth_json_path().unwrap()).unwrap())
+            .unwrap();
+    assert_eq!(credentials["openai"]["access"], "fixture-secret-canary");
+    assert!(!render_app_to_string(&mut app, 120, 40).contains("fixture-secret-canary"));
+    assert!(
+        !app.history
+            .iter()
+            .any(|line| line.contains("fixture-secret-canary"))
+    );
+    assert!(
+        !app.build_session_transcript(SegmentExportMode::Raw)
+            .contains("fixture-secret-canary")
+    );
+}
+
+#[test]
 fn model_and_auth_provider_rows_share_login_metadata() {
     let mut app = test_app();
-    app.open_auth_menu();
+    app.open_auth_provider_menu();
+    if !app.active_menu.as_ref().unwrap().projection.tabs[0].groups[0]
+        .rows
+        .iter()
+        .any(|r| r.id == "auth.provider.openai")
+    {
+        app.open_auth_menu();
+    }
     let auth_row = app
         .active_menu
         .as_ref()
@@ -10400,7 +10566,7 @@ fn slash_model_providers_opens_provider_status_tab() {
         row.row
             .metadata
             .iter()
-            .any(|item| item.starts_with("/login "))
+            .any(|item| item.starts_with("/connect "))
     }));
 }
 

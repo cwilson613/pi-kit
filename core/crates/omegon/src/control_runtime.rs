@@ -3416,7 +3416,7 @@ pub async fn auth_login_response(
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .map(|_| {
-                    "Anthropic OAuth login succeeded, but ANTHROPIC_API_KEY is also set. Requests will continue to prefer the API key. If you want Claude subscription auth for this session, unset ANTHROPIC_API_KEY and retry /login anthropic."
+                    "Anthropic OAuth login succeeded, but ANTHROPIC_API_KEY is also set. Requests will continue to prefer the API key. If you want Claude subscription auth for this session, unset ANTHROPIC_API_KEY and retry /connect anthropic."
                         .to_string()
                 })
         } else {

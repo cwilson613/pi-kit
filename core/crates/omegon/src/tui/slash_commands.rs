@@ -1523,41 +1523,42 @@ Scroll transcript:
                 }
             }
 
-            // /login [provider] — open selector or login directly
-            "login" => {
-                if args.is_empty() {
+            // /connect owns discovery/setup; /login remains a compatibility entry.
+            "connect" | "login" => {
+                let mut parts = args.split_whitespace();
+                let provider = parts.next().unwrap_or("");
+                let option = parts.next();
+                if parts.next().is_some() || option.is_some_and(|value| value != "--console") {
+                    return SlashResult::Display("Usage: /connect [provider] [--console]".into());
+                }
+                if provider.is_empty() {
                     self.open_auth_menu();
                     SlashResult::Handled
-                } else if crate::auth::provider_by_id(args).is_some_and(|p| {
-                    matches!(p.auth_method, crate::auth::AuthMethod::ApiKey)
-                        && !p.env_vars.is_empty()
-                }) {
-                    let key_name = crate::auth::provider_by_id(args)
-                        .and_then(|p| p.env_vars.first().copied())
-                        .unwrap_or("OPENAI_API_KEY");
-                    let acquisition = crate::capabilities::secrets::secret_console_url(key_name);
-                    if let Some(url) = acquisition {
-                        let url = url.to_string();
-                        std::thread::spawn(move || {
-                            let _ = open::that(url);
+                } else if let Some(provider) = crate::auth::provider_by_id(provider) {
+                    let key_name = crate::auth::operator_api_key_name(provider);
+                    if option == Some("--console") {
+                        if let Some(url) = key_name.and_then(crate::capabilities::secrets::secret_console_url) {
+                            std::thread::spawn(move || { let _ = open::that(url); });
+                            SlashResult::Display("Opening provider key console.".into())
+                        } else {
+                            SlashResult::Display("This provider has no API-key console. Use /connect to choose a connection method.".into())
+                        }
+                    } else if provider.auth_method == crate::auth::AuthMethod::ApiKey
+                        && let Some(key_name) = key_name
+                    {
+                        self.editor.start_secret_input(key_name);
+                        SlashResult::Display(format!("Paste {key_name} — input hidden"))
+                    } else if crate::auth::operator_oauth_setup_supported(provider) {
+                        let _ = tx.try_send(TuiCommand::AuthLogin {
+                            provider: provider.id.to_string(),
+                            respond_to: None,
                         });
-                    }
-                    self.editor.start_secret_input(key_name);
-                    SlashResult::Display(if acquisition.is_some() {
-                        format!("Paste {key_name} — input hidden; provider console opened")
+                        SlashResult::Handled
                     } else {
-                        format!("Paste {key_name} — input hidden")
-                    })
-                } else if let Some(CanonicalSlashCommand::AuthLogin(provider)) =
-                    canonical_slash_command("login", args)
-                {
-                    let _ = tx.try_send(TuiCommand::AuthLogin {
-                        provider,
-                        respond_to: None,
-                    });
-                    SlashResult::Handled
+                        SlashResult::Display("This provider uses external configuration. Use /auth status for credential details and /model to select a route.".into())
+                    }
                 } else {
-                    SlashResult::Display("Usage: /login <provider>".into())
+                    SlashResult::Display("Unknown provider. Use /connect and Add provider to search available providers.".into())
                 }
             }
 

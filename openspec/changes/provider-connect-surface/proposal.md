@@ -18,8 +18,8 @@ and actionable route problems at startup.
 - Keep model selection under the existing `/model` command (`/models` is a TUI alias).
 
 Plugin renewal, a new credential store, provider protocol changes, and a general
-connection framework are outside this first implementation. This is a plan;
-runtime behavior has not changed.
+connection framework are outside this first implementation. Implementation is in
+progress on `feature/provider-connect-surface`; verification is tracked separately.
 
 ## Success criteria
 

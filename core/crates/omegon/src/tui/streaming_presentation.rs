@@ -59,6 +59,14 @@ pub(super) struct StreamPublication {
 
 impl StreamingPresentationController {
     pub(super) fn classify(&mut self, event: AgentEvent) -> StreamIngestDecision {
+        self.classify_event(event, false)
+    }
+
+    pub(super) fn classify_drawn_event(&mut self, event: AgentEvent) -> StreamIngestDecision {
+        self.classify_event(event, true)
+    }
+
+    fn classify_event(&mut self, event: AgentEvent, replaying: bool) -> StreamIngestDecision {
         // Session reset and a superseding message start are out-of-band
         // lifecycle boundaries. Neither may remain trapped behind presentation
         // work owned by the generation it invalidates.
@@ -78,10 +86,9 @@ impl StreamingPresentationController {
             };
         }
 
-        // Once an event is blocked behind unpublished content, every later
-        // event must remain behind it. Replaying the front event after a draw
-        // re-enters this method only after it has been removed from the queue.
-        if !self.blocked_events.is_empty() {
+        // New arrivals stay behind the backlog. A drawn event has already
+        // passed that ordering barrier and must not requeue behind its successor.
+        if !replaying && !self.blocked_events.is_empty() {
             self.queue_blocked(event);
             return StreamIngestDecision {
                 apply_now: false,
@@ -262,6 +269,7 @@ impl StreamingPresentationController {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn has_blocked_events(&self) -> bool {
         !self.blocked_events.is_empty()
     }
@@ -464,6 +472,26 @@ mod tests {
             Some(AgentEvent::MessageAbort { reason }) if reason.as_deref() == Some("second")
         ));
         assert!(controller.take_drawn_event().is_none());
+        assert!(!controller.has_blocked_events());
+    }
+
+    #[test]
+    fn drawn_replay_makes_progress_with_multiple_deferred_events() {
+        let mut controller = StreamingPresentationController::default();
+        controller.classify(AgentEvent::MessageChunk {
+            text: "answer".into(),
+        });
+        controller.classify(AgentEvent::MessageEnd);
+        controller.classify(AgentEvent::AgentEnd);
+        publish_and_draw(&mut controller);
+        let first = controller.take_drawn_event().unwrap();
+        assert!(
+            controller.classify_drawn_event(first).apply_now,
+            "released completion must not requeue behind its successor"
+        );
+        let second = controller.take_drawn_event().unwrap();
+        assert!(matches!(second, AgentEvent::AgentEnd));
+        assert!(controller.classify_drawn_event(second).apply_now);
         assert!(!controller.has_blocked_events());
     }
 

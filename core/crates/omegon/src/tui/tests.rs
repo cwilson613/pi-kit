@@ -2669,61 +2669,95 @@ fn turn_terminal_reasons_release_active_gate_and_remain_visible() {
 
 #[tokio::test]
 async fn supervisor_completion_without_agent_end_allows_second_submission() {
-    let mut app = active_test_app();
-    app.handle_agent_event(AgentEvent::RuntimePromptStarted {
-        runtime_turn_id: 41,
-        text: "do work".into(),
-        image_paths: Vec::new(),
-    });
-    app.handle_agent_event(AgentEvent::TurnStart { turn: 1 });
-    app.handle_agent_event(AgentEvent::MessageStart {
-        role: "assistant".into(),
-    });
-    app.handle_agent_event(AgentEvent::MessageChunk {
-        text: "finished response".into(),
-    });
+    for base in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        let mut app = active_test_app();
+        app.base_terminal = base;
+        app.handle_agent_event(AgentEvent::RuntimePromptStarted {
+            runtime_turn_id: 41,
+            text: "do work".into(),
+            image_paths: Vec::new(),
+        });
+        app.handle_agent_event(AgentEvent::TurnStart { turn: 1 });
+        app.handle_agent_event(AgentEvent::MessageStart {
+            role: "assistant".into(),
+        });
+        app.handle_agent_event(AgentEvent::MessageChunk {
+            text: "finished response".into(),
+        });
 
-    assert!(app.agent_active);
+        assert!(app.agent_active);
 
-    app.handle_agent_event(AgentEvent::RuntimeTurnLifecycleUpdated {
-        snapshot_json: serde_json::json!({
-            "phase": "supervisor_completed",
-            "turn_id": 41,
-        }),
-    });
-
-    assert!(!app.agent_active);
-    assert!(!app.conversation.is_streaming());
-    assert_eq!(app.runtime_turn_id, None);
-    assert_eq!(app.slim_turn_state, SlimTurnState::Ready);
-    let rendered = render_app_to_string(&mut app, 140, 18);
-    assert!(!rendered.contains("active turn"), "{rendered}");
-    assert!(!rendered.contains("streaming answer"), "{rendered}");
-
-    // A delayed duplicate AgentEnd must remain harmless.
-    app.handle_agent_event(AgentEvent::AgentEnd);
-    assert!(!app.agent_active);
-    assert!(!app.conversation.is_streaming());
-
-    let (tx, mut rx) = test_tx_with_rx();
-    assert_eq!(
-        app.handle_ui_action(
-            UiAction::SubmitPrompt(SubmitPromptAction {
-                text: "next turn".into(),
-                attachments: Vec::new(),
-                source: PromptSource::LocalTui,
-                queue_mode: app.queue_mode,
-                metadata: PromptMetadata::default(),
+        app.handle_agent_event(AgentEvent::RuntimeTurnLifecycleUpdated {
+            snapshot_json: serde_json::json!({
+                "phase": "supervisor_completed",
+                "turn_id": 41,
             }),
-            &tx,
-        )
-        .await,
-        UiActionOutcome::accepted()
-    );
-    assert!(matches!(
-        rx.recv().await,
-        Some(TuiCommand::SubmitPrompt(PromptSubmission { text, .. })) if text == "next turn"
-    ));
+        });
+
+        assert!(!app.agent_active);
+        assert!(!app.conversation.is_streaming());
+        assert_eq!(app.runtime_turn_id, None);
+        assert_eq!(app.slim_turn_state, SlimTurnState::Ready);
+        let rendered = render_app_to_string(&mut app, 140, 18);
+        assert!(!rendered.contains("active turn"), "{rendered}");
+        assert!(!rendered.contains("streaming answer"), "{rendered}");
+
+        // A delayed duplicate AgentEnd must remain harmless.
+        app.handle_agent_event(AgentEvent::AgentEnd);
+        assert!(!app.agent_active);
+        assert!(!app.conversation.is_streaming());
+
+        let (tx, mut rx) = test_tx_with_rx();
+        assert_eq!(
+            app.handle_ui_action(
+                UiAction::SubmitPrompt(SubmitPromptAction {
+                    text: "next turn".into(),
+                    attachments: Vec::new(),
+                    source: PromptSource::LocalTui,
+                    queue_mode: app.queue_mode,
+                    metadata: PromptMetadata::default(),
+                }),
+                &tx,
+            )
+            .await,
+            UiActionOutcome::accepted()
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(TuiCommand::SubmitPrompt(PromptSubmission { text, .. })) if text == "next turn"
+        ));
+    }
+}
+
+#[test]
+fn authoritative_failure_outcomes_finalize_once_without_agent_end() {
+    for phase in [
+        "supervisor_revoked",
+        "supervisor_failed",
+        "supervisor_timed_out",
+    ] {
+        for base in [
+            TerminalPresentation::Inline,
+            TerminalPresentation::Fullscreen,
+        ] {
+            let mut app = active_test_app();
+            app.base_terminal = base;
+            app.runtime_turn_id = Some(73);
+            let event = || AgentEvent::RuntimeTurnLifecycleUpdated {
+                snapshot_json: serde_json::json!({"phase": phase, "turn_id": 73}),
+            };
+            app.handle_agent_event(event());
+            assert!(!app.agent_active);
+            let count = app.conversation.segments().len();
+            assert!(count > 0);
+            assert_eq!(app.publication_boundary, count);
+            app.handle_agent_event(event());
+            assert_eq!(app.conversation.segments().len(), count);
+        }
+    }
 }
 
 #[test]
@@ -3660,8 +3694,8 @@ fn ui_command_switches_between_om_active_and_full_presentations() {
     for alias in ["om", "lean", "slim"] {
         let result = app.handle_slash_command(&format!("/ui {alias}"), &tx);
         assert!(matches!(result, SlashResult::Display(_)));
-        assert_eq!(app.ui_presentation.level, UiPresentationLevel::Om);
-        assert_eq!(app.ui_presentation.preset_name(), "om");
+        assert_eq!(app.ui_presentation.level, UiPresentationLevel::Active);
+        assert_eq!(app.ui_presentation.preset_name(), "active");
         assert!(app.ui_surfaces.is_compact());
     }
 
@@ -3940,7 +3974,7 @@ fn ctrl_g_presentation_cycle_includes_active() {
     policy = policy.next();
     assert_eq!(policy.preset_name(), "full");
     policy = policy.next();
-    assert_eq!(policy.preset_name(), "om");
+    assert_eq!(policy.preset_name(), "active");
 
     let custom_surfaces = UiSurfaces {
         dashboard: false,
@@ -3997,11 +4031,11 @@ fn ui_command_can_toggle_individual_surfaces() {
 }
 
 #[test]
-fn empty_editor_hint_mentions_ui_surfaces_when_dashboard_hidden() {
+fn empty_editor_hint_mentions_project_browser_when_dashboard_hidden() {
     let mut app = test_app();
     app.apply_ui_preset(UiSurfaces::lean());
     let rendered = render_app_to_string(&mut app, 100, 20);
-    assert!(rendered.contains("/ui surfaces"), "{rendered}");
+    assert!(rendered.contains("F2 project"), "{rendered}");
     assert!(!rendered.contains("^D tree"), "{rendered}");
 }
 
@@ -4153,7 +4187,7 @@ fn empty_editor_hint_mentions_tool_detail_hotkey() {
     let rendered = render_app_to_string(&mut app, 100, 20);
     assert!(rendered.contains("^O/Tab details"), "{rendered}");
     assert!(!rendered.contains("^D tree"), "{rendered}");
-    assert!(rendered.contains("/ui surfaces"), "{rendered}");
+    assert!(rendered.contains("F2 project"), "{rendered}");
 }
 
 #[test]
@@ -8132,7 +8166,7 @@ fn login_selector_ollama_cloud_opens_hidden_api_key_entry() {
     assert_eq!(label, "OLLAMA_API_KEY");
     assert!(masked.is_empty(), "secret buffer should start empty");
     assert!(
-        message.contains("ollama-cloud") && message.contains("input is hidden"),
+        message.contains("OLLAMA_API_KEY") && message.contains("input hidden"),
         "unexpected message: {message}"
     );
 }
@@ -8172,7 +8206,7 @@ fn recovery_hint_rate_limit() {
 #[test]
 fn recovery_hint_unauthorized() {
     let hint = App::recovery_hint(None, "HTTP 401 Unauthorized");
-    assert!(hint.contains("/auth login"), "should suggest login: {hint}");
+    assert!(hint.contains("/connect"), "should suggest login: {hint}");
 }
 
 #[test]
@@ -9658,7 +9692,7 @@ fn settings_configuration_tab_routes_to_canonical_submenus() {
     let rows = &tab.groups[0].rows;
     for (id, command) in [
         ("skills", "/skills"),
-        ("auth", "/auth"),
+        ("auth", "/connect"),
         ("model", "/model"),
         ("extensions", "/extension"),
     ] {
@@ -9983,12 +10017,21 @@ fn auth_menu_rows_cover_operator_auth_providers() {
     let mut app = test_app();
     app.open_auth_menu();
     let menu = app.active_menu.as_ref().expect("auth menu");
-    let row_ids: std::collections::HashSet<_> = menu
+    let mut row_ids: std::collections::HashSet<_> = menu
         .state
         .visible_rows(&menu.projection)
         .into_iter()
         .map(|row| row.row.id.clone())
         .collect();
+
+    app.open_auth_provider_menu();
+    let menu = app.active_menu.as_ref().unwrap();
+    row_ids.extend(
+        menu.state
+            .visible_rows(&menu.projection)
+            .into_iter()
+            .map(|row| row.row.id.clone()),
+    );
 
     for provider in crate::auth::operator_auth_provider_ids() {
         let expected = format!("auth.provider.{provider}");
@@ -10063,26 +10106,8 @@ fn slash_auth_opens_provider_auth_menu() {
     let menu = app.active_menu.as_ref().expect("auth menu");
     assert_eq!(menu.projection.id, "auth");
     let rows = menu.state.visible_rows(&menu.projection);
-    assert!(
-        rows.iter()
-            .any(|row| row.row.id == "auth.provider.anthropic")
-    );
-    assert!(
-        rows.iter()
-            .any(|row| row.row.metadata.iter().any(|m| m == "/login openai"))
-    );
-    let copilot = rows
-        .iter()
-        .find(|row| row.row.id == "auth.provider.github-copilot")
-        .expect("github copilot auth row");
-    assert_eq!(copilot.row.label, "GitHub Copilot");
-    assert!(
-        copilot
-            .row
-            .metadata
-            .iter()
-            .any(|m| m == "/login github-copilot")
-    );
+    assert!(rows.iter().any(|row| row.row.id == "auth.add"));
+    assert_eq!(menu.projection.title, "Connections");
 }
 
 #[test]
@@ -10101,9 +10126,184 @@ fn bare_login_opens_provider_auth_menu() {
 }
 
 #[test]
+fn connect_opens_shared_menu_without_dispatching_authentication() {
+    let mut app = test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    app.editor.set_text("keep my draft");
+    let before = app.settings().model.clone();
+    assert!(matches!(
+        app.handle_slash_command("/connect", &tx),
+        SlashResult::Handled
+    ));
+    assert_eq!(
+        app.active_menu
+            .as_ref()
+            .expect("connection menu")
+            .projection
+            .title,
+        "Connections"
+    );
+    assert_eq!(app.editor.render_text(), "keep my draft");
+    assert_eq!(app.settings().model, before);
+    assert!(rx.try_recv().is_err(), "opening must not dispatch auth");
+}
+
+#[tokio::test]
+async fn connect_discovery_and_secret_cancel_preserve_drafts_and_routes_in_both_layouts() {
+    use crate::surfaces::layout::TerminalPresentation;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    for terminal in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        for detail in [
+            crate::surfaces::layout::UiPresentationLevel::Active,
+            crate::surfaces::layout::UiPresentationLevel::Full,
+        ] {
+            let mut app = test_app();
+            app.update_settings(|settings| {
+                settings.ui_terminal = terminal;
+                settings.ui_presentation = detail;
+            });
+            let (tx, mut rx) = test_tx_with_rx();
+            app.editor.set_text("draft survives connections");
+            let model = app.settings().model.clone();
+            app.handle_slash_command("/connect", &tx);
+            let add = app.active_menu.as_ref().unwrap().projection.tabs[0].groups[0]
+                .rows
+                .iter()
+                .find(|r| r.id == "auth.add")
+                .unwrap()
+                .primary_action
+                .clone()
+                .unwrap();
+            app.execute_active_menu_action(add, &tx);
+            assert_eq!(
+                app.active_menu.as_ref().unwrap().projection.title,
+                "Add provider"
+            );
+            app.handle_terminal_event(
+                Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                &tx,
+            )
+            .await;
+            assert!(app.active_menu.is_none());
+            let result = app.handle_slash_command("/connect OPENAI", &tx);
+            assert!(matches!(result, SlashResult::Display(_)));
+            assert!(
+                matches!(app.editor.mode(), editor::EditorMode::SecretInput { label, .. } if label == "OPENAI_API_KEY")
+            );
+            app.handle_terminal_event(Event::Paste("secret-canary-connect".into()), &tx)
+                .await;
+            let capture = render_app_to_string(&mut app, 120, 40);
+            assert!(!capture.contains("secret-canary-connect"));
+            assert!(
+                !app.history
+                    .iter()
+                    .any(|line| line.contains("secret-canary-connect"))
+            );
+            app.handle_terminal_event(
+                Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                &tx,
+            )
+            .await;
+            assert_eq!(app.editor.render_text(), "draft survives connections");
+            assert_eq!(app.settings().model, model);
+            assert_eq!(app.settings().ui_terminal, terminal);
+            assert!(
+                rx.try_recv().is_err(),
+                "browse/cancel must not dispatch credentials"
+            );
+        }
+    }
+}
+
+#[test]
+fn connect_local_and_external_only_providers_do_not_start_credential_flows() {
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+    for provider in [
+        "dwarfstar",
+        "ollama",
+        "google-antigravity",
+        "unknown-fixture-provider",
+    ] {
+        let result = app.handle_slash_command(&format!("/connect {provider}"), &tx);
+        assert!(matches!(result, SlashResult::Display(_)));
+        assert!(
+            !matches!(app.editor.mode(), editor::EditorMode::SecretInput { .. }),
+            "{provider} cannot accept API-key input"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "{provider} must not dispatch an unsupported login"
+        );
+    }
+}
+
+#[tokio::test]
+async fn connect_secret_submission_is_persisted_without_history_or_transcript_leak() {
+    const ISOLATED: &str = "OMEGON_CONNECT_SECRET_FIXTURE";
+    if std::env::var_os(ISOLATED).is_none() {
+        let root = tempfile::tempdir().unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tui::tests::connect_secret_submission_is_persisted_without_history_or_transcript_leak", "--nocapture"])
+            .env(ISOLATED, "1")
+            .env("HOME", root.path())
+            .env("OMEGON_HOME", root.path().join("omegon"))
+            .env("OMEGON_AUTH_JSON_PATH", root.path().join("auth.json"))
+            .output().unwrap();
+        assert!(
+            result.status.success(),
+            "isolated credential test failed: {}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        return;
+    }
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let (tx, mut rx) = test_tx_with_rx();
+    app.handle_slash_command("/connect openai", &tx);
+    app.handle_terminal_event(Event::Paste("fixture-secret-canary".into()), &tx)
+        .await;
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    // Inspect the queued write without executing the machine's secrets/keychain service.
+    assert!(
+        matches!(rx.try_recv().unwrap(), TuiCommand::ExecuteControl {
+        request: crate::operator_commands::InterfaceControlRequest::SecretsSet { name, value }, ..
+    } if name == "OPENAI_API_KEY" && value == "fixture-secret-canary")
+    );
+    let credentials: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(crate::auth::auth_json_path().unwrap()).unwrap())
+            .unwrap();
+    assert_eq!(credentials["openai"]["access"], "fixture-secret-canary");
+    assert!(!render_app_to_string(&mut app, 120, 40).contains("fixture-secret-canary"));
+    assert!(
+        !app.history
+            .iter()
+            .any(|line| line.contains("fixture-secret-canary"))
+    );
+    assert!(
+        !app.build_session_transcript(SegmentExportMode::Raw)
+            .contains("fixture-secret-canary")
+    );
+}
+
+#[test]
 fn model_and_auth_provider_rows_share_login_metadata() {
     let mut app = test_app();
-    app.open_auth_menu();
+    app.open_auth_provider_menu();
+    if !app.active_menu.as_ref().unwrap().projection.tabs[0].groups[0]
+        .rows
+        .iter()
+        .any(|r| r.id == "auth.provider.openai")
+    {
+        app.open_auth_menu();
+    }
     let auth_row = app
         .active_menu
         .as_ref()
@@ -10366,7 +10566,7 @@ fn slash_model_providers_opens_provider_status_tab() {
         row.row
             .metadata
             .iter()
-            .any(|item| item.starts_with("/login "))
+            .any(|item| item.starts_with("/connect "))
     }));
 }
 
@@ -10920,4 +11120,330 @@ fn init_menu_recommends_matching_user_skill_for_project_copy() {
             .unwrap_or_default()
             .starts_with("/skills import --project ")
     );
+}
+
+#[test]
+fn drawn_completion_backlog_releases_app_without_requeueing() {
+    let mut app = active_test_app();
+    app.handle_agent_event(AgentEvent::MessageStart {
+        role: "assistant".into(),
+    });
+    app.handle_agent_event(AgentEvent::MessageChunk {
+        text: "captured reply".into(),
+    });
+    app.handle_agent_event(AgentEvent::MessageEnd);
+    app.handle_agent_event(AgentEvent::AgentEnd);
+    draw_published_stream(&mut app, 120, 40);
+    assert!(!app.stream_presentation.has_blocked_events());
+    assert!(!app.agent_active);
+    assert!(!app.conversation.is_streaming());
+}
+
+#[tokio::test]
+async fn blocking_decisions_preserve_copy_surface_and_resolve_in_arrival_order() {
+    for base in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        let mut app = test_app();
+        app.base_terminal = base;
+        let tx = test_tx();
+        app.open_settings_menu();
+        app.active_menu.as_mut().unwrap().state.selected_row = 2;
+        let prior_menu = app.active_menu.clone();
+        app.copy_text_modal = Some(CopyTextModal::new("Prior copy", "prior selection"));
+        let (permission_tx, permission_rx) = std::sync::mpsc::channel();
+        app.handle_agent_event(AgentEvent::PermissionRequest {
+            tool_name: "write".into(),
+            path: "src/allowed.rs".into(),
+            kind: omegon_traits::PermissionRequestKind::PathBoundary,
+            persistence: omegon_traits::PermissionPersistence::ProjectDirectory,
+            grant_path: None,
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(permission_tx))),
+        });
+        let (wait_tx, wait_rx) = std::sync::mpsc::channel();
+        let (ack_tx, _ack_rx) = std::sync::mpsc::channel();
+        app.handle_agent_event(AgentEvent::OperatorWaitRequest {
+            call_id: None,
+            prompt: "Second decision".into(),
+            timeout_secs: 60,
+            acknowledge: std::sync::Arc::new(std::sync::Mutex::new(Some(ack_tx))),
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(wait_tx))),
+        });
+        let rendered = render_app_to_string(&mut app, 120, 40);
+        assert!(
+            rendered.contains("Permission required"),
+            "first decision must remain visible: {rendered}"
+        );
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+        assert_eq!(
+            permission_rx.try_recv().unwrap(),
+            omegon_traits::PermissionResponse::Allow
+        );
+        assert!(wait_rx.try_recv().is_err());
+        let rendered = render_app_to_string(&mut app, 120, 40);
+        assert!(rendered.contains("Second decision"));
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+        assert_eq!(
+            wait_rx.try_recv().unwrap(),
+            omegon_traits::OperatorWaitResponse::Completed
+        );
+        assert!(
+            app.copy_text_modal.is_some(),
+            "resolving decisions preserves prior surface state"
+        );
+        assert_eq!(app.active_menu, prior_menu);
+    }
+}
+
+#[tokio::test]
+async fn visible_extension_overlay_owns_escape_above_copy_and_settings() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.open_settings_menu();
+    let menu = app.active_menu.clone();
+    app.copy_text_modal = Some(CopyTextModal::new("Copy", "retained"));
+    app.active_modal = Some((
+        "visible extension".into(),
+        serde_json::json!({"text": "overlay"}),
+        None,
+        std::time::Instant::now(),
+    ));
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    assert!(
+        app.active_modal.is_none(),
+        "Escape belongs to the visible extension overlay"
+    );
+    assert!(app.copy_text_modal.is_some());
+    assert_eq!(app.active_menu, menu);
+}
+
+#[tokio::test]
+async fn settings_page_navigation_does_not_scroll_background_conversation() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.open_settings_menu();
+    app.conversation.conv_state.scroll_offset = 40;
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    assert_eq!(app.conversation.conv_state.scroll_offset, 40);
+}
+
+#[tokio::test]
+async fn extension_action_keys_and_paste_do_not_modify_the_composer() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.active_action_prompt = Some(("extension".into(), vec!["Apply".into()]));
+    let before = app.editor.render_text();
+    for event in [
+        Event::Key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE)),
+        Event::Key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)),
+        Event::Paste("must not leak".into()),
+    ] {
+        app.handle_terminal_event(event, &tx).await;
+    }
+    assert_eq!(app.editor.render_text(), before);
+    assert!(
+        app.active_action_prompt.is_some(),
+        "an unwired response must not report completion"
+    );
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    assert!(app.active_action_prompt.is_none());
+}
+
+#[tokio::test]
+async fn project_browser_inspection_preserves_composer_draft() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.editor.set_text("unfinished project question");
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    let rendered = render_app_to_string(&mut app, 120, 40);
+    assert!(rendered.contains("Project browser"), "{rendered}");
+    app.handle_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &tx,
+    )
+    .await;
+    let rendered = render_app_to_string(&mut app, 120, 40);
+    assert!(rendered.contains("Current session"), "{rendered}");
+    for _ in 0..2 {
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+    }
+    assert_eq!(app.editor.render_text(), "unfinished project question");
+    assert_eq!(
+        app.navigation_owner(),
+        interaction::NavigationOwner::Composer
+    );
+}
+
+#[tokio::test]
+async fn project_browser_detail_survives_permission_decision() {
+    for base in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        let mut app = test_app();
+        app.base_terminal = base;
+        let tx = test_tx();
+        app.open_project_browser();
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+        let (respond, response) = std::sync::mpsc::channel();
+        app.handle_agent_event(AgentEvent::PermissionRequest {
+            tool_name: "write".into(),
+            path: "outside/project".into(),
+            kind: omegon_traits::PermissionRequestKind::PathBoundary,
+            persistence: omegon_traits::PermissionPersistence::ProjectDirectory,
+            grant_path: None,
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(respond))),
+        });
+        assert!(render_app_to_string(&mut app, 120, 40).contains("Permission required"));
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &tx,
+        )
+        .await;
+        assert_eq!(
+            response.try_recv().unwrap(),
+            omegon_traits::PermissionResponse::Deny
+        );
+        let screen = render_app_to_string(&mut app, 120, 40);
+        assert!(screen.contains("Project browser · Details"), "{screen}");
+        assert!(screen.contains("Current session"));
+    }
+}
+
+#[tokio::test]
+async fn project_browser_cancel_reaches_runtime_and_preserves_draft() {
+    for base in [
+        TerminalPresentation::Inline,
+        TerminalPresentation::Fullscreen,
+    ] {
+        let mut app = test_app();
+        app.base_terminal = base;
+        let (tx, mut rx) = test_tx_with_rx();
+        app.agent_active = true;
+        app.editor.set_text("next question remains unsent");
+        app.open_project_browser();
+        app.handle_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            &tx,
+        )
+        .await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TuiCommand::CancelActiveTurn { .. })
+        ));
+        assert_eq!(app.editor.render_text(), "next question remains unsent");
+        assert_eq!(
+            app.navigation_owner(),
+            interaction::NavigationOwner::Project
+        );
+    }
+}
+
+#[tokio::test]
+async fn project_browser_work_inspection_shows_published_plan_tasks() {
+    let mut app = test_app();
+    let tx = test_tx();
+    app.workbench_state.active = Some(PlanDisplaySnapshot {
+        mode: "implementation".into(),
+        completed: 1,
+        total: 2,
+        items: vec![
+            PlanDisplayItem {
+                status: PlanDisplayStatus::Done,
+                description: "Inspect project sources".into(),
+            },
+            PlanDisplayItem {
+                status: PlanDisplayStatus::Active,
+                description: "Build the project browser".into(),
+            },
+        ],
+    });
+    app.open_project_browser();
+    for code in [KeyCode::Tab, KeyCode::Enter] {
+        app.handle_terminal_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), &tx)
+            .await;
+    }
+    let screen = render_app_to_string(&mut app, 120, 40);
+    assert!(screen.contains("Current plan"), "{screen}");
+    assert!(screen.contains("Done: Inspect project sources"), "{screen}");
+    assert!(
+        screen.contains("Active: Build the project browser"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn native_usability_permission_choices_are_unique_and_visible() {
+    for (width, height) in [(50, 18), (90, 30)] {
+        let mut app = test_app();
+        let (respond, _rx) = std::sync::mpsc::channel();
+        app.handle_agent_event(AgentEvent::PermissionRequest {
+            tool_name: "write".into(),
+            path: format!("/tmp/{}/denied.txt", "long-directory/".repeat(12)),
+            kind: omegon_traits::PermissionRequestKind::Policy,
+            persistence: omegon_traits::PermissionPersistence::None,
+            grant_path: None,
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(respond))),
+        });
+        let rendered = render_app_to_string(&mut app, width, height);
+        for key in ["[y]", "[a]", "[Shift+A]", "[n]"] {
+            assert_eq!(rendered.matches(key).count(), 1, "{key}: {rendered}");
+        }
+        assert!(rendered.contains("[n] deny"), "{rendered}");
+        assert!(
+            rendered.contains("[Shift+A] allow this operation"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("this directory · project"), "{rendered}");
+    }
+}
+
+#[test]
+fn native_usability_primary_composer_hint_survives_narrow_width() {
+    for width in [40, 56, 90] {
+        for (input, hint) in [
+            ("", "⏎ send"),
+            ("draft", "⏎ send"),
+            ("/usage", "⏎ run command"),
+            ("!pwd", "⏎ run directly"),
+        ] {
+            let mut app = test_app();
+            app.editor.set_text(input);
+            let rendered = render_app_to_string(&mut app, width, 24);
+            assert!(rendered.contains(hint), "{width}: {input}: {rendered}");
+        }
+    }
 }

@@ -746,6 +746,27 @@ components:
         pending_prompt:
           type: [string, "null"]
           description: A prompt staged but not yet submitted, if any.
+        pending_permissions:
+          type: array
+          description: >
+            Pending tool approvals captured by the web surface for this live session.
+            Reconnect clients can render and answer these requests by request_id.
+            Historical snapshots return an empty array.
+          items:
+            $ref: "#/components/schemas/WebPendingPermission"
+
+    WebPendingPermission:
+      type: object
+      required: [request_id, tool_name, path]
+      properties:
+        request_id:
+          type: string
+        tool_name:
+          type: string
+          description: Redacted tool label.
+        path:
+          type: string
+          description: Redacted requested path or resource.
 
     WebCommandMenuSurface:
       type: object

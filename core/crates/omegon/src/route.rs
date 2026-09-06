@@ -310,6 +310,8 @@ pub enum CredentialState {
     Unreadable {
         source: CredentialSource,
         detail: String,
+        /// True only when a parsed store contained this provider's entry.
+        entry_present: bool,
     },
     Missing {
         probed_sources: Vec<String>,
@@ -358,7 +360,7 @@ impl CredentialState {
                     source.label()
                 )
             }
-            CredentialState::Unreadable { source, detail } => {
+            CredentialState::Unreadable { source, detail, .. } => {
                 format!("unreadable credentials from {}: {detail}", source.label())
             }
             CredentialState::Missing { probed_sources } => {
@@ -375,7 +377,7 @@ impl DisconnectedReason {
                 provider,
                 probed_sources,
             } => format!(
-                "No credentials for selected model {selected} ({provider}). Probed: {}. Remediation: run `/login {provider}` or set one of: {}.",
+                "No credentials for selected model {selected} ({provider}). Probed: {}. Remediation: run `/connect {provider}` or set one of: {}.",
                 probed_sources.join(", "),
                 provider_env_var_list(provider)
             ),
@@ -389,7 +391,7 @@ impl DisconnectedReason {
                     "token expired and is not refreshable"
                 };
                 format!(
-                    "Expired credentials for selected model {selected} ({provider}): {refresh}. Remediation: run `/login {provider}` or set one of: {}.",
+                    "Expired credentials for selected model {selected} ({provider}): {refresh}. Remediation: run `/connect {provider}` or set one of: {}.",
                     provider_env_var_list(provider)
                 )
             }
@@ -400,17 +402,17 @@ impl DisconnectedReason {
                     .collect::<Vec<_>>()
                     .join("; ");
                 format!(
-                    "No usable route for selected model {selected}. Explicit fallbackProviders exhausted: {tried}. Remediation: run `/login {}` or configure fallbackProviders with a provider that has credentials.",
+                    "No usable route for selected model {selected}. Explicit fallbackProviders exhausted: {tried}. Remediation: run `/connect {}` or configure fallbackProviders with a provider that has credentials.",
                     crate::providers::infer_provider_id(selected)
                 )
             }
             DisconnectedReason::ProviderUnavailable { provider, detail } => {
                 let remediation = if detail.contains("credential") {
-                    "check or remove the unreadable provider entry from auth.json, then run `/login ".to_string()
+                    "check or remove the unreadable provider entry from auth.json, then run `/connect ".to_string()
                         + provider
                         + "` if the entry cannot be repaired"
                 } else {
-                    "run `/login ".to_string() + provider + "` or check provider configuration"
+                    "run `/connect ".to_string() + provider + "` or check provider configuration"
                 };
                 format!(
                     "Provider {provider} is unavailable for selected model {selected}: {detail}. Remediation: {remediation}."
@@ -1034,10 +1036,10 @@ fn login_failure_label(reason: &LoginFailureReason) -> String {
 fn login_failure_warning(reason: &LoginFailureReason) -> String {
     match reason {
         LoginFailureReason::Timeout => {
-            "Login timed out. Close stale login tabs and run /login again.".to_string()
+            "Login timed out. Close stale login tabs and run /connect again.".to_string()
         }
         LoginFailureReason::StaleStateOnly => {
-            "Login saw only stale callback tabs. Close old login tabs and run /login again."
+            "Login saw only stale callback tabs. Close old login tabs and run /connect again."
                 .to_string()
         }
         LoginFailureReason::Refused(detail) => format!("Login failed: {detail}"),
@@ -1054,13 +1056,15 @@ fn disconnected_for_provider_state(provider: String, state: CredentialState) -> 
             provider,
             refreshable,
         },
-        CredentialState::Unreadable { source, detail } => DisconnectedReason::ProviderUnavailable {
-            provider,
-            detail: format!(
-                "{} credential entry is unreadable: {detail}",
-                source.label()
-            ),
-        },
+        CredentialState::Unreadable { source, detail, .. } => {
+            DisconnectedReason::ProviderUnavailable {
+                provider,
+                detail: format!(
+                    "{} credential entry is unreadable: {detail}",
+                    source.label()
+                ),
+            }
+        }
         CredentialState::Missing { probed_sources } => DisconnectedReason::MissingCredentials {
             provider,
             probed_sources,
@@ -1072,7 +1076,7 @@ fn fallback_reason_for_state(provider: String, state: CredentialState) -> Fallba
     match state {
         CredentialState::Expired { .. } => FallbackReason::ExpiredCredentials { provider },
         CredentialState::Missing { .. } => FallbackReason::MissingCredentials { provider },
-        CredentialState::Unreadable { source, detail } => FallbackReason::ProviderUnavailable {
+        CredentialState::Unreadable { source, detail, .. } => FallbackReason::ProviderUnavailable {
             provider,
             detail: format!(
                 "{} credential entry is unreadable: {detail}",
@@ -1129,7 +1133,11 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
                         Err(error) => {
                             return CredentialState::Unreadable {
                                 source: CredentialSource::AuthJson,
-                                detail: error.to_string(),
+                                detail: format!(
+                                    "invalid credential entry ({:?})",
+                                    error.classify()
+                                ),
+                                entry_present: true,
                             };
                         }
                     }
@@ -1138,7 +1146,8 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
             Err(error) => {
                 return CredentialState::Unreadable {
                     source: CredentialSource::AuthJson,
-                    detail: format!("{}: {error}", path.display()),
+                    detail: format!("invalid credential store ({:?})", error.classify()),
+                    entry_present: false,
                 };
             }
         }
@@ -1237,6 +1246,7 @@ mod tests {
         CredentialState::Unreadable {
             source: CredentialSource::AuthJson,
             detail: "invalid provider entry".to_string(),
+            entry_present: true,
         }
     }
 
@@ -1322,6 +1332,46 @@ mod tests {
 
     #[test]
     fn environment_credentials_preserve_declared_api_key_and_oauth_kinds() {
+        const ISOLATED_CASE: &str = "OMEGON_TEST_ROUTE_AUTH_ISOLATED_CASE";
+        let isolated_case = std::env::var(ISOLATED_CASE).ok();
+        if isolated_case.is_none() {
+            // The production probe also reads ~/.codex/auth.json. Isolate that
+            // store in a subprocess so a developer's logged-in CLI cannot
+            // override the fixture, and parallel tests retain their own home.
+            let isolated_home = tempfile::tempdir().unwrap();
+            for fixture in ["empty", "external"] {
+                if fixture == "external" {
+                    let codex = isolated_home.path().join(".codex");
+                    std::fs::create_dir_all(&codex).unwrap();
+                    std::fs::write(
+                        codex.join("auth.json"),
+                        serde_json::json!({
+                            "tokens": {"access_token": "fixture-access", "refresh_token": "fixture-refresh"},
+                            "last_refresh": chrono::Utc::now().timestamp() as u64,
+                        })
+                        .to_string(),
+                    )
+                    .unwrap();
+                }
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "route::tests::environment_credentials_preserve_declared_api_key_and_oauth_kinds",
+                        "--exact",
+                        "--nocapture",
+                    ])
+                    .env("HOME", isolated_home.path())
+                    .env(ISOLATED_CASE, fixture)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "isolated {fixture} credential fixture failed:\n{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
+            return;
+        }
         let path = temp_auth_path("environment-credential-kind");
 
         let api_key = with_auth_env(&path, "OPENAI_API_KEY", "test-api-key", || {
@@ -1341,7 +1391,11 @@ mod tests {
         assert_eq!(
             oauth,
             CredentialState::Valid {
-                source: CredentialSource::Environment,
+                source: if isolated_case.as_deref() == Some("external") {
+                    CredentialSource::External
+                } else {
+                    CredentialSource::Environment
+                },
                 oauth: true,
             }
         );
@@ -1426,7 +1480,7 @@ mod tests {
         assert!(matches!(snapshot.route, ProviderRoute::Fallback { .. }));
         let warning = snapshot.warning.unwrap();
         assert!(warning.contains("timed out"), "{warning}");
-        assert!(warning.contains("run /login again"), "{warning}");
+        assert!(warning.contains("run /connect again"), "{warning}");
     }
 
     #[tokio::test]
@@ -1658,7 +1712,7 @@ mod tests {
             message.contains("environment, auth.json, external"),
             "{message}"
         );
-        assert!(message.contains("/login openai-codex"), "{message}");
+        assert!(message.contains("/connect openai-codex"), "{message}");
         assert!(message.contains("CHATGPT_OAUTH_TOKEN"), "{message}");
     }
 
@@ -1699,7 +1753,8 @@ mod tests {
             CredentialState::Unreadable {
                 source: CredentialSource::AuthJson,
                 detail,
-            } => assert!(detail.contains("missing field `expires`"), "{detail}"),
+                entry_present: true,
+            } => assert!(detail.contains("invalid credential entry"), "{detail}"),
             other => panic!("expected unreadable auth.json entry, got {other:?}"),
         }
     }
@@ -1835,7 +1890,7 @@ mod tests {
             .stream("", &[], &[], &crate::bridge::StreamOptions::default())
             .await;
         let err = stream_result.unwrap_err().to_string();
-        assert!(err.contains("No LLM provider configured"), "{err}");
+        assert!(err.contains("No LLM provider available"), "{err}");
     }
 
     #[tokio::test]

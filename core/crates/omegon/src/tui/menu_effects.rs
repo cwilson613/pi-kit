@@ -40,6 +40,7 @@ pub(super) enum SelectorTarget {
     ModelProvider,
     ModelPolicy,
     SecretName,
+    ConnectionProviders,
     Unknown(Option<String>),
 }
 
@@ -52,6 +53,7 @@ impl SelectorTarget {
             Some("model.provider") => Self::ModelProvider,
             Some("model.policy") => Self::ModelPolicy,
             Some("secrets.name") => Self::SecretName,
+            Some("auth.providers") => Self::ConnectionProviders,
             _ => Self::Unknown(selector_id),
         }
     }
@@ -289,6 +291,7 @@ impl App {
                     SelectorTarget::ModelProvider => self.open_model_provider_selector(),
                     SelectorTarget::ModelPolicy => self.open_model_policy_selector(),
                     SelectorTarget::SecretName => self.open_secret_name_selector(),
+                    SelectorTarget::ConnectionProviders => self.open_auth_provider_menu(),
                     SelectorTarget::Unknown(selector_id) => {
                         self.show_command_toast(CommandToast::new(
                             format!(

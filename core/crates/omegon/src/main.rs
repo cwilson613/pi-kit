@@ -26,16 +26,6 @@ use crate::conversation::PlanAction;
 use crate::runtime_composition::{decide_interactive_startup_model, restart_args_for_session};
 use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "tui")]
-use crossterm::ExecutableCommand;
-#[cfg(feature = "tui")]
-use crossterm::event::DisableMouseCapture;
-#[cfg(all(feature = "tui", unix))]
-use crossterm::event::EnableMouseCapture;
-#[cfg(feature = "tui")]
-use crossterm::terminal::disable_raw_mode;
-#[cfg(all(feature = "tui", unix))]
-use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
-#[cfg(feature = "tui")]
 use std::collections::VecDeque;
 #[cfg(feature = "tui")]
 use std::io;
@@ -287,6 +277,14 @@ struct Cli {
     /// Enable low-overhead TUI diagnostics for wild-session capture.
     #[arg(long, global = true)]
     debug_tui: bool,
+
+    /// Interactive terminal layout (independent of detail).
+    #[arg(long, global = true, value_parser = surfaces::layout::TerminalPresentation::parse)]
+    tui: Option<surfaces::layout::TerminalPresentation>,
+
+    /// Interactive detail: active or full (legacy om/lean/slim mean active).
+    #[arg(long, global = true, value_parser = surfaces::layout::UiPresentationLevel::parse)]
+    ui: Option<surfaces::layout::UiPresentationLevel>,
 
     /// Model identifier (provider:model format)
     #[arg(
@@ -2145,6 +2143,8 @@ async fn main() -> anyhow::Result<()> {
                 slim,
             } => {
                 let mut bench_cli = Cli {
+                    tui: None,
+                    ui: None,
                     command: None,
                     cwd: cli.cwd.clone(),
                     debug_tui: cli.debug_tui,
@@ -4870,6 +4870,17 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         apply_profile_posture: true,
     });
 
+    {
+        let mut settings = shared_settings.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let marker = std::env::var("OMEGON_LAUNCH_NAME").ok();
+        let argv0 = std::env::args().next().unwrap_or_default();
+        let entry = surfaces::layout::ui_entry_name(marker.as_deref(), &argv0);
+        let (terminal, detail) = surfaces::layout::resolve_ui_preferences(
+            entry, settings.ui_terminal_preference, settings.ui_detail_preference, cli.tui, cli.ui);
+        settings.ui_terminal = terminal;
+        settings.ui_presentation = detail;
+    }
+
     // Walk the system temp dir for `omegon-clipboard-*` files older
     // than `Settings.clipboard_retention_hours` (default 24h, 0 to
     // disable) and delete them. Without this sweep clipboard image
@@ -4931,16 +4942,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
             imported = imported_credentials,
             "imported discovered provider credentials before interactive bridge resolution"
         );
-    }
-
-    let mut startup_auth_warnings = Vec::new();
-    let selected_provider_status = auth::provider_by_id(&requested_provider)
-        .map(auth::provider_session_status);
-    if selected_provider_status == Some(auth::ProviderSessionStatus::Expired) {
-        startup_auth_warnings.push(format!(
-            "Credentials for {} are expired. Run /login {} to refresh them before continuing with that profile model.",
-            requested_start_model, requested_provider
-        ));
     }
 
     let fallback_providers = shared_settings
@@ -5022,9 +5023,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
                 reason = ?reason,
                 "selected interactive model unavailable; using explicitly configured fallback provider"
             );
-            startup_auth_warnings.push(format!(
-                "Selected profile model {selected} is unavailable for this session; explicitly configured fallback {serving} is serving. Remove `fallbackProviders` or refresh credentials to stop fallback."
-            ));
             startup_decision.bridge_model = serving.as_str().to_string();
             startup_decision.provider_connected = true;
             startup_decision.use_null_bridge = false;
@@ -5032,38 +5030,18 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         }
         (route::ProviderRoute::Fallback { selected, serving, .. }, None) => {
             tracing::warn!(selected = %selected, serving = %serving, "configured fallback provider resolved but bridge detection failed");
-            startup_auth_warnings.push(format!(
-                "Configured fallback {serving} for {selected} could not start. Run /login {} or update fallbackProviders.",
-                providers::infer_provider_id(serving)
-            ));
             startup_decision.provider_connected = false;
             startup_decision.use_null_bridge = true;
             (serving.as_str().to_string(), Box::new(bridge::NullBridge) as Box<dyn LlmBridge>)
         }
         (route::ProviderRoute::Serving { model }, None) => {
             tracing::warn!(model = %model, "startup credential probe passed but bridge detection failed");
-            startup_auth_warnings.push(format!(
-                "LLM provider credentials were detected for {model}, but the provider bridge could not start. Run /login {} or check provider configuration.",
-                providers::infer_provider_id(model)
-            ));
             startup_decision.provider_connected = false;
             startup_decision.use_null_bridge = true;
             (model.as_str().to_string(), Box::new(bridge::NullBridge) as Box<dyn LlmBridge>)
         }
         (route::ProviderRoute::Disconnected { selected, reason }, _) => {
             tracing::warn!(selected = %selected, reason = ?reason, "no LLM provider available for selected interactive model and no explicit fallback engaged");
-            startup_auth_warnings.push(reason.operator_message(selected));
-            if fallback_providers.is_empty()
-                && let Some(legacy_fallback) = providers::automation_safe_model()
-                && providers::infer_provider_id(&legacy_fallback)
-                    != providers::infer_provider_id(selected)
-            {
-                startup_auth_warnings.push(format!(
-                    "Omegon no longer silently falls back from {selected} to {legacy_fallback}. To opt into that route, add `fallbackProviders = [\"{}\"]` to the profile, or run `/login {}` to use the selected provider.",
-                    providers::infer_provider_id(&legacy_fallback),
-                    providers::infer_provider_id(selected)
-                ));
-            }
             startup_decision.provider_connected = false;
             startup_decision.use_null_bridge = true;
             (
@@ -5073,6 +5051,14 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         }
         (route::ProviderRoute::LoginPending { .. }, _) => unreachable!("startup route cannot be login-pending"),
     };
+    let marker = std::env::var("OMEGON_LAUNCH_NAME").ok();
+    let argv0 = std::env::args().next().unwrap_or_default();
+    let entry = surfaces::layout::ui_entry_name(marker.as_deref(), &argv0);
+    let (startup_summary, startup_diagnostic) = bootstrap_projection::interactive_startup(
+        entry, &startup_route, startup_decision.provider_connected);
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        eprintln!("{startup_summary}");
+    }
     // Update settings with selected-model provider status before TUI reads it.
     if let Ok(mut s) = shared_settings.lock() {
         s.provider_connected = startup_decision.provider_connected;
@@ -5149,7 +5135,7 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
     if let Ok(status_json) = serde_json::to_value(&agent.initial_harness_status) {
         let _ = events_tx.send(AgentEvent::HarnessStatusChanged { status_json });
     }
-    for message in startup_auth_warnings {
+    if let Some(message) = startup_diagnostic {
         let _ = events_tx.send(AgentEvent::SystemNotification { message });
     }
     match &agent.workspace_state.admission {
@@ -5310,7 +5296,73 @@ fn build_tui_secret_readiness_snapshot(
         settings::StartupSplashMode::Always => true,
         settings::StartupSplashMode::Never => false,
     };
+    // Establish authority and its first semantic view before exposing any client.
+    let session_authority = if cli.no_session {
+        None
+    } else {
+        let session_snapshot = match session::sessions_dir(&agent.cwd) {
+            Some(directory) => directory.join(format!("{}.json", agent.session_id)),
+            None => {
+                return setup::finalize_agent_error(
+                    &mut agent,
+                    anyhow::anyhow!("cannot determine interactive session directory"),
+                )
+                .await;
+            }
+        };
+        let composition_generation_id = match agent.bus.composition_generation_id() {
+            Some(generation_id) => generation_id.as_str().to_string(),
+            None => {
+                return setup::finalize_agent_error(
+                    &mut agent,
+                    anyhow::anyhow!("interactive composition was not published"),
+                )
+                .await;
+            }
+        };
+        let recorded_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let mut authority = match session_authority::SessionAuthority::open(
+            &session_snapshot,
+            &agent.session_id,
+            &agent.workspace_state.lease.workspace_id,
+            &composition_generation_id,
+            session_authority::ActorIdentity {
+                principal: "local-operator".into(),
+                ingress: "interactive".into(),
+            },
+            &recorded_at,
+        ) {
+            Ok(authority) => authority,
+            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+        };
+        if let Some(metadata) = agent.resume_meta.as_ref()
+            && let Err(error) = session::import_legacy_resume(
+                &mut authority,
+                &agent.conversation,
+                metadata,
+                &session_snapshot,
+                &agent.cwd,
+                &recorded_at,
+            ) {
+            return setup::finalize_agent_error(&mut agent, error).await;
+        }
+        if let Err(error) = session_consumers::prepare_initial_view(&agent.session_view_binding.snapshot()) {
+            return setup::finalize_agent_error(&mut agent, error.into()).await;
+        }
+        Some(authority)
+    };
+
+    let mut runtime = match session_authority {
+        Some(authority) => match InteractiveRuntimeSupervisor::with_authority(authority) {
+            Ok(runtime) => runtime,
+            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
+        },
+        None => InteractiveRuntimeSupervisor::default(),
+    };
+
+    let terminal_session = tui::TerminalSessionHandle::new();
     let tui_config = tui::TuiConfig {
+        terminal_session: terminal_session.clone(),
         cwd: agent.cwd.to_string_lossy().to_string(),
         is_oauth,
         initial,
@@ -5397,66 +5449,6 @@ fn build_tui_secret_readiness_snapshot(
 
     let _mqtt_bridge =
         maybe_start_mqtt_bridge(&agent.cwd, agent.session_id.clone(), events_tx.clone());
-
-    let session_authority = if cli.no_session {
-        None
-    } else {
-        let session_snapshot = match session::sessions_dir(&agent.cwd) {
-            Some(directory) => directory.join(format!("{}.json", agent.session_id)),
-            None => {
-                return setup::finalize_agent_error(
-                    &mut agent,
-                    anyhow::anyhow!("cannot determine interactive session directory"),
-                )
-                .await;
-            }
-        };
-        let composition_generation_id = match agent.bus.composition_generation_id() {
-            Some(generation_id) => generation_id.as_str().to_string(),
-            None => {
-                return setup::finalize_agent_error(
-                    &mut agent,
-                    anyhow::anyhow!("interactive composition was not published"),
-                )
-                .await;
-            }
-        };
-        let recorded_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let mut authority = match session_authority::SessionAuthority::open(
-            &session_snapshot,
-            &agent.session_id,
-            &agent.workspace_state.lease.workspace_id,
-            &composition_generation_id,
-            session_authority::ActorIdentity {
-                principal: "local-operator".into(),
-                ingress: "interactive".into(),
-            },
-            &recorded_at,
-        ) {
-            Ok(authority) => authority,
-            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
-        };
-        if let Some(metadata) = agent.resume_meta.as_ref()
-            && let Err(error) = session::import_legacy_resume(
-                &mut authority,
-                &agent.conversation,
-                metadata,
-                &session_snapshot,
-                &agent.cwd,
-                &recorded_at,
-            ) {
-            return setup::finalize_agent_error(&mut agent, error).await;
-        }
-        Some(authority)
-    };
-
-    let mut runtime = match session_authority {
-        Some(authority) => match InteractiveRuntimeSupervisor::with_authority(authority) {
-            Ok(runtime) => runtime,
-            Err(error) => return setup::finalize_agent_error(&mut agent, error.into()).await,
-        },
-        None => InteractiveRuntimeSupervisor::default(),
-    };
 
     let (mut agent, mut runtime_state) = split_interactive_agent(agent);
 
@@ -5909,42 +5901,16 @@ fn build_tui_secret_readiness_snapshot(
 
                 #[cfg(unix)]
                 {
-                    use crossterm::event::DisableBracketedPaste;
-                    use crossterm::terminal::LeaveAlternateScreen;
-
-                    if keyboard_enhancement {
-                        let _ = io::stdout()
-                            .execute(crossterm::event::PopKeyboardEnhancementFlags);
-                    }
-                    let _ = disable_raw_mode();
-                    let _ = io::stdout().execute(DisableMouseCapture);
-                    let _ = io::stdout().execute(DisableBracketedPaste);
-                    let _ = io::stdout().execute(LeaveAlternateScreen);
-                    let _ = io::stdout().flush();
-
-                    let suspend_result = unsafe { libc::raise(libc::SIGTSTP) };
-                    let handoff_error = if suspend_result != 0 {
-                        Some(std::io::Error::last_os_error().to_string())
-                    } else {
-                        None
-                    };
-
-                    let _ = enable_raw_mode();
-                    if keyboard_enhancement {
-                        let _ = io::stdout().execute(
-                            crossterm::event::PushKeyboardEnhancementFlags(
-                                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-                            ),
-                        );
-                    }
-                    let _ = io::stdout().execute(EnterAlternateScreen);
-                    let _ = io::stdout().execute(crossterm::event::EnableBracketedPaste);
-                    let _ = io::stdout().execute(EnableMouseCapture);
-                    let _ = io::stdout().flush();
-
-                    if let Some(err) = handoff_error {
+                    // Mode preferences belong to the TUI owner, including mouse-copy mode.
+                    let _ = keyboard_enhancement; // retained wire compatibility
+                    let result = terminal_session.with_primary_screen(|| {
+                        if unsafe { libc::raise(libc::SIGTSTP) } != 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else { Ok(()) }
+                    });
+                    if let Err(error) = result {
                         let _ = events_tx.send(AgentEvent::SystemNotification {
-                            message: format!("Shell handoff failed: {err}"),
+                            message: format!("Shell handoff failed: {error}"),
                         });
                     }
                 }
@@ -6206,22 +6172,26 @@ fn build_tui_secret_readiness_snapshot(
                         ..Default::default()
                     }
                 };
+                runtime_state.context_manager.set_selector_policy(
+                    shared_settings.lock().unwrap().selector_policy(),
+                );
+                let retained_budget = runtime_state.context_manager.retained_context_budget();
                 let planning = runtime_state
                     .context_compaction
                     .plan(
-                        runtime_state.conversation.context_compaction_snapshot(),
-                        context_compaction_service::ContextCompactionModeV1::Pressure,
+                        runtime_state.conversation.context_compaction_snapshot().with_retained_token_budget(retained_budget),
+                        context_compaction_service::ContextCompactionModeV1::Manual,
                         CancellationToken::new(),
                     )
                     .await;
                 if let Ok(Some(plan)) = planning {
-                    let payload = plan.payload;
+                    let payload = &plan.payload;
                     match session_execution::boot_execution_binding()
-                        .compact(bridge_guard.as_ref(), &payload, &stream_options)
+                        .compact(bridge_guard.as_ref(), payload, &stream_options)
                         .await
                     {
                         Ok(summary) => {
-                            runtime_state.conversation.apply_compaction(summary);
+                            plan.apply(&mut runtime_state.conversation, summary);
                             let est = runtime_state.conversation.estimate_tokens();
                             if let Ok(s) = shared_settings.lock() {
                                 let ctx_window = s.context_window;
@@ -7231,6 +7201,25 @@ fn build_tui_secret_readiness_snapshot(
 
                     loop {
                         tokio::select! {
+                            interrupt = runtime_interrupt_rx.recv() => {
+                                if let Some(identity) = interrupt {
+                                    match runtime.request_durable_interrupt(identity, RuntimeActor::tui(), ControlSurface::Tui) {
+                                        Ok(InterruptAdmission::Admitted) => {
+                                            turn_cancel.cancel();
+                                            if cancellation_deadline.is_none() {
+                                                cancellation_deadline = Some(Box::pin(tokio::time::sleep(std::time::Duration::from_secs(2))));
+                                            }
+                                        }
+                                        Ok(_) => {},
+                                        Err(error) => {
+                                            tracing::error!(%error, "failed to durably admit active TUI interrupt");
+                                            let _ = events_tx.send(AgentEvent::SystemNotification {
+                                                message: format!("Interrupt was not accepted because session authority could not be updated: {error}"),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                             _ = tui_exit.cancelled() => {
                                 quit_after_turn = true;
                                 ipc_cancel.cancel();
@@ -7582,12 +7571,7 @@ fn build_tui_secret_readiness_snapshot(
             "TUI teardown exceeded its cooperative deadline and was aborted"
         );
     }
-    let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
-    let _ = io::stdout().execute(DisableMouseCapture);
-    let _ = io::stdout().execute(crossterm::event::PopKeyboardEnhancementFlags);
-    let _ = disable_raw_mode();
-    let _ = io::stdout().execute(crossterm::terminal::LeaveAlternateScreen);
-    let _ = io::stdout().flush();
+    terminal_session.restore();
 
     // Save session + profile
     if !cli.no_session {
@@ -7757,7 +7741,7 @@ fn format_agent_error(
             if raw.contains("api.responses.write") || raw.contains("insufficient permissions") {
                 return format!(
                     "⚠ Authentication error ({who}) — your session may have expired or \
-                     lacks required permissions. Re-authenticate with /login and retry."
+                     lacks required permissions. Re-authenticate with /connect and retry."
                 );
             }
 
@@ -7772,7 +7756,7 @@ fn format_agent_error(
             return format!(
                 "⚠ Authentication error ({who}) — credentials were rejected.\n\
                  Raw: {truncated}\n\
-                 Re-authenticate with /login or check your API key."
+                 Re-authenticate with /connect or check your API key."
             );
         }
         _ => {}
@@ -9125,6 +9109,13 @@ async fn execute_remote_slash_command_with_supervisor(
     args: &str,
 ) -> omegon_traits::SlashCommandResponse {
     use crate::runtime_commands::canonical_slash_command;
+    if name == "connect" {
+        return SlashCommandResponse {
+            accepted: false,
+            output: Some(auth::operator_remote_connect_guidance().into()),
+        };
+    }
+
     use omegon_traits::SlashCommandResponse;
 
     if is_capacity_slash_command(name) {
@@ -9270,6 +9261,9 @@ fn remote_builtin_policy(
     name: &str,
     command: &crate::runtime_commands::CanonicalSlashCommand,
 ) -> RemoteBuiltinPolicy {
+    if name == "connect" {
+        return RemoteBuiltinPolicy::Deny;
+    }
     let registry_name = remote_registry_name_for_command(name, command);
     let Some(definition) = crate::command_registry::builtin_command_definitions()
         .into_iter()
@@ -10976,7 +10970,7 @@ mod tests {
             "got: {result}"
         );
         assert!(
-            result.contains("Re-authenticate with /login"),
+            result.contains("Re-authenticate with /connect"),
             "got: {result}"
         );
         // Should NOT expose internal scope names to the user
@@ -12293,6 +12287,16 @@ mod tests {
             ),
             RemoteBuiltinPolicy::RequiresBypass
         );
+    }
+
+    #[test]
+    fn connect_remote_setup_cannot_bypass_secure_interaction_requirement() {
+        let mut cli = Cli::try_parse_from(["omegon"]).unwrap();
+        cli.dangerously_bypass_permissions = true;
+        let command = crate::runtime_commands::CanonicalSlashCommand::AuthLogin("anthropic".into());
+        let rejection = reject_remote_builtin_command("connect", &command, &cli)
+            .expect("secure input is required even with bypass");
+        assert!(!rejection.accepted);
     }
 
     #[test]

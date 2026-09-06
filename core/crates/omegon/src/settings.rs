@@ -404,6 +404,13 @@ pub struct Settings {
     /// it never changes runtime posture, permissions, or tool policy.
     #[serde(default)]
     pub ui_presentation: crate::surfaces::layout::UiPresentationLevel,
+    #[serde(default)]
+    pub ui_terminal: crate::surfaces::layout::TerminalPresentation,
+    /// Persist only operator choices, never inferred defaults or CLI overrides.
+    #[serde(skip)]
+    pub ui_detail_preference: Option<crate::surfaces::layout::UiPresentationLevel>,
+    #[serde(skip)]
+    pub ui_terminal_preference: Option<crate::surfaces::layout::TerminalPresentation>,
 
     /// Source of the active persisted profile loaded for this runtime.
     #[serde(skip)]
@@ -759,6 +766,9 @@ impl Default for Settings {
             requested_context_class: None,
             tool_detail: ToolDetail::Detailed,
             ui_presentation: crate::surfaces::layout::UiPresentationLevel::Om,
+            ui_terminal: Default::default(),
+            ui_detail_preference: None,
+            ui_terminal_preference: None,
             startup_splash: StartupSplashMode::default(),
             startup_mouse_capture: StartupMouseCaptureMode::default(),
             profile_source: ProfileSource::BuiltInDefault,
@@ -1299,10 +1309,12 @@ pub struct Profile {
     /// Tool output density: "lean", "compact", "detailed", "verbose".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_detail: Option<String>,
-    /// UI presentation preference: "om", "active", or "full". Legacy
-    /// "lean"/"slim" values deserialize as Om.
+    /// Detail preference: "active" or "full". Legacy om/lean/slim mean Active.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_presentation: Option<String>,
+    /// Explicit terminal layout preference, independent of detail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_terminal: Option<crate::surfaces::layout::TerminalPresentation>,
 
     // ── Sandbox ──
     /// Sandbox isolation for delegate/cleave children.
@@ -1791,6 +1803,7 @@ impl Profile {
     /// Apply profile to settings (called at startup).
     pub fn apply_to(&self, settings: &mut Settings) {
         settings.profile_name = self.compact_label().map(ToOwned::to_owned);
+        settings.permissions = self.permissions.clone();
 
         if let Some(ref m) = self.last_used_model {
             settings.set_model(&format!("{}:{}", m.provider, m.model_id));
@@ -1839,6 +1852,11 @@ impl Profile {
             && let Ok(level) = crate::surfaces::layout::UiPresentationLevel::parse(level)
         {
             settings.ui_presentation = level;
+            settings.ui_detail_preference = Some(level);
+        }
+        if let Some(terminal) = self.ui_terminal {
+            settings.ui_terminal = terminal;
+            settings.ui_terminal_preference = Some(terminal);
         }
         if let Some(s) = self.sandbox {
             settings.sandbox = s;
@@ -1916,11 +1934,10 @@ impl Profile {
         } else {
             self.tool_detail = None;
         }
-        if settings.ui_presentation != crate::surfaces::layout::UiPresentationLevel::Om {
-            self.ui_presentation = Some(settings.ui_presentation.name().to_string());
-        } else {
-            self.ui_presentation = None;
-        }
+        self.ui_presentation = settings
+            .ui_detail_preference
+            .map(|value| value.name().to_string());
+        self.ui_terminal = settings.ui_terminal_preference;
         if settings.sandbox {
             self.sandbox = Some(true);
         } else {
@@ -2778,6 +2795,50 @@ impl crate::surfaces::settings::SettingsSurfaceProjection {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unrelated_profile_save_preserves_absent_ui_preferences() {
+        let settings = super::Settings {
+            ui_presentation: crate::surfaces::layout::UiPresentationLevel::Full,
+            ..Default::default()
+        };
+        let mut profile = super::Profile::default();
+        profile.capture_from(&settings);
+        assert!(profile.ui_presentation.is_none());
+    }
+
+    #[test]
+    fn invocation_override_does_not_replace_explicit_detail() {
+        let mut profile = super::Profile {
+            ui_presentation: Some("full".into()),
+            ..Default::default()
+        };
+        let mut settings = super::Settings::default();
+        profile.apply_to(&mut settings);
+        settings.ui_presentation = crate::surfaces::layout::UiPresentationLevel::Active;
+        profile.capture_from(&settings);
+        assert_eq!(profile.ui_presentation.as_deref(), Some("full"));
+    }
+    #[test]
+    fn explicit_default_detail_is_persisted_independently() {
+        use crate::surfaces::layout::{TerminalPresentation, UiPresentationLevel};
+        let settings = super::Settings {
+            ui_presentation: UiPresentationLevel::Active,
+            ui_detail_preference: Some(UiPresentationLevel::Active),
+            ui_terminal: TerminalPresentation::Inline,
+            ..Default::default()
+        };
+        let mut profile = super::Profile::default();
+        profile.capture_from(&settings);
+        assert_eq!(profile.ui_presentation.as_deref(), Some("active"));
+        assert!(profile.ui_terminal.is_none());
+        let mut restored = super::Settings::default();
+        profile.apply_to(&mut restored);
+        assert_eq!(
+            restored.ui_detail_preference,
+            Some(UiPresentationLevel::Active)
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -3260,6 +3321,22 @@ mod tests {
         assert!(p.extensions.permits("scry", &[], &[]));
         assert!(!p.extensions.permits("vox", &[], &[]));
         assert!(!p.extensions.permits("lipstyk", &[], &[]));
+    }
+
+    #[test]
+    fn profile_application_preserves_runtime_tool_permission_policy() {
+        let profile: Profile =
+            serde_json::from_str(r#"{"permissions":{"tools":{"write":"prompt","bash":"deny"}}}"#)
+                .unwrap();
+        let mut settings = Settings::default();
+        profile.apply_to(&mut settings);
+        assert_eq!(settings.permissions.tools, profile.permissions.tools);
+        let cleared = Profile::default();
+        cleared.apply_to(&mut settings);
+        assert!(
+            settings.permissions.tools.is_empty(),
+            "switching profile replaces the prior policy"
+        );
     }
 
     #[test]

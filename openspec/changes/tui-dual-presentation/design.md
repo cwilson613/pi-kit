@@ -1,0 +1,218 @@
+# Shared TUI presentation design
+
+## Product and configuration contract
+
+Use two independent concepts: terminal presentation (`inline`, `fullscreen`) and
+detail (`active`, `full`). Keep presentation policy in the main crate; there is no
+new public runtime protocol or shared-contract crate in this change.
+
+| Entry with no explicit preference | Terminal presentation | Detail |
+|---|---|---|
+| `om` | inline | active |
+| `omegon`, direct Cargo binary, `just run` | fullscreen | full |
+
+Add interactive CLI overrides `--tui inline|fullscreen` and `--ui active|full`.
+Resolve each axis independently: explicit CLI value, explicit selected-profile
+value, entry default. Preserve existing profile selection/precedence. Rust
+profile fields are `ui_terminal` and existing `ui_presentation` (JSON
+`uiTerminal` and `uiPresentation`); update the
+editor-facing Pkl vocabulary alongside the runtime parser.
+
+The installed launcher sets an internal entry marker, `OMEGON_LAUNCH_NAME`, to
+its own recognized basename for the target process. It does not prepend CLI
+arguments or inspect prompt contents. The binary uses the recognized marker,
+then a recognized argv[0], then `omegon`. Do not let an inherited marker make
+an `omegon` launcher act as `om`. Child `om`/`omegon` launchers overwrite it.
+Headless, remote, maintenance, help, and version execution do not initialize a
+terminal; existing `--which` continues reporting the resolved artifact.
+
+Keep resolved values separate from explicit persisted preferences. Launch defaults
+and CLI overrides are invocation-local. An unrelated settings update or exit save
+must preserve absent preferences. `/ui active` and `/ui full` remain explicit
+persisted detail selections. `/ui terminal inline|fullscreen` changes the current
+session's base presentation only; file configuration controls persistent terminal
+preference. `/ui` reports both axes and whether detail came from a default or an
+explicit preference. No duplicated registry command family is needed: extend the
+existing UI command path, retaining frontend availability metadata.
+
+Read legacy `om`, `lean`, and `slim` detail values as Active. Accept their existing
+slash aliases during migration; help and newly written preferences use Active/Full.
+This intentionally retires the old quiet Om density. Missing profile values retain
+entry defaults. Existing explicit Active or Full values continue to override them.
+Keep canonical conversation/export semantics stable while migrating internal enum
+references. Do not rewrite unrelated fields or files during startup.
+
+## Shared application, two compositions
+
+Retain one App, one event loop, one editor state, one InteractionState, and one
+canonical conversation. Extract only reusable pieces needed by both layouts:
+frame preparation, composer, bounded live activity/preview, and decision rendering.
+Existing browser/menu/diff/inspection widgets remain their current owners.
+
+Move state refresh out of layout-specific branches. Input/event admission,
+supervisor completion reconciliation, stream scheduling, and commands run before
+presentation work. Frame preparation runs once per scheduled frame. Rendering
+can retain geometry/hit-area registration; this is not a whole-App purity refactor.
+Continue existing stream acknowledgement semantics only after a successful active
+draw. Runtime completion must remain independent of whether text was displayed.
+
+Inline initially reserves eight rows, clipped to actual terminal height. Give the
+shared editor up to four rows including its borders and primary hint, and allocate
+the remaining rows to status and bounded live preview. Long drafts scroll inside
+the same editor. Decisions use the existing fullscreen composition with scrolling
+context. The first implementation always borrows fullscreen for a decision: the
+complete shared widget needs more than the remaining live rows. This avoids a
+second permission layout or input policy. At unusably tiny geometry,
+show a resize indication and never render misleading partial action labels.
+
+Inline Full increases evidence/detail in live preview, newly published completed
+output, and inspectors. It does not mount persistent dashboard/instrument panels.
+Fullscreen Active retains the workspace layout while reducing detail. Requested
+surface visibility remains stored independently of layout eligibility; returning
+fullscreen restores those preferences. Existing `/ui show|hide|toggle` must explain
+when a requested panel is available in the fullscreen workspace.
+
+Slash autocomplete stays attached to the shared composer with geometry clamped to
+the live area. File-reference pickers use their existing fullscreen selector. Rich navigation (Project, menus, process/diff/copy inspectors, extension
+modals, tutorial, command panels) borrows fullscreen from inline. Images use textual
+alt/path references in published history and existing rich inspection when available.
+
+## Navigation and terminal ownership
+
+Separate base presentation from effective presentation. A mounted rich root or a
+decision that needs more space can require fullscreen temporarily. Derive required
+space from shared interaction state; do not create another input priority chain.
+The root's fullscreen requirement survives covering decisions and nested surfaces.
+Return to the base only after the root and any fullscreen-required decision close.
+Changing the base while covered takes effect after the covering requirement ends.
+
+Adapt the neighbor's two Terminal buffers into the local TerminalSessionHandle.
+The coordinator selects buffers; the existing TerminalModes ledger owns terminal
+mode truth. One lock serializes draw, publication, mode changes, and primary-screen
+handoffs. The inline Terminal remains alive across visits. A fullscreen-first launch
+creates inline lazily on first return to primary, rather than reserving inline rows
+before entering fullscreen. There is never more than one active stdout writer.
+
+Inline uses raw mode and supported paste/keyboard enhancements, without mouse
+capture or alternate screen. Fullscreen uses alternate screen and the operator's
+mouse preference. Borrowing fullscreen does not permanently change that preference.
+Inline startup must bypass fullscreen splash, global background fill, and Clear(All),
+including the current unconditional setup in run_tui. Style only owned live cells
+and published content; restore default output attributes on return to the shell.
+Defer image-protocol discovery until a rich image surface needs it. An explicitly
+requested tutorial can borrow fullscreen through the same navigation contract.
+Retain file-based interactive logging; route live diagnostics through existing
+semantic notifications rather than write uncoordinated stdout/stderr into the UI.
+Failure tracks only successfully changed modes. If rollback cannot restore the
+expected surface, stop rendering and restore the terminal through existing cleanup;
+never claim a usable inline state solely because an enum was reset.
+
+On successful return, autoresize the preserved inline Terminal before publication,
+invalidate its live buffer, and redraw. Do not clear saved history. Guarded I/O must
+reject a publication call against fullscreen: Ratatui otherwise permits a silent
+no-op. Existing shell/tutorial handoff, explicit export, signals, normal exit, and
+panic restoration use the same owner. Uncatchable termination is outside restoration
+guarantees. Synchronous primary scopes restore preferences on operational failure.
+
+## Incremental publication
+
+Canonical conversation remains the data source. Retain only bounded prepared text
+plus a cursor describing attachment, source generation, finalized range, and offset.
+Extend the existing publication owner and settlement vocabulary rather than add a
+second pending transcript. Do not serialize or hash the full conversation on each
+frame. Initial discovery and generation replacement must also yield under budgets.
+
+Publish accepted user input once. During a running turn, display a bounded live
+preview and activity in the live area. Publish assistant/tool outcome groups after
+authoritative turn finalization, including cancellation/failure, so later tool
+metadata cannot rewrite an already published Active summary. Keep shared projection
+rules for outcomes versus evidence; add a bounded range entry point where needed.
+Standalone informational records can publish once stable. Active deferred operations
+remain inspectable; later terminal outcomes publish as new observations.
+
+On attachment/resume, print a bounded session identity summary and begin publication
+at the current finalized boundary; do not automatically dump old saved history.
+The shared fullscreen transcript exposes history. A fullscreen-first session uses
+the attachment boundary if it later switches inline, publishing work completed
+since attachment in bounded batches. Temporary visits retain the committed cursor.
+
+Prepared chunks carry the source generation, detail revision, width, and source
+offsets. Detail or width changes discard only uncommitted formatting. Published text
+stays as originally printed. Once a record starts publishing, retain its chosen
+detail until its remaining chunks settle; later records use the new preference.
+Split long logical lines and Unicode content without dropping or duplicating text.
+Measure wrapped display rows, not newline count, and split before converting to u16.
+Apply existing safe display treatment to provider/tool text before terminal output;
+raw ESC/OSC control content must not become terminal commands. Keep producer and
+content provenance intact when selecting that treatment.
+
+Budget discovery and formatting together: at most 64 KiB source text, 64 records,
+1,000 rendered rows, 65,536 buffer cells, and a cooperative 5 ms preparation slice.
+Stop at the first limit, retaining a within-record cursor. Bound scratch allocation
+before parsing/wrapping; never preformat a megabyte record to discover it is too big.
+Inject clock/budget accounting for deterministic tests. These are application work
+limits, not a hard deadline for blocking OS writes. Perform at most one publication
+batch per event-loop cycle after admitting input, decisions, and lifecycle events.
+
+Settle Committed only after insertion and backend flush succeed. KnownFailure
+means no terminal output was attempted and leaves the cursor available for retry
+on a subsequent relevant event. Any error after writes may begin is Ambiguous:
+disable automatic publication for this attachment, show a persistent degraded
+indication, and retain managed transcript/export access. Do not automatically reset
+the attachment to retry uncertain content. Successful repeated draws and retries of
+known non-writes cannot duplicate output; physical exactly-once is not promised.
+
+Session replacement and canonical-history replacement invalidate prepared chunks
+through an explicit generation change at the mutation owner. On compaction/rewrite,
+preserve printed history, publish a bounded boundary notice, and resume from the new
+finalized boundary rather than replaying the replacement prefix. Do not use source
+indices across generations. Late settlement from an old generation is rejected.
+
+Explicit `/session-export scrollback` remains an operator-requested snapshot action.
+It must serialize through terminal ownership and re-anchor inline geometry afterward.
+It does not reset the automatic cursor or silently count as automatic delivery.
+An explicit snapshot may intentionally repeat visible history and must be labeled.
+Normal exit drains one bounded pending slice and reports any remaining backlog as
+available in the saved/managed transcript; it does not block exit to print everything.
+
+## Implementation order and completion boundary
+
+First write resolution and terminal-boundary tests, then extract shared rendering
+under existing fullscreen regressions. Wire inline behind the explicit flag and
+complete the captured transition slice before changing installed entry defaults.
+Follow with failure/backlog coverage, configuration migration, and all native clients.
+Keep feature, formatting, and generated-state commits separate.
+
+No speculative dependency update, protocol change, plugin framework, or universal
+widget abstraction is required. Empirical flicker and terminal geometry questions
+are acceptance work. The prior macOS loader stall can block runtime verification,
+but does not require a different TUI architecture or prevent implementation start.
+
+## Implementation refinements
+
+Automatic delivery stores a generation, canonical segment index, field/byte cursor,
+and a bounded operation-summary accumulator. The shared semantic outcome reducer
+consumes at most 512 bytes from each tool name/result. Active aggregation scans
+incrementally, preserving its scan position between budgets; no committed prefix
+is exported or hashed. Source rewrites after the unpublished frontier invalidate
+only unfinished scanning. Rewrites touching committed content establish a new
+boundary and show a notice without replaying previous history.
+
+Explicit primary output clears the owned live rows first. It increments the
+existing presentation revision, causing the coordinator to acquire a new inline
+anchor at the resulting cursor. Ordinary alternate visits retain the original
+inline Terminal and resize it before insertion. A failed acquisition propagates
+to the existing session cleanup; there is no speculative second rollback ledger.
+
+Normal exit performs the ordinary one-batch publication opportunity and reports
+remaining completed output if the bounded cursor has not caught up. It does not
+block shutdown until an arbitrary transcript has drained.
+
+## Subsequent operator direction
+
+Decorative footer inference/tool telemetry is now OBE. The current shared-layout
+slice preserves existing Full widgets only as a migration baseline. Their core
+retirement, including exclusive code and animation scheduling, is planned in
+[tui-telemetry-addon-retirement](../tui-telemetry-addon-retirement/proposal.md).
+Active/Full remain evidence preferences; future telemetry is an optional addon
+capability rather than a reason to retain core instrument panels.

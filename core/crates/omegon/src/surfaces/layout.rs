@@ -7,12 +7,72 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Terminal ownership is independent of content density and runtime policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalPresentation {
+    Inline,
+    #[default]
+    Fullscreen,
+}
+
+impl TerminalPresentation {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Inline => "inline",
+            Self::Fullscreen => "fullscreen",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "inline" => Ok(Self::Inline),
+            "fullscreen" => Ok(Self::Fullscreen),
+            _ => Err(format!(
+                "Unknown terminal presentation: {value}; use inline or fullscreen"
+            )),
+        }
+    }
+}
+
+/// Only recognized entry identities participate in default resolution.
+pub fn ui_entry_name<'a>(marker: Option<&'a str>, argv0: &'a str) -> &'a str {
+    marker
+        .filter(|v| matches!(*v, "om" | "omegon"))
+        .or_else(|| {
+            std::path::Path::new(argv0)
+                .file_name()
+                .and_then(|v| v.to_str())
+                .filter(|v| matches!(*v, "om" | "omegon"))
+        })
+        .unwrap_or("omegon")
+}
+
+pub fn resolve_ui_preferences(
+    entry: &str,
+    profile_terminal: Option<TerminalPresentation>,
+    profile_detail: Option<UiPresentationLevel>,
+    cli_terminal: Option<TerminalPresentation>,
+    cli_detail: Option<UiPresentationLevel>,
+) -> (TerminalPresentation, UiPresentationLevel) {
+    let defaults = if entry == "om" {
+        (TerminalPresentation::Inline, UiPresentationLevel::Active)
+    } else {
+        (TerminalPresentation::Fullscreen, UiPresentationLevel::Full)
+    };
+    (
+        cli_terminal.or(profile_terminal).unwrap_or(defaults.0),
+        cli_detail.or(profile_detail).unwrap_or(defaults.1),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UiPresentationLevel {
     #[default]
-    #[serde(alias = "lean", alias = "slim")]
+    #[serde(skip_deserializing)]
     Om,
+    #[serde(alias = "om", alias = "lean", alias = "slim")]
     Active,
     Full,
 }
@@ -28,7 +88,7 @@ impl UiPresentationLevel {
 
     pub fn parse(value: &str) -> Result<Self, String> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "om" | "lean" | "slim" => Ok(Self::Om),
+            "om" | "lean" | "slim" => Ok(Self::Active),
             "active" => Ok(Self::Active),
             "full" => Ok(Self::Full),
             other => Err(format!("Unknown UI presentation level: {other}")),
@@ -39,7 +99,7 @@ impl UiPresentationLevel {
         match self {
             Self::Om => Self::Active,
             Self::Active => Self::Full,
-            Self::Full => Self::Om,
+            Self::Full => Self::Active,
         }
     }
 
@@ -264,6 +324,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_density_maps_to_active() {
+        for name in ["om", "lean", "slim"] {
+            assert_eq!(
+                UiPresentationLevel::parse(name),
+                Ok(UiPresentationLevel::Active)
+            );
+        }
+    }
+
+    #[test]
+    fn entry_defaults_resolve_independently() {
+        assert_eq!(
+            resolve_ui_preferences("om", None, None, None, None),
+            (TerminalPresentation::Inline, UiPresentationLevel::Active)
+        );
+        assert_eq!(
+            resolve_ui_preferences("omegon", None, None, None, None),
+            (TerminalPresentation::Fullscreen, UiPresentationLevel::Full)
+        );
+        assert_eq!(
+            resolve_ui_preferences(
+                "om",
+                Some(TerminalPresentation::Fullscreen),
+                Some(UiPresentationLevel::Full),
+                Some(TerminalPresentation::Inline),
+                None
+            ),
+            (TerminalPresentation::Inline, UiPresentationLevel::Full)
+        );
+        assert_eq!(ui_entry_name(Some("garbage"), "/bin/om"), "om");
+        assert_eq!(ui_entry_name(None, "cargo-test"), "omegon");
+    }
+
+    #[test]
     fn om_is_the_default_presentation() {
         let policy = UiPresentationPolicy::default();
         assert_eq!(policy.level, UiPresentationLevel::Om);
@@ -278,15 +372,15 @@ mod tests {
         let policy = UiPresentationPolicy::om().next();
         assert_eq!(policy.level, UiPresentationLevel::Active);
         assert_eq!(policy.next().level, UiPresentationLevel::Full);
-        assert_eq!(policy.next().next().level, UiPresentationLevel::Om);
+        assert_eq!(policy.next().next().level, UiPresentationLevel::Active);
     }
 
     #[test]
-    fn legacy_names_parse_as_om() {
+    fn legacy_names_parse_as_active() {
         for name in ["om", "lean", "slim"] {
             assert_eq!(
                 UiPresentationLevel::parse(name),
-                Ok(UiPresentationLevel::Om)
+                Ok(UiPresentationLevel::Active)
             );
         }
     }

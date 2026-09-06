@@ -30,9 +30,11 @@ pub mod glyphs;
 mod history;
 pub mod horizontal_line;
 pub mod image;
+mod inline;
 pub mod inline_render;
 mod input;
 pub mod instruments;
+mod interaction;
 pub mod layout_projection;
 #[cfg(test)]
 mod liveness_contract_tests;
@@ -40,9 +42,12 @@ mod markdown_publication;
 mod menu_effects;
 pub(crate) mod menu_surface;
 mod native_publication;
+mod terminal_buffers;
+use crate::surfaces::layout::TerminalPresentation;
 pub mod operation_lifecycle_projection;
 pub mod permission_lane;
 pub mod process_viewer;
+mod project_browser;
 mod render;
 mod runtime_trace;
 pub mod segment_components;
@@ -61,6 +66,9 @@ mod streaming_presentation;
 pub mod tab_bar;
 mod terminal_input;
 mod terminal_session;
+use terminal_presentation::TerminalMode;
+pub(crate) use terminal_session::TerminalSessionHandle;
+mod terminal_presentation;
 pub mod theme;
 pub mod tool_inspection;
 pub mod turn_tool_projection;
@@ -136,15 +144,8 @@ use segments::SegmentMeta;
 use std::io;
 use std::time::Duration;
 
-use crossterm::ExecutableCommand;
+use crossterm::event::MouseEventKind;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton};
-use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
 use omegon_traits::{AgentEvent, PermissionPersistence, PermissionRequestKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -168,7 +169,7 @@ use self::menu_effects::{
     MenuCommandOutcome, MenuRefreshTarget, SettingsRowAction, SettingsRowTarget,
 };
 use self::menu_surface::{ActiveMenu, MenuMode};
-use self::permission_lane::{format_permission_prompt, permission_response_for_key};
+use self::permission_lane::permission_response_for_key;
 use self::segments::{SegmentContent, SegmentExportMode, SegmentRenderMode};
 use self::settings_menu::SelectorKind;
 #[cfg(test)]
@@ -427,6 +428,10 @@ struct App {
     conversation: ConversationView,
     stream_presentation: streaming_presentation::StreamingPresentationController,
     native_publication: native_publication::NativePublicationState,
+    base_terminal: TerminalPresentation,
+    inline_active: bool,
+    publication_boundary: usize,
+    terminal_session: Option<TerminalSessionHandle>,
     agent_active: bool,
     should_quit: bool,
     turn: u32,
@@ -517,6 +522,7 @@ struct App {
     session_row: statusline::SessionRow,
     /// Structured session plan snapshot for the active Workbench panel.
     workbench_state: WorkbenchState,
+    project_browser: Option<project_browser::ProjectBrowser>,
     tool_inspection_target: Option<ToolInspectionTarget>,
     activity_tools: std::collections::VecDeque<ActivityToolState>,
     /// Explicit Slim turn state rendered in the session row.
@@ -566,6 +572,7 @@ struct App {
     >,
     /// Human-readable context for the pending permission prompt.
     pending_permission_context: Option<PendingPermissionContext>,
+    interaction: interaction::InteractionState,
     /// Pending manual-action wait prompt — waiting for operator confirmation.
     pending_operator_wait: Option<
         std::sync::Arc<
@@ -617,6 +624,7 @@ struct App {
     session_activity_cache: crate::surfaces::session_activity::SessionActivityCache,
     /// Monotonic identity of the active interactive runtime prompt.
     runtime_turn_id: Option<u64>,
+    terminal_outcome_notice: Option<(u64, &'static str)>,
     session_view_binding: Option<crate::session_consumers::SessionViewBinding>,
     session_view_generation: u64,
     session_projection_frontier: Option<u64>,
@@ -910,15 +918,24 @@ impl App {
     }
 
     pub fn new(settings: crate::settings::SharedSettings) -> Self {
-        let (model_id, model_provider, presentation_level) = {
+        let (model_id, model_provider, presentation_level, base_terminal) = {
             let s = settings.lock().unwrap();
-            (s.model.clone(), s.provider().to_string(), s.ui_presentation)
+            (
+                s.model.clone(),
+                s.provider().to_string(),
+                s.ui_presentation,
+                s.ui_terminal,
+            )
         };
         Self {
             editor: Editor::new(),
             conversation: ConversationView::new(),
             stream_presentation: streaming_presentation::StreamingPresentationController::default(),
             native_publication: native_publication::NativePublicationState::default(),
+            base_terminal,
+            inline_active: base_terminal == TerminalPresentation::Inline,
+            publication_boundary: 0,
+            terminal_session: None,
             agent_active: false,
             should_quit: false,
             turn: 0,
@@ -973,6 +990,7 @@ impl App {
             )),
             session_row: statusline::SessionRow::default(),
             workbench_state: WorkbenchState::default(),
+            project_browser: None,
             completed_plan_history_available: false,
             tool_inspection_target: None,
             activity_tools: std::collections::VecDeque::new(),
@@ -997,6 +1015,7 @@ impl App {
             tutorial_overlay: None,
             pending_permission: None,
             pending_permission_context: None,
+            interaction: Default::default(),
             pending_operator_wait: None,
             pending_operator_wait_context: None,
             update_rx: None,
@@ -1018,33 +1037,45 @@ impl App {
             runtime_queue_snapshot: None,
             session_activity_cache: Default::default(),
             runtime_turn_id: None,
+            terminal_outcome_notice: None,
             session_view_binding: None,
             session_view_generation: 0,
             session_projection_frontier: None,
         }
     }
 
-    fn set_mouse_capture(&mut self, enabled: bool) {
+    fn set_mouse_capture(&mut self, enabled: bool) -> bool {
         if self.mouse_capture_enabled == enabled {
-            return;
+            return true;
+        }
+        if let Some(session) = &self.terminal_session
+            && !self.inline_active
+            && let Err(error) = session.set_mode(TerminalMode::MouseCapture, enabled)
+        {
+            tracing::warn!(%error, "mouse capture transition failed");
+            self.show_toast(
+                "Could not change terminal mouse mode",
+                ratatui_toaster::ToastType::Warning,
+            );
+            return false;
         }
         self.mouse_capture_enabled = enabled;
-        if enabled {
-            let _ = io::stdout().execute(EnableMouseCapture);
-        } else {
-            let _ = io::stdout().execute(DisableMouseCapture);
-        }
+        true
     }
 
     fn enable_mouse_interaction_mode(&mut self) {
-        self.terminal_copy_mode = false;
-        self.set_mouse_capture(true);
+        if self.set_mouse_capture(true) {
+            self.terminal_copy_mode = false;
+        }
     }
 
     fn apply_ui_presentation(&mut self, policy: UiPresentationPolicy) {
         self.ui_presentation = policy;
         self.ui_surfaces = policy.surfaces;
-        self.update_and_persist(|settings| settings.ui_presentation = policy.level);
+        self.update_and_persist(|settings| {
+            settings.ui_presentation = policy.level;
+            settings.ui_detail_preference = Some(policy.level);
+        });
     }
 
     fn apply_ui_preset(&mut self, surfaces: UiSurfaces) {
@@ -1054,7 +1085,7 @@ impl App {
             let level = if surfaces == UiSurfaces::full() {
                 UiPresentationLevel::Full
             } else {
-                UiPresentationLevel::Om
+                UiPresentationLevel::Active
             };
             UiPresentationPolicy::named(level)
         };
@@ -1122,8 +1153,19 @@ impl App {
 
     fn ui_status_text(&self) -> String {
         let mode = self.ui_presentation.preset_name();
+        let terminal = self.base_terminal.name();
+        let source = self
+            .settings()
+            .ui_detail_preference
+            .map(|v| {
+                format!(
+                    "saved preference: {}; invocation overrides remain local",
+                    v.name()
+                )
+            })
+            .unwrap_or_else(|| "no saved preference; invocation default or override".into());
         format!(
-            "UI presentation: {mode}\n  dashboard: {}\n  instruments: {}\n  footer: {}\n  activity: {}\n\nPresentation levels\n  /ui om      (quiet outcomes + essential attention)\n  /ui active  (bounded live workflow visibility)\n  /ui full    (persistent operational evidence)\n\nCompatibility aliases\n  /ui lean | /ui slim → om\n\nSurfaces\n  /ui show|hide|toggle dashboard|instruments|footer|activity",
+            "Terminal: {terminal}\nUI presentation: {mode} ({source})\n  dashboard: {}\n  instruments: {}\n  footer: {}\n  activity: {}\n\nPresentation levels\n  /ui active  (bounded live workflow visibility)\n  /ui full    (persistent operational evidence)\n\nCompatibility aliases\n  /ui om | /ui lean | /ui slim → active\n\nTerminal layout (this session)\n  /ui terminal inline|fullscreen\n\nSurfaces (persistent panels are available in fullscreen)\n  /ui show|hide|toggle dashboard|instruments|footer|activity",
             if self.ui_surfaces.dashboard {
                 "on"
             } else {
@@ -1145,8 +1187,10 @@ impl App {
 
     fn set_terminal_copy_mode(&mut self, enabled: bool) {
         let changed = self.terminal_copy_mode != enabled;
+        if !self.set_mouse_capture(!enabled) {
+            return;
+        }
         self.terminal_copy_mode = enabled;
-        self.set_mouse_capture(!enabled);
         if !changed {
             return;
         }
@@ -1460,7 +1504,7 @@ impl App {
             || lower.contains("invalid api key")
             || lower.contains("invalid_api_key")
         {
-            return "Authentication failed. Use /auth login <provider> to re-authenticate.";
+            return "Authentication failed. Use /connect <provider> to re-authenticate.";
         }
         if lower.contains("status 403")
             || lower.contains("http 403")
@@ -1540,21 +1584,16 @@ impl App {
         let presentation = self.ui_presentation;
         let mut menu = MenuProjection::new("ui", "UI");
         menu.summary = Some(format!(
-            "Presentation: {}; dashboard: {}; instruments: {}; footer: {}; activity: {}.",
+            "Terminal: {}; detail: {}; dashboard: {}; instruments: {}; footer: {}; activity: {}.",
+            self.base_terminal.name(),
             presentation.preset_name(),
             if surfaces.dashboard { "on" } else { "off" },
             if surfaces.instruments { "on" } else { "off" },
             if surfaces.footer { "on" } else { "off" },
             if surfaces.activity { "on" } else { "off" },
         ));
-        menu.footer = Some("↑/↓ navigate · / filter · Enter run · o om · a active · f full · Esc close · /ui status for text readout".into());
+        menu.footer = Some("↑/↓ navigate · / filter · Enter run · a active · f full · Esc close · /ui status for text readout".into());
         menu.actions = vec![
-            {
-                let mut action = MenuActionProjection::command("ui.global.om", "Om", "/ui om");
-                action.key = Some("o".into());
-                action.close_policy = crate::surfaces::menu::MenuActionClosePolicy::RefreshMenu;
-                action
-            },
             {
                 let mut action =
                     MenuActionProjection::command("ui.global.active", "Active", "/ui active");
@@ -1603,35 +1642,22 @@ impl App {
             label: "UI".into(),
             groups: vec![
                 MenuGroupProjection {
+                    id: "ui.terminal".into(),
+                    label: "Terminal layout (this session)".into(),
+                    description: Some("Rich views temporarily use fullscreen. Closing them returns to this layout.".into()),
+                    rows: [TerminalPresentation::Inline, TerminalPresentation::Fullscreen].into_iter().map(|target| {
+                        let command = format!("/ui terminal {}", target.name());
+                        let mut row = surface_row(target.name(), target.name(), self.base_terminal == target, &command);
+                        row.id = format!("ui.terminal.{}", target.name());
+                        row.description = format!("Use {} after closing this menu; retain the current detail preference.", target.name());
+                        row
+                    }).collect(),
+                },
+                MenuGroupProjection {
                     id: "ui.presets".into(),
                     label: "Presentation levels".into(),
                     description: Some("Choose conversation and operational evidence density independently from surface visibility.".into()),
                     rows: vec![
-                        MenuRowProjection {
-                            id: "ui.preset.om".into(),
-                            label: "Om".into(),
-                            description: "Quiet outcomes and essential attention.".into(),
-                            value: Some(if presentation.level == UiPresentationLevel::Om && presentation.preset_name() != "custom" { "active" } else { "" }.into()),
-                            kind: MenuRowKind::Action,
-                            badges: vec![MenuBadgeProjection {
-                                label: if presentation.level == UiPresentationLevel::Om && presentation.preset_name() != "custom" { "active".into() } else { "level".into() },
-                                tone: if presentation.level == UiPresentationLevel::Om && presentation.preset_name() != "custom" { MenuBadgeTone::Success } else { MenuBadgeTone::Info },
-                            }],
-                            metadata: vec!["/ui om".into(), "/ui lean".into(), "/ui slim".into()],
-                            primary_action: Some({
-                                let mut action = MenuActionProjection::command("ui.preset.om.primary", "Om", "/ui om");
-                                action.close_policy = crate::surfaces::menu::MenuActionClosePolicy::RefreshMenu;
-                                action
-                            }),
-                            actions: vec![{
-                                let mut action = MenuActionProjection::command("ui.preset.om.action", "Om", "/ui om");
-                                action.key = Some("o".into());
-                                action.close_policy = crate::surfaces::menu::MenuActionClosePolicy::RefreshMenu;
-                                action
-                            }],
-                            safety: None,
-                            availability: None,
-                        },
                         MenuRowProjection {
                             id: "ui.preset.active".into(),
                             label: "Active".into(),
@@ -2323,7 +2349,7 @@ impl App {
                 value: None,
                 kind: MenuRowKind::Object,
                 badges: vec![MenuBadgeProjection { label: "metadata only".into(), tone: MenuBadgeTone::Neutral }],
-                metadata: vec!["values never displayed".into(), "provider auth lives under /auth".into()],
+                metadata: vec!["values never displayed".into(), "provider connections live under /connect".into()],
                 primary_action: None,
                 actions: vec![],
                 safety: None,
@@ -2339,7 +2365,7 @@ impl App {
                 value: None,
                 kind: MenuRowKind::Object,
                 badges: vec![MenuBadgeProjection { label: "empty".into(), tone: MenuBadgeTone::Neutral }],
-                metadata: vec!["values never displayed".into(), "provider auth lives under /auth".into()],
+                metadata: vec!["values never displayed".into(), "provider connections live under /connect".into()],
                 primary_action: None,
                 actions: vec![],
                 safety: None,
@@ -4163,20 +4189,28 @@ impl App {
     }
 
     fn open_auth_menu(&mut self) {
-        let providers = crate::auth::operator_auth_provider_ids()
-            .into_iter()
-            .map(crate::auth::provider_status_projection)
-            .collect();
-        let menu = auth_menu_projection::build_authentication_menu(
-            auth_menu_projection::AuthenticationMenuInputs {
-                providers,
-                route: self.provider_route_snapshot(),
-                selected_model: self.route_selected_model.clone(),
-                serving_model: self.route_serving_model.clone(),
-                route_warning: self.footer_data.route_warning.clone(),
-            },
-        );
+        let menu =
+            auth_menu_projection::build_authentication_menu(self.authentication_menu_inputs());
         self.open_menu_projection(menu);
+    }
+
+    fn open_auth_provider_menu(&mut self) {
+        let menu =
+            auth_menu_projection::build_available_provider_menu(self.authentication_menu_inputs());
+        self.open_menu_projection(menu);
+    }
+
+    fn authentication_menu_inputs(&self) -> auth_menu_projection::AuthenticationMenuInputs {
+        auth_menu_projection::AuthenticationMenuInputs {
+            providers: crate::auth::operator_auth_provider_ids()
+                .into_iter()
+                .map(crate::auth::provider_status_projection)
+                .collect(),
+            route: self.provider_route_snapshot(),
+            selected_model: self.route_selected_model.clone(),
+            serving_model: self.route_serving_model.clone(),
+            route_warning: self.footer_data.route_warning.clone(),
+        }
     }
 
     fn open_model_menu(&mut self) {
@@ -4912,26 +4946,12 @@ warning: {warning}"
                             "huggingface" => "HUGGING_FACE_TOKEN",
                             _ => unreachable!(),
                         };
-                        let acquisition =
-                            crate::capabilities::secrets::secret_console_url(key_name);
-                        if let Some(url) = acquisition {
-                            let url = url.to_string();
-                            std::thread::spawn(move || {
-                                let _ = open::that(url);
-                            });
-                        }
                         self.editor.start_secret_input(key_name);
                         // A login selector can be opened from the auth menu. Once hidden
                         // input owns the keyboard, remove that underlying menu so the
                         // first pasted character/Enter is not intercepted by stale UI.
                         self.active_menu = None;
-                        Some(if acquisition.is_some() {
-                            format!(
-                                "Opening the {value} key console… 🔒 paste {key_name} here (input is hidden):"
-                            )
-                        } else {
-                            format!("🔒 Paste your {value} API key (input is hidden):")
-                        })
+                        Some(format!("Paste {key_name} — input hidden"))
                     }
                     "github" => {
                         // GitHub uses dynamic resolution via gh CLI
@@ -5169,13 +5189,12 @@ warning: {warning}"
             .acknowledge_draw(generation, revision);
         let mut released = false;
         while let Some(event) = self.stream_presentation.take_drawn_event() {
-            self.handle_agent_event(event);
+            self.handle_drawn_agent_event(event);
             released = true;
         }
-        debug_assert!(
-            !self.stream_presentation.has_blocked_events(),
-            "drawn deferred events must drain completely"
-        );
+        // Replayed chunks may require another publication/draw before the
+        // remaining completion events can be released.
+
         released
     }
 
@@ -5531,7 +5550,7 @@ warning: {warning}"
                             "\n\nℹ Anthropic subscription detected. Type /help tutorial consent\nto enable interactive agent steps (uses subscription quota)."
                         }
                         tutorial::TutorialMode::OrientationOnly => {
-                            "\n\nℹ No B-grade cloud model found. Add an API key or\n/auth login openai-codex for the full interactive tutorial."
+                            "\n\nℹ No B-grade cloud model found. Add an API key or\n/connect openai-codex for the full interactive tutorial."
                         }
                         tutorial::TutorialMode::Interactive => "",
                     };
@@ -5554,14 +5573,14 @@ warning: {warning}"
                          Anthropic subscription detected. Omegon's ToS restricts automated use\n\
                          of subscriptions without your explicit consent.\n\n\
                          Type /help tutorial consent to enable interactive agent steps,\n\
-                         or add an API key / /auth login openai-codex for automatic access.\n\n\
+                         or add an API key / /connect openai-codex for automatic access.\n\n\
                          Tab to advance orientation steps, Esc to dismiss."
                             .to_string()
                     }
                     tutorial::TutorialMode::OrientationOnly => {
                         "Tutorial started (orientation mode).\n\n\
                          No B-grade cloud model found. Add an API key or\n\
-                         /auth login openai-codex for the full interactive tutorial.\n\n\
+                         /connect openai-codex for the full interactive tutorial.\n\n\
                          Tab to advance, Esc to dismiss."
                             .to_string()
                     }
@@ -5690,35 +5709,34 @@ warning: {warning}"
 
         let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omegon"));
 
-        // Restore terminal before exec
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = io::stdout().execute(crossterm::terminal::LeaveAlternateScreen);
-        let _ = io::stdout().execute(crossterm::event::DisableBracketedPaste);
-        let _ = io::stdout().execute(crossterm::event::DisableMouseCapture);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            let err = std::process::Command::new(&exe)
+        let launch = || -> io::Result<()> {
+            let mut command = std::process::Command::new(&exe);
+            command
                 .arg("--tutorial")
                 .arg("--no-splash")
                 .arg("--context-class")
                 .arg("compact")
-                .current_dir(&tutorial_dir)
-                .exec();
-            SlashResult::Display(format!("Failed to launch tutorial: {err}"))
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::process::Command::new(&exe)
-                .arg("--tutorial")
-                .arg("--no-splash")
-                .arg("--context-class")
-                .arg("compact")
-                .current_dir(&tutorial_dir)
-                .spawn();
-            self.should_quit = true;
-            SlashResult::Handled
+                .current_dir(&tutorial_dir);
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                Err(command.exec())
+            }
+            #[cfg(not(unix))]
+            {
+                command.spawn().map(|_| ())
+            }
+        };
+        let result = match &self.terminal_session {
+            Some(session) => session.with_primary_screen(launch),
+            None => launch(),
+        };
+        match result {
+            Ok(()) => {
+                self.should_quit = true;
+                SlashResult::Handled
+            }
+            Err(error) => SlashResult::Display(format!("Failed to launch tutorial: {error}")),
         }
     }
 
@@ -6203,7 +6221,9 @@ warning: {warning}"
     }
 
     fn prepare_interrupt_ui(&mut self) {
-        self.editor.clear_line();
+        if self.project_browser.is_none() {
+            self.editor.clear_line();
+        }
         self.conversation.conv_state.force_scroll_to_bottom();
         self.interrupt_pending = true;
         self.slim_turn_state = SlimTurnState::Interrupting;
@@ -6543,24 +6563,6 @@ warning: {warning}"
         )
     }
 
-    fn restore_tui_after_native_scrollback(
-        out: &mut io::Stdout,
-        keyboard_enhancement: bool,
-        mouse_capture: bool,
-    ) -> std::io::Result<()> {
-        out.execute(EnterAlternateScreen)?;
-        enable_raw_mode()?;
-        if keyboard_enhancement {
-            let _ = out.execute(PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-            ));
-        }
-        if mouse_capture {
-            let _ = out.execute(EnableMouseCapture);
-        }
-        Ok(())
-    }
-
     fn write_session_transcript_markdown_to_dir(
         &self,
         dir: &std::path::Path,
@@ -6700,17 +6702,16 @@ warning: {warning}"
             }
         };
 
-        let mouse_capture = self.mouse_capture_enabled;
-        let keyboard_enhancement = self.keyboard_enhancement;
-        let result = (|| -> std::io::Result<()> {
+        let Some(session) = self.terminal_session.clone() else {
+            self.show_toast(
+                "Native terminal is not attached",
+                ratatui_toaster::ToastType::Warning,
+            );
+            return;
+        };
+        let result = session.with_primary_screen(|| -> std::io::Result<()> {
             use std::io::Write;
             let mut out = io::stdout();
-            let _ = disable_raw_mode();
-            let _ = out.execute(DisableMouseCapture);
-            if keyboard_enhancement {
-                let _ = out.execute(PopKeyboardEnhancementFlags);
-            }
-            out.execute(LeaveAlternateScreen)?;
             writeln!(out)?;
             if prepared.range.start == 0 {
                 writeln!(out, "----- Omegon transcript -----")?;
@@ -6722,8 +6723,8 @@ warning: {warning}"
             }
             writeln!(out)?;
             out.flush()?;
-            Self::restore_tui_after_native_scrollback(&mut out, keyboard_enhancement, mouse_capture)
-        })();
+            Ok(())
+        });
 
         let delivery = if result.is_ok() {
             native_publication::DeliveryResult::Committed
@@ -6738,16 +6739,10 @@ warning: {warning}"
             let message = if prepared.range.end == transcript.len() {
                 "Transcript printed to native scrollback"
             } else {
-                "Transcript chunk printed; run /print again to continue"
+                "Transcript chunk printed; run /session-export scrollback again to continue"
             };
             self.show_toast(message, ratatui_toaster::ToastType::Success);
         } else {
-            let mut out = io::stdout();
-            let _ = Self::restore_tui_after_native_scrollback(
-                &mut out,
-                keyboard_enhancement,
-                mouse_capture,
-            );
             self.show_toast(
                 "Native scrollback delivery is uncertain; blind retry disabled",
                 ratatui_toaster::ToastType::Warning,
@@ -7171,6 +7166,7 @@ fn startup_mouse_capture_enabled(mode: crate::settings::StartupMouseCaptureMode)
 /// coordinator through channels.
 /// Configuration for the TUI — passed from main.
 pub struct TuiConfig {
+    pub(crate) terminal_session: TerminalSessionHandle,
     pub cwd: String,
     pub is_oauth: bool,
     /// Present when a prior session was resumed; retained for runtime context.
@@ -7731,39 +7727,26 @@ pub async fn run_tui(
     cancel: SharedCancel,
     settings: crate::settings::SharedSettings,
 ) -> io::Result<()> {
-    let terminal_guard = terminal_session::TerminalSessionGuard::new();
+    let terminal_session = config.terminal_session.clone();
+    let mut rendered_terminal_revision = terminal_session.presentation_revision();
+    let terminal_guard =
+        terminal_session::TerminalSessionGuard::with_handle(terminal_session.clone());
     // Register process-terminal signals once, before terminal acquisition.
     // Recreating these listeners inside each loop iteration leaves SIGHUP gaps
     // where controlling-terminal loss can apply the default fatal action.
     let mut termination_signals = terminal_session::TerminationSignals::new()?;
-    enable_raw_mode()?;
-    terminal_guard.mark_raw();
+    terminal_session.set_mode(TerminalMode::Raw, true)?;
 
-    // Initialize image protocol detection AFTER raw mode (suppresses echo)
-    // but BEFORE alt screen (picker queries need the primary screen).
-    image::init_picker();
-
-    io::stdout().execute(EnterAlternateScreen)?;
-    terminal_guard.mark_alternate_screen();
-    // Set the terminal's own background color to our theme bg.
-    // This ensures the alternate screen buffer is filled with our color,
-    // not the user's terminal profile background. Without this, crossterm's
-    // diff optimizer may skip cells that haven't changed from the initial
-    // state, leaving the terminal's native background visible.
-    io::stdout().execute(crossterm::style::SetBackgroundColor(
-        crossterm::style::Color::Rgb { r: 2, g: 4, b: 8 },
-    ))?;
-    // Clear the screen with our bg so every pixel starts owned.
-    io::stdout().execute(crossterm::terminal::Clear(
-        crossterm::terminal::ClearType::All,
-    ))?;
+    let base_terminal = settings
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .ui_terminal;
     let mouse_capture_enabled = startup_mouse_capture_enabled(config.startup_mouse_capture);
-    if mouse_capture_enabled {
-        io::stdout().execute(EnableMouseCapture)?;
-        terminal_guard.mark_mouse_capture();
+    terminal_session.select_presentation(base_terminal, mouse_capture_enabled)?;
+    if base_terminal == TerminalPresentation::Fullscreen {
+        image::init_picker();
     }
-    io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
-    terminal_guard.mark_bracketed_paste();
+    terminal_session.set_mode(TerminalMode::BracketedPaste, true)?;
 
     // Enable Kitty keyboard protocol when the terminal supports it.
     // This lets crossterm distinguish Shift+Enter from Enter, which is
@@ -7772,14 +7755,10 @@ pub async fn run_tui(
     let has_keyboard_enhancement =
         crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
     if has_keyboard_enhancement {
-        io::stdout().execute(PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-        ))?;
-        terminal_guard.mark_keyboard_enhancement();
+        terminal_session.set_mode(TerminalMode::KeyboardEnhancement, true)?;
     }
 
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminals = terminal_buffers::TerminalBuffers::new(base_terminal)?;
 
     // Restore the terminal before forwarding any panic to the process hook.
     // The hook guard reinstates the prior hook when this TUI session ends.
@@ -7803,6 +7782,7 @@ pub async fn run_tui(
     );
 
     let mut app = App::new(settings.clone());
+    app.terminal_session = Some(terminal_session.clone());
     app.mouse_capture_enabled = mouse_capture_enabled;
     app.terminal_copy_mode = !mouse_capture_enabled;
     app.keyboard_enhancement = has_keyboard_enhancement;
@@ -7885,9 +7865,6 @@ pub async fn run_tui(
     crate::update::spawn_polling(update_tx, app.settings.clone());
     app.login_prompt_tx = config.login_prompt_tx;
 
-    // Default to slim/conversation-first startup. Operators can elevate
-    // to the full harness via /ui full, /unshackle, or /warp.
-    app.apply_ui_preset(UiSurfaces::lean());
     if !app.settings().is_slim()
         && let Ok(mut s) = app.settings.lock()
     {
@@ -7900,9 +7877,15 @@ pub async fn run_tui(
     app.dashboard.active_changes = config.initial.active_changes;
 
     // ── Splash screen with live capability inspection ─────────────
-    if !config.no_splash {
+    app.publication_boundary = app.conversation.segments().len();
+    app.native_publication.automatic.attach(
+        app.conversation.publication_generation(),
+        app.publication_boundary,
+    );
+
+    if !config.no_splash && base_terminal == TerminalPresentation::Fullscreen {
         startup_splash::run_startup_splash(
-            &mut terminal,
+            terminals.active(),
             &mut app,
             &mut events_rx,
             config.cwd.clone(),
@@ -7945,7 +7928,12 @@ pub async fn run_tui(
         // ── Splash replay (/splash command) ─────────────────────────
         if app.replay_splash {
             app.replay_splash = false;
-            startup_splash::run_replay_splash(&mut terminal, &mut app).await?;
+            terminals.select(
+                TerminalPresentation::Fullscreen,
+                app.mouse_capture_enabled,
+                &terminal_session,
+            )?;
+            startup_splash::run_replay_splash(terminals.active(), &mut app).await?;
         }
 
         // Operator input is latency-sensitive. Service a bounded batch before
@@ -8040,6 +8028,27 @@ pub async fn run_tui(
         // remains urgent and draws immediately.
         let now = std::time::Instant::now();
         scheduler.mark_timer_due(now);
+        let presentation = if app.requires_fullscreen() {
+            TerminalPresentation::Fullscreen
+        } else {
+            TerminalPresentation::Inline
+        };
+        if app.inline_active != (presentation == TerminalPresentation::Inline) {
+            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+        }
+        terminals.synchronize_primary(&terminal_session)?;
+        terminals.select(presentation, app.mouse_capture_enabled, &terminal_session)?;
+        app.inline_active = presentation == TerminalPresentation::Inline;
+        if !app.agent_active {
+            app.publication_boundary = app.conversation.segments().len();
+        }
+        if app.inline_active && app.publish_inline(terminals.active(), &terminal_session)? {
+            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+        }
+
+        if terminal_session.presentation_revision() != rendered_terminal_revision {
+            scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
+        }
         if scheduler.should_draw(now) {
             let drawn_revision = scheduler
                 .begin_draw()
@@ -8048,10 +8057,21 @@ pub async fn run_tui(
             let publication_revision = app.publish_stream_presentation();
             let draw_started = std::time::Instant::now();
             let mut callback_elapsed = Duration::ZERO;
-            terminal.draw(|f| {
-                let callback_started = std::time::Instant::now();
-                app.draw(f);
-                callback_elapsed = callback_started.elapsed();
+            terminal_session.with_presentation_io(presentation, || {
+                let terminal = terminals.active();
+                let revision = terminal_session.presentation_revision();
+                if revision != rendered_terminal_revision {
+                    terminal.clear()?;
+                    rendered_terminal_revision = revision;
+                }
+                terminal
+                    .draw(|f| {
+                        let callback_started = std::time::Instant::now();
+                        app.draw(f);
+                        terminal_session.track_inline_area(app.inline_active.then(|| f.area()));
+                        callback_elapsed = callback_started.elapsed();
+                    })
+                    .map(|_| ())
             })?;
             if let Some((generation, revision)) = publication_revision
                 && app.acknowledge_stream_presentation_draw(generation, revision)
@@ -8178,8 +8198,27 @@ pub async fn run_tui(
 
     // Restore every terminal mode through the same idempotent path used for
     // errors, panics, and signal-driven shutdown.
+    let unprinted = app
+        .native_publication
+        .automatic
+        .has_pending(app.publication_boundary);
+    if app.inline_active {
+        terminal_session
+            .with_presentation_io(TerminalPresentation::Inline, || terminals.active().clear())?;
+    }
     drop(panic_hook_guard);
     drop(terminal_guard);
+    if app.inline_active {
+        use std::io::Write;
+        write!(io::stdout(), "\x1b[0m\r\n")?;
+        if unprinted {
+            writeln!(
+                io::stdout(),
+                "Some completed output was not printed to terminal history; use the saved session transcript when available."
+            )?;
+        }
+        io::stdout().flush()?;
+    }
     Ok(())
 }
 
@@ -8607,8 +8646,8 @@ mod slash_command_parsing_tests {
         assert!(prompt.contains("Reason: grant required for this operation"));
         assert!(prompt.contains("Persist: project profile directory permission"));
         assert!(prompt.contains("Grant: /tmp"));
-        assert!(prompt.contains("[y] once"));
-        assert!(prompt.contains("[Shift+A] always for this directory"));
+        assert!(!prompt.contains("[y]"), "choices belong to prompt actions");
+        assert!(!prompt.contains("[Shift+A]"));
         assert!(!prompt.contains("[a] always + save"));
         assert!(!prompt.contains("outside trusted workspace"));
     }
@@ -8861,7 +8900,7 @@ mod slash_command_parsing_tests {
         };
         assert_eq!(
             slim_operator_hint(true, true, true, active, &context),
-            "permission · y once · Shift+A always · n deny"
+            "permission · respond to the visible prompt"
         );
         assert_eq!(
             slim_operator_hint(false, true, true, active, &context),

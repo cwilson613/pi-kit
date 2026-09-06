@@ -386,6 +386,23 @@ pub fn operator_auth_provider_help_list() -> String {
     operator_auth_provider_ids().join(", ")
 }
 
+pub(crate) fn operator_remote_connect_guidance() -> &'static str {
+    "Connection setup requires secure interactive input, which this client does not provide. Open om or omegon in a terminal and use /connect. No authentication was started."
+}
+
+/// Credential declarations also contain local endpoint configuration. Only
+/// actual API-key providers can use the hidden credential-entry surface.
+pub(crate) fn operator_api_key_name(provider: &ProviderCredential) -> Option<&'static str> {
+    if provider.auth_method != AuthMethod::ApiKey || matches!(provider.id, "dwarfstar" | "ollama") {
+        return None;
+    }
+    provider.env_vars.first().copied()
+}
+
+pub(crate) fn operator_oauth_setup_supported(provider: &ProviderCredential) -> bool {
+    matches!(provider.id, "anthropic" | "openai-codex" | "github-copilot")
+}
+
 pub fn operator_auth_unknown_provider_message(provider: &str) -> String {
     format!(
         "Unknown provider: {}. Use one of: {}",
@@ -400,7 +417,7 @@ pub fn operator_api_key_login_guidance(
     provider_label: &str,
 ) -> String {
     format!(
-        "{} uses hidden key entry in the TUI. Run /login, choose {}, then paste {} when prompted.",
+        "{} uses hidden key entry in the TUI. Run /connect, choose {}, then paste {} when prompted.",
         provider_label, provider_label, env_var
     )
 }
@@ -1445,13 +1462,13 @@ async fn accept_oauth_callback(
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             anyhow::bail!(
-                "Login timed out waiting for browser callback. Run /login again to retry."
+                "Login timed out waiting for browser callback. Run /connect again to retry."
             );
         }
         let (mut stream, _addr) = match tokio::time::timeout(remaining, listener.accept()).await {
             Ok(accepted) => accepted?,
             Err(_) => anyhow::bail!(
-                "Login timed out waiting for browser callback. Run /login again to retry."
+                "Login timed out waiting for browser callback. Run /connect again to retry."
             ),
         };
         let mut buf = [0u8; 4096];
@@ -2699,9 +2716,16 @@ pub fn auth_status_to_provider_statuses(status: &AuthStatus) -> Vec<ProviderStat
 pub(crate) fn provider_status_projection(
     provider_id: &str,
 ) -> crate::surfaces::menu::ProviderStatusProjection {
-    use crate::surfaces::menu::{ProviderAvailabilityProjection, ProviderStatusProjection};
-
     let credential = crate::route::CredentialLedger.probe(provider_id);
+    provider_status_from_credential(provider_id, &credential)
+}
+
+fn provider_status_from_credential(
+    provider_id: &str,
+    credential: &crate::route::CredentialState,
+) -> crate::surfaces::menu::ProviderStatusProjection {
+    use crate::route::CredentialState;
+    use crate::surfaces::menu::{ProviderAvailabilityProjection, ProviderStatusProjection};
     let display_name = provider_by_id(provider_id)
         .map(|provider| provider.display_name.to_string())
         .unwrap_or_else(|| provider_id.to_string());
@@ -2709,20 +2733,99 @@ pub(crate) fn provider_status_projection(
     ProviderStatusProjection {
         provider_id: provider_id.to_string(),
         display_name,
-        credential_state: credential.summary(),
-        credential_available,
-        availability: if credential_available {
-            ProviderAvailabilityProjection::Available
-        } else {
-            ProviderAvailabilityProjection::MissingCredentials
+        // Deserialization errors can include offending secret values. Keep the
+        // connection surface useful without projecting raw credential errors.
+        credential_state: match credential {
+            CredentialState::Unreadable { source, .. } => {
+                format!("unreadable credentials from {}", source.label())
+            }
+            _ => credential.summary(),
         },
-        remediation_command: (!credential_available).then(|| format!("/login {provider_id}")),
+        credential_available,
+        availability: match credential {
+            CredentialState::Valid { .. } => ProviderAvailabilityProjection::Available,
+            CredentialState::Expired { .. } => ProviderAvailabilityProjection::ExpiredCredentials,
+            CredentialState::Unreadable {
+                entry_present: true,
+                ..
+            } => ProviderAvailabilityProjection::UnreadableCredentials,
+            CredentialState::Unreadable {
+                entry_present: false,
+                ..
+            } => ProviderAvailabilityProjection::CredentialStoreUnavailable,
+            CredentialState::Missing { .. } => ProviderAvailabilityProjection::MissingCredentials,
+        },
+        remediation_command: (!credential_available).then(|| format!("/connect {provider_id}")),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_broken_store_does_not_establish_provider_connections_or_echo_values() {
+        use crate::surfaces::menu::ProviderAvailabilityProjection;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("auth.json");
+        std::fs::write(&path, "{").unwrap();
+        with_auth_json_path_env(Some(&path), || {
+            let row = provider_status_projection("connect-fixture");
+            assert_ne!(
+                row.availability,
+                ProviderAvailabilityProjection::UnreadableCredentials,
+                "a broken whole store does not prove this provider was ever configured"
+            );
+        });
+        std::fs::write(&path, r#"{"connect-fixture":{"type":"oauth","access":"fixture","refresh":"","expires":"secret-canary"}}"#).unwrap();
+        with_auth_json_path_env(Some(&path), || {
+            let state = crate::route::CredentialLedger.probe("connect-fixture");
+            assert!(
+                !format!("{state:?}").contains("secret-canary"),
+                "raw serde values must not reach route warnings"
+            );
+            assert_eq!(
+                provider_status_projection("connect-fixture").availability,
+                ProviderAvailabilityProjection::UnreadableCredentials
+            );
+        });
+    }
+
+    #[test]
+    fn connect_projects_typed_existing_credentials_without_secret_errors() {
+        use crate::route::{CredentialSource, CredentialState};
+        use crate::surfaces::menu::ProviderAvailabilityProjection;
+        let expired = provider_status_from_credential(
+            "openai",
+            &CredentialState::Expired {
+                source: CredentialSource::External,
+                refreshable: true,
+            },
+        );
+        assert_eq!(
+            expired.availability,
+            ProviderAvailabilityProjection::ExpiredCredentials
+        );
+        assert!(!expired.credential_available);
+        assert!(expired.credential_state.contains("external"));
+        assert_eq!(
+            expired.remediation_command.as_deref(),
+            Some("/connect openai")
+        );
+        let unreadable = provider_status_from_credential(
+            "openai",
+            &CredentialState::Unreadable {
+                source: CredentialSource::AuthJson,
+                detail: "invalid secret-canary".into(),
+                entry_present: true,
+            },
+        );
+        assert_eq!(
+            unreadable.availability,
+            ProviderAvailabilityProjection::UnreadableCredentials
+        );
+        assert!(!unreadable.credential_state.contains("secret-canary"));
+    }
 
     fn with_auth_json_path_env<T>(
         path: Option<&Path>,

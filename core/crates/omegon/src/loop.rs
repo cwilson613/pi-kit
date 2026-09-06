@@ -474,6 +474,7 @@ pub(crate) async fn run_release_coupled(
             .await;
         let system_prompt = assembled_context.system_prompt;
         let compatibility_messages = assembled_context.messages;
+        context_windows.validate_fixed_context(&system_prompt, &tool_defs)?;
         // User-image attachments are stored on canonical user messages directly.
 
         tracing::debug!(

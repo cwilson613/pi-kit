@@ -18,6 +18,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Authoritative TUI completion, idle reconciliation, and session reset now release abandoned permission and operator-wait queues while preserving the operator's draft and covered menu.
+
+- WezTerm compatibility trials release temporary resize panes once, before closing the main pane, and retain pane ownership when cleanup fails. Validation of this correction uses headless mocked trials.
+
+- Interactive startup now shows the resolved provider route and one scoped problem instead of a provider checklist. `/connect` opens existing connections with an explicit searchable Add provider view, preserves expired credentials, and reuses hidden API-key entry and supported OAuth flows. Key consoles open only on explicit request. `/login` remains compatible; remote CLI and ACP provide terminal setup guidance.
+
+- Native GUI acceptance now requires explicit `--interactive-gui` and client selection. Routine testing stays in a headless PTY. Native cleanup checks window closure separately from process exit, refuses shared-window closure, and stops the matrix if cleanup fails.
+
+- Interactive startup admits local inference manifests and cached evidence before selecting its first provider route. Slow background discovery no longer leaves faster release builds with an unavailable project route on the first turn.
+
+- Marked decorative footer inference/tool telemetry as superseded and planned its core retirement, with a future optional TUI addon boundary. The retirement plan includes code and animation-state removal; it does not claim those deletions are implemented yet.
+
+- `om` now opens a small inline TUI with Active detail; `omegon` opens the fullscreen workspace with Full detail. Both share the editor, navigation, runtime, and decision widgets. `--tui` and `--ui` override independent profile preferences; `/ui terminal` changes the session layout. Inline output publishes incrementally to shell history, and rich views temporarily borrow fullscreen. Legacy `om`/`lean`/`slim` detail values resolve to Active.
+
+- Permission prompts display one scope-correct set of choices and reserve space for them when context wraps. Project browser search now filters rows without losing drafts or covered selection, and narrow composers preserve the primary send/run hint before secondary help.
+
+- Native terminal compatibility trials can now be driven by the agent across Ghostty, WezTerm, iTerm2, kitty and Apple Terminal, with owned-window screenshots, current-view assertions and recorded fixture outcomes.
+
+- Added an operator terminal compatibility kit with fixed-build launchers for installed Ghostty, WezTerm, iTerm2, kitty and Apple Terminal clients. Trials use isolated local fixtures, preserve native terminal settings, record output locally, and retain build/client identity plus operator assessment sheets.
+
+- F2 opens a Project browser with Sessions and Work tabs. Operators can inspect the current or saved session, explicitly resume a saved session, read the current plan and workstream status, and return to their draft. Refresh preserves selection by item identity, approvals retain the browser underneath, and cancellation from the browser preserves the unsent draft. Captured terminal acceptance now exercises project navigation and a denied write while browsing Work.
+
+- TUI overlays now share rendering and input precedence, preserve covered navigation state, and prevent background scrolling or composer edits. Unwired extension actions report their limitation instead of false success. Startup, native transcript printing, shell handoff, tutorial handoff, and shutdown use shared terminal mode ownership with success-ordered recovery and full redraw after primary-screen round trips. Captured acceptance verifies native transcript output and restored terminal preferences.
+
+- Session-backed TUI startup prepares a validated semantic view before exposing clients, and new empty sessions display readiness without a missing-projection warning. Permission and manual-action prompts share visible/input ownership, queue arrivals, and preserve passive surface state. Profile application now propagates declared permission policy into runtime admission. Captured terminal acceptance exercises a denied write above Settings and return to the prior surface.
+
+- TUI deferred stream events now replay without requeueing behind their successors, preventing a completed answer from freezing input. Added an isolated tmux acceptance runner with a local streaming provider and attributable terminal captures for project-shell reconstruction.
+
+- Conversation compaction now budgets the retained recent suffix by estimated tokens as well as age, preserving complete turns and connected tool exchanges. Loop and manual callers apply the selected boundary, prior summaries feed subsequent compactions, and effective context policy reserves system and summary headroom. Oversized active groups remain intact with explicit planning diagnostics. Durable compaction now aligns current semantic sources instead of slicing stale request items, preserves post-request results, and validates retained-source replay. Incompatible or legacy/mixed projections fail admission before mutation.
+
+- MCP servers can configure separate startup, catalog, and execution deadlines. Unset phases preserve legacy timeout behavior; execution progress cannot extend deadlines, cancellation leaves unrelated calls running, and shutdown releases the client registry before service cleanup.
+
+- Project instructions now include every AGENTS.md from the active worktree root through cwd, with source labels and complete UTF-8 content. Linked worktrees use their own policy files; explicit shared symlinks remain supported and canonical sources are deduplicated. Unreadable policy fails preparation, and fixed instructions plus tool schemas and reply reserve that exceed model capacity fail before provider dispatch instead of truncating required guidance.
+
+- Completed the first three ROI-ranked OpenCode2 beta parity tasks: instruction discovery, MCP phase deadlines, and bounded reconnect verification and repairs. OpenSpec records test-first evidence and remaining limits; durable refresh, context retention, model presets, and broader lifecycle investigations retain separate follow-up criteria.
+
 - Added direct Anthropic support for Claude Fable 5.1 and restricted-access Claude Mythos 5.1, promoting Fable 5.1 as the Anthropic S-grade default and curated model. Requests use the line's required adaptive thinking, map Omegon thinking levels onto output effort, opt into safe thinking-block drops when mutable session prefixes invalidate bound reasoning, and automatically cache growing conversations to benefit from Fable 5.1's lower cache-read price. Cache reads and writes reported at stream start now remain visible in turn usage. The Claude Code OAuth user-agent now matches upstream 2.1.258, and provider drift checks follow the current Anthropic model section and current grade schema.
 
 - First-party runtime domains now have one machine-checked packaging class, canonical owner, runtime boundary, extraction disposition, and composition evidence. The composition gate rejects missing or duplicate domains, documentation drift, and any `core:*` claim without signed identity plus kernel-absence, additive-restoration, and full-product evidence.
@@ -51,6 +87,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 - Extracted domains in the composition matrix must now declare machine-checked kernel absence, additive restoration, and accumulated full-product evidence. The policy rejects missing or aliased rows, service and extension identity mismatches, retained absence after restoration, and extensions dropped from the full product.
 
 ### Fixed
+
+- WebSocket clients subscribe before snapshot delivery so completions during reconnect remain observable. Snapshots replay captured web-owned approvals with session isolation and redacted metadata; the browser reconciles snapshot and live approval prompts by identity. Regression fixtures verify durable admission deduplication and detached delegate result retrieval, while legacy prompt retries still require a client identity contract.
 
 - The Nix host-only distribution smoke now allows enough time for an uncached package build instead of canceling a healthy final derivation at the previous job limit.
 

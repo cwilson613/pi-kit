@@ -193,7 +193,9 @@ function renderPermissionPrompt(requestId, toolName, path) {
     banner("Permission requested: " + (toolName || "tool") + (path ? " · " + path : ""));
     return;
   }
+  if (Array.from(transcript.querySelectorAll("[data-permission-id]")).some(box => box.dataset.permissionId === requestId)) return;
   const box = document.createElement("div");
+  box.dataset.permissionId = requestId;
   box.className = "banner";
   const label = document.createElement("div");
   label.textContent = "Permission requested: " + (toolName || "tool") + (path ? " · " + path : "");
@@ -317,6 +319,12 @@ function applySnapshot(snap) {
       if (lastSeg && lastSeg.role === "assistant" && lastSeg.complete === false) {
         currentAssistant = lastBubble;
       }
+    }
+  }
+  if (s.command && Array.isArray(s.command.pending_permissions)) {
+    transcript.querySelectorAll("[data-permission-id]").forEach(box => box.remove());
+    for (const pending of s.command.pending_permissions) {
+      renderPermissionPrompt(pending.request_id, pending.tool_name, pending.path);
     }
   }
 }

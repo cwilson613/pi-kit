@@ -823,6 +823,12 @@ impl AgentSetup {
 
         // ─── Cleave + delegate shared inference runtime ────────────────
         let inference_runtime = crate::inference_runtime::InferenceRuntimeState::new(&project_root);
+        // Local manifests and cached evidence must be admitted before the first
+        // route is selected. Network discovery must not gate their visibility.
+        let startup_report = inference_runtime.refresh().await;
+        inference_runtime
+            .record_refresh_report(&startup_report)
+            .await;
         // Startup discovery is deliberately backgrounded: catalog reads project
         // the persisted cache immediately and never wait on provider networks.
         // The non-forced pass respects per-endpoint TTL; successful updates are
@@ -1467,11 +1473,14 @@ impl AgentSetup {
             "harness status assembled"
         );
 
-        // Print bootstrap panel if running interactively
-        let use_color = std::io::stderr().is_terminal() && std::env::var("NO_COLOR").is_err();
-        if use_color || std::io::stderr().is_terminal() {
-            let panel = crate::bootstrap_projection::render_bootstrap(&harness_status, use_color);
-            eprint!("{panel}");
+        // The TUI prints its compact summary after route/bridge resolution in
+        // main. Explicit status and other interactive consumers keep diagnostics.
+        if runtime_mode != "tui" && std::io::stderr().is_terminal() {
+            let use_color = std::env::var("NO_COLOR").is_err();
+            eprint!(
+                "{}",
+                crate::bootstrap_projection::render_bootstrap(&harness_status, use_color)
+            );
         }
 
         // Emit BusEvent for features
@@ -1506,21 +1515,29 @@ impl AgentSetup {
                 (t.name.len() + t.description.len() + schema.len()) / 4
             })
             .sum();
-        let base_prompt = settings
-            .as_ref()
-            .and_then(|s| s.lock().ok().map(|g| g.automation_level))
-            .map(|level| {
-                prompt::build_base_prompt_for_mode_with_subagent_policy(
-                    &cwd,
-                    &tool_defs,
-                    prompt_mode,
-                    crate::autonomy::subagent_policy_for_automation(level),
-                )
-                .prompt
-            })
-            .unwrap_or_else(|| {
-                prompt::build_base_prompt_for_mode(&cwd, &tool_defs, prompt_mode).prompt
-            });
+        let automation_level = settings.as_ref().and_then(|settings| {
+            settings
+                .lock()
+                .ok()
+                .map(|settings| settings.automation_level)
+        });
+        let assembly = match automation_level {
+            Some(level) => prompt::build_base_prompt_for_mode_with_subagent_policy(
+                &cwd,
+                &tool_defs,
+                prompt_mode,
+                crate::autonomy::subagent_policy_for_automation(level),
+            ),
+            None => prompt::build_base_prompt_for_mode(&cwd, &tool_defs, prompt_mode),
+        };
+        let base_prompt = match assembly {
+            Ok(assembly) => assembly.prompt,
+            Err(error) => {
+                return Err(
+                    published_setup_error(&mut bus, &mut dynamic_contributions, error).await,
+                );
+            }
+        };
         let prompt_tokens = base_prompt.len() / 4;
 
         tracing::info!(

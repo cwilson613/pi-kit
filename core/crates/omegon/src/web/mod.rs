@@ -304,6 +304,12 @@ fn project_web_instance(
     instance
 }
 
+pub struct PendingWebPermission {
+    sender: std::sync::mpsc::Sender<omegon_traits::PermissionResponse>,
+    session_id: String,
+    projection: surfaces::WebPendingPermission,
+}
+
 /// Shared state accessible to all web handlers.
 #[derive(Clone)]
 pub struct WebState {
@@ -333,14 +339,7 @@ pub struct WebState {
     /// events, keyed by a stable `Arc`-identity id, so the web client can
     /// answer tool-approval prompts via `POST /api/web/actions`. Populated by
     /// the surface stream as it forwards the event to the browser.
-    pub pending_permissions: Arc<
-        Mutex<
-            std::collections::HashMap<
-                String,
-                std::sync::mpsc::Sender<omegon_traits::PermissionResponse>,
-            >,
-        >,
-    >,
+    pub pending_permissions: Arc<Mutex<std::collections::HashMap<String, PendingWebPermission>>>,
     /// Operator-wait responders captured from broadcast `OperatorWaitRequest`
     /// events, keyed by a stable `Arc`-identity id. The surface stream sends
     /// `acknowledge` immediately on capture (the producer abandons the wait if
@@ -534,14 +533,43 @@ impl WebState {
     pub(crate) fn register_permission(
         &self,
         respond: &Arc<Mutex<Option<std::sync::mpsc::Sender<omegon_traits::PermissionResponse>>>>,
+        tool_name: &str,
+        path: &str,
     ) -> String {
         let id = permission_request_id(respond);
+        let session_id = self.session_id();
         if let Some(sender) = respond.lock().ok().and_then(|mut slot| slot.take())
             && let Ok(mut map) = self.pending_permissions.lock()
         {
-            map.insert(id.clone(), sender);
+            map.retain(|_, pending| pending.session_id == session_id);
+            map.insert(
+                id.clone(),
+                PendingWebPermission {
+                    sender,
+                    session_id,
+                    projection: surfaces::WebPendingPermission {
+                        request_id: id.clone(),
+                        tool_name: self.redact_web_text(tool_name),
+                        path: self.redact_web_text(path),
+                    },
+                },
+            );
         }
         id
+    }
+
+    pub(crate) fn permission_snapshot(&self) -> Vec<surfaces::WebPendingPermission> {
+        let session_id = self.session_id();
+        let Ok(mut pending) = self.pending_permissions.lock() else {
+            return Vec::new();
+        };
+        pending.retain(|_, request| request.session_id == session_id);
+        let mut snapshot = pending
+            .values()
+            .map(|request| request.projection.clone())
+            .collect::<Vec<_>>();
+        snapshot.sort_by(|a, b| a.request_id.cmp(&b.request_id));
+        snapshot
     }
 
     /// Resolve a captured permission responder by id, sending the decision.
@@ -552,13 +580,16 @@ impl WebState {
         request_id: &str,
         decision: omegon_traits::PermissionResponse,
     ) -> Result<(), &'static str> {
-        let sender = self
+        let session_id = self.session_id();
+        let pending = self
             .pending_permissions
             .lock()
             .ok()
             .and_then(|mut map| map.remove(request_id))
+            .filter(|pending| pending.session_id == session_id)
             .ok_or("unknown or already-answered permission request")?;
-        sender
+        pending
+            .sender
             .send(decision)
             .map_err(|_| "permission request is no longer awaiting a response")
     }
@@ -643,6 +674,13 @@ impl WebState {
     /// events are ignored.
     pub(crate) fn fold_conversation_event(&self, event: &omegon_traits::AgentEvent) {
         use omegon_traits::AgentEvent;
+        if (matches!(event, AgentEvent::SessionReset)
+            || matches!(event, AgentEvent::RuntimeQueueUpdated { snapshot_json }
+                if snapshot_json.get("active").is_some_and(serde_json::Value::is_null)))
+            && let Ok(mut pending) = self.pending_permissions.lock()
+        {
+            pending.clear();
+        }
         if let AgentEvent::RuntimeQueueUpdated { snapshot_json } = event
             && let Some(binding) = &self.session_view_binding
         {
@@ -1915,6 +1953,28 @@ mod tests {
             kind: crate::session_consumers::SessionViewKind::Resume,
         });
         (directory, binding)
+    }
+
+    #[test]
+    fn parity_permission_does_not_cross_historical_or_replaced_session() {
+        let (_directory, binding) = semantic_binding();
+        let mut state = WebState::new(DashboardHandles::default(), broadcast::channel(4).0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let respond = Arc::new(Mutex::new(Some(tx)));
+        let id = state.register_permission(&respond, "bash", "/tmp");
+        assert_eq!(state.permission_snapshot().len(), 1);
+        let historical =
+            surfaces::project_historical_web_surfaces(&state, &binding.snapshot()).unwrap();
+        assert!(historical.surfaces.command.pending_permissions.is_empty());
+        assert_eq!(state.permission_snapshot().len(), 1);
+        state.session_view_binding = Some(binding);
+        assert!(
+            state
+                .answer_permission(&id, omegon_traits::PermissionResponse::Allow)
+                .is_err()
+        );
+        assert!(state.permission_snapshot().is_empty());
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]

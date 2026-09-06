@@ -4386,6 +4386,9 @@ impl OmegonAcpAgent {
             .unwrap_or((trimmed, ""));
 
         let advertised_name = cmd.strip_prefix('/').unwrap_or(cmd);
+        if advertised_name == "connect" {
+            return crate::auth::operator_remote_connect_guidance().into();
+        }
 
         if let Some(command) =
             crate::runtime_commands::canonical_slash_command(advertised_name, args)
@@ -4591,6 +4594,9 @@ fn mcp_config(
         docker_mcp: None,
         styrene_dest: None,
         timeout_secs: 30,
+        startup_timeout_secs: None,
+        catalog_timeout_secs: None,
+        execution_timeout_secs: None,
         host_actions: crate::plugins::mcp::McpHostActionPolicy::default(),
     }
 }
@@ -4817,6 +4823,25 @@ mod extension_metadata_tests {
                 .handle_slash_command("/profile open built-in:built-in-default")
                 .await,
             "ACP worker is not initialized"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_acp_rejects_secure_setup_before_worker_dispatch() {
+        let agent = OmegonAcpAgent::new("test-model");
+        for command in [
+            "/connect",
+            "/connect openai",
+            "/connect anthropic",
+            "/connect openai --console",
+        ] {
+            let response = agent.handle_slash_command(command).await;
+            assert_eq!(response, crate::auth::operator_remote_connect_guidance());
+        }
+        assert!(
+            acp_available_commands()
+                .iter()
+                .any(|command| command.name == "connect")
         );
     }
 

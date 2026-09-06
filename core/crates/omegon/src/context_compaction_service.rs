@@ -139,6 +139,15 @@ pub(crate) struct ContextCompactionSnapshotV1 {
     pub(crate) messages: Vec<AgentMessage>,
     pub(crate) current_turn: u32,
     pub(crate) decay_window: u32,
+    pub(crate) retained_token_budget: Option<usize>,
+    pub(crate) previous_summary: Option<String>,
+}
+
+impl ContextCompactionSnapshotV1 {
+    pub(crate) fn with_retained_token_budget(mut self, tokens: usize) -> Self {
+        self.retained_token_budget = Some(tokens);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,12 +163,30 @@ pub(crate) enum ContextCompactionApplicationV1 {
     KeepRecent(u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct ContextCompactionPlanV1 {
     pub(crate) payload: String,
     pub(crate) evict_count: usize,
     pub(crate) reason: Option<String>,
     pub(crate) application: ContextCompactionApplicationV1,
+    pub(crate) source_messages: Vec<crate::bridge::LlmMessage>,
+    pub(crate) source_is_prefix: bool,
+    pub(crate) previous_summary: Option<String>,
+}
+
+impl ContextCompactionPlanV1 {
+    pub(crate) fn apply(
+        self,
+        conversation: &mut crate::conversation::ConversationState,
+        summary: String,
+    ) {
+        match self.application {
+            ContextCompactionApplicationV1::DecayWindow => conversation.apply_compaction(summary),
+            ContextCompactionApplicationV1::KeepRecent(turns) => {
+                conversation.apply_compaction_keeping_recent(summary, turns);
+            }
+        }
+    }
 }
 
 pub(crate) enum ContextCompactionRequestV1 {
@@ -283,6 +310,8 @@ impl WorkerController {
                     messages: Vec::new(),
                     current_turn: 0,
                     decay_window: 0,
+                    retained_token_budget: None,
+                    previous_summary: None,
                 },
                 mode: ContextCompactionModeV1::Overflow,
                 cancellation: cancellation.clone(),
@@ -431,10 +460,59 @@ fn plan_compaction(
         }
         ContextCompactionModeV1::Manual => MANUAL_KEEP_RECENT_TURNS,
     };
+    if is_cancelled() {
+        return Err(ContextCompactionServiceErrorV1::cancelled());
+    }
+    if let Some(budget) = snapshot.retained_token_budget {
+        let Some((mut window, mut retained_tokens)) = budgeted_window(
+            snapshot,
+            primary_window,
+            primary_window,
+            budget,
+            &is_cancelled,
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut payload = payload_for_window(snapshot, window, &is_cancelled)?;
+        if payload.is_none()
+            && mode == ContextCompactionModeV1::Pressure
+            && let Some(selection) = budgeted_window(
+                snapshot,
+                PRESSURE_KEEP_RECENT_TURNS,
+                primary_window,
+                budget,
+                &is_cancelled,
+            )?
+        {
+            (window, retained_tokens) = selection;
+            payload = payload_for_window(snapshot, window, &is_cancelled)?;
+        }
+        return Ok(payload.map(|(payload, evict_count)| ContextCompactionPlanV1 {
+                source_is_prefix: evictions_are_prefix(snapshot, window),
+                source_messages: snapshot.messages.iter().map(crate::conversation::ConversationState::to_llm_message).collect(),
+                previous_summary: snapshot.previous_summary.clone(),
+                payload,
+                evict_count,
+                reason: Some(if retained_tokens > budget {
+                    format!("protected recent turn/tool exchange exceeds retained context target: estimated {retained_tokens} tokens, target {budget}; preserved complete messages")
+                } else {
+                    format!("token-budgeted retention: estimated {retained_tokens} tokens, target {budget}, keep_recent_turns={window}")
+                }),
+                application: ContextCompactionApplicationV1::KeepRecent(window),
+        }));
+    }
     if let Some((payload, evict_count)) =
         payload_for_window(snapshot, primary_window, &is_cancelled)?
     {
         return Ok(Some(ContextCompactionPlanV1 {
+            source_is_prefix: evictions_are_prefix(snapshot, primary_window),
+            source_messages: snapshot
+                .messages
+                .iter()
+                .map(crate::conversation::ConversationState::to_llm_message)
+                .collect(),
+            previous_summary: snapshot.previous_summary.clone(),
             payload,
             evict_count,
             reason: None,
@@ -450,6 +528,9 @@ fn plan_compaction(
     }
     payload_for_window(snapshot, PRESSURE_KEEP_RECENT_TURNS, &is_cancelled).map(|plan| {
         plan.map(|(payload, evict_count)| ContextCompactionPlanV1 {
+            source_is_prefix: evictions_are_prefix(snapshot, PRESSURE_KEEP_RECENT_TURNS),
+            source_messages: snapshot.messages.iter().map(crate::conversation::ConversationState::to_llm_message).collect(),
+            previous_summary: snapshot.previous_summary.clone(),
             payload,
             evict_count,
             reason: Some(format!(
@@ -460,6 +541,101 @@ fn plan_compaction(
             ),
         })
     })
+}
+
+// A boundary is eligible only when it keeps complete numeric turns and every
+// message sharing a tool-call ID on the same side. Ages match the application's
+// saturating arithmetic, including restored histories whose turn IDs coincide.
+fn budgeted_window(
+    snapshot: &ContextCompactionSnapshotV1,
+    age_window: u32,
+    protection_window: u32,
+    budget: usize,
+    is_cancelled: &impl Fn() -> bool,
+) -> Result<Option<(u32, usize)>, ContextCompactionServiceErrorV1> {
+    let mut turns = std::collections::BTreeMap::<u32, usize>::new();
+    let mut exchanges = std::collections::HashMap::<&str, (u32, u32)>::new();
+    for message in &snapshot.messages {
+        if is_cancelled() {
+            return Err(ContextCompactionServiceErrorV1::cancelled());
+        }
+        let age = snapshot.current_turn.saturating_sub(message_turn(message));
+        let wire = crate::conversation::ConversationState::to_llm_message(message);
+        let mut chars = wire.char_count();
+        // The shared estimator already charges tool-result images. Charge user
+        // images too; base64 size is deliberately conservative, not a tokenizer.
+        if let crate::bridge::LlmMessage::User { images, .. } = &wire {
+            chars = images.iter().fold(chars, |sum, image| {
+                sum.saturating_add(image.data.len())
+                    .saturating_add(image.media_type.len())
+            });
+        }
+        let turn_chars = turns.entry(age).or_default();
+        *turn_chars = turn_chars.saturating_add(chars);
+        let mut record = |id| {
+            let span = exchanges.entry(id).or_insert((age, age));
+            span.0 = span.0.min(age);
+            span.1 = span.1.max(age);
+        };
+        match message {
+            AgentMessage::Assistant(assistant, _) => {
+                for call in &assistant.tool_calls {
+                    record(call.id.as_str());
+                }
+            }
+            AgentMessage::ToolResult(result, _) => record(result.call_id.as_str()),
+            _ => {}
+        }
+    }
+    // The loop advances current_turn before planning, so its newest populated
+    // turn normally has age one. Protect that turn while it remains in the
+    // primary recent window. Entirely old idle history can still be compacted.
+    if turns
+        .first_key_value()
+        .is_none_or(|(&age, _)| age > protection_window)
+    {
+        turns.insert(0, 0);
+    }
+    let mut chars = 0usize;
+    let mut protected = None;
+    let mut selected = None;
+    for (age, turn_chars) in turns {
+        if is_cancelled() {
+            return Err(ContextCompactionServiceErrorV1::cancelled());
+        }
+        chars = chars.saturating_add(turn_chars);
+        if !evictions_are_prefix(snapshot, age)
+            || exchanges
+                .values()
+                .any(|&(newest, oldest)| newest <= age && age < oldest)
+        {
+            continue;
+        }
+        let tokens = crate::util::estimate_chars_to_tokens(chars);
+        // The first safe boundary includes the newest recent turn and linked tool
+        // exchange, even if that protected group exceeds the requested budget.
+        protected.get_or_insert((age, tokens));
+        if age <= age_window && tokens <= budget {
+            selected = Some((age, tokens));
+        }
+    }
+    Ok(selected.or(protected))
+}
+
+// Restored operator observations can carry older turn IDs after newer messages.
+// A durable replacement cuts by source order, so an age boundary must also
+// select a chronological suffix. Keep later old messages with that suffix.
+fn evictions_are_prefix(snapshot: &ContextCompactionSnapshotV1, keep_recent_turns: u32) -> bool {
+    let mut retained_seen = false;
+    for message in &snapshot.messages {
+        let retained =
+            snapshot.current_turn.saturating_sub(message_turn(message)) <= keep_recent_turns;
+        if !retained && retained_seen {
+            return false;
+        }
+        retained_seen |= retained;
+    }
+    true
 }
 
 fn payload_for_window(
@@ -486,6 +662,11 @@ fn payload_for_window(
          - Key constraints discovered\n\
          Be concise but preserve actionable context.\n\n---\n\n",
     );
+    if let Some(summary) = &snapshot.previous_summary {
+        payload.push_str("[Previous conversation summary]\n");
+        payload.push_str(summary);
+        payload.push_str("\n[End previous summary]\n\n");
+    }
     for message in &evictable {
         if is_cancelled() {
             return Err(ContextCompactionServiceErrorV1::cancelled());
@@ -549,6 +730,350 @@ mod tests {
     use super::*;
     use crate::conversation::ConversationState;
 
+    fn retention_history() -> ConversationState {
+        let mut conversation = ConversationState::new();
+        for turn in 0..=3 {
+            conversation.intent.stats.turns = turn;
+            conversation.push_user(if turn == 3 {
+                "newest active request".into()
+            } else {
+                "x".repeat(4_000)
+            });
+        }
+        conversation
+    }
+
+    #[test]
+    fn token_retention_compacts_large_recent_turns_in_every_mode() {
+        let conversation = retention_history();
+        for mode in [
+            ContextCompactionModeV1::Pressure,
+            ContextCompactionModeV1::Overflow,
+            ContextCompactionModeV1::Manual,
+        ] {
+            let snapshot = conversation
+                .context_compaction_snapshot()
+                .with_retained_token_budget(100);
+            let plan = plan_compaction(&snapshot, mode, || false)
+                .unwrap()
+                .expect("recent oversized history must compact");
+            assert_eq!(plan.evict_count, 3);
+            assert_eq!(
+                plan.application,
+                ContextCompactionApplicationV1::KeepRecent(0)
+            );
+        }
+    }
+
+    #[test]
+    fn token_retention_protects_latest_turn_for_zero_and_small_budgets() {
+        for budget in [0, 1] {
+            let mut conversation = retention_history();
+            let snapshot = conversation
+                .context_compaction_snapshot()
+                .with_retained_token_budget(budget);
+            let plan = plan_compaction(&snapshot, ContextCompactionModeV1::Pressure, || false)
+                .unwrap()
+                .unwrap();
+            assert!(
+                plan.reason
+                    .as_deref()
+                    .unwrap()
+                    .contains("exceeds retained context target")
+            );
+            let removed = plan.evict_count;
+            plan.apply(&mut conversation, "summary".into());
+            assert_eq!(
+                snapshot.messages.len() - conversation.replay_messages().len(),
+                removed
+            );
+            assert_eq!(conversation.replay_messages().len(), 1);
+            assert_eq!(conversation.last_user_prompt(), "newest active request");
+        }
+    }
+
+    #[test]
+    fn token_retention_preserves_cross_turn_tool_exchange() {
+        let mut conversation = ConversationState::new();
+        conversation.push_user("old".repeat(100));
+        conversation.intent.stats.turns = 1;
+        conversation.push_assistant(crate::conversation::AssistantMessage {
+            text: "using tool".into(),
+            tool_calls: vec![crate::conversation::ToolCall {
+                id: "call".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "file"}),
+            }],
+            ..Default::default()
+        });
+        conversation.intent.stats.turns = 2;
+        conversation.push_tool_result(crate::conversation::ToolResultEntry {
+            call_id: "call".into(),
+            tool_name: "read".into(),
+            content: vec![omegon_traits::ContentBlock::Text {
+                text: "large".repeat(1000),
+            }],
+            is_error: false,
+            args_summary: None,
+        });
+        conversation.intent.stats.turns = 3;
+        let snapshot = conversation
+            .context_compaction_snapshot()
+            .with_retained_token_budget(0);
+        let plan = plan_compaction(&snapshot, ContextCompactionModeV1::Overflow, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan.application,
+            ContextCompactionApplicationV1::KeepRecent(2)
+        );
+        assert_eq!(plan.evict_count, 1);
+        assert!(
+            plan.reason
+                .as_deref()
+                .unwrap()
+                .contains("exceeds retained context target")
+        );
+        plan.apply(&mut conversation, "summary".into());
+        assert!(matches!(
+            conversation.replay_messages(),
+            [
+                AgentMessage::Assistant(_, 1),
+                AgentMessage::ToolResult(_, 2)
+            ]
+        ));
+    }
+
+    #[test]
+    fn token_retention_keeps_largest_complete_suffix_and_carries_summary() {
+        let mut conversation = ConversationState::new();
+        conversation.push_user("initial".into());
+        conversation.intent.stats.turns = 20;
+        conversation.apply_compaction("earlier constraints must survive".into());
+        for turn in 20..=23 {
+            conversation.intent.stats.turns = turn;
+            conversation.push_user("abcd".repeat(10));
+        }
+        let snapshot = conversation
+            .context_compaction_snapshot()
+            .with_retained_token_budget(25);
+        let plan = plan_compaction(&snapshot, ContextCompactionModeV1::Overflow, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan.application,
+            ContextCompactionApplicationV1::KeepRecent(1)
+        );
+        assert_eq!(plan.evict_count, 2);
+        assert!(plan.payload.contains("earlier constraints must survive"));
+        plan.apply(&mut conversation, "new summary".into());
+        assert_eq!(conversation.replay_messages().len(), 2);
+    }
+
+    #[test]
+    fn token_retention_counts_nontext_history_and_user_images() {
+        let mut conversation = ConversationState::new();
+        conversation.push_assistant(crate::conversation::AssistantMessage {
+            text: "short".into(),
+            thinking: Some("think".repeat(100)),
+            tool_calls: vec![crate::conversation::ToolCall {
+                id: "call".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "x".repeat(400)}),
+            }],
+            ..Default::default()
+        });
+        conversation.push_tool_result(crate::conversation::ToolResultEntry {
+            call_id: "call".into(),
+            tool_name: "read".into(),
+            content: vec![omegon_traits::ContentBlock::Text {
+                text: "result".repeat(100),
+            }],
+            is_error: false,
+            args_summary: None,
+        });
+        conversation.intent.stats.turns = 1;
+        conversation.push_user("current".into());
+        let snapshot = conversation
+            .context_compaction_snapshot()
+            .with_retained_token_budget(20);
+        let plan = plan_compaction(&snapshot, ContextCompactionModeV1::Pressure, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.evict_count, 2);
+        let mut snapshot = conversation
+            .context_compaction_snapshot()
+            .with_retained_token_budget(20);
+        snapshot.messages = vec![
+            AgentMessage::User {
+                text: "image".into(),
+                images: vec![crate::bridge::ImageAttachment {
+                    data: "x".repeat(4000),
+                    media_type: "image/png".into(),
+                    source_path: None,
+                }],
+                turn: 0,
+            },
+            AgentMessage::User {
+                text: "current".into(),
+                images: vec![],
+                turn: 1,
+            },
+        ];
+        let plan = plan_compaction(&snapshot, ContextCompactionModeV1::Pressure, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.evict_count, 1);
+    }
+
+    #[test]
+    fn token_retention_protects_latest_populated_turn_after_loop_advances() {
+        for mode in [
+            ContextCompactionModeV1::Pressure,
+            ContextCompactionModeV1::Overflow,
+            ContextCompactionModeV1::Manual,
+        ] {
+            let mut conversation = retention_history();
+            // The production loop increments its turn before planning context.
+            conversation.intent.stats.turns += 1;
+            let snapshot = conversation
+                .context_compaction_snapshot()
+                .with_retained_token_budget(0);
+            let plan = plan_compaction(&snapshot, mode, || false).unwrap().unwrap();
+            assert_eq!(
+                plan.evict_count, 3,
+                "latest populated turn must survive {mode:?}"
+            );
+            assert_eq!(
+                plan.application,
+                ContextCompactionApplicationV1::KeepRecent(1)
+            );
+            plan.apply(&mut conversation, "summary".into());
+            assert_eq!(conversation.last_user_prompt(), "newest active request");
+        }
+    }
+
+    #[test]
+    fn token_retention_pressure_fallback_preserves_newest_within_primary_window() {
+        let mut conversation = ConversationState::new();
+        conversation.push_user("newest recent request".into());
+        conversation.intent.stats.turns = 6;
+        let snapshot = conversation
+            .context_compaction_snapshot()
+            .with_retained_token_budget(100);
+        // Fallback age four must not override the primary recent-window protection.
+        assert!(
+            plan_compaction(&snapshot, ContextCompactionModeV1::Pressure, || false)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn token_retention_reordered_turns_preserve_chronological_suffix() {
+        let mut conversation = ConversationState::new();
+        for (turn, text) in [(0, "old"), (2, "newest"), (1, "restored observation")] {
+            conversation.intent.stats.turns = turn;
+            conversation.push_user(text.into());
+        }
+        conversation.intent.stats.turns = 2;
+        let snapshot = conversation
+            .context_compaction_snapshot()
+            .with_retained_token_budget(0);
+        let plan = plan_compaction(&snapshot, ContextCompactionModeV1::Pressure, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan.evict_count, 1,
+            "older restored message must widen retained suffix"
+        );
+        assert!(plan.source_is_prefix);
+        assert_eq!(
+            plan.application,
+            ContextCompactionApplicationV1::KeepRecent(1)
+        );
+        plan.apply(&mut conversation, "summary".into());
+        assert!(matches!(
+            conversation.replay_messages(),
+            [
+                AgentMessage::User { turn: 2, .. },
+                AgentMessage::User { turn: 1, .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn token_retention_legacy_plans_flag_nonprefix_eviction() {
+        for current_turn in [6, 20] {
+            let mut conversation = ConversationState::new();
+            for (turn, text) in [
+                (0, "old"),
+                (current_turn, "newest"),
+                (1, "restored observation"),
+            ] {
+                conversation.intent.stats.turns = turn;
+                conversation.push_user(text.into());
+            }
+            conversation.intent.stats.turns = current_turn;
+            let snapshot = conversation.context_compaction_snapshot();
+            let plan = plan_compaction(&snapshot, ContextCompactionModeV1::Pressure, || false)
+                .unwrap()
+                .unwrap();
+            assert!(
+                !plan.source_is_prefix,
+                "legacy age/fallback plans must report nonprefix selection"
+            );
+            assert_eq!(plan.evict_count, 2);
+        }
+    }
+
+    #[test]
+    fn token_retention_old_only_history_can_be_compacted() {
+        let mut conversation = ConversationState::new();
+        conversation.push_user("old".into());
+        conversation.intent.stats.turns = 99;
+        let snapshot = conversation
+            .context_compaction_snapshot()
+            .with_retained_token_budget(100);
+        let plan = plan_compaction(&snapshot, ContextCompactionModeV1::Manual, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.evict_count, 1);
+        plan.apply(&mut conversation, "summary".into());
+        assert!(conversation.replay_messages().is_empty());
+    }
+
+    #[test]
+    fn token_retention_small_history_and_legacy_pressure_fallback() {
+        let mut conversation = ConversationState::new();
+        conversation.push_user("small".into());
+        conversation.intent.stats.turns = 6;
+        conversation.push_user("new".into());
+        let snapshot = conversation
+            .context_compaction_snapshot()
+            .with_retained_token_budget(100);
+        assert!(
+            plan_compaction(&snapshot, ContextCompactionModeV1::Overflow, || false)
+                .unwrap()
+                .is_none()
+        );
+        let pressure = plan_compaction(&snapshot, ContextCompactionModeV1::Pressure, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pressure.evict_count, 1);
+        let snapshot = ConversationState::new()
+            .context_compaction_snapshot()
+            .with_retained_token_budget(0);
+        assert!(
+            plan_compaction(&snapshot, ContextCompactionModeV1::Pressure, || false)
+                .unwrap()
+                .is_none()
+        );
+        let error =
+            plan_compaction(&snapshot, ContextCompactionModeV1::Pressure, || true).unwrap_err();
+        assert_eq!(error.code, ContextCompactionServiceErrorCodeV1::Cancelled);
+    }
+
     #[test]
     fn managed_planner_preserves_direct_pressure_and_manual_payloads() {
         let mut conversation = ConversationState::new();
@@ -584,6 +1109,8 @@ mod tests {
             }],
             current_turn: 10,
             decay_window: 1,
+            retained_token_budget: None,
+            previous_summary: None,
         };
         let error =
             plan_compaction(&snapshot, ContextCompactionModeV1::Overflow, || true).unwrap_err();
@@ -598,6 +1125,8 @@ mod tests {
                     messages: Vec::new(),
                     current_turn: 0,
                     decay_window: 10,
+                    retained_token_budget: None,
+                    previous_summary: None,
                 },
                 ContextCompactionModeV1::Pressure,
                 CancellationToken::new(),
@@ -636,6 +1165,8 @@ mod tests {
                     messages: Vec::new(),
                     current_turn: 0,
                     decay_window: 10,
+                    retained_token_budget: None,
+                    previous_summary: None,
                 },
                 mode: ContextCompactionModeV1::Pressure,
                 cancellation: CancellationToken::new(),

@@ -18,6 +18,10 @@ visibility = "private"
 
 ## Identity and baseline
 
+For the September 2026 beta comparison and proposed follow-up work, see the
+[OpenCode2 parity pass](../opencode2-beta-parity.md). This profile retains its
+original V1 baseline.
+
 This profile covers the open-source coding agent at
 [`anomalyco/opencode`](https://github.com/anomalyco/opencode), not Omegon's
 OpenCode Go model-provider route and not another similarly named project.

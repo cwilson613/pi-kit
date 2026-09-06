@@ -168,27 +168,27 @@ fn authorize_surface_stream(
 async fn handle_surface_stream(socket: WebSocket, state: WebState) {
     let (mut ws_tx, _ws_rx) = socket.split();
     let mut revision = 0_u64;
-    let snapshot = super::surfaces::project_web_surfaces(&state);
-    let initial = WebSurfaceStreamEnvelope::new(
-        snapshot.session_id.clone(),
-        revision,
-        "snapshot",
-        None,
-        serde_json::to_value(snapshot).unwrap_or_else(|_| json!({})),
-    );
-    if ws_tx
-        .send(Message::Text(
-            serde_json::to_string(&initial)
-                .unwrap_or_else(|_| "{}".to_string())
-                .into(),
-        ))
+    let Ok(mut events_rx) =
+        super::ws::subscribe_with_snapshot(&state.events_tx, &mut ws_tx, async {
+            let snapshot = super::surfaces::project_web_surfaces(&state);
+            let initial = WebSurfaceStreamEnvelope::new(
+                snapshot.session_id.clone(),
+                revision,
+                "snapshot",
+                None,
+                serde_json::to_value(snapshot).unwrap_or_else(|_| json!({})),
+            );
+            Message::Text(
+                serde_json::to_string(&initial)
+                    .unwrap_or_else(|_| "{}".to_string())
+                    .into(),
+            )
+        })
         .await
-        .is_err()
-    {
+    else {
         return;
-    }
+    };
 
-    let mut events_rx = state.events_tx.subscribe();
     loop {
         match events_rx.recv().await {
             Ok(event) => {
@@ -310,12 +310,12 @@ fn surface_stream_event(
         } => {
             // Capture the responder so POST /api/web/actions can answer it, and
             // hand the browser the stable id to echo back.
-            let request_id = state.register_permission(&respond);
+            let request_id = state.register_permission(&respond, &tool_name, &path);
             WebSurfaceStreamEnvelope::default_session(
                 revision,
                 "permission_requested",
                 Some("command"),
-                json!({ "request_id": request_id, "tool_name": tool_name, "path": path }),
+                json!({ "request_id": request_id, "tool_name": state.redact_web_text(&tool_name), "path": state.redact_web_text(&path) }),
             )
         }
         AgentEvent::OperatorWaitRequest {
@@ -323,6 +323,7 @@ fn surface_stream_event(
             timeout_secs,
             acknowledge,
             respond,
+            ..
         } => {
             // Acknowledge immediately (2s producer deadline) and capture the
             // responder so POST /api/web/actions can deliver the decision.
@@ -633,6 +634,121 @@ mod tests {
     }
 
     #[test]
+    fn parity_permission_known_id_survives_client_detach_and_rejects_duplicate_answer() {
+        let runtime = test_state();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let respond = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        let request_id = {
+            let client = runtime.clone();
+            client.register_permission(&respond, "bash", "/tmp")
+        };
+        // The original connection is gone, but the runtime retains its sender.
+        // This case exercises a retained request ID. The fresh-client test below
+        // independently verifies metadata reconstruction from the snapshot.
+        let reconnected = runtime.clone();
+        reconnected
+            .answer_permission(&request_id, omegon_traits::PermissionResponse::Allow)
+            .unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            omegon_traits::PermissionResponse::Allow
+        );
+        assert!(
+            runtime
+                .answer_permission(&request_id, omegon_traits::PermissionResponse::Deny)
+                .is_err()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "duplicate decision must not reach the waiting tool"
+        );
+    }
+
+    #[test]
+    fn parity_fresh_client_snapshot_recovers_web_owned_permission() {
+        let runtime = test_state();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let event = AgentEvent::PermissionRequest {
+            tool_name: "bash".into(),
+            path: "/tmp/work".into(),
+            kind: omegon_traits::PermissionRequestKind::PathBoundary,
+            persistence: omegon_traits::PermissionPersistence::None,
+            grant_path: None,
+            respond: std::sync::Arc::new(std::sync::Mutex::new(Some(tx))),
+        };
+        let original = serde_json::to_value(surface_stream_event(&runtime, 1, event)).unwrap();
+        let reconnected = runtime.clone();
+        let snapshot =
+            serde_json::to_value(super::super::surfaces::project_web_surfaces(&reconnected))
+                .unwrap();
+        let pending = &snapshot["surfaces"]["command"]["pending_permissions"];
+        assert_eq!(
+            pending
+                .as_array()
+                .expect("pending permission inventory")
+                .len(),
+            1
+        );
+        assert_eq!(pending[0]["request_id"], original["payload"]["request_id"]);
+        assert_eq!(pending[0]["tool_name"], "bash");
+        assert_eq!(pending[0]["path"], "/tmp/work");
+        reconnected
+            .answer_permission(
+                pending[0]["request_id"].as_str().unwrap(),
+                omegon_traits::PermissionResponse::Allow,
+            )
+            .unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            omegon_traits::PermissionResponse::Allow
+        );
+        let settled =
+            serde_json::to_value(super::super::surfaces::project_web_surfaces(&runtime)).unwrap();
+        assert_eq!(
+            settled["surfaces"]["command"]["pending_permissions"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn parity_permission_snapshot_clears_on_authoritative_idle() {
+        let runtime = test_state();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let respond = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        runtime.register_permission(&respond, "bash", "/tmp");
+        runtime.fold_conversation_event(&AgentEvent::RuntimeQueueUpdated {
+            snapshot_json: json!({"active": null, "depth": 0}),
+        });
+        assert!(runtime.pending_permissions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parity_permission_snapshot_preserves_other_frontend_ownership_and_redacts_secrets() {
+        let runtime = secret_test_state();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let respond = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        let tui_sender = respond.lock().unwrap().take().unwrap();
+        runtime.register_permission(&respond, "bash", "/tmp");
+        assert!(runtime.permission_snapshot().is_empty());
+        tui_sender
+            .send(omegon_traits::PermissionResponse::Deny)
+            .unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            omegon_traits::PermissionResponse::Deny
+        );
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let respond = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        runtime.register_permission(&respond, "bash", "/tmp/super-secret-token");
+        let snapshot = serde_json::to_string(&runtime.permission_snapshot()).unwrap();
+        assert!(!snapshot.contains("super-secret-token"));
+        assert!(snapshot.contains("[REDACTED"));
+        runtime.fold_conversation_event(&AgentEvent::SessionReset);
+        assert!(runtime.permission_snapshot().is_empty());
+    }
+
+    #[test]
     fn operator_wait_acknowledges_immediately_and_captures_responder() {
         let state = test_state();
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
@@ -643,6 +759,7 @@ mod tests {
             &state,
             5,
             AgentEvent::OperatorWaitRequest {
+                call_id: None,
                 prompt: "swap the cable".into(),
                 timeout_secs: 120,
                 acknowledge: acknowledge.clone(),

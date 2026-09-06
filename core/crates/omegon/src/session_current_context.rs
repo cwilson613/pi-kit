@@ -443,16 +443,32 @@ fn retained_message(
         .find(|record| record.frontier().event_id() == replacement.source_event_id)
         .ok_or_else(|| CurrentContextError::Invalid("retained context source is absent".into()))?;
     let SessionFactPayload::ModelRequestPrepared(prepared) = source.payload() else {
-        return Err(CurrentContextError::Invalid(
-            "retained context source is not request preparation".into(),
-        ));
+        let resolved = compaction_source_message(
+            replay,
+            replacement.source_event_id,
+            &replacement.source_identity,
+        )?;
+        let bytes = replay
+            .read_default_content(&replacement.content_ref)
+            .map_err(invalid)?;
+        if canonical_json_bytes(&resolved.0).map_err(invalid)? != bytes {
+            return Err(CurrentContextError::Invalid(
+                "retained semantic content differs from its source".into(),
+            ));
+        }
+        return Ok(resolved);
     };
-    let (_, ordinal) = replacement
+    let (request_id, ordinal) = replacement
         .source_identity
         .rsplit_once(':')
         .ok_or_else(|| {
             CurrentContextError::Invalid("retained context identity is invalid".into())
         })?;
+    if request_id != prepared.request_id.to_string() {
+        return Err(CurrentContextError::Invalid(
+            "retained request identity differs from its source".into(),
+        ));
+    }
     let ordinal = ordinal.parse::<u32>().map_err(invalid)?;
     let item = prepared
         .context_items
@@ -465,6 +481,64 @@ fn retained_message(
     Ok((
         serde_json::from_slice(&bytes).map_err(invalid)?,
         item.provenance.clone(),
+    ))
+}
+
+/// Resolve retained semantic provenance independently of its serialized blob.
+/// Old request/ordinal references remain handled above for replay compatibility.
+pub(crate) fn compaction_source_message(
+    replay: &SessionReplay,
+    event_id: Uuid,
+    identity: &str,
+) -> Result<
+    (
+        crate::bridge::LlmMessage,
+        crate::session_authority::ModelContextProvenance,
+    ),
+    CurrentContextError,
+> {
+    let source = replay
+        .records()
+        .iter()
+        .find(|record| record.frontier().event_id() == event_id)
+        .ok_or_else(|| CurrentContextError::Invalid("retained semantic source is absent".into()))?;
+    let (message, kind, expected_identity, owner_id, owner_generation_id) = match source.payload() {
+        SessionFactPayload::PromptAdmitted(prompt) =>
+            (prompt_message(replay, prompt)?, ModelContextSourceKind::Prompt, prompt.prompt_id, None, None),
+        SessionFactPayload::AssistantMessageCommitted(commit) if committed_attempt_is_usable(replay, commit) =>
+            (assistant_message(replay, commit)?, ModelContextSourceKind::AssistantMessage, commit.message_id, None, None),
+        SessionFactPayload::ToolResultRecorded(result) =>
+            (tool_result_message(replay, result)?, ModelContextSourceKind::ToolResult, result.tool_result_id, None, None),
+        SessionFactPayload::CompactionSummaryCommitted(summary) if replay.records().iter().any(|record|
+            matches!(record.payload(), SessionFactPayload::CompactionApplied(applied)
+                if applied.compaction_id == summary.compaction_id && applied.compaction_summary_id == summary.compaction_summary_id)) => {
+            let bytes = replay.read_default_content(&summary.summary_ref).map_err(invalid)?;
+            let text = std::str::from_utf8(&bytes).map_err(invalid)?;
+            (crate::bridge::LlmMessage::User {
+                content: format!("[Previous conversation summary]\n{text}\n[End summary - continue from here]"), images: Vec::new(),
+            }, ModelContextSourceKind::CompactionSummary, summary.compaction_summary_id, None, None)
+        }
+        SessionFactPayload::ContextSourceMaterialized(source) if source.source_kind == ContextSourceKind::ContributionContext => {
+            let bytes = replay.read_default_content(&source.content_ref).map_err(invalid)?;
+            (serde_json::from_slice(&bytes).map_err(invalid)?, ModelContextSourceKind::ContributionContext,
+                source.context_source_id, Some(source.owner_id.clone()), Some(source.owner_generation_id.clone()))
+        }
+        _ => return Err(CurrentContextError::Invalid("unsupported retained semantic source".into())),
+    };
+    if identity != expected_identity.to_string() {
+        return Err(CurrentContextError::Invalid(
+            "retained semantic source identity differs from its event".into(),
+        ));
+    }
+    Ok((
+        message,
+        crate::session_authority::ModelContextProvenance {
+            source_kind: kind,
+            source_event_id: Some(event_id),
+            source_identity: Some(identity.into()),
+            owner_id,
+            owner_generation_id,
+        },
     ))
 }
 
@@ -803,6 +877,91 @@ mod tests {
     );
     const SESSION_ID: &str = "fixture-session";
     const STREAM_ID: Uuid = Uuid::from_u128(0x10000000_0000_4000_8000_000000000001);
+
+    #[test]
+    fn token_retention_replay_rejects_tampered_semantic_identity_and_content() {
+        use crate::session_authority::*;
+        let directory = tempfile::tempdir().unwrap();
+        let now = "2026-09-05T12:00:00Z";
+        let authority = SessionAuthorityHandle::new(
+            SessionAuthority::open(
+                &directory.path().join("session.json"),
+                "retained-source",
+                "workspace",
+                "composition:test",
+                ActorIdentity {
+                    principal: "operator".into(),
+                    ingress: "test".into(),
+                },
+                now,
+            )
+            .unwrap(),
+        );
+        let message = crate::bridge::LlmMessage::User {
+            content: "original".into(),
+            images: vec![],
+        };
+        let content_ref = authority
+            .write_content(
+                &canonical_json_bytes(&message).unwrap(),
+                "application/json",
+                ProjectionClass::Default,
+            )
+            .unwrap();
+        let source_id = Uuid::new_v4();
+        let source_event = authority
+            .materialize_context_source(
+                Uuid::new_v4(),
+                now,
+                ContextSourceMaterialized {
+                    context_source_id: source_id,
+                    source_kind: ContextSourceKind::ContributionContext,
+                    source_identity: "retained-fixture".into(),
+                    owner_id: "test:retention".into(),
+                    owner_generation_id: omegon_traits::RuntimeContributionGenerationId::new(
+                        "test:retention-v1",
+                    )
+                    .unwrap(),
+                    content_ref: content_ref.clone(),
+                },
+            )
+            .unwrap();
+        let descriptor = authority.projection_worker_descriptor();
+        let replay = SessionReplay::replay_prefix(
+            &descriptor.session_snapshot,
+            &descriptor.session_id,
+            descriptor.stream_id,
+            crate::session_replay::ReplayEnd::Event(source_event),
+        )
+        .unwrap();
+        let mut retained = CompactionReplacementItem {
+            ordinal: 1,
+            source_kind: CompactionReplacementSourceKind::Retained,
+            source_event_id: source_event,
+            source_identity: source_id.to_string(),
+            content_ref,
+        };
+        assert!(retained_message(&replay, &retained).is_ok());
+        retained.source_identity = Uuid::new_v4().to_string();
+        assert!(retained_message(&replay, &retained).is_err());
+        retained.source_identity = source_id.to_string();
+        let forged = crate::bridge::LlmMessage::User {
+            content: "forged".into(),
+            images: vec![],
+        };
+        retained.content_ref = authority
+            .write_content(
+                &canonical_json_bytes(&forged).unwrap(),
+                "application/json",
+                ProjectionClass::Default,
+            )
+            .unwrap();
+        let error = retained_message(&replay, &retained).unwrap_err();
+        assert!(
+            error.to_string().contains("differs from its source"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn mixed_capture_requires_and_preserves_labeled_legacy_base() {

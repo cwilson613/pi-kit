@@ -353,6 +353,7 @@ impl App {
             format!("→ {label}")
         };
         self.conversation.push_system(&message);
+        self.finish_blocking_interaction();
         UiActionOutcome::accepted_message(message)
     }
 
@@ -381,6 +382,7 @@ impl App {
             format!("-> {label}")
         };
         self.conversation.push_system(&message);
+        self.finish_blocking_interaction();
         UiActionOutcome::accepted_message(message)
     }
 }

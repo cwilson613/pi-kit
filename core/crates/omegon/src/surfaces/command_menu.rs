@@ -67,6 +67,21 @@ impl CommandMenuProjection {
         } else {
             let name = parts[0];
             let sub_prefix = parts.get(1).copied().unwrap_or("");
+            if name == "connect" {
+                let Some(row) = self.rows.iter().find(|row| row.name == name) else {
+                    return Vec::new();
+                };
+                return auth_provider_ids
+                    .iter()
+                    .filter(|provider| provider.starts_with(sub_prefix))
+                    .map(|provider| {
+                        let mut row = row.clone();
+                        row.command = format!("/connect {provider}");
+                        row.description = "Configure provider connection".into();
+                        row
+                    })
+                    .collect();
+            }
             if name == "auth" {
                 let nested_parts: Vec<&str> = sub_prefix.splitn(2, ' ').collect();
                 if matches!(nested_parts.first().copied(), Some("login" | "logout"))
@@ -362,5 +377,22 @@ mod tests {
         let logout = projection.matching("/auth logout github-c", &providers);
         assert_eq!(logout.len(), 1);
         assert_eq!(logout[0].command, "/auth logout github-copilot");
+    }
+
+    #[test]
+    fn connect_completion_preserves_registry_safety_for_provider_arguments() {
+        let projection = command_menu_projection(
+            crate::command_registry::builtin_command_definitions(),
+            [],
+            &[],
+        );
+        let root = projection.matching("/conn", &[]);
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].command, "/connect");
+        let providers = projection.matching("/connect openai-c", &["openai", "openai-codex"]);
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].command, "/connect openai-codex");
+        assert_eq!(providers[0].safety, root[0].safety);
+        assert_eq!(providers[0].availability, root[0].availability);
     }
 }

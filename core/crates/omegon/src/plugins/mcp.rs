@@ -99,16 +99,130 @@ pub struct McpServerConfig {
     /// Uses DaemonFleet::terminal_open for bidirectional stdio over the mesh.
     #[serde(default)]
     pub styrene_dest: Option<String>,
-    /// Timeout for tool calls in seconds (default: 30).
+    /// Legacy fallback for all phase budgets in seconds (default: 30).
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Connection and initialization budget; absent inherits the legacy budget.
+    #[serde(default, deserialize_with = "deserialize_startup_timeout")]
+    pub startup_timeout_secs: Option<u64>,
+    /// Complete inventory budget, including all pages and inventory kinds.
+    #[serde(default, deserialize_with = "deserialize_catalog_timeout")]
+    pub catalog_timeout_secs: Option<u64>,
+    /// Hard operation budget, unaffected by progress notifications.
+    #[serde(default, deserialize_with = "deserialize_execution_timeout")]
+    pub execution_timeout_secs: Option<u64>,
     /// Explicit HostAction policy for actions emitted by this MCP server.
     #[serde(default)]
     pub host_actions: McpHostActionPolicy,
 }
 
+// Keep conversion to nanoseconds representable as well as deadline addition.
+const MAX_PHASE_TIMEOUT_SECS: u64 = u64::MAX / 1_000_000_000;
+
+fn deserialize_phase_timeout<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    phase: &str,
+) -> Result<Option<u64>, D::Error> {
+    let seconds = Option::<u64>::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("{phase}_timeout_secs: {error}")))?;
+    if seconds.is_some_and(|seconds| seconds == 0 || seconds > MAX_PHASE_TIMEOUT_SECS) {
+        return Err(serde::de::Error::custom(format!(
+            "{phase}_timeout_secs must be positive and fit a nanosecond duration"
+        )));
+    }
+    Ok(seconds)
+}
+
+fn deserialize_startup_timeout<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    deserialize_phase_timeout(deserializer, "startup")
+}
+
+fn deserialize_catalog_timeout<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    deserialize_phase_timeout(deserializer, "catalog")
+}
+
+fn deserialize_execution_timeout<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    deserialize_phase_timeout(deserializer, "execution")
+}
+
+impl McpServerConfig {
+    fn startup_secs(&self) -> u64 {
+        self.startup_timeout_secs
+            .unwrap_or(self.timeout_secs.max(1))
+    }
+
+    fn catalog_secs(&self) -> u64 {
+        self.catalog_timeout_secs
+            .unwrap_or(self.timeout_secs.max(1))
+    }
+
+    fn execution_secs(&self) -> u64 {
+        self.execution_timeout_secs.unwrap_or(self.timeout_secs)
+    }
+
+    fn readiness_ms(&self) -> u64 {
+        if self.startup_timeout_secs.is_none() && self.catalog_timeout_secs.is_none() {
+            self.timeout_secs.saturating_mul(1000).max(1)
+        } else {
+            self.startup_secs()
+                .saturating_add(self.catalog_secs())
+                .saturating_mul(1000)
+        }
+    }
+
+    fn validate_budgets(&self) -> anyhow::Result<()> {
+        for (phase, seconds) in [
+            ("startup", self.startup_timeout_secs),
+            ("catalog", self.catalog_timeout_secs),
+            ("execution", self.execution_timeout_secs),
+        ] {
+            if let Some(seconds) = seconds {
+                anyhow::ensure!(
+                    seconds > 0 && seconds <= MAX_PHASE_TIMEOUT_SECS,
+                    "MCP {phase}_timeout_secs must be positive and fit a nanosecond duration"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn phase_deadline(server: &str, phase: &str, seconds: u64) -> anyhow::Result<tokio::time::Instant> {
+    tokio::time::Instant::now()
+        .checked_add(Duration::from_secs(seconds))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "MCP server '{server}' {phase} timeout cannot be represented: {seconds}s"
+            )
+        })
+}
+
 fn default_timeout() -> u64 {
     30
+}
+
+#[cfg(test)]
+mod phase_config_regressions {
+    use super::*;
+
+    #[test]
+    fn explicit_phase_budgets_reject_invalid_values() {
+        for phase in ["startup", "catalog", "execution"] {
+            for value in ["0", "-1", "\"bad\"", "9223372036854775807"] {
+                let input = format!("command = 'fake'\n{phase}_timeout_secs = {value}");
+                assert!(
+                    toml::from_str::<McpServerConfig>(&input).is_err(),
+                    "accepted {input}"
+                );
+            }
+        }
+    }
 }
 fn default_true() -> bool {
     true
@@ -270,7 +384,152 @@ impl ClientHandler for OmegonMcpClient {
 }
 
 /// Running connection to an MCP server.
-type McpConnection = RunningService<RoleClient, OmegonMcpClient>;
+struct McpConnection {
+    service: RunningService<RoleClient, OmegonMcpClient>,
+    _process_group: McpProcessGroup,
+}
+
+impl std::ops::Deref for McpConnection {
+    type Target = RunningService<RoleClient, OmegonMcpClient>;
+    fn deref(&self) -> &Self::Target {
+        &self.service
+    }
+}
+
+impl std::ops::DerefMut for McpConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.service
+    }
+}
+
+#[derive(Default)]
+struct McpProcessGroup(Option<u32>);
+
+impl Drop for McpProcessGroup {
+    fn drop(&mut self) {
+        crate::child_agent::kill_child_process_group(self.0);
+        #[cfg(not(unix))]
+        if self.0.is_some() {
+            tracing::warn!("MCP descendant process cleanup is unconfirmed on this platform");
+        }
+    }
+}
+
+/// Bound enqueue and response by the same hard execution deadline. Cancellation
+/// is request-scoped; it never closes a transport shared with unrelated calls.
+async fn execute_request(
+    client: &rmcp::Peer<RoleClient>,
+    server: &str,
+    seconds: u64,
+    request: ClientRequest,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> anyhow::Result<ServerResult> {
+    let deadline = phase_deadline(server, "execution", seconds)?;
+    let mut options = service::PeerRequestOptions::no_options();
+    options.meta = Some(request.get_meta().clone());
+    let mut handle = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("MCP execution cancelled before enqueue (server: '{server}'); no remote termination confirmed"),
+        result = tokio::time::timeout_at(deadline, client.send_cancellable_request(request, options)) => {
+            result.map_err(|_| anyhow::anyhow!("MCP execution timed out after {seconds}s while enqueueing (server: '{server}'); remote completion unknown"))??
+        }
+    };
+    let reason = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => format!("MCP execution cancelled (server: '{server}')"),
+        response = &mut handle.rx => return Ok(response.map_err(|_| service::ServiceError::TransportClosed)??),
+        _ = tokio::time::sleep_until(deadline) => format!("MCP execution timed out after {seconds}s (server: '{server}')"),
+    };
+    let cancellation = match tokio_timeout(
+        Duration::from_millis(100),
+        handle.cancel(Some(reason.clone())),
+    )
+    .await
+    {
+        Ok(Ok(())) => "cancellation notification sent",
+        Ok(Err(_)) => "cancellation notification failed",
+        Err(_) => "cancellation notification deadline exceeded",
+    };
+    anyhow::bail!("{reason}; {cancellation}; remote completion unknown, termination not confirmed")
+}
+
+#[derive(Default)]
+struct McpCatalog {
+    tools: Vec<McpTool>,
+    resources: Vec<McpResource>,
+    resource_templates: Vec<McpResourceTemplate>,
+    prompts: Vec<McpPrompt>,
+}
+
+async fn discover_catalog(
+    server_name: &str,
+    client: &rmcp::Peer<RoleClient>,
+    deadline: tokio::time::Instant,
+    seconds: u64,
+    allow_partial_catalog: bool,
+) -> anyhow::Result<McpCatalog> {
+    let mut catalog = McpCatalog::default();
+    let mut tools_discovered = false;
+    let outcome = tokio::time::timeout_at(deadline, async {
+        catalog.tools = client.list_all_tools().await?.into_iter().map(|t| McpTool {
+            name: format!("{}::{}", server_name, t.name),
+            description: t.description.map(|d| d.to_string()).unwrap_or_default(),
+            parameters: Value::Object((*t.input_schema).clone()),
+            server_name: server_name.to_string(),
+        }).collect();
+        tools_discovered = true;
+        // Unsupported optional catalogs remain nonfatal. Their pagination still
+        // consumes the same catalog deadline. Legacy servers keep the inventory
+        // already discovered if an optional catalog stalls.
+        catalog.resources = client.list_all_resources().await.unwrap_or_else(|error| {
+            tracing::debug!(server = server_name, %error, "MCP resource catalog unavailable");
+            Vec::new()
+        }).into_iter().map(|r| McpResource {
+            uri: r.raw.uri, name: r.raw.name, description: r.raw.description, mime_type: r.raw.mime_type,
+            server_name: server_name.to_string(),
+        }).collect();
+        catalog.resource_templates = client.list_all_resource_templates().await.unwrap_or_else(|error| {
+            tracing::debug!(server = server_name, %error, "MCP resource-template catalog unavailable");
+            Vec::new()
+        }).into_iter().map(|t| McpResourceTemplate {
+            uri_template: t.raw.uri_template, name: t.raw.name, description: t.raw.description, mime_type: t.raw.mime_type,
+            server_name: server_name.to_string(),
+        }).collect();
+        catalog.prompts = client.list_all_prompts().await.unwrap_or_else(|error| {
+            tracing::debug!(server = server_name, %error, "MCP prompt catalog unavailable");
+            Vec::new()
+        }).into_iter().map(|p| McpPrompt {
+            name: format!("{}::{}", server_name, p.name),
+            description: p.description.map(|d| d.to_string()),
+            arguments: p.arguments.unwrap_or_default().into_iter().map(|a| McpPromptArgument {
+                name: a.name, description: a.description.map(|d| d.to_string()), required: a.required.unwrap_or(false),
+            }).collect(),
+            server_name: server_name.to_string(),
+        }).collect();
+        Ok::<_, service::ServiceError>(())
+    }).await;
+    match outcome {
+        Ok(result) => {
+            result?;
+            Ok(catalog)
+        }
+        Err(_) if allow_partial_catalog && tools_discovered => {
+            tracing::warn!(
+                server = server_name,
+                timeout_secs = seconds,
+                "MCP catalog timed out during optional discovery; preserving legacy partial inventory"
+            );
+            Ok(catalog)
+        }
+        Err(_) => anyhow::bail!(
+            "MCP server '{server_name}' catalog timed out after {seconds}s (including pagination)"
+        ),
+    }
+}
+
+#[cfg(test)]
+#[path = "mcp_phase_tests.rs"]
+mod phase_tests;
 
 /// Feature that wraps one or more MCP server connections.
 pub struct McpFeature {
@@ -300,7 +559,12 @@ pub(crate) struct McpSupervisor {
 
 impl McpSupervisor {
     pub(crate) async fn shutdown(&self, timeout: Duration) -> Vec<String> {
-        let mut clients = self.clients.lock().await;
+        // Remove peers under a short lock. New invocations must not wait behind
+        // asynchronous service settlement before observing unavailability/cancel.
+        let mut clients = {
+            let mut registry = self.clients.lock().await;
+            std::mem::take(&mut *registry)
+        };
         let mut failures = Vec::new();
         for (name, client) in clients.iter_mut() {
             match client.close_with_timeout(timeout).await {
@@ -342,7 +606,7 @@ pub(crate) fn dynamic_preflight(
             ],
             timeout_ms: servers
                 .values()
-                .map(|server| server.timeout_secs.saturating_mul(1000))
+                .map(McpServerConfig::readiness_ms)
                 .max()
                 .unwrap_or(30_000)
                 .max(1),
@@ -375,8 +639,8 @@ impl McpFeature {
         let mut host_action_policies = HashMap::new();
         for (server_name, config) in servers {
             admission.validate()?;
-            let readiness_deadline =
-                tokio::time::Instant::now() + Duration::from_secs(config.timeout_secs.max(1));
+            config.validate_budgets()?;
+            let readiness_deadline = phase_deadline(server_name, "startup", config.startup_secs())?;
             match Self::connect_one(
                 server_name,
                 config,
@@ -386,137 +650,22 @@ impl McpFeature {
             )
             .await
             {
-                Ok((server_tools, client)) => {
+                Ok((catalog, client)) => {
                     tracing::info!(
                         plugin = plugin_name,
                         server = server_name,
-                        tools = server_tools.len(),
+                        tools = catalog.tools.len(),
                         "MCP server connected"
                     );
-                    all_tools.extend(server_tools);
-                    timeouts.insert(server_name.clone(), config.timeout_secs);
+                    all_tools.extend(catalog.tools);
+                    all_resources.extend(catalog.resources);
+                    all_resource_templates.extend(catalog.resource_templates);
+                    all_prompts.extend(catalog.prompts);
+                    timeouts.insert(server_name.clone(), config.execution_secs());
                     if !config.host_actions.allowed.is_empty() {
                         host_action_policies
                             .insert(server_name.clone(), config.host_actions.clone());
                     }
-
-                    // Discover resources (non-fatal — many servers don't expose any)
-                    match tokio::time::timeout_at(readiness_deadline, client.list_all_resources())
-                        .await
-                    {
-                        Ok(Ok(resources)) => {
-                            if !resources.is_empty() {
-                                tracing::info!(
-                                    plugin = plugin_name,
-                                    server = server_name,
-                                    count = resources.len(),
-                                    "MCP resources discovered"
-                                );
-                            }
-                            all_resources.extend(resources.into_iter().map(|r| McpResource {
-                                uri: r.uri.clone(),
-                                name: r.name.clone(),
-                                description: r.description.clone(),
-                                mime_type: r.mime_type.clone(),
-                                server_name: server_name.clone(),
-                            }));
-                        }
-                        Ok(Err(e)) => {
-                            tracing::debug!(
-                                server = server_name,
-                                error = %e,
-                                "MCP server does not support resources"
-                            );
-                        }
-                        Err(_) => tracing::debug!(
-                            server = server_name,
-                            "MCP resource discovery exceeded readiness deadline"
-                        ),
-                    }
-
-                    // Discover resource templates (non-fatal)
-                    match tokio::time::timeout_at(
-                        readiness_deadline,
-                        client.list_all_resource_templates(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(templates)) => {
-                            if !templates.is_empty() {
-                                tracing::info!(
-                                    plugin = plugin_name,
-                                    server = server_name,
-                                    count = templates.len(),
-                                    "MCP resource templates discovered"
-                                );
-                            }
-                            all_resource_templates.extend(templates.into_iter().map(|t| {
-                                McpResourceTemplate {
-                                    uri_template: t.uri_template.clone(),
-                                    name: t.name.clone(),
-                                    description: t.description.clone(),
-                                    mime_type: t.mime_type.clone(),
-                                    server_name: server_name.clone(),
-                                }
-                            }));
-                        }
-                        Ok(Err(e)) => {
-                            tracing::debug!(
-                                server = server_name,
-                                error = %e,
-                                "MCP server does not support resource templates"
-                            );
-                        }
-                        Err(_) => tracing::debug!(
-                            server = server_name,
-                            "MCP resource-template discovery exceeded readiness deadline"
-                        ),
-                    }
-
-                    // Discover prompts (non-fatal)
-                    match tokio::time::timeout_at(readiness_deadline, client.list_all_prompts())
-                        .await
-                    {
-                        Ok(Ok(prompts)) => {
-                            if !prompts.is_empty() {
-                                tracing::info!(
-                                    plugin = plugin_name,
-                                    server = server_name,
-                                    count = prompts.len(),
-                                    "MCP prompts discovered"
-                                );
-                            }
-                            all_prompts.extend(prompts.into_iter().map(|p| {
-                                McpPrompt {
-                                    name: format!("{}::{}", server_name, p.name),
-                                    description: p.description.map(|d| d.to_string()),
-                                    arguments: p
-                                        .arguments
-                                        .unwrap_or_default()
-                                        .into_iter()
-                                        .map(|a| McpPromptArgument {
-                                            name: a.name,
-                                            description: a.description.map(|d| d.to_string()),
-                                            required: a.required.unwrap_or(false),
-                                        })
-                                        .collect(),
-                                    server_name: server_name.clone(),
-                                }
-                            }));
-                        }
-                        Ok(Err(e)) => {
-                            tracing::debug!(
-                                server = server_name,
-                                error = %e,
-                                "MCP server does not support prompts"
-                            );
-                        }
-                        Err(_) => tracing::debug!(
-                            server = server_name,
-                            "MCP prompt discovery exceeded readiness deadline"
-                        ),
-                    }
-
                     clients.insert(server_name.clone(), client);
                 }
                 Err(e) => {
@@ -543,7 +692,7 @@ impl McpFeature {
             admission,
             readiness_timeout_ms: servers
                 .values()
-                .map(|server| server.timeout_secs.saturating_mul(1000))
+                .map(McpServerConfig::readiness_ms)
                 .max()
                 .unwrap_or(30_000)
                 .max(1),
@@ -556,9 +705,10 @@ impl McpFeature {
         secrets: Option<&omegon_secrets::SecretsManager>,
         progress: Arc<ProgressRegistry>,
         readiness_deadline: tokio::time::Instant,
-    ) -> anyhow::Result<(Vec<McpTool>, McpConnection)> {
+    ) -> anyhow::Result<(McpCatalog, McpConnection)> {
         let handler = OmegonMcpClient { progress };
         let connect = async {
+            let mut process_group = McpProcessGroup::default();
             let client = if let Some(ref url) = config.url {
                 // HTTP transport mode
                 Self::validate_url(url)?;
@@ -566,50 +716,50 @@ impl McpFeature {
                 service::serve_client(handler, transport).await?
             } else {
                 // Local process transport mode
-                let cmd = Self::build_command(server_name, config, secrets)?;
+                let mut cmd = Self::build_command(server_name, config, secrets)?;
+                crate::child_agent::configure_child_process_group(&mut cmd);
                 let transport = TokioChildProcess::new(cmd)?;
+                process_group.0 = transport.id();
                 service::serve_client(handler, transport).await?
             };
-            Ok::<_, anyhow::Error>(client)
+            Ok::<_, anyhow::Error>(McpConnection {
+                service: client,
+                _process_group: process_group,
+            })
         };
         let mut client = tokio::time::timeout_at(readiness_deadline, connect)
             .await
             .map_err(|_| {
-                anyhow::anyhow!("MCP server '{server_name}' connection readiness timed out")
+                anyhow::anyhow!(
+                    "MCP server '{server_name}' startup timed out after {}s",
+                    config.startup_secs()
+                )
             })??;
 
-        // Discover tools via MCP tools/list
-        let tools_result =
-            match tokio::time::timeout_at(readiness_deadline, client.list_tools(None)).await {
-                Ok(Ok(tools)) => tools,
-                Ok(Err(error)) => {
-                    let _ = client.close_with_timeout(Duration::from_secs(1)).await;
-                    return Err(error.into());
-                }
-                Err(_) => {
-                    let _ = client.close_with_timeout(Duration::from_secs(1)).await;
-                    return Err(anyhow::anyhow!(
-                        "MCP server '{server_name}' tool discovery readiness timed out"
-                    ));
-                }
+        // Legacy configurations share one readiness deadline. Explicit startup/catalog
+        // settings opt into separate phases, with one deadline for the entire catalog.
+        let readiness_deadline =
+            if config.startup_timeout_secs.is_some() || config.catalog_timeout_secs.is_some() {
+                phase_deadline(server_name, "catalog", config.catalog_secs())?
+            } else {
+                readiness_deadline
             };
-        let tools: Vec<McpTool> = tools_result
-            .tools
-            .into_iter()
-            .map(|t| {
-                // Convert the input_schema (Arc<Map>) to a serde_json::Value
-                let params: Value = serde_json::to_value(&t.input_schema)
-                    .unwrap_or_else(|_| serde_json::json!({"type": "object", "properties": {}}));
-                McpTool {
-                    name: format!("{}::{}", server_name, t.name),
-                    description: t.description.map(|d| d.to_string()).unwrap_or_default(),
-                    parameters: params,
-                    server_name: server_name.to_string(),
-                }
-            })
-            .collect();
-
-        Ok((tools, client))
+        let catalog = match discover_catalog(
+            server_name,
+            client.peer(),
+            readiness_deadline,
+            config.catalog_secs(),
+            config.startup_timeout_secs.is_none() && config.catalog_timeout_secs.is_none(),
+        )
+        .await
+        {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                let _ = client.close_with_timeout(Duration::from_secs(1)).await;
+                return Err(error);
+            }
+        };
+        Ok((catalog, client))
     }
 
     pub(crate) fn supervisor(&self) -> McpSupervisor {
@@ -773,7 +923,11 @@ impl McpFeature {
     }
 
     /// Execute `resources/read` against the named MCP server.
-    async fn execute_read_resource(&self, args: &Value) -> anyhow::Result<ToolResult> {
+    async fn execute_read_resource(
+        &self,
+        args: &Value,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
         let server_name = args
             .get("server")
             .and_then(|v| v.as_str())
@@ -787,21 +941,23 @@ impl McpFeature {
         let clients = self.clients.lock().await;
         let client = clients
             .get(server_name)
-            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?;
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?
+            .peer()
+            .clone();
+        drop(clients);
 
         let params = ReadResourceRequestParams::new(uri);
-        let result = tokio_timeout(
-            Duration::from_secs(timeout_secs),
-            client.read_resource(params),
+        let response = execute_request(
+            &client,
+            server_name,
+            timeout_secs,
+            ClientRequest::ReadResourceRequest(ReadResourceRequest::new(params)),
+            cancel,
         )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "MCP resource read timed out after {}s (server: '{}')",
-                timeout_secs,
-                server_name
-            )
-        })??;
+        .await?;
+        let ServerResult::ReadResourceResult(result) = response else {
+            return Err(service::ServiceError::UnexpectedResponse.into());
+        };
 
         let content: Vec<ContentBlock> = result
             .contents
@@ -823,7 +979,11 @@ impl McpFeature {
     }
 
     /// Execute `prompts/get` against the named MCP server.
-    async fn execute_get_prompt(&self, args: &Value) -> anyhow::Result<ToolResult> {
+    async fn execute_get_prompt(
+        &self,
+        args: &Value,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
         let server_name = args
             .get("server")
             .and_then(|v| v.as_str())
@@ -839,19 +999,24 @@ impl McpFeature {
         let clients = self.clients.lock().await;
         let client = clients
             .get(server_name)
-            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?;
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?
+            .peer()
+            .clone();
+        drop(clients);
 
         let mut params = GetPromptRequestParams::new(prompt_name);
         params.arguments = prompt_args;
-        let result = tokio_timeout(Duration::from_secs(timeout_secs), client.get_prompt(params))
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "MCP prompt get timed out after {}s (server: '{}')",
-                    timeout_secs,
-                    server_name
-                )
-            })??;
+        let response = execute_request(
+            &client,
+            server_name,
+            timeout_secs,
+            ClientRequest::GetPromptRequest(GetPromptRequest::new(params)),
+            cancel,
+        )
+        .await?;
+        let ServerResult::GetPromptResult(result) = response else {
+            return Err(service::ServiceError::UnexpectedResponse.into());
+        };
 
         let mut text_parts = Vec::new();
         if let Some(ref desc) = result.description {
@@ -1109,7 +1274,7 @@ impl Feature for McpFeature {
         tool_name: &str,
         call_id: &str,
         args: Value,
-        _cancel: tokio_util::sync::CancellationToken,
+        cancel: tokio_util::sync::CancellationToken,
         sink: ToolProgressSink,
         context: omegon_traits::ToolExecutionContext,
     ) -> anyhow::Result<ToolResult> {
@@ -1130,10 +1295,10 @@ impl Feature for McpFeature {
 
         // Route to resource/prompt handlers
         if mcp_name == "mcp_read_resource" {
-            return self.execute_read_resource(&args).await;
+            return self.execute_read_resource(&args, &cancel).await;
         }
         if mcp_name == "mcp_get_prompt" {
-            return self.execute_get_prompt(&args).await;
+            return self.execute_get_prompt(&args, &cancel).await;
         }
 
         let server_name = server_name.to_string();
@@ -1144,7 +1309,10 @@ impl Feature for McpFeature {
         let clients = self.clients.lock().await;
         let client = clients
             .get(&server_name)
-            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?;
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server_name))?
+            .peer()
+            .clone();
+        drop(clients);
 
         let arguments = if args.is_object() {
             Some(args.as_object().unwrap().clone())
@@ -1181,37 +1349,24 @@ impl Feature for McpFeature {
             None
         };
 
-        let result = match tokio_timeout(
-            Duration::from_secs(timeout_secs),
-            client.call_tool(params),
+        let response = execute_request(
+            &client,
+            &server_name,
+            timeout_secs,
+            ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+            &cancel,
         )
-        .await
-        {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) if context.invocation.is_some() => {
+        .await;
+        let result = match response {
+            Ok(ServerResult::CallToolResult(result)) => result,
+            Ok(_) => return Err(service::ServiceError::UnexpectedResponse.into()),
+            Err(error) if context.invocation.is_some() => {
                 return Err(crate::invocation_service::UnknownCompletionError {
-                    reason: format!(
-                        "MCP transport failed after invocation acknowledgement (server: '{server_name}'): {error}"
-                    ),
+                    reason: format!("MCP invocation completion unknown: {error}"),
                 }
                 .into());
             }
-            Ok(Err(error)) => return Err(error.into()),
-            Err(_) if context.invocation.is_some() => {
-                return Err(crate::invocation_service::UnknownCompletionError {
-                    reason: format!(
-                        "MCP tool call timed out after {timeout_secs}s (server: '{server_name}')"
-                    ),
-                }
-                .into());
-            }
-            Err(_) => {
-                return Err(anyhow::anyhow!(
-                    "MCP tool call timed out after {}s (server: '{}')",
-                    timeout_secs,
-                    server_name
-                ));
-            }
+            Err(error) => return Err(error),
         };
 
         // Convert MCP content to Omegon content blocks
@@ -2065,6 +2220,9 @@ manual = true
             docker_mcp: None,
             styrene_dest: None,
             timeout_secs: 30,
+            startup_timeout_secs: None,
+            catalog_timeout_secs: None,
+            execution_timeout_secs: None,
             host_actions: McpHostActionPolicy::default(),
         };
         let cmd = McpFeature::build_command("test", &config, None).unwrap();
@@ -2085,6 +2243,9 @@ manual = true
             docker_mcp: None,
             styrene_dest: None,
             timeout_secs: 30,
+            startup_timeout_secs: None,
+            catalog_timeout_secs: None,
+            execution_timeout_secs: None,
             host_actions: McpHostActionPolicy::default(),
         };
         let cmd = McpFeature::build_command("test", &config, None).unwrap();
@@ -2122,6 +2283,9 @@ manual = true
             docker_mcp: Some("github".into()),
             styrene_dest: None,
             timeout_secs: 30,
+            startup_timeout_secs: None,
+            catalog_timeout_secs: None,
+            execution_timeout_secs: None,
             host_actions: McpHostActionPolicy::default(),
         };
         let cmd = McpFeature::build_command("test", &config, None).unwrap();
@@ -2171,6 +2335,9 @@ manual = true
             docker_mcp: None,
             styrene_dest: Some("a7b3c9d1e5f2".into()),
             timeout_secs: 60,
+            startup_timeout_secs: None,
+            catalog_timeout_secs: None,
+            execution_timeout_secs: None,
             host_actions: McpHostActionPolicy::default(),
         };
         let cmd = McpFeature::build_command("gpu", &config, None).unwrap();
@@ -2208,6 +2375,9 @@ manual = true
             docker_mcp: None,
             styrene_dest: None,
             timeout_secs: 30,
+            startup_timeout_secs: None,
+            catalog_timeout_secs: None,
+            execution_timeout_secs: None,
             host_actions: McpHostActionPolicy::default(),
         };
         let result = McpFeature::build_command("test", &config, None);
@@ -2411,7 +2581,10 @@ manual = true
     async fn execute_read_resource_missing_server_arg() {
         let feat = make_test_feature(vec![], vec![], vec![]);
         let args = serde_json::json!({"uri": "file:///tmp/x"});
-        let err = feat.execute_read_resource(&args).await.unwrap_err();
+        let err = feat
+            .execute_read_resource(&args, &tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(
             err.to_string()
                 .contains("missing required argument: server"),
@@ -2423,7 +2596,10 @@ manual = true
     async fn execute_read_resource_missing_uri_arg() {
         let feat = make_test_feature(vec![], vec![], vec![]);
         let args = serde_json::json!({"server": "fs"});
-        let err = feat.execute_read_resource(&args).await.unwrap_err();
+        let err = feat
+            .execute_read_resource(&args, &tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("missing required argument: uri"),
             "unexpected error: {err}"
@@ -2434,7 +2610,10 @@ manual = true
     async fn execute_get_prompt_missing_server_arg() {
         let feat = make_test_feature(vec![], vec![], vec![]);
         let args = serde_json::json!({"name": "summarize"});
-        let err = feat.execute_get_prompt(&args).await.unwrap_err();
+        let err = feat
+            .execute_get_prompt(&args, &tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(
             err.to_string()
                 .contains("missing required argument: server"),
@@ -2446,7 +2625,10 @@ manual = true
     async fn execute_get_prompt_missing_name_arg() {
         let feat = make_test_feature(vec![], vec![], vec![]);
         let args = serde_json::json!({"server": "fs"});
-        let err = feat.execute_get_prompt(&args).await.unwrap_err();
+        let err = feat
+            .execute_get_prompt(&args, &tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("missing required argument: name"),
             "unexpected error: {err}"

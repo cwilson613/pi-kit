@@ -2792,11 +2792,18 @@ pub async fn context_compact_response(
             ..Default::default()
         }
     };
+    runtime_state
+        .context_manager
+        .set_selector_policy(shared_settings.lock().unwrap().selector_policy());
+    let retained_budget = runtime_state.context_manager.retained_context_budget();
     let before_tokens = runtime_state.conversation.estimate_tokens() as u64;
     let planning = runtime_state
         .context_compaction
         .plan(
-            runtime_state.conversation.context_compaction_snapshot(),
+            runtime_state
+                .conversation
+                .context_compaction_snapshot()
+                .with_retained_token_budget(retained_budget),
             crate::context_compaction_service::ContextCompactionModeV1::Manual,
             tokio_util::sync::CancellationToken::new(),
         )
@@ -2811,18 +2818,16 @@ pub async fn context_compact_response(
         }
     };
     if let Some(plan) = plan {
-        let payload = plan.payload;
+        let payload = &plan.payload;
         let evict_count = plan.evict_count;
+        let retention_reason = plan.reason.clone();
         let authority_compaction = match (
             invocation_scope.authority.clone(),
             invocation_scope.turn_id,
             invocation_scope.session_id.as_deref(),
         ) {
             (Some(authority), None, Some(session_id)) if authority.session_id() == session_id => {
-                match crate::session_compaction::SessionCompaction::begin_idle(
-                    authority,
-                    evict_count,
-                ) {
+                match crate::session_compaction::SessionCompaction::begin_idle(authority, &plan) {
                     Ok(Some(compaction)) => Some(compaction),
                     Ok(None) => {
                         return SlashCommandResponse {
@@ -2860,14 +2865,14 @@ pub async fn context_compact_response(
                 after_tokens: None,
                 evicted_messages: Some(evict_count),
                 summary_chars: None,
-                reason: None,
+                reason: retention_reason.clone(),
             },
         ));
         let compact_result = if let Some(authority) = authority_compaction.as_ref() {
             crate::session_execution::boot_execution_binding()
                 .compact_scoped(
                     bridge_guard.as_ref(),
-                    &payload,
+                    payload,
                     &stream_options,
                     invocation_scope,
                     authority,
@@ -2875,16 +2880,13 @@ pub async fn context_compact_response(
                 .await
         } else {
             crate::session_execution::boot_execution_binding()
-                .compact(bridge_guard.as_ref(), &payload, &stream_options)
+                .compact(bridge_guard.as_ref(), payload, &stream_options)
                 .await
         };
         match compact_result {
             Ok(summary) => {
                 let summary_chars = summary.chars().count();
-                runtime_state.conversation.apply_compaction_keeping_recent(
-                    summary,
-                    crate::context_compaction_service::MANUAL_KEEP_RECENT_TURNS,
-                );
+                plan.apply(&mut runtime_state.conversation, summary);
                 let est = runtime_state.conversation.estimate_tokens();
                 let settings = shared_settings.lock().unwrap();
                 if let Ok(mut metrics) = agent.context_metrics.lock() {
@@ -2903,7 +2905,7 @@ pub async fn context_compact_response(
                         after_tokens: Some(est as u64),
                         evicted_messages: Some(evict_count),
                         summary_chars: Some(summary_chars),
-                        reason: None,
+                        reason: retention_reason.clone(),
                     },
                 ));
                 SlashCommandResponse {
@@ -2939,13 +2941,15 @@ pub async fn context_compact_response(
                 after_tokens: Some(before_tokens),
                 evicted_messages: Some(0),
                 summary_chars: None,
-                reason: Some("no evictable messages older than decay window".to_string()),
+                reason: Some(
+                    "no complete older turns eligible under the retention budget".to_string(),
+                ),
             },
         ));
         SlashCommandResponse {
             accepted: true,
             output: Some(
-                "Nothing to compress yet — manual compaction keeps the last two turns and summarizes older turns.".to_string(),
+                "Nothing to compress yet — compaction preserves the current turn and complete tool exchanges; older turns are summarized according to the retention budget.".to_string(),
             ),
         }
     }
@@ -3412,7 +3416,7 @@ pub async fn auth_login_response(
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .map(|_| {
-                    "Anthropic OAuth login succeeded, but ANTHROPIC_API_KEY is also set. Requests will continue to prefer the API key. If you want Claude subscription auth for this session, unset ANTHROPIC_API_KEY and retry /login anthropic."
+                    "Anthropic OAuth login succeeded, but ANTHROPIC_API_KEY is also set. Requests will continue to prefer the API key. If you want Claude subscription auth for this session, unset ANTHROPIC_API_KEY and retry /connect anthropic."
                         .to_string()
                 })
         } else {
@@ -7084,6 +7088,53 @@ mod context_compaction_tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn token_retention_manual_handler_applies_selected_recent_boundary() {
+        let mut state = test_runtime_state_with_evictable_context();
+        state.conversation = crate::conversation::ConversationState::new();
+        state
+            .conversation
+            .push_user("older large turn ".repeat(8_000));
+        state.conversation.intent.stats.turns = 1;
+        state.conversation.push_user("current task".into());
+        let mut agent = test_agent();
+        let settings = crate::settings::shared("test:model");
+        settings.lock().unwrap().context_window = 32_000;
+        let bridge = Arc::new(tokio::sync::RwLock::new(Box::new(MockBridge {
+            events: vec![
+                LlmEvent::TextDelta {
+                    delta: "Prior work summarized".into(),
+                },
+                LlmEvent::Done {
+                    message: serde_json::json!({}),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    provider_telemetry: None,
+                },
+            ],
+        }) as Box<dyn LlmBridge>));
+        let (events, mut receive) = broadcast::channel(8);
+        let response = context_compact_response(
+            &mut state,
+            &mut agent,
+            &settings,
+            &bridge,
+            &events,
+            &crate::invocation_service::InvocationScope::default(),
+        )
+        .await;
+        assert!(response.accepted, "{response:?}");
+        assert_eq!(state.conversation.message_count(), 1);
+        assert_eq!(state.conversation.last_user_prompt(), "current task");
+        assert_eq!(state.conversation.intent.stats.compactions, 1);
+        let AgentEvent::ContextCompaction(started) = receive.recv().await.unwrap() else {
+            panic!("expected compaction start");
+        };
+        assert_eq!(started.evicted_messages, Some(1));
     }
 
     #[tokio::test]

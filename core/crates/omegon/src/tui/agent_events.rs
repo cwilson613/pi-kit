@@ -24,6 +24,7 @@ impl App {
         }
         self.dashboard_handles.session().set_busy(false);
         self.conversation.finalize_message();
+        self.publication_boundary = self.conversation.segments().len();
         self.effects.stop_spinner_glow();
         self.effects.stop_border_pulse();
         if was_active {
@@ -130,16 +131,36 @@ impl App {
     }
 
     pub(super) fn handle_agent_event(&mut self, event: AgentEvent) {
+        self.handle_presented_agent_event(event, false);
+    }
+
+    pub(super) fn handle_drawn_agent_event(&mut self, event: AgentEvent) {
+        self.handle_presented_agent_event(event, true);
+    }
+
+    fn handle_presented_agent_event(&mut self, event: AgentEvent, replaying: bool) {
+        if self.defer_blocking_interaction(&event) {
+            return;
+        }
         // Runtime authority events must bypass stream-presentation buffering:
         // buffering a terminal supervisor/queue snapshot can strand the TUI in
         // a locally active state after the worker has already returned.
         let authoritative_runtime_event = matches!(
             event,
-            AgentEvent::RuntimeTurnLifecycleUpdated { .. } | AgentEvent::RuntimeQueueUpdated { .. }
+            AgentEvent::RuntimeTurnLifecycleUpdated { .. }
+                | AgentEvent::RuntimeQueueUpdated { .. }
+                | AgentEvent::PermissionRequest { .. }
+                | AgentEvent::OperatorWaitRequest { .. }
         );
-        let decision = self.stream_presentation.classify(event.clone());
-        if !decision.apply_now && !authoritative_runtime_event {
-            return;
+        if !authoritative_runtime_event {
+            let decision = if replaying {
+                self.stream_presentation.classify_drawn_event(event.clone())
+            } else {
+                self.stream_presentation.classify(event.clone())
+            };
+            if !decision.apply_now {
+                return;
+            }
         }
         match event {
             AgentEvent::TurnStart { turn } => {
@@ -394,26 +415,17 @@ impl App {
             } => {
                 self.slim_turn_state = SlimTurnState::Finished("blocked");
                 // Show a blocking permission prompt in the TUI.
-                let prompt_text = format_permission_prompt(
+                self.command_prompt = Some(permission_lane::permission_prompt(
                     &tool_name,
                     &path,
                     kind,
                     persistence,
                     grant_path.as_deref(),
-                );
-                self.command_prompt = Some(
-                    CommandPrompt::new("Permission required", prompt_text.clone()).with_actions(
-                        vec![
-                            CommandPromptAction::new("y", "this operation"),
-                            CommandPromptAction::new("a", "this directory · session"),
-                            CommandPromptAction::new("Shift+A", "this directory · project"),
-                            CommandPromptAction::new("n", "deny"),
-                        ],
-                    ),
-                );
+                ));
 
                 // Store the responder — the next key event (y/a/n) will
                 // resolve it. See handle_permission_key below.
+                self.interaction.prompt = self.command_prompt.clone();
                 self.pending_permission = Some(respond.clone());
                 self.pending_permission_context = Some(PendingPermissionContext {
                     tool_name,
@@ -424,6 +436,7 @@ impl App {
                 });
             }
             AgentEvent::OperatorWaitRequest {
+                call_id,
                 prompt,
                 timeout_secs,
                 acknowledge,
@@ -447,6 +460,8 @@ impl App {
                 {
                     let _ = tx.send(());
                 }
+                self.interaction.prompt = self.command_prompt.clone();
+                self.interaction.wait_call_id = call_id;
                 self.pending_operator_wait = Some(respond.clone());
                 self.pending_operator_wait_context = Some(prompt);
             }
@@ -463,12 +478,8 @@ impl App {
                 // the event boundary instead of retaining the startup snapshot.
                 self.workbench_state.workspace = self.current_workbench_workspace_context();
 
-                if name == crate::tool_registry::core::WAIT_FOR_OPERATOR
-                    && self.pending_operator_wait.is_some()
-                {
-                    self.pending_operator_wait = None;
-                    self.pending_operator_wait_context = None;
-                    self.command_prompt = None;
+                if name == crate::tool_registry::core::WAIT_FOR_OPERATOR {
+                    self.finish_operator_wait_call(&id);
                 }
 
                 let text_blocks: Vec<&str> = result
@@ -711,6 +722,9 @@ impl App {
                     .get("active")
                     .is_some_and(serde_json::Value::is_null);
                 self.runtime_queue_snapshot = Some(snapshot_json);
+                if runtime_idle {
+                    self.cancel_blocking_interactions();
+                }
                 if runtime_idle && (self.runtime_turn_id.is_some() || self.agent_active) {
                     self.terminalize_runtime_turn();
                 }
@@ -867,11 +881,30 @@ impl App {
                     .get("phase")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("active");
-                if phase == "supervisor_completed" {
+                if matches!(
+                    phase,
+                    "supervisor_completed"
+                        | "supervisor_revoked"
+                        | "supervisor_failed"
+                        | "supervisor_timed_out"
+                ) {
                     let advised_turn = snapshot_json
                         .get("turn_id")
                         .and_then(serde_json::Value::as_u64);
                     if self.runtime_turn_id.is_none() || advised_turn == self.runtime_turn_id {
+                        self.cancel_blocking_interactions();
+                        let notice = match phase {
+                            "supervisor_revoked" => Some("Turn cancelled or revoked."),
+                            "supervisor_failed" => Some("Turn failed."),
+                            "supervisor_timed_out" => Some("Turn timed out."),
+                            _ => None,
+                        };
+                        if let (Some(turn), Some(notice)) = (advised_turn, notice)
+                            && self.terminal_outcome_notice != Some((turn, notice))
+                        {
+                            self.conversation.push_system(notice);
+                            self.terminal_outcome_notice = Some((turn, notice));
+                        }
                         self.terminalize_runtime_turn();
                     }
                 } else {
@@ -925,10 +958,13 @@ impl App {
                 }
             }
             AgentEvent::SessionReset => {
+                self.cancel_blocking_interactions();
+                self.terminalize_runtime_turn();
+                self.terminal_outcome_notice = None;
                 if self.session_view_binding.is_some() {
                     self.refresh_semantic_session_view();
                 } else {
-                    self.conversation = ConversationView::new();
+                    self.replace_conversation(ConversationView::new());
                     self.conversation
                         .push_system("New session started. Previous session saved.");
                 }

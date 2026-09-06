@@ -345,7 +345,7 @@ pub trait LlmBridge: Send + Sync {
 // ─── Null bridge (no provider configured) ──────────────────────────────────
 
 /// Placeholder bridge used when no LLM provider is available.
-/// Every stream call returns an error telling the user to /login.
+/// Every stream call returns an error telling the user to /connect.
 pub struct NullBridge;
 
 #[async_trait]
@@ -358,15 +358,7 @@ impl LlmBridge for NullBridge {
         _options: &StreamOptions,
     ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
         anyhow::bail!(
-            "No LLM provider configured. Use /login to authenticate or open the login selector.\n\
-             Suggested routes:\n\
-             • /login anthropic      — Claude Pro/Max (OAuth)\n\
-             • /login openai-codex   — ChatGPT/Codex consumer OAuth\n\
-             • /login github-copilot — GitHub Copilot subscription OAuth\n\
-             • /login openai         — OpenAI API key\n\
-             • /login openrouter     — OpenRouter API key\n\
-             • /login ollama-cloud   — Hosted Ollama API key\n\
-             Or set an env var such as ANTHROPIC_API_KEY."
+            "No LLM provider available. Use /connect to configure a connection or /model to choose a route."
         );
     }
 
@@ -548,12 +540,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn null_bridge_returns_login_error() {
+    async fn connect_null_bridge_returns_one_action_without_catalog() {
         let bridge = NullBridge;
         let result = bridge.stream("", &[], &[], &StreamOptions::default()).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("/login"), "should mention /login: {err}");
+        assert!(err.contains("/connect"), "should mention /connect: {err}");
+        assert_eq!(err.lines().count(), 1, "no provider catalog: {err}");
+        assert!(!err.contains("/login"));
         assert!(
             err.contains("No LLM provider"),
             "should explain no provider: {err}"

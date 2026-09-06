@@ -162,6 +162,25 @@ impl SessionViewBinding {
     }
 }
 
+/// Prepare the first client view before a frontend can observe the binding.
+pub(crate) fn prepare_initial_view(target: &SessionViewTarget) -> Result<(), SessionConsumerError> {
+    use crate::session_shadow_projection::{
+        ALL_SHADOW_PROJECTORS, ProjectorPublicationStatus, SessionProjectionCoordinator,
+    };
+    let replay =
+        SessionReplay::replay_session(&target.snapshot, &target.session_id, ReplayEnd::EndOfStream)
+            .map_err(|error| SessionConsumerError::Unavailable(error.to_string()))?;
+    let coordinator =
+        SessionProjectionCoordinator::open(&target.snapshot.with_extension("projections"))
+            .map_err(|error| SessionConsumerError::Unavailable(error.to_string()))?;
+    for report in coordinator.publish(&replay, &ALL_SHADOW_PROJECTORS) {
+        if let ProjectorPublicationStatus::Failed { error, .. } = report.status {
+            return Err(SessionConsumerError::Unavailable(error.to_string()));
+        }
+    }
+    SemanticSessionView::load(target).map(|_| ())
+}
+
 fn empty_runtime_queue() -> serde_json::Value {
     serde_json::Value::Null
 }
@@ -458,6 +477,32 @@ mod tests {
             kind: SessionViewKind::Resume,
         };
         (directory, target)
+    }
+
+    #[test]
+    fn initial_view_is_available_before_background_projection_starts() {
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("fresh.json");
+        let _authority = crate::session_authority::SessionAuthority::open(
+            &snapshot,
+            "fresh",
+            "workspace",
+            "generation",
+            crate::session_authority::ActorIdentity {
+                principal: "operator".into(),
+                ingress: "interactive".into(),
+            },
+            "2026-09-05T00:00:00Z",
+        )
+        .unwrap();
+        let binding = SessionViewBinding::new(snapshot, "fresh".into());
+        prepare_initial_view(&binding.snapshot()).unwrap();
+        let view = SemanticSessionView::load(&binding.snapshot()).unwrap();
+        // A session with no semantic step yet retains its truthful lineage;
+        // initialization must not fabricate a full-spine boundary.
+        assert_eq!(view.status, SemanticSessionStatus::LegacyUnavailable);
+        assert!(view.frontier_sequence > 0);
+        assert!(view.transcript.is_empty());
     }
 
     #[test]

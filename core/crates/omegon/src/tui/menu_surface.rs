@@ -321,7 +321,7 @@ fn menu_description_lines<'a>(
         .collect()
 }
 
-fn wrap_display(value: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap_display(value: &str, width: usize) -> Vec<String> {
     if value.is_empty() {
         return vec![String::new()];
     }

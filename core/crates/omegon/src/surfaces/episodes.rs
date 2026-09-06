@@ -92,46 +92,87 @@ fn deterministic_outcome<TText>(
 where
     TText: AsRef<str>,
 {
-    if let Some(tool) = tools.iter().find(|tool| tool.is_error) {
-        let result = tool
-            .result_summary
-            .as_ref()
-            .map(AsRef::as_ref)
-            .filter(|text| !text.trim().is_empty())
-            .unwrap_or("failed");
-        return format!("{} failed · {}", tool.name.as_ref(), bounded(result));
-    }
-
-    if state == OperationEpisodeState::Running {
-        let tool = tools.last().expect("episode has at least one tool");
-        return format!("Running {}", tool.name.as_ref());
-    }
-
-    if let Some(tool) = tools.iter().rev().find(|tool| {
-        tool.result_summary
-            .as_ref()
-            .is_some_and(|result| !result.as_ref().trim().is_empty())
-    }) {
-        return format!(
-            "{} · {}",
+    let mut summary = OutcomeSummary::default();
+    for tool in tools {
+        summary.observe(
             tool.name.as_ref(),
-            bounded(tool.result_summary.as_ref().expect("checked").as_ref())
+            tool.result_summary.as_ref().map(AsRef::as_ref),
+            tool.is_error,
         );
     }
+    summary.outcome(state)
+}
 
-    match tools {
-        [tool] => format!("{} complete", tool.name.as_ref()),
-        _ => format!("Completed {} operations", tools.len()),
+/// Bounded scalar reducer shared by managed and incremental terminal projections.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct OutcomeSummary {
+    pub(crate) count: usize,
+    failure: Option<String>,
+    success: Option<String>,
+    last_name: String,
+}
+
+impl OutcomeSummary {
+    pub(crate) fn observe(&mut self, name: &str, result: Option<&str>, failed: bool) {
+        self.count += 1;
+        self.last_name = bounded(name);
+        let result = result.map(bounded).filter(|v| !v.is_empty());
+        if failed && self.failure.is_none() {
+            self.failure = Some(format!(
+                "{} failed · {}",
+                self.last_name,
+                result.as_deref().unwrap_or("failed")
+            ));
+        }
+        if let Some(result) = result {
+            self.success = Some(format!("{} · {}", self.last_name, result));
+        }
+    }
+
+    pub(crate) fn failed(&self) -> bool {
+        self.failure.is_some()
+    }
+
+    pub(crate) fn outcome(&self, state: OperationEpisodeState) -> String {
+        if let Some(failure) = &self.failure {
+            return failure.clone();
+        }
+        if state == OperationEpisodeState::Running {
+            return format!("Running {}", self.last_name);
+        }
+        if let Some(success) = &self.success {
+            return success.clone();
+        }
+        if self.count == 1 {
+            format!("{} complete", self.last_name)
+        } else {
+            format!("Completed {} operations", self.count)
+        }
+    }
+
+    pub(crate) fn display(&self) -> String {
+        format!(
+            "{} {} · {} operation{}",
+            if self.failed() { "✗" } else { "✓" },
+            self.outcome(OperationEpisodeState::Complete),
+            self.count,
+            if self.count == 1 { "" } else { "s" }
+        )
     }
 }
 
 fn bounded(text: &str) -> String {
-    const LIMIT: usize = 120;
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() <= LIMIT {
-        compact
+    // Bound discovery as well as the output; a huge whitespace-only result must
+    // not be scanned in an inline preparation cycle.
+    let prefix = &text[..text.floor_char_boundary(text.len().min(512))];
+    let compact = prefix.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = compact.chars();
+    let mut prefix: String = chars.by_ref().take(120).collect();
+    if chars.next().is_some() || text.len() > 512 {
+        prefix.pop();
+        format!("{prefix}…")
     } else {
-        format!("{}…", compact.chars().take(LIMIT - 1).collect::<String>())
+        prefix
     }
 }
 

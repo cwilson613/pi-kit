@@ -119,6 +119,9 @@ pub struct ProviderStatusProjection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAvailabilityProjection {
     Available,
+    ExpiredCredentials,
+    UnreadableCredentials,
+    CredentialStoreUnavailable,
     MissingCredentials,
     Unavailable,
 }
@@ -126,7 +129,10 @@ pub enum ProviderAvailabilityProjection {
 impl ProviderStatusProjection {
     pub fn badge_label(&self) -> &'static str {
         match self.availability {
-            ProviderAvailabilityProjection::Available => "valid",
+            ProviderAvailabilityProjection::Available => "configured",
+            ProviderAvailabilityProjection::ExpiredCredentials => "expired",
+            ProviderAvailabilityProjection::UnreadableCredentials => "unreadable",
+            ProviderAvailabilityProjection::CredentialStoreUnavailable => "store unavailable",
             ProviderAvailabilityProjection::MissingCredentials => "missing",
             ProviderAvailabilityProjection::Unavailable => "unavailable",
         }
@@ -135,7 +141,10 @@ impl ProviderStatusProjection {
     pub fn badge_tone(&self) -> MenuBadgeTone {
         match self.availability {
             ProviderAvailabilityProjection::Available => MenuBadgeTone::Success,
-            ProviderAvailabilityProjection::MissingCredentials => MenuBadgeTone::Warning,
+            ProviderAvailabilityProjection::MissingCredentials
+            | ProviderAvailabilityProjection::ExpiredCredentials => MenuBadgeTone::Warning,
+            ProviderAvailabilityProjection::UnreadableCredentials
+            | ProviderAvailabilityProjection::CredentialStoreUnavailable => MenuBadgeTone::Danger,
             ProviderAvailabilityProjection::Unavailable => MenuBadgeTone::Danger,
         }
     }

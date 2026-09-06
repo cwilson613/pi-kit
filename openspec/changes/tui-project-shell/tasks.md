@@ -1,0 +1,45 @@
+## 1. Captured terminal foundation
+<!-- specs: tui-project-client -->
+
+- [x] Add and verify local streaming fixture contract tests before the runner implementation.
+- [x] Automate actual terminal launch, two prompts, resize, isolated state, and evidence capture.
+- [x] Run the scenario interactively, inspect captures, and record build provenance and limitations.
+
+- [x] Reproduce and repair deferred completion replay that prevented second-turn input; verify controller and App regressions.
+
+## 2. Client interaction ownership
+<!-- specs: tui-project-client -->
+
+- [x] Initialize and validate fresh-session projections before launching interactive clients; render an explicit empty-session ready state.
+- [x] Add regression scenarios for visible approval/input agreement while browsing and return to prior selection.
+- [x] Introduce responder-backed decision ownership with arrival ordering, bounded overflow, preserved passive state, and matching prompt/input precedence.
+- [x] Propagate profile permission policy into runtime settings; capture a real denied write above Settings and return to the prior surface.
+- [x] Extend shared visible/input ownership to passive navigation and extension overlays.
+- [x] Adapt success-ordered terminal ownership from the inline corpus; route current fullscreen/native-export mode changes through one owner.
+- [ ] Add responder transport and provenance for extension actions; the client currently reports unsupported responses.
+- [x] Implement the persistent inline viewport and bounded automatic transcript publication, with backlog/recovery acceptance; detailed TDD ownership is in [tui-dual-presentation](../tui-dual-presentation/tasks.md).
+
+## 3. Project and work vertical slice
+<!-- specs: tui-project-client -->
+
+- [x] Specify the first project/session/work composition using existing session inventory and Workbench read models.
+- [x] Implement F2 Sessions/Work browsing, item inspection, stable refresh, draft preservation, approval return, and explicit idle resume; verify focused TUI regressions.
+- [x] Complete the final crate gate and capture the F2 browser scenario after the host executable-loader stall is resolved.
+- [ ] Implement project → session/work → execution/evidence → decision/cancel → conversation navigation.
+- [ ] Extend captured acceptance for recovery, queued decisions, cancellation, and preserved drafts/selections.
+
+## 4. Native operator compatibility kit
+<!-- specs: tui-project-client -->
+
+- [x] Prepare fixed-build launchers, isolated fixture state, local recordings and assessment sheets for installed native clients.
+- [x] Verify environment isolation, literal argument handling, artifact identity checks and descendant cleanup.
+- [x] Check native client startup and exercise one complete native recorded trial before handoff.
+
+## 5. Agent-operated native compatibility
+<!-- specs: tui-project-client -->
+
+- [x] Automate native input and owned-window screenshot capture, with current-view and fixture outcome assertions.
+- [x] Run installed clients, inspect native screenshots, and record supported checks and concrete limitations without delegating manual steps to the operator.
+
+Presentation findings from native trials: implementation and acceptance for duplicated permission choices, Project search,
+and narrow composer hints are tracked in [tui-native-usability](../tui-native-usability/tasks.md).

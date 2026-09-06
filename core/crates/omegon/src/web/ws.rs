@@ -69,29 +69,44 @@ pub async fn ws_handler(
         .into_response()
 }
 
+async fn initialize_connection<S>(
+    state: &WebState,
+    sink: &mut S,
+) -> Result<tokio::sync::broadcast::Receiver<AgentEvent>, S::Error>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    subscribe_with_snapshot(&state.events_tx, sink, async {
+        super::api::refresh_lifecycle(&state.handles).await;
+        Message::Text(snapshot_message(build_snapshot(state)).to_string().into())
+    })
+    .await
+}
+
+pub(super) async fn subscribe_with_snapshot<S>(
+    events: &tokio::sync::broadcast::Sender<AgentEvent>,
+    sink: &mut S,
+    snapshot: impl std::future::Future<Output = Message>,
+) -> Result<tokio::sync::broadcast::Receiver<AgentEvent>, S::Error>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    // Subscribe before both snapshot construction and delivery. A completion
+    // during either await must remain available to the new connection.
+    let receiver = events.subscribe();
+    sink.send(snapshot.await).await?;
+    Ok(receiver)
+}
+
 /// Handle a single WebSocket connection.
 async fn handle_socket(socket: WebSocket, state: WebState) {
     tracing::info!("WebSocket client connected");
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Send initial state snapshot
-    super::api::refresh_lifecycle(&state.handles).await;
-    let snapshot = build_snapshot(&state);
-    let init_msg = snapshot_message(snapshot);
-    let snapshot_json = init_msg.to_string();
-    tracing::debug!(bytes = snapshot_json.len(), "sending initial snapshot");
-    if ws_tx
-        .send(Message::Text(snapshot_json.into()))
-        .await
-        .is_err()
-    {
+    let Ok(mut events_rx) = initialize_connection(&state, &mut ws_tx).await else {
         tracing::warn!("WebSocket: initial snapshot send failed — client disconnected");
         return;
-    }
-    tracing::debug!("initial snapshot sent OK");
-
-    // Subscribe to agent events
-    let mut events_rx = state.events_tx.subscribe();
+    };
     let command_tx = state.command_tx.clone();
     let state_for_cmds = state.clone();
     let state_for_events = state.clone();
@@ -2660,6 +2675,60 @@ fn serialize_agent_event(event: &AgentEvent) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn parity_reconnect_keeps_completion_during_snapshot_send() {
+        let (events_tx, _) = tokio::sync::broadcast::channel(4);
+        let state = WebState::new(
+            crate::runtime_state::RuntimeStateHandles::default(),
+            events_tx.clone(),
+        );
+        // Inject completion exactly while the initial snapshot is sent, without
+        // clocks, sleeps, a provider, or a socket scheduling assumption.
+        let mut sink = Box::pin(futures_util::sink::unfold(
+            events_tx,
+            |events, message: Message| async move {
+                let Message::Text(text) = message else {
+                    panic!("initial message must be the state snapshot");
+                };
+                let snapshot: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(snapshot["type"], "state_snapshot");
+                let _ = events.send(AgentEvent::RuntimeTurnLifecycleUpdated {
+                    snapshot_json: json!({"phase": "supervisor_completed", "turn_id": 41}),
+                });
+                Ok::<_, std::convert::Infallible>(events)
+            },
+        ));
+        let mut receiver = initialize_connection(&state, &mut sink).await.unwrap();
+        assert!(
+            matches!(
+                receiver.try_recv(),
+                Ok(AgentEvent::RuntimeTurnLifecycleUpdated { snapshot_json })
+                    if snapshot_json["phase"] == "supervisor_completed"
+            ),
+            "completion during reconnect must not fall between snapshot and subscription"
+        );
+    }
+
+    #[tokio::test]
+    async fn parity_legacy_prompt_retries_have_no_submission_identity() {
+        let (events_tx, _) = tokio::sync::broadcast::channel(4);
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
+        let (snapshot_tx, _) = tokio::sync::mpsc::channel(4);
+        let state = WebState::new(
+            crate::runtime_state::RuntimeStateHandles::default(),
+            events_tx,
+        );
+        let command = json!({"type": "user_prompt", "text": "inspect", "caller_role": "admin"});
+        // This compatibility protocol has no retry ID: repeated text is valid
+        // new input, not evidence that a transport retransmitted a submission.
+        for _ in 0..2 {
+            handle_client_command(&command, &command_tx, &state, &snapshot_tx).await;
+            assert!(
+                matches!(command_rx.try_recv(), Ok(WebCommand::UserPrompt { text, .. }) if text == "inspect")
+            );
+        }
+    }
 
     #[tokio::test]
     async fn handle_client_command_forwards_agents_status_for_monitor_role() {

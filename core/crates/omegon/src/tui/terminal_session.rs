@@ -1,17 +1,167 @@
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crossterm::ExecutableCommand;
 use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, PopKeyboardEnhancementFlags};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct TerminalModes {
-    raw: bool,
-    alternate_screen: bool,
-    mouse_capture: bool,
-    bracketed_paste: bool,
-    keyboard_enhancement: bool,
+use super::terminal_presentation::{self, TerminalMode, TerminalModes};
+
+#[derive(Clone)]
+pub(crate) struct TerminalSessionHandle {
+    modes: Arc<Mutex<TerminalModes>>,
+    presentation_revision: Arc<AtomicU64>,
+    inline_area: Arc<Mutex<Option<ratatui::layout::Rect>>>,
+}
+
+impl TerminalSessionHandle {
+    pub(super) fn track_inline_area(&self, area: Option<ratatui::layout::Rect>) {
+        *self
+            .inline_area
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = area;
+    }
+    pub(super) fn select_presentation(
+        &self,
+        presentation: crate::surfaces::layout::TerminalPresentation,
+        mouse: bool,
+    ) -> io::Result<()> {
+        let mut state = self
+            .modes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut target = *state;
+        target.alternate_screen =
+            presentation == crate::surfaces::layout::TerminalPresentation::Fullscreen;
+        target.mouse_capture = target.alternate_screen && mouse;
+        terminal_presentation::transition(&mut state, target, &mut apply_mode)
+    }
+
+    pub(super) fn with_presentation_io<T>(
+        &self,
+        presentation: crate::surfaces::layout::TerminalPresentation,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        let state = self
+            .modes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fullscreen = presentation == crate::surfaces::layout::TerminalPresentation::Fullscreen;
+        if !state.raw || state.alternate_screen != fullscreen {
+            return Err(io::Error::other("active terminal ownership was lost"));
+        }
+        operation()
+    }
+    pub(crate) fn new() -> Self {
+        Self {
+            modes: Arc::new(Mutex::new(TerminalModes::default())),
+            presentation_revision: Arc::new(AtomicU64::new(0)),
+            inline_area: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(super) fn set_mode(&self, mode: TerminalMode, enabled: bool) -> io::Result<()> {
+        let mut state = self
+            .modes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut target = *state;
+        target.set(mode, enabled);
+        terminal_presentation::transition(&mut state, target, &mut apply_mode)
+    }
+
+    pub(crate) fn with_primary_screen<T>(
+        &self,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        let mut state = self
+            .modes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inline_area = if state.alternate_screen {
+            None
+        } else {
+            *self
+                .inline_area
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let result = terminal_presentation::primary_scope(&mut state, &mut apply_mode, || {
+            if let Some(area) = inline_area {
+                use crossterm::{
+                    cursor::MoveTo,
+                    terminal::{Clear, ClearType},
+                };
+                io::stdout()
+                    .execute(MoveTo(area.x, area.y))?
+                    .execute(Clear(ClearType::FromCursorDown))?;
+            }
+            operation()
+        });
+        // Re-entering the alternate screen destroys its physical contents.
+        // Invalidate the renderer even when publication or restoration failed.
+        self.presentation_revision.fetch_add(1, Ordering::Release);
+        result
+    }
+
+    pub(super) fn presentation_revision(&self) -> u64 {
+        self.presentation_revision.load(Ordering::Acquire)
+    }
+
+    pub(super) fn with_fullscreen_io<T>(
+        &self,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        let state = self
+            .modes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.alternate_screen || !state.raw {
+            return Err(io::Error::other("fullscreen terminal ownership was lost"));
+        }
+        operation()
+    }
+
+    pub(crate) fn restore(&self) {
+        restore_owned_modes(&self.modes);
+    }
+}
+
+fn restore_owned_modes(modes: &Mutex<TerminalModes>) {
+    let mut state = modes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Err(error) = terminal_presentation::restore(&mut state, &mut apply_mode) {
+        tracing::warn!(%error, "terminal restoration incomplete; failed modes remain tracked");
+    }
+}
+
+fn apply_mode(mode: TerminalMode, enabled: bool) -> io::Result<()> {
+    use crossterm::event::{
+        EnableBracketedPaste, EnableMouseCapture, KeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
+    };
+    use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
+    let mut out = io::stdout();
+    match (mode, enabled) {
+        (TerminalMode::Raw, true) => enable_raw_mode(),
+        (TerminalMode::Raw, false) => disable_raw_mode(),
+        (TerminalMode::AlternateScreen, true) => out.execute(EnterAlternateScreen).map(|_| ()),
+        (TerminalMode::AlternateScreen, false) => out.execute(LeaveAlternateScreen).map(|_| ()),
+        (TerminalMode::MouseCapture, true) => out.execute(EnableMouseCapture).map(|_| ()),
+        (TerminalMode::MouseCapture, false) => out.execute(DisableMouseCapture).map(|_| ()),
+        (TerminalMode::BracketedPaste, true) => out.execute(EnableBracketedPaste).map(|_| ()),
+        (TerminalMode::BracketedPaste, false) => out.execute(DisableBracketedPaste).map(|_| ()),
+        (TerminalMode::KeyboardEnhancement, true) => out
+            .execute(PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+            ))
+            .map(|_| ()),
+        (TerminalMode::KeyboardEnhancement, false) => {
+            out.execute(PopKeyboardEnhancementFlags).map(|_| ())
+        }
+    }
 }
 
 /// Tracks each terminal mode as it is enabled so partial initialization,
@@ -21,30 +171,23 @@ pub(super) struct TerminalSessionGuard {
 }
 
 impl TerminalSessionGuard {
-    pub(super) fn new() -> Self {
+    pub(super) fn with_handle(handle: TerminalSessionHandle) -> Self {
         Self {
-            modes: Arc::new(Mutex::new(TerminalModes::default())),
+            modes: handle.modes,
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn new() -> Self {
+        Self::with_handle(TerminalSessionHandle::new())
+    }
+    #[cfg(test)]
     pub(super) fn mark_raw(&self) {
         self.update(|modes| modes.raw = true);
     }
-
+    #[cfg(test)]
     pub(super) fn mark_alternate_screen(&self) {
         self.update(|modes| modes.alternate_screen = true);
-    }
-
-    pub(super) fn mark_mouse_capture(&self) {
-        self.update(|modes| modes.mouse_capture = true);
-    }
-
-    pub(super) fn mark_bracketed_paste(&self) {
-        self.update(|modes| modes.bracketed_paste = true);
-    }
-
-    pub(super) fn mark_keyboard_enhancement(&self) {
-        self.update(|modes| modes.keyboard_enhancement = true);
     }
 
     pub(super) fn install_panic_hook(&self) -> PanicHookGuard {
@@ -65,14 +208,10 @@ impl TerminalSessionGuard {
     }
 
     pub(super) fn restore(&self) {
-        let modes = self
-            .modes
-            .lock()
-            .map(|mut modes| std::mem::take(&mut *modes))
-            .unwrap_or_default();
-        restore_snapshot(modes);
+        restore_owned_modes(&self.modes);
     }
 
+    #[cfg(test)]
     fn update(&self, update: impl FnOnce(&mut TerminalModes)) {
         if let Ok(mut modes) = self.modes.lock() {
             update(&mut modes);
@@ -100,6 +239,7 @@ impl Drop for PanicHookGuard {
     }
 }
 
+#[cfg(test)]
 fn snapshot(modes: &Arc<Mutex<TerminalModes>>) -> TerminalModes {
     modes.lock().map(|modes| *modes).unwrap_or_default()
 }
@@ -134,6 +274,7 @@ fn restore_snapshot(modes: TerminalModes) {
     if modes.alternate_screen {
         let _ = stdout.execute(LeaveAlternateScreen);
     }
+    let _ = stdout.execute(crossterm::style::ResetColor);
     let _ = stdout.flush();
 }
 
@@ -198,13 +339,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inactive_terminal_cannot_write_or_commit_an_insert() {
+        use crate::surfaces::layout::TerminalPresentation;
+        let session = TerminalSessionHandle::new();
+        let mut called = false;
+        assert!(
+            session
+                .with_presentation_io(TerminalPresentation::Inline, || {
+                    called = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!called);
+        session.modes.lock().unwrap().raw = true;
+        assert!(
+            session
+                .with_presentation_io(TerminalPresentation::Fullscreen, || {
+                    called = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!called);
+        session
+            .with_presentation_io(TerminalPresentation::Inline, || {
+                called = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(called);
+        called = false;
+        session.modes.lock().unwrap().alternate_screen = true;
+        assert!(
+            session
+                .with_presentation_io(TerminalPresentation::Inline, || {
+                    called = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(!called);
+    }
+
+    #[test]
     fn restore_consumes_tracked_modes_and_is_idempotent() {
         let guard = TerminalSessionGuard::new();
         guard.mark_raw();
         guard.mark_alternate_screen();
-        guard.mark_mouse_capture();
-        guard.mark_bracketed_paste();
-        guard.mark_keyboard_enhancement();
+        guard.update(|modes| {
+            modes.mouse_capture = true;
+            modes.bracketed_paste = true;
+            modes.keyboard_enhancement = true;
+        });
 
         guard.restore();
         assert_eq!(snapshot(&guard.modes), TerminalModes::default());

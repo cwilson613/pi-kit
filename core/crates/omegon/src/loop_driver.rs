@@ -1020,11 +1020,7 @@ impl LoopContextContract for LoopContextPort<'_> {
             }
         };
         let compaction = crate::session_compaction::SessionCompaction::begin_turn(
-            authority,
-            turn_id,
-            step_id,
-            trigger,
-            plan.evict_count,
+            authority, turn_id, step_id, trigger, plan,
         )?
         .ok_or_else(|| anyhow::anyhow!("exact authority compaction input is unavailable"))?;
         Ok(Box::new(compaction))

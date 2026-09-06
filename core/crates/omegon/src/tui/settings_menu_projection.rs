@@ -82,9 +82,9 @@ pub(super) fn build_settings_menu_projection(
         ),
         (
             "auth",
-            "Authentication",
-            "Manage provider credentials, login state, and vault unlock.",
-            "/auth",
+            "Connections",
+            "Manage existing provider connections or add a provider. /auth unlock manages vault access.",
+            "/connect",
         ),
         (
             "skills",

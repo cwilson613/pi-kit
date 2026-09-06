@@ -102,6 +102,8 @@ fn bounded_system_notification(text: &str) -> String {
 
 /// Conversation view state — segment list + scroll.
 pub struct ConversationView {
+    publication_generation: u64,
+    publication_changed_at: Option<usize>,
     segments: Vec<Segment>,
     /// Whether we're currently receiving streaming text.
     streaming: bool,
@@ -310,6 +312,8 @@ impl ConversationView {
     pub fn new() -> Self {
         Self {
             segments: Vec::new(),
+            publication_generation: 0,
+            publication_changed_at: None,
             streaming: false,
             conv_state: ConvState::new(),
             image_cache: ImageCache::default(),
@@ -318,6 +322,20 @@ impl ConversationView {
             tabs: TabState::new(),
             suppressed_tool_calls: std::collections::HashMap::new(),
         }
+    }
+
+    pub(super) fn take_publication_change(&mut self) -> usize {
+        self.publication_changed_at.take().unwrap_or(0)
+    }
+
+    pub(super) fn replace_source(&mut self, mut replacement: Self) {
+        replacement.publication_generation = self.publication_generation.wrapping_add(1);
+        replacement.publication_changed_at = Some(0);
+        *self = replacement;
+    }
+
+    pub(super) fn publication_generation(&self) -> u64 {
+        self.publication_generation
     }
 
     /// Access segments for rendering.
@@ -429,6 +447,8 @@ impl ConversationView {
         if excess == 0 {
             return;
         }
+        self.publication_changed_at = Some(0);
+        self.publication_generation = self.publication_generation.wrapping_add(1);
         self.segments.retain(|segment| {
             if excess > 0 && matches!(segment.content, SegmentContent::SystemNotification { .. }) {
                 excess -= 1;
@@ -778,6 +798,12 @@ impl ConversationView {
     }
 
     fn remove_segment(&mut self, idx: usize) {
+        self.publication_changed_at = Some(
+            self.publication_changed_at
+                .unwrap_or(idx.saturating_sub(1))
+                .min(idx.saturating_sub(1)),
+        );
+        self.publication_generation = self.publication_generation.wrapping_add(1);
         self.segments.remove(idx);
         if let Some(ref mut p) = self.pinned_segment {
             if *p == idx {
@@ -1659,6 +1685,8 @@ impl ConversationView {
 
     /// Clear all segments (for /clear command).
     pub fn clear(&mut self) {
+        self.publication_changed_at = Some(0);
+        self.publication_generation = self.publication_generation.wrapping_add(1);
         self.segments.clear();
         self.conv_state = ConvState::new();
         self.streaming = false;

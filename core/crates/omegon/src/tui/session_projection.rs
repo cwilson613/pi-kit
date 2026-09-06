@@ -8,6 +8,15 @@ use crate::{
 };
 
 impl App {
+    pub(super) fn replace_conversation(&mut self, conversation: ConversationView) {
+        self.conversation.replace_source(conversation);
+        self.publication_boundary = self.conversation.segments().len();
+        self.native_publication.automatic.source_replaced(
+            self.conversation.publication_generation(),
+            self.publication_boundary,
+        );
+    }
+
     pub(super) fn refresh_semantic_session_view(&mut self) {
         let Some(binding) = self.session_view_binding.clone() else {
             return;
@@ -18,6 +27,7 @@ impl App {
             return;
         }
 
+        self.project_browser = None;
         self.activity_tools.clear();
         self.last_tool_name = None;
         self.completed_tool_name = None;
@@ -41,7 +51,13 @@ impl App {
                     SessionViewKind::New => "New session",
                     SessionViewKind::ContextClear => "Context cleared into new session",
                 };
-                conversation.push_system(&format!(
+                if target.kind == SessionViewKind::New && view.frontier_sequence == 1 {
+                    conversation.push_system(&format!(
+                        "New session {}. Ready for first turn. No semantic steps recorded yet.",
+                        target.session_id
+                    ));
+                } else {
+                    conversation.push_system(&format!(
                     "{action} {}. Semantic view: {}. Frontier {}. Queue {}; turn {}; context revision {} ({} items).",
                     target.session_id,
                     view.status.label(),
@@ -59,6 +75,7 @@ impl App {
                         .as_ref()
                         .map_or(0, |snapshot| snapshot.context.items.len()),
                 ));
+                }
             }
             Err(error) => {
                 self.session_projection_frontier = None;
@@ -69,7 +86,7 @@ impl App {
                 ));
             }
         }
-        self.conversation = conversation;
+        self.replace_conversation(conversation);
     }
 
     pub(super) fn write_exact_semantic_transcript(

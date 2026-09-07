@@ -4906,12 +4906,6 @@ async fn run_interactive_command(cli: &Cli) -> anyhow::Result<()> {
         Err(e) => tracing::warn!(error = %e, "clipboard prune failed"),
     }
 
-    // On first launch (no profile.json), sweep the system for existing tools
-    // and let the operator choose a starting posture before the TUI appears.
-    if first_run::should_run(&cli.cwd) {
-        first_run::run_interactive(&cli.cwd, &shared_settings);
-    }
-
     // Fresh by default. --resume opts into session restore; --resume with no value
     // means "most recent" and --fresh forces a clean start.
     let resume = interactive_resume_mode(cli);
@@ -5286,7 +5280,7 @@ fn build_tui_secret_readiness_snapshot(
     // Resolve the persisted startup splash policy. The CLI flag remains the
     // highest-authority one-shot override, while `/splash` remains available
     // for cosmetic replay regardless of this startup decision.
-    let is_first_run = first_run::should_run(&cli.cwd);
+    let is_first_run = first_run::is_first_launch(&cli.cwd);
     let startup_splash = shared_settings
         .lock()
         .map(|settings| settings.startup_splash)

@@ -178,7 +178,7 @@ reasoning = true
     return workspace
 
 
-def run(binary: Path, output: Path, presentation="fullscreen", detail="active", entry=None, stress=False):
+def run(binary: Path, output: Path, presentation="fullscreen", detail="active", entry=None, stress=False, fresh_install=False):
     binary = binary.resolve(strict=True)
     checkout = Path(__file__).resolve().parents[1]
     if output.resolve().is_relative_to(checkout):
@@ -188,7 +188,7 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
     ledger = {"binary": str(binary), "binary_sha256": digest(binary), "started": time.time(),
               "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip(),
               "dirty": subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout, text=True),
-              "captures": [], "passed": False, "tui": presentation, "ui": detail, "entry": entry, "stress": stress}
+              "captures": [], "passed": False, "tui": presentation, "ui": detail, "entry": entry, "stress": stress, "fresh_install": fresh_install}
 
     def tmux(*args, check=True):
         return subprocess.run(["tmux", "-L", socket, *args], check=check, capture_output=True, text=True, timeout=10).stdout
@@ -222,6 +222,8 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
         root = Path(temporary)
         provider.stress = stress
         workspace = prepare_fixture_workspace(root, provider)
+        if fresh_install:
+            (workspace / ".omegon/profile.json").unlink()
         log = output / "omegon.log"
         executable = binary
         if entry:
@@ -234,6 +236,8 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
                        "XDG_CONFIG_HOME": str(root / ".config"), "TERM": "xterm-256color", "LANG": "en_US.UTF-8",
                        "OMEGON_CHILD": "1", "NO_COLOR": "1", "OPENAI_API_KEY": "local-only",
                        "OMEGON_PROJECT_ENDPOINT_616363657074616E6365_TOKEN": "local-only"}
+        if fresh_install:
+            environment.pop("OMEGON_CHILD")
         if entry:
             environment["OMEGON_BIN"] = str(binary)
         launch = ["env", "-i", *(f"{key}={value}" for key, value in environment.items()), *command]
@@ -249,7 +253,12 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             ledger["process"] = subprocess.check_output(["ps", "-p", ledger["pid"], "-o", "pid=,lstart=,command="], text=True)
             if str(binary) not in ledger["process"]:
                 raise RuntimeError("running process does not identify the requested binary")
-            wait_for(lambda: log.exists() and "terminal input boundary acquired" in log.read_text(), "TUI startup")
+            def startup_ready():
+                if fresh_install and "How would you like to work?" in screen():
+                    capture("legacy-first-run")
+                    raise AssertionError("fresh startup exposed legacy posture wizard")
+                return log.exists() and "terminal input boundary acquired" in log.read_text()
+            wait_for(startup_ready, "TUI startup")
             wait_for(lambda: ("Ask anything" if presentation == "inline" else "Ready for first turn") in screen(), "initial semantic view")
             assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}").strip() == ("0" if presentation == "inline" else "1")
             if "semantic frontend is unavailable" in screen():
@@ -269,6 +278,21 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             assert provider.requests == 0, "placeholder probe submitted a message"
             capture("00-startup-primary", primary=True)
             assert_quiet_startup((output / "00-startup-primary.txt").read_text(), entry or "omegon")
+            if fresh_install:
+                startup = (output / "00-startup-primary.txt").read_text()
+                for legacy in ("Fabricator", "Architect", "Explorator", "Devastator", "Found existing tools:", "Choice [1]:"):
+                    assert legacy not in startup, f"legacy first-run output: {legacy}"
+                assert not (root / ".omegon/profile.json").exists(), "startup created a global profile"
+                assert not (workspace / ".omegon/profile.json").exists(), "startup created a project profile"
+                assert provider.requests == 0
+                ledger["fresh_install_checks"] = {"no_child_marker": "OMEGON_CHILD" not in environment,
+                                                  "no_profile_written": True, "no_setup_input": True}
+                action("send-keys", "-t", "run:0.0", "-l", "/quit")
+                action("send-keys", "-t", "run:0.0", "Enter")
+                wait_for(lambda: "TUI_EXIT_0" in screen(), "clean fresh-install exit")
+                capture("09-shell-return")
+                ledger["passed"] = True
+                return
             action("send-keys", "-t", "run:0.0", "-l", "/connect")
             action("send-keys", "-t", "run:0.0", "Enter")
             wait_for(lambda: "Existing connections" in screen(), "Connections opens")
@@ -446,5 +470,6 @@ if __name__ == "__main__":
     parser.add_argument("--ui", choices=["active", "full"], default="active")
     parser.add_argument("--entry", choices=["om", "omegon"], help="test the fixed-build launcher default without UI flags")
     parser.add_argument("--stress", action="store_true", help="gate a large stream, cancel from Project, and replace the conversation")
+    parser.add_argument("--fresh-install", action="store_true", help="verify profile-free non-child startup without a posture wizard")
     arguments = parser.parse_args()
-    run(arguments.binary, arguments.output.resolve(), arguments.tui, arguments.ui, arguments.entry, arguments.stress)
+    run(arguments.binary, arguments.output.resolve(), arguments.tui, arguments.ui, arguments.entry, arguments.stress, arguments.fresh_install)

@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Fresh interactive launches enter the editor without the legacy named-posture questionnaire, detected-tool inventory, or automatic posture-profile write. `om` and `omegon` retain their independent layout/detail defaults; explicit saved postures and CLI compatibility remain supported.
+
 - The shared composer uses a thin padded frame, the complete model name, and plain context usage. Empty grade/thinking fields and decorative route glyphs are removed. Inline idle input sits beside the transcript instead of below reserved activity space; its placeholder keeps only message, command, and send guidance. Inline notifications now expire through the shared render path.
 
 - The TUI defaults to terminal foreground/background colors and ANSI signal colors instead of loading Alpharius. Composer guidance is a dim placeholder inside the empty input, disappears while typing a message, and no longer reserves a separate help row.

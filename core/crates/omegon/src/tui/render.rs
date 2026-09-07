@@ -38,6 +38,8 @@ impl App {
         );
 
         self.prepare_shared_frame();
+        let now = std::time::Instant::now();
+        self.operator_events.retain(|e| e.expires_at > now);
 
         if self.inline_active {
             self.draw_inline(frame);
@@ -599,8 +601,6 @@ impl App {
         }
 
         // ── Toast notifications — rendered last, on top of everything ──
-        let now = std::time::Instant::now();
-        self.operator_events.retain(|e| e.expires_at > now);
         self.footer_data.operator_events = self
             .operator_events
             .iter()
@@ -855,43 +855,12 @@ impl App {
             } else if command_primed {
                 "⏎ run command  Tab accept suggestion  ↑/↓ browse  Esc clear ".into()
             } else if self.editor.is_empty() {
-                if self.ui_surfaces.dashboard {
-                    "Ask anything  ⏎ send  / commands  ⇧⏎/⌥⏎ newline  ^O/Tab details  ^D tree "
-                        .into()
-                } else {
-                    "Ask anything  ⏎ send  / commands  ⇧⏎/⌥⏎ newline  ^O/Tab details  F2 project "
-                        .into()
-                }
+                "Ask anything  / commands  ⏎ send".into()
             } else {
                 String::new()
             };
             let hint_text =
-                fit_composer_hint(&hint_text, usize::from(editor_area.width.saturating_sub(2)));
-            let model_id = self.footer_data.model_id.as_str();
-            let model_short = model_id
-                .split(':')
-                .next_back()
-                .unwrap_or(model_id)
-                .split('-')
-                .take(3)
-                .collect::<Vec<_>>()
-                .join("-");
-            let provider_label = self
-                .footer_data
-                .model_provider
-                .trim()
-                .split(':')
-                .next()
-                .unwrap_or("");
-            let provider_label = if provider_label.is_empty() {
-                model_id
-                    .split_once(':')
-                    .map(|(provider, _)| provider)
-                    .unwrap_or("provider?")
-            } else {
-                provider_label
-            };
-            let route_label = format!("{provider_label}/{model_short}");
+                fit_composer_hint(&hint_text, usize::from(editor_area.width.saturating_sub(4)));
             let editor_title = if shell_primed {
                 let shell = std::env::var("SHELL")
                     .ok()
@@ -930,137 +899,68 @@ impl App {
                     ),
                 ])
             } else {
-                use crate::tui::glyphs::EngineGlyphRole;
-                let glyphs = crate::tui::glyphs::glyphs();
-                let is_local_provider = matches!(provider_label, "ollama" | "llama.cpp" | "local");
-                let provider_glyph = if is_local_provider {
-                    glyphs.engine(EngineGlyphRole::ProviderLocal)
-                } else {
-                    glyphs.engine(EngineGlyphRole::ProviderCloud)
-                };
-                let route_glyph = glyphs.engine(EngineGlyphRole::Route);
-                let title_budget = editor_area.width.saturating_sub(2) as usize;
-                let grade = self.footer_data.model_tier.trim();
-                let grade_text = if grade.is_empty() {
-                    glyphs.engine(EngineGlyphRole::GradeEmblem).to_string()
-                } else {
-                    format!("{} {grade}", glyphs.engine(EngineGlyphRole::GradeEmblem))
-                };
-                let settings_snapshot = self.settings();
-                let profile_source = settings_snapshot.profile_source;
-                let profile_name = settings_snapshot.profile_name.clone();
-                let source_label = match profile_source {
-                    crate::settings::ProfileSource::Project(_) => "project",
-                    crate::settings::ProfileSource::User(_) => "user",
-                    crate::settings::ProfileSource::BuiltInDefault => "default",
-                };
-                let profile_text = profile_name
-                    .filter(|name| !name.trim().is_empty())
-                    .unwrap_or_else(|| source_label.to_string());
-                let thinking_text = format!(
-                    "{} {}",
-                    glyphs.engine(EngineGlyphRole::Thinking),
-                    self.footer_data.thinking_level
-                );
-                let context_text = format!(
-                    "{} {}",
-                    glyphs.engine(EngineGlyphRole::Context),
-                    Self::editor_context_widget(
-                        self.footer_data.actual_context_class,
-                        self.footer_data.context_window,
-                        self.footer_data.estimated_tokens,
-                        self.footer_data.context_percent,
-                    )
-                );
-                let route_bg = t.accent_muted();
-                let grade_bg = t.accent();
-                let thinking_bg = t.card_bg();
-                let context_bg = t.surface_bg();
-                let mut title_spans = vec![Span::styled(
-                    " ",
-                    Style::default().fg(t.border_dim()).bg(t.surface_bg()),
+                let model = self.footer_data.model_id.as_str();
+                let provider = self.footer_data.model_provider.trim();
+                let model = model.strip_prefix(&format!("{provider}:")).unwrap_or(model);
+                let budget = usize::from(editor_area.width.saturating_sub(4));
+                let mut spans = vec![Span::styled(
+                    format!(" {model} "),
+                    t.style_fg().add_modifier(Modifier::BOLD),
                 )];
-                title_spans.push(Span::styled(
-                    format!(
-                        " {} {provider_glyph} {route_label} ",
-                        glyphs.engine(EngineGlyphRole::RibbonMark),
-                    ),
-                    Style::default()
-                        .fg(t.bg())
-                        .bg(route_bg)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                let push_segment = |spans: &mut Vec<Span<'static>>,
-                                    text: String,
-                                    style: Style,
-                                    previous_bg: Color,
-                                    segment_bg: Color| {
-                    if previous_bg == Color::Reset && segment_bg == Color::Reset {
-                        spans.push(Span::styled(" · ", t.style_dim()));
-                    } else {
-                        spans.push(Span::styled(
-                            route_glyph,
-                            Style::default().fg(previous_bg).bg(segment_bg),
-                        ));
-                    }
-                    spans.push(Span::styled(format!(" {text} "), style.bg(segment_bg)));
-                };
-                let tail_fields = [
-                    (
-                        grade_text,
-                        Style::default().fg(t.bg()).add_modifier(Modifier::BOLD),
-                        grade_bg,
-                    ),
-                    (
-                        profile_text,
-                        Style::default().fg(t.fg()).add_modifier(Modifier::BOLD),
-                        thinking_bg,
-                    ),
-                    (
-                        thinking_text,
-                        Style::default().fg(t.accent_bright()),
-                        thinking_bg,
-                    ),
-                    (context_text, Style::default().fg(t.fg()), context_bg),
-                ];
-                let mut previous_bg = route_bg;
-                for (text, style, segment_bg) in tail_fields {
-                    let mut candidate = title_spans.clone();
-                    push_segment(&mut candidate, text, style, previous_bg, segment_bg);
-                    let candidate_width = candidate.iter().map(|span| span.width()).sum::<usize>()
-                        + Span::raw(route_glyph).width();
-                    if candidate_width <= title_budget {
-                        title_spans = candidate;
-                        previous_bg = segment_bg;
+                // Keep the exact route visible. Optional fields yield space first.
+                let mut fields = vec![provider.to_string()];
+                let thinking = self.footer_data.thinking_level.trim();
+                if !thinking.is_empty() {
+                    fields.push(format!("thinking {thinking}"));
+                }
+                for field in fields.into_iter().filter(|v| !v.is_empty()) {
+                    let span = Span::styled(format!("· {field} "), t.style_dim());
+                    if spans.iter().map(Span::width).sum::<usize>() + span.width() <= budget {
+                        spans.push(span);
                     }
                 }
-                if previous_bg != Color::Reset {
-                    title_spans.push(Span::styled(
-                        route_glyph,
-                        Style::default().fg(previous_bg).bg(t.surface_bg()),
-                    ));
-                }
-                Line::from(title_spans)
+                Line::from(spans)
             };
+            let framed = !shell_primed && !command_primed;
             let mut editor_block = Block::default()
-                .borders(Borders::TOP)
+                .borders(if framed { Borders::ALL } else { Borders::TOP })
+                .padding(if framed {
+                    ratatui::widgets::Padding::horizontal(1)
+                } else {
+                    ratatui::widgets::Padding::ZERO
+                })
                 .border_type(ratatui::widgets::BorderType::Rounded)
-                .border_style(Style::default().fg(intent_color).bg(intent_bg))
+                .border_style(if framed {
+                    t.style_dim()
+                } else {
+                    Style::default().fg(intent_color).bg(intent_bg)
+                })
                 .title(editor_title);
             if shell_primed || command_primed {
                 editor_block = editor_block
                     .title_bottom(Line::styled(hint_text.clone(), t.style_dim()).right_aligned());
+            } else if self.footer_data.context_window > 0 {
+                let capacity = widgets::format_tokens(self.footer_data.context_window);
+                let percent = self.footer_data.context_percent.clamp(0.0, 100.0).round() as u8;
+                editor_block = editor_block.title_bottom(
+                    Line::styled(format!(" {percent}% of {capacity} context "), t.style_dim())
+                        .right_aligned(),
+                );
             }
 
             let editor_rect = editor_area;
-            // Pre-split using char-boundary wrapping (same algorithm as
-            // cursor_screen_position) so the terminal cursor always lands on
-            // the correct visual cell.  Paragraph::wrap uses word boundaries
-            // which diverge from cursor math and compound across rows.
-            // Normal editor mode uses Borders::TOP only: content spans the
-            // full width and starts one row below the top border.
-            let content_width = editor_rect.width.max(1);
-            let visible_rows = editor_rect.height.saturating_sub(1).max(1);
+            let content = editor_block.inner(editor_rect);
+            let content_width = content.width.max(1);
+            let visible_rows = content.height.max(1);
+            // The editor's cursor API accepts a top-border viewport. Derive it
+            // from the block's actual inner rectangle so padding and wrapping agree.
+            let cursor_area = Rect::new(
+                content.x,
+                content.y.saturating_sub(1),
+                content.width,
+                content.height.saturating_add(1),
+            );
+            let (cx, cy) = self.editor.cursor_screen_position(cursor_area);
             let visual_lines: Vec<Line<'static>> = if self.editor.is_empty() {
                 if let Some(preloaded) = self.pending_history_preload.as_ref() {
                     let preview = preloaded.lines().next().unwrap_or("");
@@ -1125,7 +1025,6 @@ impl App {
                 .block(editor_block); // no .wrap() — pre-split above
             frame.render_widget(editor_widget, editor_rect);
             if !self.editor_input_suppressed_now() {
-                let (cx, cy) = self.editor.cursor_screen_position(editor_rect);
                 frame.set_cursor_position(ratatui::layout::Position { x: cx, y: cy });
             }
         }

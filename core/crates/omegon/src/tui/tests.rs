@@ -9,7 +9,6 @@ use super::workbench::{PlanDisplayItem, PlanDisplayStatus, SlimTurnState};
 use super::*;
 use crate::settings::{ContextClass, Settings, ThinkingLevel};
 use crate::tui::segments::Segment;
-use crate::tui::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::web::WebDaemonStatus;
 use ratatui::Terminal;
@@ -4031,11 +4030,11 @@ fn ui_command_can_toggle_individual_surfaces() {
 }
 
 #[test]
-fn empty_editor_hint_mentions_project_browser_when_dashboard_hidden() {
+fn empty_editor_hint_prioritizes_message_and_commands() {
     let mut app = test_app();
     app.apply_ui_preset(UiSurfaces::lean());
     let rendered = render_app_to_string(&mut app, 100, 20);
-    assert!(rendered.contains("F2 project"), "{rendered}");
+    assert!(rendered.contains("/ commands"), "{rendered}");
     assert!(!rendered.contains("^D tree"), "{rendered}");
 }
 
@@ -4182,7 +4181,7 @@ fn slash_help_opens_command_inventory_menu() {
 }
 
 #[test]
-fn empty_editor_hint_mentions_tool_detail_hotkey() {
+fn empty_editor_hint_stays_in_the_input() {
     let mut app = test_app();
     let rendered = render_app_to_string(&mut app, 100, 20);
     let help = rendered
@@ -4191,16 +4190,16 @@ fn empty_editor_hint_mentions_tool_detail_hotkey() {
         .expect("empty composer help");
     assert!(help.contains("⏎ send"), "{rendered}");
     assert!(help.contains("/ commands"), "{rendered}");
-    assert!(help.contains("^O/Tab details"), "{rendered}");
+    assert!(!help.contains("^O/Tab details"), "{rendered}");
     assert!(!help.contains("^D tree"), "{rendered}");
-    assert!(help.contains("F2 project"), "{rendered}");
+    assert!(!help.contains("F2 project"), "{rendered}");
     let area = app.editor_area.expect("rendered editor area");
     let input = rendered.lines().nth(usize::from(area.y) + 1).unwrap();
     assert!(
         input.contains("Ask anything"),
         "placeholder is not in the input row: {input}"
     );
-    assert_eq!(area.height, 2, "plain composer needs only border and input");
+    assert_eq!(area.height, 3, "plain composer frames its input");
 }
 
 #[test]
@@ -8285,13 +8284,13 @@ fn editor_top_line_shows_engine_block_details() {
     let rendered = render_app_to_string(&mut app, 140, 18);
 
     assert!(rendered.contains("claude-sonnet"), "{rendered}");
-    assert!(rendered.contains(" anthropic/claude-sonnet"), "{rendered}");
-    assert!(rendered.contains("󰿃 B"), "{rendered}");
-    assert!(rendered.contains(" high"), "{rendered}");
     assert!(
-        rendered.contains(" ctx:msv@1.0M ▕████░░░░▏ 50%"),
+        rendered.contains("claude-sonnet-4-6 · anthropic"),
         "{rendered}"
     );
+    assert!(!rendered.contains("󰿃 B"), "{rendered}");
+    assert!(rendered.contains("thinking high"), "{rendered}");
+    assert!(rendered.contains("50% of 1.0M context"), "{rendered}");
 }
 
 #[test]
@@ -8305,84 +8304,11 @@ fn editor_top_line_preserves_route_when_context_would_overflow() {
 
     let rendered = render_app_to_string(&mut app, 80, 18);
 
-    assert!(rendered.contains("openai-codex/gpt-5.5"), "{rendered}");
+    assert!(rendered.contains("gpt-5.5 · openai-codex"), "{rendered}");
 }
 
 #[test]
-fn editor_top_line_preserves_route_badge_contrast_after_bg_cleanup() {
-    let mut settings = Settings::new("openai-codex:gpt-5.5");
-    settings.thinking = ThinkingLevel::Minimal;
-    let mut app = App::new(std::sync::Arc::new(std::sync::Mutex::new(settings)));
-    app.theme = Box::new(crate::tui::theme::Alpharius);
-    app.apply_ui_preset(UiSurfaces::lean());
-    app.footer_data.context_window = 1_048_576;
-    app.footer_data.context_percent = 0.0;
-
-    let styles = rendered_cell_styles_for_text(&mut app, 140, 18, "openai-codex/gpt-5.5");
-
-    assert!(
-        styles
-            .iter()
-            .all(|(fg, bg)| *fg == crate::tui::theme::Alpharius.bg()
-                && *bg == crate::tui::theme::Alpharius.accent_muted()),
-        "route text should remain dark-on-accent after final bg cleanup, got {styles:?}"
-    );
-}
-
-#[test]
-fn editor_top_line_dividers_bridge_gradient_segment_backgrounds() {
-    let mut settings = Settings::new("openai-codex:gpt-5.5");
-    settings.thinking = ThinkingLevel::Minimal;
-    let mut app = App::new(std::sync::Arc::new(std::sync::Mutex::new(settings)));
-    app.theme = Box::new(crate::tui::theme::Alpharius);
-    app.apply_ui_preset(UiSurfaces::lean());
-    app.footer_data.context_window = 1_048_576;
-    app.footer_data.context_percent = 0.0;
-
-    let backend = ratatui::backend::TestBackend::new(140, 18);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|frame| app.draw(frame)).unwrap();
-    let buf = terminal.backend().buffer();
-    let mut divider_styles = Vec::new();
-    for y in 0..buf.area.height {
-        for x in 0..buf.area.width {
-            let cell = &buf[(x, y)];
-            if cell.symbol() == "" {
-                divider_styles.push((cell.fg, cell.bg));
-            }
-        }
-    }
-
-    assert_eq!(
-        divider_styles,
-        vec![
-            (
-                crate::tui::theme::Alpharius.accent_muted(),
-                crate::tui::theme::Alpharius.accent()
-            ),
-            (
-                crate::tui::theme::Alpharius.accent(),
-                crate::tui::theme::Alpharius.card_bg()
-            ),
-            (
-                crate::tui::theme::Alpharius.card_bg(),
-                crate::tui::theme::Alpharius.card_bg()
-            ),
-            (
-                crate::tui::theme::Alpharius.card_bg(),
-                crate::tui::theme::Alpharius.surface_bg()
-            ),
-            (
-                crate::tui::theme::Alpharius.surface_bg(),
-                crate::tui::theme::Alpharius.surface_bg()
-            ),
-        ],
-        "engine ribbon should bridge route → grade → profile → thinking → context → editor backgrounds: {divider_styles:?}"
-    );
-}
-
-#[test]
-fn editor_top_line_restores_context_fill_bar() {
+fn composer_context_is_readable_without_a_gauge() {
     let mut settings = Settings::new("anthropic:claude-sonnet-4-6");
     settings.thinking = ThinkingLevel::High;
     let mut app = App::new(std::sync::Arc::new(std::sync::Mutex::new(settings)));
@@ -8396,18 +8322,15 @@ fn editor_top_line_restores_context_fill_bar() {
 
     let rendered = render_app_to_string(&mut app, 180, 18);
 
-    assert!(
-        rendered.contains("ctx:msv@1.0M ▕████░░░░▏ 50%"),
-        "{rendered}"
-    );
-    assert!(rendered.contains("▕████░░░░▏"), "{rendered}");
+    assert!(rendered.contains("50% of 1.0M context"), "{rendered}");
+    assert!(!rendered.contains("▕████░░░░▏"), "{rendered}");
     assert!(!rendered.contains("ctx:cmp→msv"), "{rendered}");
     assert!(!rendered.contains("κ ▰"), "{rendered}");
     assert!(!rendered.contains("◆"), "{rendered}");
 }
 
 #[test]
-fn editor_top_line_grades_actual_model_not_route_intent() {
+fn composer_preserves_the_actual_model_variant() {
     let mut settings = Settings::new("openai-codex:gpt-5.6-sol");
     settings.thinking = ThinkingLevel::Low;
     let mut app = App::new(std::sync::Arc::new(std::sync::Mutex::new(settings)));
@@ -8417,13 +8340,13 @@ fn editor_top_line_grades_actual_model_not_route_intent() {
     let rendered = render_app_to_string(&mut app, 140, 18);
 
     assert!(
-        rendered.contains("openai-codex/gpt-5.6-sol  ·  󰿃 S  ·  default  ·   low  ·   ctx:"),
+        rendered.contains("gpt-5.6-sol · openai-codex · thinking low"),
         "{rendered}"
     );
 }
 
 #[test]
-fn active_turn_keeps_engine_ribbon_and_moves_spinner_to_status_row() {
+fn active_turn_keeps_model_identity_and_separate_activity() {
     let mut settings = Settings::new("openai-codex:gpt-5.5");
     settings.thinking = ThinkingLevel::High;
     let mut app = App::new(std::sync::Arc::new(std::sync::Mutex::new(settings)));
@@ -8437,8 +8360,8 @@ fn active_turn_keeps_engine_ribbon_and_moves_spinner_to_status_row() {
     let rendered = render_app_to_string(&mut app, 160, 20);
 
     assert!(
-        rendered.contains("openai-codex/gpt-5.5  ·  󰿃 S  ·  default  ·   high  ·   ctx:"),
-        "active turn must keep engine route/grade/thinking/context visible: {rendered}"
+        rendered.contains("gpt-5.5 · openai-codex · thinking high"),
+        "active turn must keep model identity visible: {rendered}"
     );
     assert!(
         rendered.contains("⟳") && rendered.contains("· active turn"),
@@ -11477,14 +11400,14 @@ fn terminal_composer_placeholder_is_dim_and_disappears_when_typing() {
                 .draw(|frame| app.draw(frame))
                 .expect("empty editor draw");
             let area = app.editor_area.expect("editor area");
-            let cell = &terminal.backend().buffer()[(area.x, area.y + 1)];
+            let cell = &terminal.backend().buffer()[(area.x + 2, area.y + 1)];
             assert!(
                 cell.modifier.contains(Modifier::DIM),
                 "placeholder must be faint"
             );
             assert_eq!(cell.fg, Color::Reset);
             assert_eq!(cell.bg, Color::Reset);
-            assert_eq!(area.height, 2);
+            assert_eq!(area.height, 3);
             app.editor.set_text("A real message");
             let rendered = render_app_to_string(&mut app, width, 24);
             assert!(rendered.contains("A real message"), "{rendered}");
@@ -11493,4 +11416,83 @@ fn terminal_composer_placeholder_is_dim_and_disappears_when_typing() {
             }
         }
     }
+}
+
+#[test]
+fn inline_composer_has_a_compact_readable_frame() {
+    let mut app = test_app();
+    app.inline_active = true;
+    app.footer_data.model_id = "anthropic:claude-sonnet-4-6".into();
+    app.footer_data.model_provider = "anthropic".into();
+    app.footer_data.model_tier.clear();
+    app.footer_data.thinking_level.clear();
+    app.footer_data.context_window = 200_000;
+    app.footer_data.context_percent = 25.0;
+    let rendered = render_app_to_string(&mut app, 100, 8);
+    let area = app.editor_area.unwrap();
+    assert_eq!(
+        area.y, 1,
+        "idle composer should follow one spacer row: {rendered}"
+    );
+    assert_eq!(area.height, 3);
+    assert!(rendered.contains("claude-sonnet-4-6"), "{rendered}");
+    assert!(rendered.contains("25% of 200k"), "{rendered}");
+    assert!(rendered.contains("│ Ask anything"), "{rendered}");
+    assert!(
+        rendered.contains('╰') && rendered.contains('╯'),
+        "{rendered}"
+    );
+    for noise in [
+        "eng cloud",
+        "grade",
+        "think",
+        "ctx:",
+        "ready · idle",
+        "^O/Tab",
+    ] {
+        assert!(!rendered.contains(noise), "{noise}: {rendered}");
+    }
+}
+
+#[test]
+fn framed_composer_cursor_tracks_padded_wrapped_text() {
+    use ratatui::{TerminalOptions, Viewport};
+    for inline in [false, true] {
+        let mut app = test_app();
+        app.inline_active = inline;
+        app.editor.set_text(&("a".repeat(36) + "界é"));
+        app.editor.move_end();
+        let mut terminal = Terminal::with_options(
+            TestBackend::new(50, 30),
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(3, 10, 40, 8)),
+            },
+        )
+        .unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let area = app.editor_area.unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        // A short fullscreen viewport may allocate only one content row;
+        // the wrapped tail and cursor must scroll together above the bottom border.
+        let tail_y = area.y + 2.min(area.height.saturating_sub(2));
+        assert_eq!((cursor.x, cursor.y), (area.x + 5, tail_y));
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(area.x + 2, tail_y)].symbol(), "界");
+        assert_eq!(buffer[(area.x + 4, tail_y)].symbol(), "é");
+        assert_eq!(buffer[(area.x, area.bottom() - 1)].symbol(), "╰");
+    }
+}
+
+#[test]
+fn inline_composer_reappears_after_notice_expiry() {
+    let mut app = test_app();
+    app.inline_active = true;
+    app.show_toast("NOTICE_EXPIRY_PROBE", ratatui_toaster::ToastType::Info);
+    assert!(render_app_to_string(&mut app, 100, 8).contains("NOTICE_EXPIRY_PROBE"));
+    app.operator_events.back_mut().unwrap().expires_at =
+        std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let rendered = render_app_to_string(&mut app, 100, 8);
+    assert!(!rendered.contains("NOTICE_EXPIRY_PROBE"), "{rendered}");
+    assert!(rendered.contains("│ Ask anything"), "{rendered}");
+    assert!(app.operator_events.is_empty());
 }

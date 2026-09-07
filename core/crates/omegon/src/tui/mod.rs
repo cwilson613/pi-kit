@@ -693,14 +693,12 @@ fn render_runtime_queue_info_line(
 }
 
 fn editor_height_for(editor: &Editor, main_area: Rect) -> u16 {
-    let content_width = main_area.width.saturating_sub(2).max(1);
+    let content_width = main_area.width.saturating_sub(4).max(1);
     let editor_rows = editor.visual_line_count(content_width) as u16;
     let max_editor = (main_area.height * 40 / 100).clamp(5, 20);
-    let text = editor.render_text();
-    let contextual_help = !matches!(editor.mode(), editor::EditorMode::Normal)
-        || text.trim_start().starts_with(['/', '!']);
-    let chrome_rows = 1 + u16::from(contextual_help);
-    (editor_rows + chrome_rows).clamp(1 + chrome_rows, max_editor)
+    // A plain composer has a top and bottom border; contextual modes use
+    // the second row for their action hint instead.
+    (editor_rows + 2).clamp(3, max_editor)
 }
 
 enum CommandAdmission {
@@ -736,39 +734,6 @@ impl App {
             .or_else(|| registry.infer_grade(model_provider, model))
             .map(str::to_string)
             .unwrap_or_else(|| fallback.to_string())
-    }
-
-    fn context_class_tag(class: crate::settings::ContextClass) -> &'static str {
-        match class {
-            crate::settings::ContextClass::Compact => "cmp",
-            crate::settings::ContextClass::Standard => "std",
-            crate::settings::ContextClass::Extended => "ext",
-            crate::settings::ContextClass::Massive => "msv",
-        }
-    }
-
-    fn context_fill_bar(percent: f32) -> String {
-        let percent = percent.clamp(0.0, 100.0);
-        let filled = ((percent / 100.0) * 8.0).round().clamp(0.0, 8.0) as usize;
-        format!("▕{}{}▏", "█".repeat(filled), "░".repeat(8 - filled))
-    }
-
-    fn editor_context_widget(
-        actual: crate::settings::ContextClass,
-        context_window: usize,
-        _estimated_tokens: usize,
-        context_percent: f32,
-    ) -> String {
-        let class = Self::context_class_tag(actual);
-        let capacity = if context_window > 0 {
-            widgets::format_tokens(context_window)
-        } else {
-            widgets::format_tokens(actual.nominal_tokens())
-        };
-        let percent = context_percent.clamp(0.0, 100.0).round() as u8;
-
-        let bar = Self::context_fill_bar(context_percent);
-        format!("ctx:{class}@{capacity} {bar} {percent}%")
     }
 
     fn render_engine_status_row(&self, area: Rect, frame: &mut Frame, t: &dyn theme::Theme) {

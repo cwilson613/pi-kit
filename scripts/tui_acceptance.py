@@ -33,7 +33,7 @@ def tui_command(binary, workspace, log, presentation="fullscreen", detail="activ
 def ready_marker(presentation, detail):
     # Full detail exposes readiness through its composer. The subsequent distinct
     # provider request proves submission; the compact idle label is not mounted.
-    return "⏎ send" if (presentation, detail) == ("fullscreen", "full") else "ready · idle"
+    return "Ask anything" if presentation == "inline" or detail == "full" else "ready · idle"
 
 
 @contextmanager
@@ -250,7 +250,7 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             if str(binary) not in ledger["process"]:
                 raise RuntimeError("running process does not identify the requested binary")
             wait_for(lambda: log.exists() and "terminal input boundary acquired" in log.read_text(), "TUI startup")
-            wait_for(lambda: ("ready · idle" if presentation == "inline" else "Ready for first turn") in screen(), "initial semantic view")
+            wait_for(lambda: ("Ask anything" if presentation == "inline" else "Ready for first turn") in screen(), "initial semantic view")
             assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}").strip() == ("0" if presentation == "inline" else "1")
             if "semantic frontend is unavailable" in screen():
                 raise AssertionError("startup exposed an unavailable session projection")

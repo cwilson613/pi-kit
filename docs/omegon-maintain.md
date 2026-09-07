@@ -428,6 +428,12 @@ inode. A conflicting stored volume identity prevents recovery. Recovery also
 refuses active admission locks, unresolved transactions, and maintenance fences.
 Close sessions that use the affected installation before applying recovery.
 
+Recovery reserves descriptors for its bounded lock inventory by temporarily
+raising the companion's soft file limit within the inherited hard limit. It
+retains every lock and restores the limit afterward. If the hard limit cannot
+support recovery, `home_recovery_descriptor_limit` reports a refusal before
+recovery records change.
+
 Preview the recovery without changing records:
 
 ```sh

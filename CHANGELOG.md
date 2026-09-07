@@ -20,6 +20,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 - Installation home recovery now provides inspection, dry-run, and resumable audited rebinding through `omegon-maintain home`. Recovery preserves existing contribution and session restrictions; supported macOS volume identity avoids repeated failures after device renumbering. Contribution loading failures appear in shared status and a compact TUI notice instead of silently becoming an empty inventory.
 
+- Home recovery reserves a bounded, temporary companion-local descriptor budget so large installations can retain every admission lock under the default macOS soft file limit. Insufficient hard limits cause a refusal before recovery records change.
+
 - Persistent inline notifications and command results append to terminal history instead of merging into already-published text. Retaining a bounded notification history preserves publication progress for new output.
 
 - Expired OAuth credentials remain unavailable after rejected refreshes, including cached client and environment-token copies. Refresh attempts share bounded work and suppress repeated rejected grants until credentials change or connection setup is retried. Provider inventory does not refresh credentials; explicit API-key and fresh external credential precedence remain intact.

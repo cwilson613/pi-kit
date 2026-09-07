@@ -59,8 +59,14 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> (i32, Value) {
+        self.run_with_limit(args, None)
+    }
+
+    fn run_with_limit(&self, args: &[&str], limits: Option<libc::rlimit>) -> (i32, Value) {
+        use std::os::unix::process::CommandExt;
         let binary = env!("CARGO_BIN_EXE_omegon-maintain");
-        let output = Command::new(binary)
+        let mut command = Command::new(binary);
+        command
             .args(["--json", "--home"])
             .arg(&self.home)
             .arg("--config-home")
@@ -68,9 +74,20 @@ impl Fixture {
             .args(args)
             .current_dir(self.root.path())
             .env_clear()
-            .env("HOME", self.root.path())
-            .output()
-            .unwrap();
+            .env("HOME", self.root.path());
+        if let Some(limits) = limits {
+            // SAFETY: child-only pre-exec hook performs one async-signal-safe
+            // syscall with an initialized value; it never changes the test parent.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::setrlimit(libc::RLIMIT_NOFILE, &limits) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let output = command.output().unwrap();
         let value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
             panic!(
                 "{error}: stdout={} stderr={}",
@@ -234,4 +251,225 @@ fn home_recovery_keeps_disabled_plugins_disabled_and_existing_audit_valid() {
     drop(state);
     let (code, verified) = fixture.run(&["audit", "verify"]);
     assert_eq!(code, 0, "{verified}");
+}
+
+fn add_descriptor_budget_locks(fixture: &Fixture) {
+    use std::os::unix::fs::OpenOptionsExt;
+    for index in 0..400 {
+        fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(
+                fixture
+                    .home
+                    .join(format!("maintain/v1/locks/contribution-fd-{index:03}.lock")),
+            )
+            .unwrap();
+    }
+}
+
+fn authority_snapshot(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    fn collect(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        out: &mut Vec<(std::path::PathBuf, Vec<u8>)>,
+    ) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                collect(root, &entry.path(), out);
+            } else {
+                out.push((
+                    entry.path().strip_prefix(root).unwrap().into(),
+                    fs::read(entry.path()).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    collect(root, root, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+#[test]
+fn home_recovery_descriptor_budget_expands_soft_limit_and_retains_all_locks() {
+    let fixture = Fixture::mismatched();
+    add_descriptor_budget_locks(&fixture);
+    let limits = libc::rlimit {
+        rlim_cur: 64,
+        rlim_max: 1024,
+    };
+    let before = authority_snapshot(&fixture.home);
+    let (code, planned) = fixture.run_with_limit(
+        &["home", "recover", "--dry-run", "--deadline", "10s"],
+        Some(limits),
+    );
+    assert_eq!(code, 0, "{planned}");
+    assert_eq!(authority_snapshot(&fixture.home), before);
+    let (code, applied) =
+        fixture.run_with_limit(&["home", "recover", "--deadline", "10s"], Some(limits));
+    assert_eq!(code, 0, "{applied}");
+    let descriptor = open_secure_root(&fixture.home).unwrap();
+    assert!(
+        MaintenanceStateV1::bootstrap(
+            &descriptor,
+            path_identity(&descriptor).unwrap(),
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            true
+        )
+        .is_ok()
+    );
+    assert!(
+        fixture
+            .home
+            .join("maintain/v1/locks/contribution-fd-399.lock")
+            .exists()
+    );
+}
+
+#[test]
+fn home_recovery_descriptor_budget_hard_limit_refuses_without_authority_changes() {
+    let fixture = Fixture::mismatched();
+    add_descriptor_budget_locks(&fixture);
+    let before = authority_snapshot(&fixture.home);
+    let (code, result) = fixture.run_with_limit(
+        &["home", "recover", "--deadline", "10s"],
+        Some(libc::rlimit {
+            rlim_cur: 64,
+            rlim_max: 64,
+        }),
+    );
+    assert_ne!(code, 0, "{result}");
+    assert_eq!(
+        result["errors"][0]["code"], "home_recovery_descriptor_limit",
+        "{result}"
+    );
+    assert_eq!(authority_snapshot(&fixture.home), before);
+}
+
+#[test]
+fn home_recovery_descriptor_budget_does_not_bypass_busy_lock() {
+    use omegon_maintenance_contracts::{LockMode, ProtocolLock};
+    let fixture = Fixture::mismatched();
+    add_descriptor_budget_locks(&fixture);
+    let locks = open_secure_root(&fixture.home.join("maintain/v1/locks")).unwrap();
+    let _guard = ProtocolLock::acquire_at(
+        &locks,
+        b"contribution-fd-399.lock",
+        LockMode::Shared,
+        false,
+        true,
+    )
+    .unwrap();
+    let before = authority_snapshot(&fixture.home);
+    let (code, result) = fixture.run_with_limit(
+        &["home", "recover", "--deadline", "10s"],
+        Some(libc::rlimit {
+            rlim_cur: 64,
+            rlim_max: 1024,
+        }),
+    );
+    assert_ne!(code, 0, "{result}");
+    assert_eq!(
+        result["errors"][0]["code"], "home_recovery_busy",
+        "{result}"
+    );
+    assert_eq!(authority_snapshot(&fixture.home), before);
+}
+
+#[test]
+fn home_recovery_descriptor_budget_restores_limits_in_child() {
+    const CHILD: &str = "OMEGON_DESCRIPTOR_BUDGET_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "home_recovery_descriptor_budget_restores_limits_in_child",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let fixture = Fixture::mismatched();
+    add_descriptor_budget_locks(&fixture);
+    let limits = libc::rlimit {
+        rlim_cur: 64,
+        rlim_max: 1024,
+    };
+    // SAFETY: this test re-executes into a private child; these limits cannot
+    // affect any concurrently running test or the operator's process.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limits) }, 0);
+    let args: Vec<std::ffi::OsString> = vec![
+        "omegon-maintain".into(),
+        "--json".into(),
+        "--home".into(),
+        fixture.home.clone().into_os_string(),
+        "--config-home".into(),
+        fixture.config.clone().into_os_string(),
+        "home".into(),
+        "recover".into(),
+        "--dry-run".into(),
+        "--deadline".into(),
+        "10s".into(),
+    ];
+    assert_eq!(omegon_maintain::run(args.clone()), 0);
+    let mut after = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit writes exactly the initialized rlimit allocation.
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut after) },
+        0
+    );
+    assert_eq!(after.rlim_cur, limits.rlim_cur);
+    assert_eq!(after.rlim_max, limits.rlim_max);
+
+    // Restoration also covers admission failure after hundreds of locks were
+    // acquired, and the successful mutation path rather than dry-run alone.
+    let locks = open_secure_root(&fixture.home.join("maintain/v1/locks")).unwrap();
+    let held = omegon_maintenance_contracts::ProtocolLock::acquire_at(
+        &locks,
+        b"contribution-fd-399.lock",
+        omegon_maintenance_contracts::LockMode::Shared,
+        false,
+        true,
+    )
+    .unwrap();
+    assert_ne!(omegon_maintain::run(args.clone()), 0);
+    // SAFETY: initialized rlimit output allocation in this isolated child.
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut after) },
+        0
+    );
+    assert_eq!(
+        (after.rlim_cur, after.rlim_max),
+        (limits.rlim_cur, limits.rlim_max)
+    );
+    drop(held);
+    drop(locks);
+    let apply = args
+        .into_iter()
+        .filter(|arg| arg != "--dry-run")
+        .collect::<Vec<_>>();
+    assert_eq!(omegon_maintain::run(apply), 0);
+    // SAFETY: initialized rlimit output allocation in this isolated child.
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut after) },
+        0
+    );
+    assert_eq!(
+        (after.rlim_cur, after.rlim_max),
+        (limits.rlim_cur, limits.rlim_max)
+    );
 }

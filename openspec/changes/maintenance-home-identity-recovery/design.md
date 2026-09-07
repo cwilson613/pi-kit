@@ -55,3 +55,16 @@ legacy records are not silently upgraded through a mismatch. Unsupported
 platforms keep strict device checks and explicit recovery. Directory rename,
 replacement, volume mismatch, and tampered bindings remain failures. No global
 weakening of PathIdentityV1 equality or descriptor race checks is permitted.
+
+## Companion descriptor budget
+
+The observed home has 439 domain lock files; macOS launches the companion with a
+soft descriptor limit of 256 and an unlimited hard limit. Recovery still needs
+all locks simultaneously. After bounded inventory and before acquiring domain
+locks, reserve one descriptor per lock plus 64 for roots, audit, journal, and
+existing process descriptors. A scoped guard raises only RLIMIT_NOFILE's soft
+limit when needed, preserves the hard limit, and restores the original soft
+limit when recovery access is released, including failure paths. If the hard
+limit or kernel policy prevents this budget, refuse before recovery records are
+written. Child-process tests alter limits only inside their isolated process;
+the operator shell and normal harness limits are never changed.

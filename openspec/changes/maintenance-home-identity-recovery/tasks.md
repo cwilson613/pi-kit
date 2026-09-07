@@ -18,3 +18,17 @@ Focused evidence: `/tmp/omegon-recovery-maint-final.log` (nine unit recovery
 regressions and four CLI recovery cases), `/tmp/omegon-recovery-maint-contracts-all.log`
 (43 protocol tests). Full companion landing gates and real installation recovery
 remain separate final validation.
+
+## 3. Bound recovery descriptor usage
+<!-- specs: home-identity -->
+
+- [x] Record failing child-process tests for low-soft-limit recovery and insufficient-hard-limit refusal.
+- [x] Add scoped soft-limit budgeting while retaining all protocol locks; restore limits on success and failure.
+- [x] Verify successful recovery, safe hard-limit refusal, retained lock contention, and original limit restoration in isolated child processes.
+
+Descriptor-budget evidence: `/tmp/omegon-recovery-maint-fd-red.log` (four
+regressions reproduced), `/tmp/omegon-recovery-maint-fd-green.log` (four passed),
+`/tmp/omegon-recovery-maint-fd-crate.log` (`just test-crate omegon-maintain`, all
+73 tests passed), and `/tmp/omegon-recovery-maint-fd-clippy.log`
+(`just clippy-changed`, passed). Child-process checks observed original limits
+after dry-run success, contended-lock refusal, and successful apply.

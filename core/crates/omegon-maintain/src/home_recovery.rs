@@ -31,6 +31,8 @@ pub(super) fn execute(
             result,
             if busy {
                 "home_recovery_busy"
+            } else if error.starts_with("descriptor limit:") {
+                "home_recovery_descriptor_limit"
             } else if pending {
                 "home_recovery_pending"
             } else {
@@ -65,11 +67,81 @@ fn required_dir(parent: &File, name: &[u8]) -> RecoveryResult<File> {
         })
 }
 
+// One descriptor per bounded inventory entry plus room for admitted roots,
+// metadata, audit/journal I/O, and the companion's existing process descriptors.
+const RECOVERY_DESCRIPTOR_RESERVE: usize = 64;
+
+struct DescriptorBudget {
+    original: Option<libc::rlimit>,
+}
+
+impl DescriptorBudget {
+    fn reserve(lock_count: usize) -> RecoveryResult<Self> {
+        let required: libc::rlim_t = lock_count
+            .checked_add(RECOVERY_DESCRIPTOR_RESERVE)
+            .and_then(|count| count.try_into().ok())
+            .ok_or("descriptor limit: recovery budget overflow")?;
+        let mut original = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes the initialized, correctly sized allocation.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) } != 0 {
+            return Err(format!(
+                "descriptor limit: cannot inspect process limit: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if original.rlim_cur >= required {
+            return Ok(Self { original: None });
+        }
+        if original.rlim_max < required {
+            return Err(format!(
+                "descriptor limit: recovery needs {required} descriptors for {lock_count} locks and a {RECOVERY_DESCRIPTOR_RESERVE}-descriptor reserve, but the process hard limit is {}; no recovery records changed",
+                original.rlim_max
+            ));
+        }
+        let expanded = libc::rlimit {
+            rlim_cur: required,
+            rlim_max: original.rlim_max,
+        };
+        // SAFETY: only this companion process's soft limit changes; the hard
+        // limit is retained and the scoped guard restores the inherited value.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &expanded) } != 0 {
+            return Err(format!(
+                "descriptor limit: cannot reserve {required} descriptors within the existing hard limit: {}; no recovery records changed",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(Self {
+            original: Some(original),
+        })
+    }
+}
+
+impl Drop for DescriptorBudget {
+    fn drop(&mut self) {
+        if let Some(original) = self.original.take() {
+            // SAFETY: restoring the unchanged hard limit and previously admitted
+            // soft limit is valid. This does not close or release any descriptor.
+            if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) } != 0 {
+                eprintln!(
+                    "omegon-maintain: could not restore process descriptor limit: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+    }
+}
+
 struct Access {
     state: MaintenanceStateV1,
     _locks: Vec<ProtocolLock>,
     observed: PathIdentityV1,
     root_identity: PathIdentityV1,
+    // Rust drops fields in declaration order: release records and every lock
+    // before returning the companion to its inherited descriptor budget.
+    _descriptor_budget: DescriptorBudget,
 }
 
 impl Access {
@@ -112,6 +184,11 @@ impl Access {
         } else {
             read_dir_at(&locks, context, MAX_ENTRIES)?
         };
+        let descriptor_budget = if inspect {
+            DescriptorBudget { original: None }
+        } else {
+            DescriptorBudget::reserve(entries.len())?
+        };
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         for entry in entries {
             if entry.name != b"bootstrap.lock" {
@@ -139,6 +216,7 @@ impl Access {
             _locks: guards,
             observed,
             root_identity,
+            _descriptor_budget: descriptor_budget,
         };
         access.recheck(context)?;
         Ok(access)

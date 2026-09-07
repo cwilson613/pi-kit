@@ -77,3 +77,31 @@ Then ordinary bootstrap accepts the same authority without rekeying policy
 Given a persisted stable identity
 When the opened directory inode or volume UUID differs
 Then ordinary bootstrap rejects admission
+
+### Requirement: Recovery budgets descriptors without releasing authority locks
+
+Recovery MUST reserve enough process file descriptors for the bounded lock
+inventory and a fixed allowance for roots, audit records, and transaction I/O.
+It MAY temporarily raise only the companion process soft descriptor limit within
+the existing hard limit, and MUST restore the original soft limit afterward.
+An insufficient hard limit or failed adjustment MUST refuse before recovery
+records are written. Every admitted lock remains held through settlement.
+
+#### Scenario: Low inherited soft limit
+Given more maintenance lock files than the inherited soft descriptor limit
+And the hard limit permits the bounded recovery descriptor budget
+When recovery runs
+Then it acquires and retains every required lock and completes recovery
+And the original process descriptor limits are restored afterward
+
+#### Scenario: Insufficient hard limit
+Given a hard descriptor limit below the bounded recovery budget
+When recovery runs
+Then it reports a descriptor budget refusal before changing recovery records
+And installation identity, policies, audit state, and process limits are unchanged
+
+#### Scenario: Contended lock with an expanded budget
+Given recovery can raise its soft limit and a required domain lock is held
+When recovery runs
+Then it reports busy and leaves authority intact
+And expanding descriptor capacity does not relax quiescence checks

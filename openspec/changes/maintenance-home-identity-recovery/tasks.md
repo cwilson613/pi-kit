@@ -12,12 +12,12 @@
 - [x] Implement descriptor-bound recovery with bootstrap/domain/audit locking and immutable intent plus atomic resumable phase journal.
 - [x] Add supported stable-volume continuity without weakening path/inode or descriptor race checks.
 - [x] Verify unchanged-home behavior, all interrupted phases, busy guards, active transactions/fences, and refusal for unproven continuity.
-- [ ] Recover the observed installation through the supported command, finish catalog/extension installation, and verify real-home admission without GUI launches.
+- [x] Recover the observed installation through the supported command, finish catalog/extension installation, and verify real-home admission without GUI launches.
 
 Focused evidence: `/tmp/omegon-recovery-maint-final.log` (nine unit recovery
 regressions and four CLI recovery cases), `/tmp/omegon-recovery-maint-contracts-all.log`
-(43 protocol tests). Full companion landing gates and real installation recovery
-remain separate final validation.
+(43 protocol tests). Final companion gates and real installation recovery are
+recorded in `verification.md`.
 
 ## 3. Bound recovery descriptor usage
 <!-- specs: home-identity -->

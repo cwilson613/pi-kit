@@ -55,5 +55,5 @@ items include their focused validation; final landing work is tracked separately
 <!-- specs: tui-inline-publication -->
 
 - [x] Reproduce hidden startup, control-response and local notifications after an already-published system segment; make persistent notices append centrally while preserving explicit mutable plan snapshots.
-- [ ] Verify notification retention rollover, partially published retained records and stale-batch rejection; preserve bounded memory and no replay.
-- [ ] Repeat crate/lint checks and private PTY startup, status and clean-exit acceptance against the identified build.
+- [x] Verify notification retention rollover, partially published retained records and stale-batch rejection; preserve bounded memory and no replay.
+- [x] Repeat crate/lint checks and private PTY startup, status and clean-exit acceptance against the identified build.

@@ -168,3 +168,31 @@ again stopped at the existing catalog home-identity mismatch. Thus binary/launch
 installation passed; the whole link recipe did not. Catalog and subsequent
 extension-install steps remain with the separate recovery change. Decorative
 telemetry retirement also remains planned. This TUI change is left unarchived.
+
+## Persistent notification follow-up
+
+The installation-recovery pass reproduced hidden startup and `/status` output
+caused by merging new system text into already-published records. Persistent
+notifications now append centrally. A separate red regression reproduced output
+loss after notification retention rolled over; typed pruning now preserves cursor
+meaning, partial output and stale-batch rejection with bounded bookkeeping.
+Adversarial review checked interleaved removals, boundary changes between events,
+synthetic notice offsets and generation changes after the cursor.
+
+Focused red/green logs are `omegon-recovery-status-*`,
+`omegon-recovery-rollover-*` and `omegon-recovery-prune-metadata-green.log` in the
+external installation-recovery evidence directory. The final Omegon crate gate
+passed 5,252 tests (11 ignored); affected-target Clippy passed.
+
+Real debug PTY acceptance delivered all 66 additional `/status` responses across
+retention rollover, plus the initial status response. Startup and status then
+passed again after supported home recovery using the identical binary hash.
+Both sessions had zero inference requests, unchanged auth/profile hashes and
+verified process cleanup. The recovered session exposes existing trust blocks for
+two contributions rather than silently hiding them. See the contribution-loading
+verification document for exact artifact identity and capture paths.
+
+The historical catalog/home-identity blocker above is now resolved by
+maintenance-home-identity-recovery; catalog and extension installation recipes
+completed. Final release handoff evidence is recorded externally after these
+verification notes are committed.

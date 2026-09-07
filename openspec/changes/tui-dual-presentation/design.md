@@ -216,3 +216,20 @@ retirement, including exclusive code and animation scheduling, is planned in
 [tui-telemetry-addon-retirement](../tui-telemetry-addon-retirement/proposal.md).
 Active/Full remain evidence preferences; future telemetry is an optional addon
 capability rather than a reason to retain core instrument panels.
+
+## Persistent notification retention
+
+Persistent system notifications append centrally so later control responses and
+local notices cannot modify an already-published record. Explicit mutable plan
+snapshots retain their existing replacement behavior.
+
+Notification pruning records at most 64 chronological removal coordinates and
+advances source generation. Native publication consumes this typed change to
+rebase the cursor and finalized boundary while preserving surviving partial
+field/byte/detail and scan state. An evicted current record resets its content
+offsets; a partially emitted synthetic attachment notice retains its own offsets.
+Generation changes reject stale prepared batches even when deletion occurs after
+the cursor. Reconciliation runs before terminal event boundary assignments and
+per frame, including fullscreen. Clear, replacement and arbitrary removals
+invalidate pruning coordinates and retain conservative rewrite handling. No
+second transcript or unbounded pruning queue is introduced.

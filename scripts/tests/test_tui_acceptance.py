@@ -135,6 +135,89 @@ def test_runtime_idle_requires_matching_terminal_fact_for_each_started_turn():
     assert runner.authority_runtime_idle([started, closed, second, {"event_type": "turn.closed", "payload": {"turn_id": "second"}}])
 
 
+def test_streaming_fixture_stages_hold_before_response_completion():
+    import queue
+    import threading
+    events = queue.Queue()
+    with runner.fixture_provider() as server:
+        server.streaming = True
+        def consume():
+            request = Request(server.url + "/v1/chat/completions", data=b'{"messages": []}', headers={"Content-Type": "application/json"})
+            with urlopen(request, timeout=5) as response:
+                for line in response:
+                    if line.startswith(b"data: "):
+                        events.put(line.decode())
+        reader = threading.Thread(target=consume)
+        reader.start()
+        try:
+            for stage in range(3):
+                assert server.stream_stages[stage].wait(2)
+                event = events.get(timeout=2)
+                assert f"STREAM_A_{stage * 32 + 1:04}" in event
+                assert f"STREAM_A_{(stage + 1) * 32:04}" in event
+                assert "[DONE]" not in event and '"finish_reason": null' in event
+                assert reader.is_alive(), "provider completed before release"
+                server.release_stages[stage].set()
+            assert '"finish_reason": "stop"' in events.get(timeout=2)
+            assert "[DONE]" in events.get(timeout=2)
+            reader.join(2)
+            assert not reader.is_alive()
+        finally:
+            for release in getattr(server, "release_stages", []):
+                release.set()
+            reader.join(5)
+
+
+def test_streaming_fixture_interleaves_read_tool_and_followup_response():
+    with runner.fixture_provider() as server:
+        server.streaming = True
+        server.requests = 1
+        server.stream_read_path = "/fixture/stream-probe.txt"
+        server.tool_path = "/fixture/legacy-denied.txt"
+        server.release_stages[3].set()
+        request = Request(server.url + "/v1/chat/completions", data=b'{"messages": []}', headers={"Content-Type": "application/json"})
+        with urlopen(request, timeout=2) as response:
+            body = response.read().decode()
+        assert "STREAM_B_0001" in body and "STREAM_B_0032" in body
+        assert '"name": "read"' in body and "stream-probe.txt" in body
+        assert '"finish_reason": "tool_calls"' in body
+        server.release_stages[4].set()
+        with urlopen(request, timeout=2) as response:
+            body = response.read().decode()
+        assert "STREAM_C_0001" in body and "STREAM_C_0032" in body
+        assert '"finish_reason": "stop"' in body
+        assert server.requests == 3
+
+
+def test_streaming_payload_preserves_nonwhitespace_across_wraps():
+    marker = "STREAM_A_0001"
+    wrapped = marker + " " + "steady out\nput 界 é " * 12
+    runner.assert_streaming_payload(wrapped, [marker])
+    for corrupted in [wrapped.replace("put 界", "p", 1),
+                      wrapped.replace("界", "X界", 1),
+                      wrapped.replace("é", "e", 1)]:
+        try:
+            runner.assert_streaming_payload(corrupted, [marker])
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("streaming payload accepted dropped or altered nonwhitespace characters")
+
+
+def test_streaming_history_gate_rejects_viewport_only_and_replay():
+    markers = ["STREAM_A_0001", "STREAM_A_0002"]
+    runner.assert_streaming_history("STREAM_A_0001\nSTREAM_A_0002", "STREAM_A_0001\nSTREAM_A_0002", markers)
+    for scrollback, transcript in [("", "STREAM_A_0001\nSTREAM_A_0002"),
+                                  ("STREAM_A_0001", "STREAM_A_0001"),
+                                  ("STREAM_A_0001\nSTREAM_A_0002", "STREAM_A_0001\nSTREAM_A_0002\nSTREAM_A_0001")]:
+        try:
+            runner.assert_streaming_history(scrollback, transcript, markers)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("viewport-only, missing, or replayed streaming text accepted")
+
+
 if __name__ == "__main__":
     command = runner.tui_command(Path("/binary with spaces"), Path("/workspace"), Path("/log"), "inline", "full")
     assert "--tui" in command and "--ui" in command, "fixture must select both axes explicitly"
@@ -157,3 +240,10 @@ if __name__ == "__main__":
 
     test_reply_readiness_rejects_active_placeholder_and_publication_overlap()
     test_runtime_idle_requires_matching_terminal_fact_for_each_started_turn()
+
+    test_streaming_fixture_stages_hold_before_response_completion()
+    test_streaming_history_gate_rejects_viewport_only_and_replay()
+
+    test_streaming_fixture_interleaves_read_tool_and_followup_response()
+
+    test_streaming_payload_preserves_nonwhitespace_across_wraps()

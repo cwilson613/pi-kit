@@ -196,3 +196,88 @@ The historical catalog/home-identity blocker above is now resolved by
 maintenance-home-identity-recovery; catalog and extension installation recipes
 completed. Final release handoff evidence is recorded externally after these
 verification notes are committed.
+
+## Live streaming correction
+
+The operator's live reply exposed an incorrect publication policy: the inline
+viewport replaced its three-line preview while withholding the answer from
+primary scrollback until turn completion. Completed text was retained, but the
+operator could not read earlier lines during the response.
+
+The deterministic baseline reproduced the defect against release commit
+`bc2f08796c195177e3b85fb516e46ca1dce71465`, SHA-256
+`03d1a3131387d41ea4d800d2c24473d335384fe4a630777bf483b9f77d1ee712`.
+The fixture delivered 32 numbered long Unicode lines, then held the stream before
+completion. Only markers 30 and 31 appeared in the live preview; marker 1 was
+absent from primary history. The authority journal had no closed turn. The failed
+assertion and owned-process cleanup are retained in
+`../omegon-streaming-feedback-evidence-01/before/`, with a summary in
+`before-observation.json` and the operator capture in `operator-before/`.
+
+The revised contract requires stable streamed rows in primary scrollback before
+completion. The acceptance driver checks five held checkpoints, resizing during
+streaming, a completed read tool, and a second turn. It verifies all 160 numbered
+lines exactly once and in order. These fixtures use local HTTP requests and a
+private tmux server; they create no desktop windows or paid inference requests.
+
+Adversarial source review identified and corrected split terminal-control parsing,
+Unicode joins across stripped controls, oversized-cluster stalls, duplicate tool
+summaries after detail changes, and restart behind a live publication cursor.
+The implementation also omits mutable plan snapshots from automatic history so
+they cannot block following answers. Their canonical Workbench/fullscreen state
+remains intact. Regression fixtures cover these cases, including explicit recovery
+from text-limit and unmapped-rewrite pauses.
+
+The final focused suite passed 29 publication tests, 10 inline integration tests,
+and two composer tests. The Python acceptance driver tests also passed. An earlier
+run exposed a fixture using a 16-byte budget for the production 64 KiB cluster
+limit; the corrected fixture checks the production limit. Another compile caught
+a missing type qualification in the restored running-tool preview. Both failed
+attempts are retained separately from the final passing logs.
+
+The earlier test executable also waited in macOS `_dyld_start` before any tests
+ran, then proceeded without intervention. Its on-disk signature check passed.
+That focused run finished naturally; no machine security settings changed. The optional
+developer-script sweep was stopped separately during unrelated Cargo filters;
+it is not counted as a passed complete gate.
+
+The first Active and Full streaming runs passed marker progress and ordering, but
+inspection of their raw captures found lost characters in 159 of 160 Unicode
+payloads. Those manifests are insufficient evidence of text fidelity; the finding
+is retained in `payload-fidelity-review.json`. A plain tmux probe preserved the
+same Unicode under both tested UTF-8 locales. Local Ratatui source identified
+extra continuation-cell spaces in `insert_before` output as the cause. The
+acceptance driver now checks every complete payload as well as markers. The
+interim crate run was stopped while waiting in the existing filesystem-watcher
+test because this renderer correction required a new validation run.
+
+Earlier fixture-only failures are also retained: joined soft-wrap captures were
+needed to read markers after resize, the new streaming fixture inherited a legacy
+permission barrier, and saved alternate-screen captures could not include primary
+scrollback. Each correction retains raw geometry captures and scoped cleanup.
+
+The corrected insertion adapter passed 11 inline tests and 29 publication tests,
+including an actual Crossterm byte regression that was red before the correction.
+Final debug SHA-256:
+`520a033255ef3e57ca3810d710a24c1334a251900dfca15dc99b32e1c59e41b2`.
+`debug-width-artifact.json` identifies the frozen executable and build source.
+The final `width-fixed-active` and `width-fixed-full` captures each preserve all
+160 complete Unicode payloads after whitespace normalization, exactly once and in
+order. Both pass five checkpoints before completion, resize from 120×40 to 72×24,
+and complete two turns with a read-tool continuation through three local requests.
+
+`width-fixed-stress` passes browsing with a preserved draft and published prefix,
+explicit export, denied write, cancellation, new-session recovery, and clean shell
+return through six local requests. The authority journals confirm every started
+turn closed. All three sessions restored terminal modes and cleaned up their owned
+processes. No GUI test windows or paid inference were used. See
+`acceptance-summary.json` for capture hashes and per-scenario evidence. All 14
+Python fixture tests passed. Changed-target Clippy, including the workspace
+selected by the lockfile change, passed.
+
+The final serialized `just test-crate omegon` gate passed 5,275 tests with 11
+ignored, including authoritative lifecycle recovery and all integration targets.
+`just clippy-changed --base bc2f0879`, formatting, and diff checks passed. The final
+crate run completed the filesystem-watcher test without intervention. Release
+installation and operator-window identity are recorded externally after this
+tested source is committed, preserving an exact artifact-to-commit handoff.

@@ -19,6 +19,7 @@ import time
 import uuid
 
 FIXTURE_MODEL = "openai:omegon-tui-fixture"
+STREAMING_LINE_BODY = "steady output 界é " * 12
 
 
 def tui_command(binary, workspace, log, presentation="fullscreen", detail="active", *, unconfigured=False):
@@ -77,16 +78,17 @@ def fixture_provider():
             if self.path != "/v1/chat/completions" or not 0 <= length <= 8 * 1024 * 1024:
                 self.send_error(400)
                 return
-            json.loads(self.rfile.read(length))
+            request_body = json.loads(self.rfile.read(length))
             with server.request_lock:
                 server.requests += 1
                 number = server.requests
-            if server.stress and number == 5:
+                server.request_bodies.append(request_body)
+            if not server.streaming and server.stress and number == 5:
                 server.cancel_waiting.set()
                 if not server.release_cancel.wait(timeout=60):
                     self.send_error(504)
                     return
-            tool_probe = number == 3 and server.tool_path is not None
+            tool_probe = not server.streaming and number == 3 and server.tool_path is not None
             if tool_probe:
                 server.tool_waiting.set()
                 if not server.release_tool.wait(timeout=60):
@@ -95,13 +97,42 @@ def fixture_provider():
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
+            if server.streaming:
+                try:
+                    stages = range(3) if number == 1 else [3 if number == 2 else 4]
+                    label = {1: "A", 2: "B", 3: "C"}.get(number)
+                    if label is None:
+                        raise AssertionError(f"unexpected streaming fixture request {number}")
+                    for stage in stages:
+                        first = stage * 32 + 1 if number == 1 else 1
+                        content = "".join(f"STREAM_{label}_{line:04} " + STREAMING_LINE_BODY + "\n"
+                                          for line in range(first, first + 32))
+                        if first == 1:
+                            content = f"TUI_FIXTURE_REPLY_{number}\n" + content
+                        event = {"choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]}
+                        self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+                        self.wfile.flush()
+                        server.stream_stages[stage].set()
+                        if not server.release_stages[stage].wait(timeout=60):
+                            return
+                    delta, finish = {}, "stop"
+                    if number == 2:
+                        delta = {"tool_calls": [{"index": 0, "id": "stream-read-probe", "type": "function",
+                                  "function": {"name": "read", "arguments": json.dumps({"path": server.stream_read_path})}}]}
+                        finish = "tool_calls"
+                    event = {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+                    self.wfile.write(("data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n").encode())
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # Failed acceptance terminates its owned client before releasing gates.
+                return
             reply = f"TUI_FIXTURE_REPLY_{number}"
             if server.tool_path is not None and number >= 4:
                 reply += (" The operator denied the requested write. The fixture has completed its permission check "
                           "and will make no further tool calls. The requested file remains absent, the prior project "
                           "surface is preserved, and control returns to the conversation for the next operator prompt.")
             if server.stress and number == 1:
-                reply = f"TUI_FIXTURE_REPLY_{number} " + "bounded-output 界é " * 5000
+                reply = f"TUI_FIXTURE_REPLY_{number}\n" + "bounded-output 界é " * 5000
             deltas = [({"content": reply}, None), ({}, "stop")]
             if tool_probe:
                 call = {"index": 0, "id": "fixture-denied-write", "type": "function",
@@ -125,6 +156,11 @@ def fixture_provider():
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.stress = False
+    server.streaming = False
+    server.stream_stages = [threading.Event() for _ in range(5)]
+    server.release_stages = [threading.Event() for _ in range(5)]
+    server.stream_read_path = None
+    server.request_bodies = []
     server.stream_waiting = threading.Event()
     server.release_stream = threading.Event()
     server.cancel_waiting = threading.Event()
@@ -140,6 +176,8 @@ def fixture_provider():
     try:
         yield server
     finally:
+        for release in server.release_stages:
+            release.set()
         server.release_tool.set()
         server.release_stream.set()
         server.release_cancel.set()
@@ -237,7 +275,24 @@ reasoning = true
     return workspace
 
 
-def run(binary: Path, output: Path, presentation="fullscreen", detail="active", entry=None, stress=False, fresh_install=False, unconfigured=False):
+def assert_streaming_history(scrollback, transcript, markers):
+    for marker in markers:
+        assert marker in scrollback, f"stable streamed line missing from PRIMARY scrollback before completion: {marker}"
+        assert transcript.count(marker) == 1, f"streamed line overwritten or replayed: {marker}"
+
+
+def assert_streaming_payload(transcript, markers):
+    # Terminal hard/soft wrapping and wide-cell padding may change whitespace;
+    # every other character, including combining marks, must survive exactly.
+    normalized = "".join(transcript.split())
+    body = "".join(STREAMING_LINE_BODY.split())
+    for marker in markers:
+        assert normalized.count(marker + body) == 1, f"streamed payload lost or altered nonwhitespace characters: {marker}"
+
+
+def run(binary: Path, output: Path, presentation="fullscreen", detail="active", entry=None, stress=False, fresh_install=False, unconfigured=False, streaming=False):
+    if streaming and (presentation != "inline" or unconfigured or stress):
+        raise ValueError("streaming acceptance requires configured inline layout without stress")
     if unconfigured and stress:
         raise ValueError("unconfigured acceptance cannot run provider stress turns")
     binary = binary.resolve(strict=True)
@@ -250,7 +305,13 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
               "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip(),
               "dirty": subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout, text=True),
               "captures": [], "passed": False, "tui": presentation, "ui": detail, "entry": entry, "stress": stress, "fresh_install": fresh_install,
-              "unconfigured": unconfigured, "terminal_owner": "private-headless-tmux", "gui_windows_created": 0}
+              "unconfigured": unconfigured, "streaming": streaming, "terminal_owner": "private-headless-tmux", "gui_windows_created": 0}
+
+    diff = subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=checkout)
+    (output / "source.diff").write_bytes(diff)
+    ledger["source_diff_sha256"] = digest(output / "source.diff")
+    ledger["driver_sha256"] = digest(Path(__file__))
+    (output / "driver.py").write_bytes(Path(__file__).read_bytes())
 
     def tmux(*args, check=True):
         return subprocess.run(["tmux", "-L", socket, *args], check=check, capture_output=True, text=True, timeout=10).stdout
@@ -263,29 +324,41 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
         return tmux("capture-pane", "-p", "-t", "run:0.0")
 
     def history():
-        return tmux("capture-pane", "-p", "-S", "-", "-t", "run:0.0") if presentation == "inline" else screen()
+        return tmux("capture-pane", *(["-J"] if streaming else []), "-p", "-S", "-", "-t", "run:0.0") if presentation == "inline" else screen()
 
     def capture(name, *, primary=False):
         path = output / (name + ".txt")
         path.write_text((history() if presentation == "inline" else tmux("capture-pane", "-p", "-a", "-t", "run:0.0")) if primary else screen())
+        if streaming and primary:
+            # -J joins terminal soft-wrap rows for marker identity after resize;
+            # retain physical rows too so the actual visual layout is reviewable.
+            physical = output / (name + ".physical.txt")
+            physical.write_text(tmux("capture-pane", "-p", "-S", "-", "-t", "run:0.0"))
+            ledger.setdefault("physical_captures", []).append({"file": physical.name, "sha256": digest(physical)})
         ledger["captures"].append({"name": name, "time": time.time(), "sha256": digest(path),
                                    "geometry": tmux("display-message", "-p", "-t", "run:0.0", "#{pane_width}x#{pane_height}").strip()})
 
-    def wait_for(predicate, label):
-        deadline = time.monotonic() + 60
+    def wait_for(predicate, label, seconds=60):
+        deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if predicate():
                 return
             time.sleep(0.05)
         capture("failure")
+        capture("failure-primary", primary=True)
         raise TimeoutError(label)
 
     with tempfile.TemporaryDirectory(prefix="omegon-tui-") as temporary, fixture_provider() as provider:
         root = Path(temporary)
         provider.stress = stress
+        provider.streaming = streaming
         workspace = prepare_unconfigured_workspace(root) if unconfigured else prepare_fixture_workspace(root, provider)
         if fresh_install and not unconfigured:
             (workspace / ".omegon/profile.json").unlink()
+        if streaming:
+            read_probe = workspace / "stream-probe.txt"
+            read_probe.write_text("STREAM_TOOL_FILE_CONTENT\n")
+            provider.stream_read_path = str(read_probe)
         log = output / "omegon.log"
 
         def turn_settled(number):
@@ -336,6 +409,87 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             if "semantic frontend is unavailable" in screen():
                 raise AssertionError("startup exposed an unavailable session projection")
             capture("01-startup")
+            if streaming:
+                def scrollback():
+                    assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}").strip() == "0"
+                    return tmux("capture-pane", "-J", "-p", "-S", "-", "-E", "-1", "-t", "run:0.0")
+
+                def authority_records():
+                    return [json.loads(line) for journal in root.rglob("*.authority.jsonl")
+                            for line in journal.read_text().splitlines() if line]
+
+                committed = []
+                def paused_stage(stage, label, first):
+                    wait_for(provider.stream_stages[stage].is_set, f"provider streaming barrier {stage}")
+                    markers = [f"STREAM_{label}_{line:04}" for line in range(first, first + 8)]
+                    # The provider is held before finish_reason/[DONE]. Current-screen
+                    # visibility does not count: require real rows above the viewport.
+                    wait_for(lambda: all(marker in scrollback() for marker in markers),
+                             f"live stable prefix {label}/{first} reaches PRIMARY scrollback", seconds=12)
+                    committed.extend(markers)
+                    assert_streaming_history(scrollback(), history(), committed)
+                    assert not provider.release_stages[stage].is_set()
+                    assert not authority_runtime_idle(authority_records()), "streaming observation happened after turn completion"
+                    capture(f"stream-{stage}-paused-primary", primary=True)
+                    saved = output / f"stream-{stage}-scrollback-only.txt"
+                    saved.write_text(scrollback())
+                    ledger.setdefault("streaming_checkpoints", []).append({"stage": stage,
+                        "requests": provider.requests, "markers": list(committed), "provider_held": True,
+                        "runtime_idle": False, "scrollback_file": saved.name, "sha256": digest(saved)})
+
+                action("send-keys", "-t", "run:0.0", "-l", "stream fixture first turn")
+                action("send-keys", "-t", "run:0.0", "Enter")
+                paused_stage(0, "A", 1)
+                provider.release_stages[0].set()
+                paused_stage(1, "A", 33)
+                action("resize-window", "-t", "run:0", "-x", "72", "-y", "24")
+                wait_for(lambda: all(marker in scrollback() for marker in committed), "stream prefix survives narrower resize")
+                assert_streaming_history(scrollback(), history(), committed)
+                capture("stream-resize-paused-primary", primary=True)
+                provider.release_stages[1].set()
+                paused_stage(2, "A", 65)
+                provider.release_stages[2].set()
+                wait_for(lambda: turn_settled(1), "first streamed turn completes without replay")
+                all_first = [f"STREAM_A_{line:04}" for line in range(1, 97)]
+                first_complete = history()
+                for marker in all_first:
+                    assert first_complete.count(marker) == 1, f"first turn lost or replayed {marker}"
+                capture("stream-first-complete-primary", primary=True)
+                action("send-keys", "-t", "run:0.0", "-l", "stream fixture second turn with read tool")
+                action("send-keys", "-t", "run:0.0", "Enter")
+                paused_stage(3, "B", 1)
+                provider.release_stages[3].set()
+                paused_stage(4, "C", 1)
+                # The third local request proves the real read tool completed and
+                # its result reached the provider before the continued answer.
+                tool_messages = [message for message in provider.request_bodies[2]["messages"]
+                                 if message.get("role") == "tool"]
+                assert any("STREAM_TOOL_FILE_CONTENT" in json.dumps(message) for message in tool_messages), "read tool result missing from continuation"
+                continued = history()
+                for marker in all_first:
+                    assert continued.count(marker) == 1, f"second turn overwrote or replayed {marker}"
+                provider.release_stages[4].set()
+                wait_for(lambda: turn_settled(3), "second streamed turn and read tool complete")
+                complete = history()
+                all_markers = all_first + [f"STREAM_{label}_{line:04}" for label in ("B", "C") for line in range(1, 33)]
+                for marker in all_markers:
+                    assert complete.count(marker) == 1, f"final transcript lost or replayed {marker}"
+                positions = [complete.index(marker) for marker in all_markers]
+                assert positions == sorted(positions), "streamed lines were reordered"
+                assert_streaming_payload(complete, all_markers)
+                assert provider.requests == 3, f"unexpected local requests: {provider.requests}"
+                assert digest(binary) == ledger["binary_sha256"], "binary changed during streaming acceptance"
+                capture("stream-second-tool-complete-primary", primary=True)
+                ledger["streaming_checks"] = {"unique_lines": len(all_markers), "local_requests": provider.requests,
+                    "paid_requests": 0, "live_checkpoints": 5, "read_tool_completed": True,
+                    "nonwhitespace_payload_preserved": True, "resize": "120x40 to 72x24"}
+                action("send-keys", "-t", "run:0.0", "-l", "/quit")
+                action("send-keys", "-t", "run:0.0", "Enter")
+                wait_for(lambda: "TUI_EXIT_0" in screen(), "streaming clean TUI exit")
+                assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}:#{mouse_any_flag}").strip() == "0:0"
+                capture("stream-shell-return")
+                ledger["passed"] = True
+                return
             styled = output / "01-startup-styled.ansi"
             styled.write_text(tmux("capture-pane", "-p", "-e", "-t", "run:0.0"))
             ledger["style_capture"] = {"file": styled.name, "sha256": digest(styled)}
@@ -452,16 +606,24 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
                 action("send-keys", "-t", "run:0.0", "Enter")
                 if stress and number == 1:
                     wait_for(provider.stream_waiting.is_set, "held streaming response")
+                    if presentation == "inline":
+                        wait_for(lambda: history().count("TUI_FIXTURE_REPLY_1") == 1,
+                                 "stable streaming prefix published before Project takes fullscreen")
+                        capture("stress-prefix-before-project", primary=True)
                     action("send-keys", "-t", "run:0.0", "-l", "UNSENT_DRAFT_SURVIVES")
                     action("send-keys", "-t", "run:0.0", "F2")
                     wait_for(lambda: "Project browser" in screen(), "Project admits input during large stream")
                     capture("stress-streaming-project")
-                    prior = tmux("capture-pane", "-p", "-a", "-S", "-", "-t", "run:0.0")
-                    assert "TUI_FIXTURE_REPLY_1" not in prior, "unfinalized response entered primary history"
                     provider.release_stream.set()
                     action("send-keys", "-t", "run:0.0", "Escape")
                     wait_for(lambda: "UNSENT_DRAFT_SURVIVES" in screen(), "draft survives active browsing")
                     capture("stress-return-draft")
+                    if presentation == "inline":
+                        # tmux -a cannot access saved primary history. Check only
+                        # after returning to primary, where history is available.
+                        wait_for(lambda: history().count("TUI_FIXTURE_REPLY_1") == 1,
+                                 "Project return preserves stable primary prefix")
+                        capture("stress-prefix-after-project", primary=True)
                     action("send-keys", "-t", "run:0.0", "C-u")
                 wait_for(lambda: turn_settled(number), f"reply {number} published once and runtime idle")
                 capture(f"0{number + 1}-turn-{number}")
@@ -544,8 +706,20 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}:#{mouse_any_flag}").strip() == "0:0"
             capture("09-shell-return")
             ledger["passed"] = True
+        except Exception as error:
+            ledger["error"] = str(error)
+            if ledger.get("pid") and not (output / "failure.txt").exists():
+                try:
+                    capture("failure")
+                    capture("failure-primary", primary=True)
+                except (subprocess.SubprocessError, OSError) as capture_error:
+                    ledger["failure_capture_error"] = str(capture_error)
+            raise
         finally:
             ledger["provider_requests"] = provider.requests
+            if streaming:
+                ledger["streaming_fixture"] = {"stages_sent": [event.is_set() for event in provider.stream_stages],
+                    "stages_released": [event.is_set() for event in provider.release_stages]}
             for number, journal in enumerate(sorted(root.rglob("*.authority.jsonl"))):
                 target = output / f"authority-{number}.jsonl"
                 shutil.copy2(journal, target)
@@ -585,8 +759,9 @@ if __name__ == "__main__":
     parser.add_argument("--tui", choices=["inline", "fullscreen"], default="fullscreen")
     parser.add_argument("--ui", choices=["active", "full"], default="active")
     parser.add_argument("--entry", choices=["om", "omegon"], help="test the fixed-build launcher default without UI flags")
+    parser.add_argument("--streaming", action="store_true", help="gate stable streamed lines in primary scrollback before completion, resize, and interleave a read tool")
     parser.add_argument("--stress", action="store_true", help="gate a large stream, cancel from Project, and replace the conversation")
     parser.add_argument("--fresh-install", action="store_true", help="verify profile-free non-child startup without a posture wizard")
     parser.add_argument("--unconfigured", action="store_true", help="verify no-model, no-credential startup and draft preservation through connection cancellation")
     arguments = parser.parse_args()
-    run(arguments.binary, arguments.output.resolve(), arguments.tui, arguments.ui, arguments.entry, arguments.stress, arguments.fresh_install, arguments.unconfigured)
+    run(arguments.binary, arguments.output.resolve(), arguments.tui, arguments.ui, arguments.entry, arguments.stress, arguments.fresh_install, arguments.unconfigured, arguments.streaming)

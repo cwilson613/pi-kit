@@ -5,6 +5,37 @@ use ratatui::widgets::Wrap;
 
 pub(super) const LIVE_ROWS: u16 = 8;
 
+/// Render only the temporary native insertion buffer, never a managed viewport.
+fn render_publication_lines(lines: &[String], buffer: &mut ratatui::buffer::Buffer) {
+    use ratatui::widgets::Widget;
+    let lines = lines
+        .iter()
+        .map(|line| Line::from(line.as_str()))
+        .collect::<Vec<_>>();
+    Paragraph::new(lines).render(buffer.area, buffer);
+
+    // Ratatui's insert_before emits every cell, unlike ordinary frame diffs.
+    // Crossterm prints adjacent cells without repositioning: a printable blank
+    // in the covered cell of a wide glyph would advance the terminal twice.
+    // Empty only these temporary continuation symbols; keep real spaces intact.
+    use unicode_width::UnicodeWidthStr;
+    let width = usize::from(buffer.area.width);
+    if width == 0 {
+        return;
+    }
+    for row in buffer.content.chunks_mut(width) {
+        let mut column = 0;
+        while column < row.len() {
+            let cells = row[column].symbol().width().max(1);
+            let end = (column + cells).min(row.len());
+            for continuation in &mut row[column + 1..end] {
+                continuation.set_symbol("");
+            }
+            column = end;
+        }
+    }
+}
+
 impl App {
     pub(super) fn reconcile_native_publication(&mut self) {
         let mut invalid_prune = false;
@@ -43,7 +74,7 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
         session: &TerminalSessionHandle,
     ) -> io::Result<bool> {
-        use ratatui::{backend::Backend, widgets::Widget};
+        use ratatui::backend::Backend;
         self.reconcile_native_publication();
         let generation = self.conversation.publication_generation();
         session.with_presentation_io(TerminalPresentation::Inline, || terminal.autoresize())?;
@@ -66,12 +97,7 @@ impl App {
             if !batch.lines.is_empty() {
                 attempted = true;
                 terminal.insert_before(batch.lines.len() as u16, |buffer| {
-                    let lines = batch
-                        .lines
-                        .iter()
-                        .map(|line| Line::from(line.as_str()))
-                        .collect::<Vec<_>>();
-                    Paragraph::new(lines).render(buffer.area, buffer);
+                    render_publication_lines(&batch.lines, buffer);
                 })?;
                 terminal.backend_mut().flush()?;
             }
@@ -112,7 +138,7 @@ impl App {
             .clamp(2, 4)
             .min(area.height);
         let status = if self.native_publication.automatic.is_degraded() {
-            "Scrollback delivery uncertain · /session-export or fullscreen for history"
+            self.native_publication.automatic.degradation_message()
         } else if self.agent_active {
             "Working · Ctrl+C cancel · F2 Project"
         } else if self
@@ -128,28 +154,27 @@ impl App {
         if !status.is_empty() {
             lines.push(Line::styled(status, self.theme.style_dim()));
         }
-        // Borrow only a bounded suffix; never format the whole transcript here.
-        if self.agent_active
-            && let Some(segment) = self.conversation.segments().last()
-        {
-            let text = match &segment.content {
-                SegmentContent::AssistantText { text, .. } => text.as_str(),
-                SegmentContent::SystemNotification { text } => text.as_str(),
-                SegmentContent::ToolCard { name, .. } => name.as_str(),
-                _ => "",
-            };
-            let start = text.floor_char_boundary(text.len().saturating_sub(1024));
-            let clean = super::native_publication::safe_inline_text(&text[start..]);
-            lines.extend(
-                clean
-                    .lines()
-                    .rev()
-                    .take(3)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .map(|v| Line::from(v.to_owned())),
-            );
+        // Only the uncommitted physical row belongs in the live viewport.
+        // Stable response rows are retained above it in native scrollback.
+        if self.agent_active {
+            let tail = self.native_publication.automatic.pending_text();
+            if !tail.is_empty() {
+                lines.push(Line::from(tail.to_owned()));
+            } else if let Some(segments::Segment {
+                content:
+                    SegmentContent::ToolCard {
+                        name,
+                        complete: false,
+                        ..
+                    },
+                ..
+            }) = self.conversation.segments().last()
+            {
+                let end = name.floor_char_boundary(name.len().min(512));
+                lines.push(Line::from(native_publication::safe_inline_text(
+                    &name[..end],
+                )));
+            }
         }
         // Keep idle input beside the transcript. The reserved viewport remains
         // available below for streaming output and contextual controls.
@@ -176,6 +201,38 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_insertion_crossterm_bytes_preserve_wide_and_combining_glyphs() {
+        use ratatui::{backend::Backend, buffer::Buffer};
+        use unicode_width::UnicodeWidthStr;
+        for text in ["界é steady output ".repeat(6), "👩\u{200d}💻 界é".repeat(8)] {
+            let width = text.width() as u16;
+            let mut buffer = Buffer::empty(Rect::new(0, 0, width, 1));
+            render_publication_lines(std::slice::from_ref(&text), &mut buffer);
+            let mut bytes = Vec::new();
+            {
+                let mut backend = CrosstermBackend::new(&mut bytes);
+                // Match Ratatui insert_before's complete-cell insertion path;
+                // ordinary Terminal::draw uses a diff and does not expose this bug.
+                backend
+                    .draw(
+                        buffer
+                            .content
+                            .iter()
+                            .enumerate()
+                            .map(|(x, cell)| (x as u16, 0, cell)),
+                    )
+                    .unwrap();
+            }
+            let rendered =
+                native_publication::safe_inline_text(std::str::from_utf8(&bytes).unwrap());
+            assert_eq!(
+                rendered, text,
+                "covered wide cells must not add printable spaces"
+            );
+        }
+    }
 
     #[test]
     fn contribution_health_notice_publishes_after_initial_attachment_exactly_once() {

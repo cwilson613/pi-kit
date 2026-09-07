@@ -57,3 +57,15 @@ items include their focused validation; final landing work is tracked separately
 - [x] Reproduce hidden startup, control-response and local notifications after an already-published system segment; make persistent notices append centrally while preserving explicit mutable plan snapshots.
 - [x] Verify notification retention rollover, partially published retained records and stale-batch rejection; preserve bounded memory and no replay.
 - [x] Repeat crate/lint checks and private PTY startup, status and clean-exit acceptance against the identified build.
+
+## 7. Readable live inline output
+<!-- specs: tui-inline-publication -->
+
+- [x] Reproduce long streamed replies disappearing from the small live viewport while primary history has no answer prefix; retain failing private PTY evidence.
+- [x] Publish stable grapheme-safe assistant prefixes during streaming, keep only the unfinished tail live, and drain eligible backlog within existing input/publication budgets.
+- [x] Preserve ordered completed tool-run summaries and Full thinking evidence, completion/cancel deduplication, generation/pruning behavior, resize/detail changes, and fullscreen round trips.
+- [x] Verify numbered long responses in primary history before completion, continued output, tool interleaving, Unicode wrapping, cancellation and a second turn with the identified build; run Rust/script gates and record captured acceptance evidence.
+
+Record the installed operator handoff in the external evidence directory after
+committing the tested source, so the release artifact and launcher identify the
+same revision. That record includes window/process identity and owned-session cleanup.

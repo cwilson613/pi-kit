@@ -754,7 +754,7 @@ impl Default for Settings {
     fn default() -> Self {
         let context_window = 200_000;
         Self {
-            model: "anthropic:claude-sonnet-4-6".into(),
+            model: String::new(),
             profile_name: None,
             posture: BehavioralPosture::fixed(PosturePreset::Architect),
             thinking: ThinkingLevel::Medium,
@@ -778,7 +778,7 @@ impl Default for Settings {
             auto_update: false,
             trusted_directories: Vec::new(),
             permissions: ProfilePermissions::default(),
-            provider_connected: true, // optimistic default — set false when NullBridge
+            provider_connected: false, // unselected until a route is resolved
             provider_is_oauth: false,
             sandbox: false,
             terminal_tool: true,
@@ -838,6 +838,9 @@ impl Settings {
             context_window,
             context_class,
             provider_is_oauth: crate::auth::provider_oauth_for_model(model),
+            // Explicit-model callers retain the historical optimistic state;
+            // runtime route resolution replaces it before interactive rendering.
+            provider_connected: !model.trim().is_empty(),
             ..Default::default()
         }
     }
@@ -932,7 +935,11 @@ impl Settings {
     }
 
     pub fn provider(&self) -> String {
-        crate::providers::infer_provider_id(&self.model)
+        if self.model.trim().is_empty() {
+            String::new()
+        } else {
+            crate::providers::infer_provider_id(&self.model)
+        }
     }
 }
 
@@ -1045,6 +1052,8 @@ const PROVIDER_PREFIXES: &[&str] = &[
     "google-antigravity",
     "huggingface",
     "openrouter",
+    "opencode-go",
+    "opencode-zen",
     "ollama",
     "ollama-cloud",
     "local",
@@ -1805,7 +1814,10 @@ impl Profile {
         settings.profile_name = self.compact_label().map(ToOwned::to_owned);
         settings.permissions = self.permissions.clone();
 
-        if let Some(ref m) = self.last_used_model {
+        if let Some(ref m) = self.last_used_model
+            && !m.provider.trim().is_empty()
+            && !m.model_id.trim().is_empty()
+        {
             settings.set_model(&format!("{}:{}", m.provider, m.model_id));
         }
         if let Some(ref t) = self.thinking_level
@@ -1900,7 +1912,7 @@ impl Profile {
 
     /// Capture current settings into the profile (called on change).
     pub fn capture_from(&mut self, settings: &Settings) {
-        self.last_used_model = Some(ProfileModel {
+        self.last_used_model = (!settings.model.trim().is_empty()).then(|| ProfileModel {
             provider: settings.provider().to_string(),
             model_id: settings.model_short().to_string(),
         });
@@ -3085,6 +3097,37 @@ mod tests {
         assert_eq!(policy.model_window, ContextClass::Compact.nominal_tokens());
         assert!(policy.reply_reserve < 8_192);
         assert!(policy.tool_schema_reserve < 4_096);
+    }
+
+    #[test]
+    fn fresh_provider_settings_are_unselected_and_not_persisted_as_a_model() {
+        let settings = Settings::default();
+        assert!(settings.model.is_empty());
+        assert!(!settings.provider_connected);
+        assert!(settings.provider().is_empty());
+        let mut profile = Profile::default();
+        profile.capture_from(&Settings::new(""));
+        assert!(profile.last_used_model.is_none());
+    }
+
+    #[test]
+    fn fresh_provider_saved_zen_model_roundtrips_without_duplicate_provider() {
+        let selected = Settings::new("opencode-zen:big-pickle");
+        let mut profile = Profile::default();
+        profile.capture_from(&selected);
+        let mut restored = Settings::default();
+        profile.apply_to(&mut restored);
+        assert_eq!(restored.model, selected.model);
+    }
+
+    #[test]
+    fn fresh_provider_ignores_empty_legacy_saved_model() {
+        let profile: Profile =
+            serde_json::from_str(r#"{"lastUsedModel":{"provider":"anthropic","modelId":""}}"#)
+                .unwrap();
+        let mut settings = Settings::default();
+        profile.apply_to(&mut settings);
+        assert!(settings.model.is_empty());
     }
 
     #[test]

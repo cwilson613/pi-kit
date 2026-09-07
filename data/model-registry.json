@@ -112,6 +112,26 @@
   },
   "endpoints": [
     {
+      "id": "opencode-zen",
+      "displayName": "OpenCode Zen Free",
+      "class": "upstream",
+      "protocol": "openAiCompatible",
+      "baseUrl": null,
+      "authScheme": {
+        "kind": "none"
+      },
+      "enabled": true,
+      "discoveryProtocol": "static",
+      "openAiCompatibleProfile": {
+        "supportsChatCompletions": true,
+        "supportsResponsesApi": false,
+        "supportsStreaming": true,
+        "supportsTools": true,
+        "docsUrl": "https://opencode.ai/docs/zen",
+        "verifiedAt": "2026-09-07"
+      }
+    },
+    {
       "id": "anthropic",
       "displayName": "Anthropic",
       "class": "upstream",
@@ -647,6 +667,62 @@
     }
   ],
   "models": [
+    {
+      "id": "mimo-v2.5-free",
+      "provider": "opencode-zen",
+      "name": "MiMo V2.5 Free",
+      "contextInput": 200000,
+      "contextOutput": 32000,
+      "capabilities": [
+        "instruction",
+        "coding",
+        "tools",
+        "reasoning"
+      ],
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "supportsReasoning": true,
+      "description": "Anonymous free OpenCode Zen route; prompts and completions may be used to improve the model. Availability is temporary.",
+      "executionClass": "broker-cloud",
+      "clientRequirements": {
+        "anonymous": true,
+        "inputCostPerMillion": 0,
+        "outputCostPerMillion": 0,
+        "termsUrl": "https://opencode.ai/docs/zen#privacy"
+      }
+    },
+    {
+      "id": "big-pickle",
+      "provider": "opencode-zen",
+      "name": "Big Pickle",
+      "contextInput": 160000,
+      "contextOutput": 32000,
+      "capabilities": [
+        "instruction",
+        "coding",
+        "tools",
+        "reasoning"
+      ],
+      "inputModalities": [
+        "text"
+      ],
+      "outputModalities": [
+        "text"
+      ],
+      "supportsReasoning": true,
+      "description": "Anonymous free OpenCode Zen route; prompts and completions may be used to improve the model. Availability is temporary.",
+      "executionClass": "broker-cloud",
+      "clientRequirements": {
+        "anonymous": true,
+        "inputCostPerMillion": 0,
+        "outputCostPerMillion": 0,
+        "termsUrl": "https://opencode.ai/docs/zen#privacy"
+      }
+    },
     {
       "id": "claude-fable-5-1",
       "provider": "anthropic",

@@ -759,6 +759,8 @@ impl App {
     }
 
     pub(super) fn render_shared_composer(&mut self, frame: &mut Frame, editor_area: Rect) {
+        let settings = self.settings();
+        let connected = settings.provider_connected;
         let t = &self.theme;
         self.editor_area = Some(editor_area);
         // Apply theme to textarea each frame (in case theme changed)
@@ -898,6 +900,15 @@ impl App {
                         Style::default().fg(t.accent_bright()).bg(intent_bg),
                     ),
                 ])
+            } else if !connected {
+                Line::styled(
+                    if settings.model.trim().is_empty() {
+                        " Choose a connection "
+                    } else {
+                        " Not connected "
+                    },
+                    t.style_fg().add_modifier(Modifier::BOLD),
+                )
             } else {
                 let model = self.footer_data.model_id.as_str();
                 let provider = self.footer_data.model_provider.trim();
@@ -939,7 +950,7 @@ impl App {
             if shell_primed || command_primed {
                 editor_block = editor_block
                     .title_bottom(Line::styled(hint_text.clone(), t.style_dim()).right_aligned());
-            } else if self.footer_data.context_window > 0 {
+            } else if connected && self.footer_data.context_window > 0 {
                 let capacity = widgets::format_tokens(self.footer_data.context_window);
                 let percent = self.footer_data.context_percent.clamp(0.0, 100.0).round() as u8;
                 editor_block = editor_block.title_bottom(

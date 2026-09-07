@@ -581,6 +581,101 @@ fn session_reset_clears_instrument_panel_tool_activity() {
 }
 
 #[tokio::test]
+async fn disconnected_submission_preserves_draft_and_attachments_without_starting_turn() {
+    let mut app = test_app();
+    app.settings.lock().unwrap().provider_connected = false;
+    let (tx, mut rx) = test_tx_with_rx();
+    app.editor.set_text("inspect this ");
+    app.editor
+        .insert_attachment(PathBuf::from("/tmp/draft.png"));
+    app.editor.insert('!');
+    let draft = app.editor.render_text();
+
+    app.submit_editor_buffer(&tx).await;
+
+    assert_eq!(app.editor.render_text(), draft);
+    assert!(
+        rx.try_recv().is_err(),
+        "disconnected draft must not enqueue inference"
+    );
+    assert!(!app.agent_active);
+    assert!(app.history.is_empty());
+    assert_eq!(app.active_menu.as_ref().unwrap().projection.id, "auth");
+    app.active_menu = None;
+    let (text, attachments) = app.editor.take_submission();
+    assert_eq!(text, "inspect this !");
+    assert_eq!(attachments, vec![PathBuf::from("/tmp/draft.png")]);
+}
+
+#[tokio::test]
+async fn disconnected_draft_can_be_submitted_once_after_connection_becomes_ready() {
+    let mut app = test_app();
+    app.settings.lock().unwrap().provider_connected = false;
+    let (tx, mut rx) = test_tx_with_rx();
+    app.editor.set_text("retained prompt");
+    app.submit_editor_buffer(&tx).await;
+    assert!(rx.try_recv().is_err());
+    app.settings.lock().unwrap().provider_connected = true;
+    app.active_menu = None;
+    assert_eq!(app.editor.render_text(), "retained prompt");
+    app.submit_editor_buffer(&tx).await;
+    match rx.try_recv().expect("connected prompt submission") {
+        TuiCommand::SubmitPrompt(prompt) => assert_eq!(prompt.text, "retained prompt"),
+        other => panic!("expected prompt, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "draft must submit exactly once");
+    assert!(app.editor.is_empty());
+}
+
+#[tokio::test]
+async fn disconnected_submission_keeps_slash_and_shell_commands_available() {
+    let mut app = test_app();
+    app.settings.lock().unwrap().provider_connected = false;
+    let (tx, mut rx) = test_tx_with_rx();
+    app.editor.set_text("/connect");
+    app.submit_editor_buffer(&tx).await;
+    assert_eq!(app.active_menu.as_ref().unwrap().projection.id, "auth");
+    assert!(app.editor.is_empty());
+    app.active_menu = None;
+    app.editor.set_text("! pwd");
+    app.submit_editor_buffer(&tx).await;
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(TuiCommand::RunShellCommand { .. })
+    ));
+}
+
+#[test]
+fn disconnected_composer_has_no_model_capability_claims() {
+    for inline in [false, true] {
+        let mut app = test_app();
+        app.inline_active = inline;
+        app.settings.lock().unwrap().provider_connected = false;
+        app.settings.lock().unwrap().model.clear();
+        app.footer_data.provider_connected = false;
+        app.footer_data.model_id = "stale-model".into();
+        app.footer_data.thinking_level = "high".into();
+        app.footer_data.context_window = 1_000_000;
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| app.render_shared_composer(frame, Rect::new(0, 0, 100, 3)))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Choose a connection"), "{text}");
+        for stale in ["stale-model", "thinking", "%", "context"] {
+            assert!(!text.contains(stale), "{stale}: {text}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn submit_editor_buffer_sends_plain_prompt_after_attachment_token_removed() {
     let mut app = test_app();
     let (tx, mut rx) = test_tx_with_rx();
@@ -10270,6 +10365,85 @@ fn model_and_auth_provider_rows_share_login_metadata() {
 
     assert_eq!(auth_row.metadata[0], model_row.metadata[0]);
     assert_eq!(auth_row.description, model_row.description);
+}
+
+#[test]
+fn disconnected_route_after_serving_does_not_reuse_stale_footer_as_serving_connection() {
+    let mut app = test_app();
+    app.handle_agent_event(AgentEvent::RouteChanged {
+        state: "serving".into(),
+        selected: Some("anthropic:prior-model".into()),
+        serving: Some("anthropic:prior-model".into()),
+        warning: None,
+        message: "Connected".into(),
+    });
+    assert_eq!(app.footer_data.model_id, "anthropic:prior-model");
+    app.handle_agent_event(AgentEvent::RouteChanged {
+        state: "disconnected".into(),
+        selected: Some("anthropic:prior-model".into()),
+        serving: None,
+        warning: None,
+        message: "Credentials expired".into(),
+    });
+    // The route event is authoritative even before the next footer/settings sync.
+    assert!(app.provider_route_snapshot().serving_provider.is_none());
+    app.open_auth_menu();
+    let menu = &app.active_menu.as_ref().unwrap().projection;
+    assert!(
+        !menu
+            .tabs
+            .iter()
+            .flat_map(|tab| &tab.groups)
+            .flat_map(|group| &group.rows)
+            .flat_map(|row| &row.badges)
+            .any(|badge| badge.label == "serving")
+    );
+    assert!(
+        !menu
+            .summary
+            .as_deref()
+            .unwrap_or_default()
+            .contains("serving:")
+    );
+    app.open_model_menu();
+    assert!(
+        !app.active_menu
+            .as_ref()
+            .unwrap()
+            .projection
+            .summary
+            .as_deref()
+            .unwrap_or_default()
+            .contains("serving:")
+    );
+}
+
+#[test]
+fn disconnected_empty_selection_never_invents_anthropic_badges() {
+    let mut app = test_app();
+    app.settings.lock().unwrap().model.clear();
+    app.settings.lock().unwrap().provider_connected = false;
+    app.handle_agent_event(AgentEvent::RouteChanged {
+        state: "disconnected".into(),
+        selected: Some(String::new()),
+        serving: None,
+        warning: None,
+        message: "Choose a connection".into(),
+    });
+    let route = app.provider_route_snapshot();
+    assert!(route.selected_provider.is_none());
+    assert!(route.serving_provider.is_none());
+    app.open_auth_menu();
+    let menu = &app.active_menu.as_ref().unwrap().projection;
+    assert!(
+        !menu
+            .tabs
+            .iter()
+            .flat_map(|tab| &tab.groups)
+            .flat_map(|group| &group.rows)
+            .flat_map(|row| &row.badges)
+            .any(|badge| matches!(badge.label.as_str(), "selected" | "serving"))
+    );
 }
 
 #[test]

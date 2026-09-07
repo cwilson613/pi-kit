@@ -926,6 +926,13 @@ async fn resolve_provider_route(
 ) -> Option<ResolvedProviderRoute> {
     let selected_model = crate::providers::canonical_model_spec(model_spec);
     let selected_provider = crate::providers::infer_provider_id(&selected_model);
+    if selected_provider == crate::providers::zen::PROVIDER_ID {
+        crate::providers::zen::ensure_available(crate::providers::model_id_from_spec(
+            &selected_model,
+        ))
+        .await
+        .ok()?;
+    }
     let providers = if exact {
         vec![selected_provider.as_str()]
     } else {
@@ -969,6 +976,13 @@ struct ProviderLoopRouteSetup {
 
 #[async_trait::async_trait]
 impl crate::loop_driver::LoopRouteSetupContract for ProviderLoopRouteSetup {
+    async fn invalidate(&self, model: &str, detail: &str) -> bool {
+        match self.controller.as_ref() {
+            Some(controller) => controller.invalidate_serving_model(model, detail).await,
+            None => false,
+        }
+    }
+
     async fn serving_model(&self) -> Option<String> {
         let controller = self.controller.as_ref()?;
         controller
@@ -1475,6 +1489,10 @@ pub(crate) async fn dispatch_loop_route(
             },
             Err(error) => error,
         };
+        if error.is::<crate::bridge::ProviderRouteUnavailable>() {
+            close_failed_response_request(&request, attempt - 1)?;
+            return Err(error);
+        }
         let server_retry_delay_ms = error
             .downcast_ref::<crate::upstream_errors::UpstreamResponseFailure>()
             .and_then(|failure| failure.retry_after_ms);

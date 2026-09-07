@@ -7,6 +7,8 @@
 //! The upstream provider APIs are the only external dependency — no npm,
 //! no Node.js, no supply chain risk from package registries.
 
+pub(crate) mod zen;
+
 use async_trait::async_trait;
 use futures_util::FutureExt;
 use serde_json::{Value, json};
@@ -78,19 +80,19 @@ pub fn automation_safe_model() -> Option<String> {
     }
     // 3. Google Gemini (API key)
     if resolve_api_key_sync("google").is_some() {
-        return Some("google:gemini-2.5-flash".to_string());
+        return default_model_for_provider("google");
     }
     // 4. Google Antigravity (OAuth)
     if resolve_api_key_sync("google-antigravity").is_some() {
-        return Some("google-antigravity:gemini-2.5-flash".to_string());
+        return default_model_for_provider("google-antigravity");
     }
     // 5. OpenAI direct API key
     if resolve_api_key_sync("openai").is_some_and(|(_, oauth)| !oauth) {
-        return Some("openai:gpt-4o".to_string());
+        return default_model_for_provider("openai");
     }
     // 6. OpenRouter
     if resolve_api_key_sync("openrouter").is_some() {
-        return Some("openrouter:openai/gpt-4o".to_string());
+        return default_model_for_provider("openrouter");
     }
     // 7. Ollama — local inference, always unrestricted.
     // Probe once per process with a tight 50ms timeout (localhost should respond in <5ms).
@@ -117,7 +119,7 @@ pub fn automation_safe_model() -> Option<String> {
             .is_some()
     });
     if *ollama_up {
-        return Some("ollama:llama3".to_string());
+        return default_model_for_provider("ollama");
     }
     None
 }
@@ -2035,6 +2037,11 @@ impl LlmBridge for OpenAIClient {
 
         if !response.status().is_success() {
             let status = response.status();
+            if self.endpoint_id == zen::PROVIDER_ID
+                && let Some(error) = zen::definitive_failure(status, model)
+            {
+                return Err(error.into());
+            }
             let retry_after_ms = server_retry_delay_ms(response.headers());
             let err = response.text().await.unwrap_or_default();
             let user_msg = crate::model_registry::ModelRegistry::global()
@@ -2059,6 +2066,11 @@ impl LlmBridge for OpenAIClient {
                         .unwrap_or_else(|| err.chars().take(200).collect());
                     format!("{} {status}: {fallback}", self.endpoint_id)
                 });
+            let user_msg = if self.endpoint_id == zen::PROVIDER_ID {
+                format!("{} {user_msg}", zen::failure_hint(status))
+            } else {
+                user_msg
+            };
             let _ = tx
                 .send(upstream_failure_event(user_msg, retry_after_ms))
                 .await;
@@ -3657,6 +3669,7 @@ pub fn compat_base_url(provider_id: &str) -> Option<&'static str> {
         "cerebras" => Some("https://api.cerebras.ai"),
         "moonshot" => Some("https://api.moonshot.ai"),
         "opencode-go" => Some("https://opencode.ai/zen/go"),
+        "opencode-zen" => Some("https://opencode.ai/zen"),
         "perplexity" => Some("https://api.perplexity.ai"),
         "google" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         // Antigravity OAuth tokens require the Cloud Code Assist internal API
@@ -3872,6 +3885,16 @@ impl OpenAICompatClient {
     pub fn from_env(provider_id: &str) -> Option<Self> {
         let base_url = compat_base_url(provider_id)?;
 
+        // The gateway treats this documented public token as anonymous. Never
+        // resolve ambient credentials here: that could turn a free route paid.
+        if provider_id == zen::PROVIDER_ID {
+            return Some(Self::new(
+                "public".into(),
+                base_url.into(),
+                provider_id.into(),
+            ));
+        }
+
         // Local Ollama doesn't need an API key — just check reachability.
         if provider_id == "ollama" {
             return Self::from_env_ollama(base_url);
@@ -4050,6 +4073,16 @@ impl LlmBridge for OpenAICompatClient {
         options: &StreamOptions,
     ) -> anyhow::Result<mpsc::Receiver<LlmEvent>> {
         let mut opts = options.clone();
+        if self.provider_id == zen::PROVIDER_ID {
+            let id = zen::validate_model(options)?;
+            let available =
+                zen::refresh_from_url(&format!("{}/v1/models", self.inner.base_url)).await?;
+            if !available.iter().any(|model| model.id == id) {
+                return Err(zen::withdrawn(id).into());
+            }
+            // These models reason internally but publish no effort levels.
+            opts.reasoning = None;
+        }
 
         // Strip provider prefix from model name
         if let Some(ref mut m) = opts.model {
@@ -4764,6 +4797,24 @@ impl LlmBridge for AntigravityClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_provider_zen_has_anonymous_transport_without_paid_fallback() {
+        assert_eq!(
+            compat_base_url("opencode-zen"),
+            Some("https://opencode.ai/zen")
+        );
+        assert!(OpenAICompatClient::from_env("opencode-zen").is_some());
+        assert_eq!(
+            fallback_order_for_model("opencode-zen:big-pickle"),
+            vec!["opencode-zen"]
+        );
+        assert!(
+            crate::model_registry::ModelRegistry::global()
+                .model_info("opencode-zen:big-pickle")
+                .is_some()
+        );
+    }
 
     #[test]
     fn copilot_environment_token_metadata_uses_declared_oauth_exchange_kind() {

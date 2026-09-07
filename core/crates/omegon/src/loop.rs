@@ -4333,6 +4333,11 @@ mod tests {
     #[tokio::test]
     async fn path_always_allow_grants_directory_without_second_prompt() {
         let workspace = tempfile::tempdir().unwrap();
+        // Persistent grants follow the active profile. Seed an isolated project
+        // profile so this test never inherits or updates the operator's user profile.
+        crate::settings::Profile::default()
+            .save(workspace.path())
+            .unwrap();
         let outside = std::env::current_dir()
             .unwrap()
             .join("target")
@@ -4417,6 +4422,17 @@ mod tests {
                 .contains("outside content"),
             "dispatch result: {:?}",
             first_dispatch.results[0].content
+        );
+        let persisted = crate::settings::Profile::load_with_source(workspace.path());
+        assert!(matches!(
+            persisted.source,
+            crate::settings::ProfileSource::Project(_)
+        ));
+        assert!(
+            persisted
+                .profile
+                .effective_trusted_directories()
+                .contains(&outside.canonicalize().unwrap().display().to_string())
         );
         assert_eq!(first_dispatch.permission_decisions.len(), 1);
         assert_eq!(

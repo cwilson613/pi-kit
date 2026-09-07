@@ -18,6 +18,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Installation home recovery now provides inspection, dry-run, and resumable audited rebinding through `omegon-maintain home`. Recovery preserves existing contribution and session restrictions; supported macOS volume identity avoids repeated failures after device renumbering. Contribution loading failures appear in shared status and a compact TUI notice instead of silently becoming an empty inventory.
+
+- Expired OAuth credentials remain unavailable after rejected refreshes, including cached client and environment-token copies. Refresh attempts share bounded work and suppress repeated rejected grants until credentials change or connection setup is retried. Provider inventory does not refresh credentials; explicit API-key and fresh external credential precedence remain intact.
+
 - GPT-6 Astra is available in native OpenAI API and Codex model choices and becomes their frontier/default model; saved selections and lower-cost grades remain intact. Direct OpenAI Astra uses Responses for text and tools, with supported reasoning parameters. Extra-high and maximum thinking are independently selectable. API and Codex context ceilings remain route-specific. Claude Fable 5.1 remains the verified Anthropic frontier default.
 
 - Fresh interactive sessions start without an implicit provider or model. Disconnected submission preserves the draft and opens connection choices; model, thinking, and context telemetry appear only for a usable route. Explicit CLI models override saved profiles, and provider defaults use the shared registry. `/connect free` offers reviewed anonymous OpenCode Zen models with data-use terms and live availability checks; free routes never fall back to paid providers.

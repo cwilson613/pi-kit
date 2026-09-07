@@ -2259,6 +2259,7 @@ pub async fn status_view_response(
         &session_kind,
         &authorization,
     );
+    status.contribution_loading = runtime_state.bus.contribution_health().snapshot();
     let bootstrap_markdown = crate::bootstrap_projection::render_bootstrap(&status, false);
     let projection = crate::surfaces::diagnostics::HarnessStatusProjection::new(
         serde_json::to_value(status).unwrap_or(serde_json::Value::Null),

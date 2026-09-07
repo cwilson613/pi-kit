@@ -32,3 +32,17 @@ one test passed). The failed capture is preserved outside Git under
 `../omegon-installation-recovery-evidence-01/before-home-recovery-01`; auth/profile
 hashes stayed unchanged, the journal contained only `session.created`, and owned
 PTY cleanup completed. Final installed acceptance remains pending a corrected build.
+
+The corrected startup capture exposed the same merge defect for `/status` output,
+which arrives through the generic SystemNotification event. The status regression
+failed in `/tmp/omegon-recovery-status-red.log`. The final fix removes generic
+notification merging centrally and removes the temporary separate-append API.
+The before-home-recovery-02 capture preserves one visible startup notice, unchanged
+protected files, zero inference, and no OAuth refresh, but fails status visibility.
+
+Focused validation of the central correction passed all seven inline tests and
+all 53 conversation tests (`/tmp/omegon-recovery-status-green.log`), including
+/status event publication, direct local notices, duplicate suppression, mutable
+plan snapshot replacement, and bounded notification history. Final runtime
+acceptance will use the same frozen debug artifact before and after recovery,
+then verify the installed release.

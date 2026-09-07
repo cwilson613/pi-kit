@@ -6,15 +6,22 @@ use ratatui::widgets::Wrap;
 pub(super) const LIVE_ROWS: u16 = 8;
 
 impl App {
-    pub(super) fn publish_inline(
-        &mut self,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-        session: &TerminalSessionHandle,
-    ) -> io::Result<bool> {
-        use ratatui::{backend::Backend, widgets::Widget};
+    pub(super) fn reconcile_native_publication(&mut self) {
+        let mut invalid_prune = false;
+        if let Some(prune) = self.conversation.take_publication_prune() {
+            if self.native_publication.automatic.apply_prune(&prune) {
+                self.publication_boundary = prune.rebase_boundary(self.publication_boundary);
+            } else {
+                invalid_prune = true;
+            }
+        }
+        if !self.agent_active {
+            self.publication_boundary = self.conversation.segments().len();
+        }
         let generation = self.conversation.publication_generation();
         if generation != self.native_publication.automatic.generation() {
             let changed_at = self.conversation.take_publication_change();
+            let changed_at = if invalid_prune { 0 } else { changed_at };
             self.publication_boundary = self
                 .publication_boundary
                 .min(self.conversation.segments().len());
@@ -29,6 +36,16 @@ impl App {
                 );
             }
         }
+    }
+
+    pub(super) fn publish_inline(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        session: &TerminalSessionHandle,
+    ) -> io::Result<bool> {
+        use ratatui::{backend::Backend, widgets::Widget};
+        self.reconcile_native_publication();
+        let generation = self.conversation.publication_generation();
         session.with_presentation_io(TerminalPresentation::Inline, || terminal.autoresize())?;
         let size = terminal.size()?;
         if size.width == 0 || size.height == 0 {
@@ -227,6 +244,194 @@ mod tests {
                     native_publication::PreparationBudget::default(),
                 )
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn contribution_health_status_output_publishes_after_startup_notice() {
+        let mut app = App::new(crate::settings::shared("test"));
+        app.conversation
+            .push_system("3 contribution scopes could not load. /status for details.");
+        app.native_publication.automatic.attach(
+            app.conversation.publication_generation(),
+            app.conversation.segments().len(),
+        );
+        app.handle_agent_event(AgentEvent::SystemNotification {
+            message:
+                "Harness status\nskills (user) blocked [home_identity_mismatch] — /fixture/skills"
+                    .into(),
+        });
+        let source = app.conversation.segments();
+        let batch = app
+            .native_publication
+            .automatic
+            .prepare(
+                app.conversation.publication_generation(),
+                source,
+                source.len(),
+                UiPresentationLevel::Active,
+                120,
+                native_publication::PreparationBudget::default(),
+            )
+            .expect("status response must create a new publication");
+        assert!(
+            batch
+                .lines
+                .concat()
+                .contains("skills (user) blocked [home_identity_mismatch]")
+        );
+    }
+
+    #[test]
+    fn persistent_local_notice_publishes_without_repeating_prior_scrollback() {
+        let mut app = App::new(crate::settings::shared("test"));
+        app.conversation.push_system("Already published notice");
+        app.native_publication.automatic.attach(
+            app.conversation.publication_generation(),
+            app.conversation.segments().len(),
+        );
+        app.conversation
+            .push_system("Local command result remains visible");
+        let source = app.conversation.segments();
+        let batch = app
+            .native_publication
+            .automatic
+            .prepare(
+                app.conversation.publication_generation(),
+                source,
+                source.len(),
+                UiPresentationLevel::Active,
+                120,
+                native_publication::PreparationBudget::default(),
+            )
+            .unwrap();
+        let rendered = batch.lines.join("\n");
+        assert!(rendered.contains("Local command result remains visible"));
+        assert!(!rendered.contains("Already published notice"));
+    }
+
+    #[test]
+    fn persistent_notice_rollover_publishes_new_records_without_replay() {
+        let mut app = App::new(crate::settings::shared("test"));
+        for index in 0..64 {
+            app.conversation.push_system(&format!("old notice {index}"));
+        }
+        app.publication_boundary = app.conversation.segments().len();
+        app.native_publication.automatic.attach(
+            app.conversation.publication_generation(),
+            app.publication_boundary,
+        );
+        for index in 65..=66 {
+            app.conversation.push_system(&format!("new notice {index}"));
+            app.reconcile_native_publication();
+            let source = app.conversation.segments();
+            let batch = app
+                .native_publication
+                .automatic
+                .prepare(
+                    app.conversation.publication_generation(),
+                    source,
+                    source.len(),
+                    UiPresentationLevel::Active,
+                    120,
+                    native_publication::PreparationBudget::default(),
+                )
+                .unwrap();
+            let text = batch.lines.join("\n");
+            assert!(text.contains(&format!("new notice {index}")), "{text}");
+            assert!(!text.contains("old notice"), "{text}");
+            assert_eq!(source.len(), 64);
+            app.native_publication
+                .automatic
+                .settle(batch, native_publication::DeliveryResult::Committed);
+        }
+    }
+
+    #[test]
+    fn persistent_notice_burst_rebases_once_and_keeps_prune_scratch_bounded() {
+        let mut app = App::new(crate::settings::shared("test"));
+        for index in 0..64 {
+            app.conversation.push_system(&format!("old-{index}"));
+        }
+        app.publication_boundary = app.conversation.segments().len();
+        app.native_publication.automatic.attach(
+            app.conversation.publication_generation(),
+            app.publication_boundary,
+        );
+        let attachment = app
+            .native_publication
+            .automatic
+            .prepare(
+                app.conversation.publication_generation(),
+                app.conversation.segments(),
+                app.publication_boundary,
+                UiPresentationLevel::Active,
+                120,
+                native_publication::PreparationBudget::default(),
+            )
+            .unwrap();
+        app.native_publication
+            .automatic
+            .settle(attachment, native_publication::DeliveryResult::Committed);
+        for index in 65..=200 {
+            app.conversation.push_system(&format!("new-{index}"));
+        }
+        app.reconcile_native_publication();
+        let source = app.conversation.segments();
+        let batch = app
+            .native_publication
+            .automatic
+            .prepare(
+                app.conversation.publication_generation(),
+                source,
+                source.len(),
+                UiPresentationLevel::Active,
+                120,
+                native_publication::PreparationBudget::default(),
+            )
+            .unwrap();
+        let text = batch.lines.join("\n");
+        for index in 137..=200 {
+            assert_eq!(
+                text.lines()
+                    .filter(|line| line.trim() == format!("new-{index}"))
+                    .count(),
+                1,
+                "{text}"
+            );
+        }
+        assert!(!text.contains("old-") && !text.contains("new-136"));
+        assert!(app.conversation.take_publication_prune().is_none());
+    }
+
+    #[test]
+    fn persistent_notice_prunes_keep_active_and_new_turn_boundaries_correct() {
+        let mut app = App::new(crate::settings::shared("test"));
+        for index in 0..64 {
+            app.conversation.push_system(&format!("old-{index}"));
+        }
+        app.publication_boundary = 64;
+        app.native_publication
+            .automatic
+            .attach(app.conversation.publication_generation(), 64);
+        app.agent_active = true;
+        app.conversation.append_streaming("still live");
+        app.conversation.push_system("new-65");
+        app.reconcile_native_publication();
+        assert_eq!(
+            app.publication_boundary, 63,
+            "live assistant must remain beyond finalized cutoff"
+        );
+        app.conversation.push_system("new-66");
+        app.handle_agent_event(AgentEvent::AgentEnd);
+        let finalized = app.conversation.segments().len();
+        app.agent_active = true;
+        app.conversation.push_system("new-67");
+        app.reconcile_native_publication();
+        assert_eq!(
+            app.publication_boundary,
+            finalized - 1,
+            "only prunes after terminal boundary apply to next turn"
         );
     }
 

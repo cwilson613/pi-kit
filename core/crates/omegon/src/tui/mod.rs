@@ -7900,6 +7900,7 @@ pub async fn run_tui(
     app.dashboard.active_changes = config.initial.active_changes;
 
     // ── Splash screen with live capability inspection ─────────────
+    app.conversation.take_publication_prune();
     app.publication_boundary = app.conversation.segments().len();
     app.native_publication.automatic.attach(
         app.conversation.publication_generation(),
@@ -8070,9 +8071,7 @@ pub async fn run_tui(
         terminals.synchronize_primary(&terminal_session)?;
         terminals.select(presentation, app.mouse_capture_enabled, &terminal_session)?;
         app.inline_active = presentation == TerminalPresentation::Inline;
-        if !app.agent_active {
-            app.publication_boundary = app.conversation.segments().len();
-        }
+        app.reconcile_native_publication();
         if app.inline_active && app.publish_inline(terminals.active(), &terminal_session)? {
             scheduler.mark_dirty(TuiDrawReason::BackgroundEvent);
         }

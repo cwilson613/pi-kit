@@ -127,6 +127,31 @@ impl AutomaticPublication {
     pub(super) fn has_pending(&self, boundary: usize) -> bool {
         self.cursor.notice.is_some() || self.cursor.segment < boundary
     }
+    pub(super) fn apply_prune(&mut self, prune: &super::conversation::PublicationPrune) -> bool {
+        if self.cursor.generation != prune.from_generation {
+            return false;
+        }
+        for index in &prune.removed {
+            if *index < self.cursor.segment {
+                self.cursor.segment -= 1;
+            } else if *index == self.cursor.segment && self.cursor.notice.is_none() {
+                self.cursor.field = 0;
+                self.cursor.byte = 0;
+                self.cursor.detail = None;
+                self.cursor.summary = None;
+                self.cursor.scan = None;
+            }
+            if let Some(scan) = &mut self.cursor.scan
+                && *index < scan.index
+            {
+                scan.index -= 1;
+            }
+        }
+        // Also invalidate prepared batches when deletion was after the cursor.
+        self.cursor.generation = prune.to_generation;
+        true
+    }
+
     pub(super) fn reconcile(
         &mut self,
         generation: u64,
@@ -584,6 +609,105 @@ fn floor_char_boundary(text: &str, mut index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepare_view(
+        cursor: &AutomaticPublication,
+        view: &super::super::conversation::ConversationView,
+        budget: PreparationBudget,
+    ) -> InlineBatch {
+        cursor
+            .prepare(
+                view.publication_generation(),
+                view.segments(),
+                view.segments().len(),
+                crate::surfaces::layout::UiPresentationLevel::Active,
+                120,
+                budget,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn notification_prune_preserves_surviving_partial_record_and_rejects_stale_batch() {
+        let mut view = super::super::conversation::ConversationView::new();
+        for index in 0..64 {
+            view.push_user(&format!("old prompt {index}"));
+            view.push_system(&format!("old notice {index}"));
+        }
+        let assistant_index = view.segments().len();
+        let text = "SURVIVING-ASSISTANT-PARTIAL-CONTENT-ONCE";
+        view.append_streaming(text);
+        view.finalize_message();
+        let mut cursor = AutomaticPublication::default();
+        cursor.cursor.segment = assistant_index;
+        let first = prepare_view(&cursor, &view, inline_budget());
+        let mut rendered = first.lines.concat();
+        cursor.settle(first, DeliveryResult::Committed);
+        let old_byte = cursor.cursor.byte;
+        let stale = prepare_view(&cursor, &view, inline_budget());
+        view.push_system("new 65");
+        view.push_system("new 66");
+        let prune = view.take_publication_prune().unwrap();
+        assert!(cursor.apply_prune(&prune));
+        assert_eq!(cursor.cursor.byte, old_byte);
+        assert_eq!(cursor.cursor.segment, assistant_index - 2);
+        assert!(!cursor.settle(stale, DeliveryResult::Committed));
+        let remaining = prepare_view(&cursor, &view, PreparationBudget::default());
+        rendered.push_str(&remaining.lines.concat());
+        assert_eq!(rendered.matches(text).count(), 1, "{rendered}");
+        assert!(!rendered.contains("old notice"));
+        assert!(rendered.contains("new 65") && rendered.contains("new 66"));
+    }
+
+    #[test]
+    fn notification_prune_resets_evicted_partial_record_but_not_synthetic_notice() {
+        let mut view = super::super::conversation::ConversationView::new();
+        view.push_system(&"OLD-LONG-CONTENT-".repeat(10));
+        for index in 1..64 {
+            view.push_system(&format!("retained-{index}"));
+        }
+        let mut cursor = AutomaticPublication::default();
+        let first = prepare_view(&cursor, &view, inline_budget());
+        cursor.settle(first, DeliveryResult::Committed);
+        assert!(cursor.cursor.byte > 0);
+        view.push_system("new 65");
+        let prune = view.take_publication_prune().unwrap();
+        assert!(cursor.apply_prune(&prune));
+        assert_eq!(cursor.cursor.byte, 0);
+        let rendered = prepare_view(&cursor, &view, PreparationBudget::default())
+            .lines
+            .concat();
+        assert!(rendered.contains("retained-1"));
+        assert!(!rendered.contains("OLD-LONG"));
+
+        let mut synthetic = AutomaticPublication::default();
+        synthetic.cursor.notice = Some("synthetic partial attachment".into());
+        synthetic.cursor.byte = 7;
+        assert!(synthetic.apply_prune(&prune));
+        assert_eq!(synthetic.cursor.byte, 7);
+    }
+
+    #[test]
+    fn notification_prune_after_cursor_invalidates_prepared_batch() {
+        let mut view = super::super::conversation::ConversationView::new();
+        view.push_user("UNPUBLISHED-PROMPT");
+        for index in 0..64 {
+            view.push_system(&format!("notice {index}"));
+        }
+        let mut cursor = AutomaticPublication::default();
+        let batch = prepare_view(&cursor, &view, inline_budget());
+        view.push_system("new notice");
+        let prune = view.take_publication_prune().unwrap();
+        assert!(cursor.apply_prune(&prune));
+        assert_eq!(cursor.cursor.segment, 0);
+        assert!(!cursor.settle(batch, DeliveryResult::Committed));
+        assert!(
+            prepare_view(&cursor, &view, PreparationBudget::default())
+                .lines
+                .concat()
+                .contains("UNPUBLISHED-PROMPT")
+        );
+    }
 
     fn inline_budget() -> PreparationBudget {
         PreparationBudget {

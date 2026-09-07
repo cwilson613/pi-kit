@@ -10,6 +10,7 @@ impl App {
     /// This is deliberately idempotent because TurnEnd, AgentEnd, lifecycle,
     /// and queue snapshots can all report the same completion.
     fn terminalize_runtime_turn(&mut self) {
+        self.reconcile_native_publication();
         let was_active = self.agent_active || self.conversation.is_streaming();
         self.expire_running_activity_tools(Duration::from_millis(2200));
         self.agent_active = false;
@@ -998,7 +999,7 @@ impl App {
                             .unwrap_or_default(),
                         &status.contribution_loading,
                     ) {
-                        self.conversation.append_system(&notice);
+                        self.conversation.push_system(&notice);
                     }
                     // Compare with previous status and show toasts for changes
                     if let Some(prev) = self.previous_harness_status.take() {

@@ -50,3 +50,10 @@ items include their focused validation; final landing work is tracked separately
 - [x] Finish serialized crate/Clippy/script/schema checks, copy final evidence and inspect the complete diff.
 - [x] Reconcile this change and parent pending items, create logical commits, and rebuild/install the current launcher pair without launching GUI windows; record the catalog/home-identity blocker separately.
 - [x] Verify scenarios against the recorded evidence and mark completion truthfully. Leave archival and the separately planned telemetry retirement open.
+
+## 6. Persistent notification follow-up
+<!-- specs: tui-inline-publication -->
+
+- [x] Reproduce hidden startup, control-response and local notifications after an already-published system segment; make persistent notices append centrally while preserving explicit mutable plan snapshots.
+- [ ] Verify notification retention rollover, partially published retained records and stale-batch rejection; preserve bounded memory and no replay.
+- [ ] Repeat crate/lint checks and private PTY startup, status and clean-exit acceptance against the identified build.

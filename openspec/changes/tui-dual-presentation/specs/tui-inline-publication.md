@@ -48,6 +48,26 @@ limits. Default maxima are 64 KiB source text, 64 records, 1,000 rendered rows,
 65,536 cells, and a cooperative 5 ms preparation slice. No pre-budget full-history
 export, hash, clone, or unbounded single-record parse is permitted.
 
+#### Scenario: Persistent notice after published attachment
+Given native scrollback already contains the attachment and an earlier system notice
+When a control response or local command produces a persistent system notice
+Then the new notice is appended once as a separate publication
+And earlier printed text is not mutated or repeated
+
+#### Scenario: Retained notification history rolls over
+Given the retained system-notification limit has been reached and earlier notices were published
+When a new notice prunes older retained notifications
+Then the new notice remains eligible for publication once
+And repeated rollover does not stop future output or replay old output
+And retained notification history remains bounded
+
+#### Scenario: Pruning before a partially published retained record
+Given a retained record has a committed partial prefix and older notifications precede it
+When notification retention prunes those older records
+Then publication retains the committed field and byte position in the retained record
+And its remaining content is published without repeating the prefix
+And stale prepared batches cannot settle against the changed source
+
 #### Scenario: Backlog remains interruptible
 Given many completed groups accumulated while fullscreen is open
 When inline resumes with a queued decision and cancellation input

@@ -20,3 +20,10 @@ A single aggregate startup notice points to `/status`. Its comparison identity i
 the blocked scope set and errors, so duplicate status events do not repeat it.
 Recovery removes the failure record through a successful load result; no guard is
 relaxed and no recorded failure is cleared merely because a refresh was requested.
+
+Persistent TUI system notifications append as separate bounded records. Consecutive
+messages must not merge into a record already published to inline scrollback; this
+applies to startup diagnostics, remote control results such as `/status`, and local
+slash/error messages through the same conversation method. The existing mutable
+plan-progress snapshot remains a separate coalescing contract. Fullscreen retains
+one card per persistent record; the existing aggregate and per-record caps apply.

@@ -18,6 +18,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- `/connect` provider rows now open connection setup, with an explicit method choice when OAuth and API keys are both supported. Model selection stays an explicit action. Native provider admission preserves embedded authentication and transport ownership instead of treating catalog HTTP metadata as a custom manifest; route failures use actionable text rather than internal debug structures.
+
+- Fable 5.1 and Mythos 5.1 declare ordinary tool support in the model catalog so admitted tool requests reach their native provider transport.
+
 - Installation home recovery now provides inspection, dry-run, and resumable audited rebinding through `omegon-maintain home`. Recovery preserves existing contribution and session restrictions; supported macOS volume identity avoids repeated failures after device renumbering. Contribution loading failures appear in shared status and a compact TUI notice instead of silently becoming an empty inventory.
 
 - Home recovery reserves a bounded, temporary companion-local descriptor budget so large installations can retain every admission lock under the default macOS soft file limit. Insufficient hard limits cause a refusal before recovery records change.

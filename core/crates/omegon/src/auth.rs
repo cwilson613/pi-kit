@@ -410,12 +410,18 @@ pub(crate) fn operator_remote_connect_guidance() -> &'static str {
 }
 
 /// Credential declarations also contain local endpoint configuration. Only
-/// actual API-key providers can use the hidden credential-entry surface.
+/// declared API-key alternatives can use the hidden credential-entry surface.
 pub(crate) fn operator_api_key_name(provider: &ProviderCredential) -> Option<&'static str> {
-    if provider.auth_method != AuthMethod::ApiKey || matches!(provider.id, "dwarfstar" | "ollama") {
+    if !matches!(provider.auth_method, AuthMethod::ApiKey | AuthMethod::OAuth)
+        || matches!(provider.id, "dwarfstar" | "ollama")
+    {
         return None;
     }
-    provider.env_vars.first().copied()
+    provider
+        .env_vars
+        .iter()
+        .copied()
+        .find(|name| !provider.oauth_env_vars.contains(name))
 }
 
 pub(crate) fn operator_oauth_setup_supported(provider: &ProviderCredential) -> bool {
@@ -3964,6 +3970,25 @@ mod tests {
             ));
             assert!(provider_oauth_for_model("anthropic:github-copilot:gpt-5.5"));
         });
+    }
+
+    #[test]
+    fn connect_api_key_methods_exclude_oauth_tokens_and_endpoint_configuration() {
+        for (provider, expected) in [
+            ("anthropic", Some("ANTHROPIC_API_KEY")),
+            ("openai", Some("OPENAI_API_KEY")),
+            ("openai-codex", None),
+            ("github-copilot", None),
+            ("google-antigravity", None),
+            ("ollama", None),
+            ("dwarfstar", None),
+        ] {
+            assert_eq!(
+                operator_api_key_name(provider_by_id(provider).unwrap()),
+                expected,
+                "{provider}"
+            );
+        }
     }
 
     #[test]

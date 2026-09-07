@@ -576,12 +576,18 @@ impl RouteSnapshot {
         }
     }
 
-    pub fn operator_status(&self) -> String {
-        let mut lines = vec![format!("Provider route: {}", route_summary(self))];
-        lines.push(format!("Model intent: {}", self.intent.summary()));
+    /// Action failures need the route problem, not the full diagnostic inventory.
+    pub fn operator_problem(&self) -> String {
+        let mut lines = vec![route_summary(self)];
         if let Some(warning) = &self.warning {
             lines.push(format!("Route warning: {warning}"));
         }
+        lines.join("\n")
+    }
+
+    pub fn operator_status(&self) -> String {
+        let mut lines = vec![self.operator_problem()];
+        lines.push(format!("Model intent: {}", self.intent.summary()));
         if let Some(outcome) = &self.last_login_outcome {
             lines.push(format!(
                 "Last login outcome: {}",
@@ -1089,7 +1095,19 @@ fn route_summary(snapshot: &RouteSnapshot) -> String {
             format!("Provider login pending for {provider} ({elapsed}s)")
         }
         ProviderRoute::Disconnected { selected, reason } => {
-            format!("Provider route disconnected for {selected}: {reason:?}")
+            if selected.trim().is_empty() {
+                return "No provider connected. Use /connect to choose a connection.".into();
+            }
+            let problem = match reason {
+                DisconnectedReason::MissingCredentials { .. } => "Credentials missing",
+                DisconnectedReason::ExpiredCredentials { .. } => "Credentials expired",
+                DisconnectedReason::FallbackExhausted { .. } => "Configured fallbacks unavailable",
+                DisconnectedReason::ProviderUnavailable { .. } => "Provider unavailable",
+            };
+            let provider = crate::providers::infer_provider_id(selected);
+            format!(
+                "{problem} for {selected}. Use /connect {provider} or /model to choose a route."
+            )
         }
     }
 }
@@ -2083,6 +2101,99 @@ mod tests {
         let warning = failed.warning.unwrap();
         assert!(warning.contains("stale callback tabs"), "{warning}");
         assert!(warning.contains("Close old login tabs"), "{warning}");
+    }
+
+    #[test]
+    fn connection_diagnostic_unselected_is_actionable_without_internal_state() {
+        let snapshot = RouteSnapshot {
+            route: ProviderRoute::Disconnected {
+                selected: "".into(),
+                reason: DisconnectedReason::ProviderUnavailable {
+                    provider: "".into(),
+                    detail: "Choose a connection with /connect".into(),
+                },
+            },
+            intent: ModelIntent::default(),
+            last_login_outcome: None,
+            warning: None,
+        };
+        assert_eq!(
+            route_summary(&snapshot),
+            "No provider connected. Use /connect to choose a connection."
+        );
+        let status = snapshot.operator_status();
+        assert!(!status.contains("ProviderUnavailable"), "{status}");
+        assert!(!status.contains("provider: \"\""), "{status}");
+        assert!(!snapshot.operator_problem().contains("Model intent:"));
+        assert!(status.contains("Model intent:"), "{status}");
+    }
+
+    #[test]
+    fn connection_diagnostic_selected_retains_problem_and_scoped_action() {
+        for (reason, problem) in [
+            (
+                DisconnectedReason::MissingCredentials {
+                    provider: "openai".into(),
+                    probed_sources: vec![],
+                },
+                "Credentials missing",
+            ),
+            (
+                DisconnectedReason::ExpiredCredentials {
+                    provider: "openai".into(),
+                    refreshable: true,
+                },
+                "Credentials expired",
+            ),
+            (
+                DisconnectedReason::ProviderUnavailable {
+                    provider: "openai".into(),
+                    detail: "internal transport detail".into(),
+                },
+                "Provider unavailable",
+            ),
+            (
+                DisconnectedReason::FallbackExhausted {
+                    selected: "openai:gpt-6-astra".into(),
+                    attempts: vec![],
+                },
+                "Configured fallbacks unavailable",
+            ),
+        ] {
+            let snapshot = RouteSnapshot {
+                route: ProviderRoute::Disconnected {
+                    selected: "openai:gpt-6-astra".into(),
+                    reason,
+                },
+                intent: ModelIntent::default(),
+                last_login_outcome: None,
+                warning: None,
+            };
+            let status = snapshot.operator_status();
+            assert!(status.contains("openai:gpt-6-astra"), "{status}");
+            assert!(status.contains(problem), "{status}");
+            assert!(status.contains("/connect openai"), "{status}");
+            assert!(!status.contains('{'), "{status}");
+        }
+    }
+
+    #[test]
+    fn connection_diagnostic_serving_has_one_heading() {
+        let snapshot = RouteSnapshot {
+            route: ProviderRoute::Serving {
+                model: "openai:gpt-6-astra".into(),
+            },
+            intent: ModelIntent::default(),
+            last_login_outcome: None,
+            warning: None,
+        };
+        assert_eq!(
+            snapshot
+                .operator_status()
+                .matches("Provider route:")
+                .count(),
+            1
+        );
     }
 
     #[test]

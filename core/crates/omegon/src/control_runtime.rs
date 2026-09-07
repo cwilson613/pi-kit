@@ -1587,7 +1587,7 @@ pub async fn set_model_response(
         if !serving_matches {
             return SlashCommandResponse {
                 accepted: false,
-                output: Some(snapshot.operator_status()),
+                output: Some(snapshot.operator_problem()),
             };
         }
         if let Ok(mut s) = shared_settings.lock() {
@@ -3901,7 +3901,7 @@ async fn apply_profile_model_intent(
             .switch_model(model.to_string(), &crate::route::CredentialLedger, bridge)
             .await?;
         if snapshot.serving_model() != Some(model) {
-            anyhow::bail!(snapshot.operator_status());
+            anyhow::bail!(snapshot.operator_problem());
         }
         return Ok(Some(model.to_string()));
     }

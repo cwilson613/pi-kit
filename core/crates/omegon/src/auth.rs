@@ -2502,7 +2502,12 @@ pub struct ModelLimits {
 /// Query the Anthropic /v1/models endpoint for the selected model's limits.
 /// Returns None if the API is unreachable or the model isn't found.
 pub async fn probe_anthropic_model_limits(model_id: &str) -> Option<ModelLimits> {
-    let (api_key, is_oauth) = resolve_with_refresh("anthropic").await?;
+    if model_id.trim().is_empty() {
+        return None;
+    }
+    // Model inventory is observational: an expired grant is unavailable here.
+    // Explicit connection or selected-route execution owns refresh authority.
+    let (api_key, is_oauth) = crate::providers::resolve_api_key_sync("anthropic")?;
     let client = reqwest::Client::new();
     let base_url =
         std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into());
@@ -3177,6 +3182,10 @@ mod tests {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 *refresh::TEST_REFRESH_URL.lock().unwrap() = Some(format!("http://{}", listener.local_addr().unwrap()));
                 assert_eq!(probe_provider("anthropic").await.status, ProviderAuthStatus::Expired);
+                for model in ["", "claude-model-fixture"] {
+                    let limits = tokio::time::timeout(Duration::from_millis(40), probe_anthropic_model_limits(model)).await;
+                    assert!(limits.is_ok_and(|limits| limits.is_none()), "model inventory must not refresh expired OAuth, including an empty startup selection");
+                }
                 assert!(!refresh_terminally_rejected("anthropic", &expired));
                 assert!(tokio::time::timeout(Duration::from_millis(20), listener.accept()).await.is_err(), "inventory must not refresh");
                 let server = tokio::spawn(async move {

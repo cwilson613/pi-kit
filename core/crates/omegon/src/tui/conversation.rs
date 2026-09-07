@@ -496,6 +496,12 @@ impl ConversationView {
             self.conv_state.auto_scroll_to_bottom();
             return;
         }
+        self.append_system(text);
+    }
+
+    /// Append a separate bounded record when an earlier notification may already
+    /// have been published to native terminal scrollback.
+    pub fn append_system(&mut self, text: &str) {
         self.segments
             .push(Segment::system(bounded_system_notification(text)));
         self.enforce_system_notification_limit();

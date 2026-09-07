@@ -36,6 +36,12 @@ When the interactive surface presents startup state
 Then one contribution-health notice is shown
 And the status command lists each blocked root and cause
 
+#### Scenario: Native inline attachment already published
+Given the inline terminal has published its initial session attachment notification
+When a later status event reports blocked contribution scopes
+Then the warning is appended as a new native publication
+And repeated equivalent status events do not duplicate it
+
 ### Requirement: Recovery replaces stale failure state
 
 A successful reload MUST replace the prior outcome for that scope while retaining

@@ -21,3 +21,14 @@ or cleared by these diagnostics.
 Root landing gates and installed runtime evidence remain pending. The only warning
 in the focused test log is the existing macOS linker unwind-size warning (plus the
 dependency future-incompatibility notice).
+
+The first real-HOME capture at revision `6291e51e6631994343beb61e99c38f0e53ffe1f5`
+exposed an inline publication defect: the new warning merged into a session
+notification already marked as published. The native publication regression
+reproduced the missing warning (`/tmp/omegon-recovery-notice-red.log`). Contribution
+notices now append a separate bounded record; the same regression verifies visible
+publication once and duplicate suppression (`/tmp/omegon-recovery-notice-green.log`,
+one test passed). The failed capture is preserved outside Git under
+`../omegon-installation-recovery-evidence-01/before-home-recovery-01`; auth/profile
+hashes stayed unchanged, the journal contained only `session.created`, and owned
+PTY cleanup completed. Final installed acceptance remains pending a corrected build.

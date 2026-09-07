@@ -161,6 +161,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn contribution_health_notice_publishes_after_initial_attachment_exactly_once() {
+        use crate::contribution_health::{ContributionKind, ScopeHealth};
+        let mut app = App::new(crate::settings::shared("test"));
+        app.conversation
+            .push_system("Session attachment already published");
+        app.native_publication.automatic.attach(
+            app.conversation.publication_generation(),
+            app.conversation.segments().len(),
+        );
+        let status = crate::status::HarnessStatus {
+            contribution_loading: vec![ScopeHealth::blocked(
+                ContributionKind::Skills,
+                "user",
+                std::path::Path::new("/fixture/skills"),
+                &anyhow::anyhow!("blocked fixture"),
+            )],
+            ..Default::default()
+        };
+        let event = AgentEvent::HarnessStatusChanged {
+            status_json: serde_json::to_value(status).unwrap(),
+        };
+        app.handle_agent_event(event.clone());
+        let source = app.conversation.segments();
+        let batch = app
+            .native_publication
+            .automatic
+            .prepare(
+                app.conversation.publication_generation(),
+                source,
+                source.len(),
+                UiPresentationLevel::Active,
+                120,
+                native_publication::PreparationBudget::default(),
+            )
+            .expect(
+                "new contribution notice must not merge into already-published session attachment",
+            );
+        assert!(
+            batch
+                .lines
+                .concat()
+                .contains("1 contribution scope could not load")
+        );
+        assert!(
+            !batch
+                .lines
+                .concat()
+                .contains("Session attachment already published")
+        );
+        app.native_publication
+            .automatic
+            .settle(batch, native_publication::DeliveryResult::Committed);
+        app.handle_agent_event(event);
+        let source = app.conversation.segments();
+        assert!(
+            app.native_publication
+                .automatic
+                .prepare(
+                    app.conversation.publication_generation(),
+                    source,
+                    source.len(),
+                    UiPresentationLevel::Active,
+                    120,
+                    native_publication::PreparationBudget::default(),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
     fn session_reset_invalidates_publication_before_the_next_prompt_arrives() {
         let mut app = App::new(crate::settings::shared("test"));
         app.conversation.push_system("old session");

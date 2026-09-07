@@ -59,6 +59,23 @@ When startup or connection inventory projects provider status
 Then it makes no OAuth refresh requests
 And expired credentials are not marked authenticated
 
+#### Scenario: Unselected startup model limits
+Given an empty model selection and an expired Anthropic credential
+When interactive startup considers model-limit discovery
+Then it does not infer Anthropic as a selected route
+And it makes no OAuth refresh request
+
+#### Scenario: Model-limit and ACP status inventory
+Given expired provider credentials
+When ordinary model-limit or ACP provider-status inventory runs
+Then it treats those credentials as unavailable without refreshing them
+
+#### Scenario: Selected saved-route recovery
+Given a nonempty saved model selection whose provider needs credential recovery
+When startup resolves that requested route
+Then it may refresh the requested provider
+And unselected providers are not refreshed
+
 ### Requirement: Refresh diagnostics exclude sensitive payloads
 
 Refresh failures expose typed classifications and bounded status information without credentials or raw provider bodies.

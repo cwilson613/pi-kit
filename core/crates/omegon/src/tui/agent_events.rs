@@ -998,7 +998,7 @@ impl App {
                             .unwrap_or_default(),
                         &status.contribution_loading,
                     ) {
-                        self.conversation.push_system(&notice);
+                        self.conversation.append_system(&notice);
                     }
                     // Compare with previous status and show toasts for changes
                     if let Some(prev) = self.previous_harness_status.take() {

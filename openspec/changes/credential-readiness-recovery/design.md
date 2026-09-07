@@ -10,4 +10,6 @@ Sync resolution and read-only status discovery apply the same usability rules wi
 
 Tests use local HTTP fixtures and temporary auth stores. They verify wire request counts, typed classifications, token precedence, retry suppression, recovery, and absence of inference after rejected OAuth. No provider login or real credential reset is required.
 
+Disconnected startup must not infer a provider from an empty model ID. Model-limit inventory uses synchronous credential inspection, and startup runs it only for a connected nonempty selection. ACP provider-status inventory uses the same read-only resolver. This does not remove startup credential adoption for a genuinely selected saved route: that path may refresh only its requested provider.
+
 Refresh write-back compares the captured stored generation, including absence, while holding the existing auth-file lock. Logout invalidates in-flight refresh coordination. A changed external source observed after HTTP completion supersedes the older refresh result; a usable external credential also precedes cached success from an expired stored grant. This preserves explicit credential replacement and external-tool recovery during concurrent requests.

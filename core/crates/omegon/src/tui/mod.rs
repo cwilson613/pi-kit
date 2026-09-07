@@ -9852,15 +9852,16 @@ mod slash_command_parsing_tests {
             .iter()
             .find(|command| command.name == "think")
             .expect("/think must be in COMMANDS");
-        for expected in ["off", "minimal", "low", "medium", "high"] {
+        for level in crate::settings::ThinkingLevel::all() {
+            let expected = level.as_str();
             assert!(
                 think.subcommands.contains(&expected),
                 "missing /think {expected}"
             );
         }
-        assert!(
-            !think.subcommands.contains(&"max"),
-            "/think max should not be advertised unless ThinkingLevel supports it"
+        assert_eq!(
+            think.subcommands.len(),
+            crate::settings::ThinkingLevel::all().len()
         );
     }
 }

@@ -9,7 +9,7 @@
 //! ## Three-axis routing model
 //!
 //! - **Model capability grade**: F / D / C / B / A / S; local is provider selection
-//! - **Thinking level**: off / minimal / low / medium / high
+//! - **Thinking level**: off / minimal / low / medium / high / xhigh / max
 //! - **Context class**: Compact (128k) / Standard (272k) / Extended (400k) / Massive (1M+)
 
 use serde::{Deserialize, Serialize};
@@ -369,7 +369,7 @@ pub struct Settings {
     #[serde(default, skip)]
     pub posture_enabled_tools: Vec<String>,
 
-    /// Thinking level: off, minimal, low, medium, high.
+    /// Thinking level: off, minimal, low, medium, high, xhigh, max.
     pub thinking: ThinkingLevel,
 
     /// Maximum turns per agent invocation. 0 = no limit.
@@ -955,6 +955,8 @@ pub enum ThinkingLevel {
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
 impl ThinkingLevel {
@@ -965,6 +967,8 @@ impl ThinkingLevel {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
@@ -976,6 +980,8 @@ impl ThinkingLevel {
             Self::Low => "Adept",
             Self::Medium => "Magos",
             Self::High => "Archmagos",
+            Self::XHigh => "Extra high",
+            Self::Max => "Maximum",
         }
     }
 
@@ -985,7 +991,9 @@ impl ThinkingLevel {
             "minimal" | "functionary" => Some(Self::Minimal),
             "low" | "min" | "adept" => Some(Self::Low),
             "medium" | "med" | "default" | "magos" => Some(Self::Medium),
-            "high" | "max" | "archmagos" => Some(Self::High),
+            "high" | "archmagos" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
             _ => None,
         }
     }
@@ -1004,6 +1012,8 @@ impl ThinkingLevel {
             Self::Low => Some(5_000),
             Self::Medium => Some(10_000),
             Self::High => Some(50_000),
+            Self::XHigh => Some(75_000),
+            Self::Max => Some(100_000),
         }
     }
 
@@ -1013,7 +1023,7 @@ impl ThinkingLevel {
             Self::Minimal => "◔",
             Self::Low => "◔",
             Self::Medium => "◑",
-            Self::High => "◉",
+            Self::High | Self::XHigh | Self::Max => "◉",
         }
     }
 
@@ -1024,6 +1034,8 @@ impl ThinkingLevel {
             Self::Low,
             Self::Medium,
             Self::High,
+            Self::XHigh,
+            Self::Max,
         ]
     }
 }
@@ -2440,7 +2452,7 @@ pub struct PostureDef {
     /// Base built-in posture to inherit from (explorator/fabricator/architect/devastator).
     #[serde(default = "default_base")]
     pub base: String,
-    /// Thinking level override (off/minimal/low/medium/high).
+    /// Thinking level override (off/minimal/low/medium/high/xhigh/max).
     pub thinking: Option<String>,
     /// Context class override (compact/standard/extended/massive). Legacy aliases compact/standard/extended/massive are accepted.
     pub context_class: Option<String>,
@@ -3186,6 +3198,24 @@ mod tests {
         for level in ThinkingLevel::all() {
             let s = level.as_str();
             assert_eq!(ThinkingLevel::parse(s), Some(*level));
+        }
+    }
+
+    #[test]
+    fn astra_thinking_levels_round_trip_without_downgrade() {
+        for effort in ["high", "xhigh", "max"] {
+            let level = ThinkingLevel::parse(effort).expect("frontier effort must parse");
+            assert_eq!(level.as_str(), effort);
+            assert!(ThinkingLevel::all().contains(&level));
+            assert!(matches!(
+                crate::runtime_commands::canonical_slash_command("think", effort),
+                Some(crate::runtime_commands::CanonicalSlashCommand::SetThinking(parsed)) if parsed == level
+            ));
+            assert_eq!(serde_json::to_value(level).unwrap(), effort);
+            assert_eq!(
+                serde_json::from_value::<ThinkingLevel>(serde_json::json!(effort)).unwrap(),
+                level
+            );
         }
     }
 

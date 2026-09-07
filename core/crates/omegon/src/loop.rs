@@ -1648,10 +1648,13 @@ mod legacy_route_policy_tests {
     ) -> u64 {
         let is_openai_reasoning = provider == "openai-codex"
             || ((provider == "openai" || provider == "openai-compatible")
-                && (model.contains("gpt-5") || model.contains("o3") || model.contains("o4")));
+                && (model.contains("gpt-5")
+                    || crate::providers::model_id_from_spec(model) == "gpt-6-astra"
+                    || model.contains("o3")
+                    || model.contains("o4")));
         if is_openai_reasoning {
             return match reasoning {
-                Some("high") => 2_400,
+                Some("high" | "xhigh" | "max") => 2_400,
                 Some("medium") => 1_800,
                 Some("low" | "minimal") => 1_200,
                 _ => 1_200,
@@ -4948,6 +4951,22 @@ mod tests {
         assert_eq!(
             stall_exhaustion_secs("anthropic", "claude-sonnet-4-5", Some("high")),
             600
+        );
+    }
+
+    #[test]
+    fn astra_reasoning_stall_budget_preserves_deep_reasoning_window() {
+        for provider in ["openai", "openai-codex"] {
+            for effort in ["high", "xhigh", "max"] {
+                assert_eq!(
+                    stall_exhaustion_secs(provider, "gpt-6-astra", Some(effort)),
+                    2_400
+                );
+            }
+        }
+        assert_eq!(
+            stall_exhaustion_secs("openai", "gpt-6-astra", Some("medium")),
+            1_800
         );
     }
 

@@ -1852,13 +1852,7 @@ pub async fn thinking_view_response(
         .ok()
         .map(|settings| settings.thinking);
     let mut rows = Vec::new();
-    for level in [
-        crate::settings::ThinkingLevel::Off,
-        crate::settings::ThinkingLevel::Minimal,
-        crate::settings::ThinkingLevel::Low,
-        crate::settings::ThinkingLevel::Medium,
-        crate::settings::ThinkingLevel::High,
-    ] {
+    for &level in crate::settings::ThinkingLevel::all() {
         let mut row = PaletteRowProjection::action(
             format!("think.{}", level.as_str()),
             format!("/think {}", level.as_str()),
@@ -1907,6 +1901,8 @@ fn thinking_level_description(level: crate::settings::ThinkingLevel) -> &'static
         crate::settings::ThinkingLevel::Low => "use light reasoning for simple work",
         crate::settings::ThinkingLevel::Medium => "use the default balanced reasoning level",
         crate::settings::ThinkingLevel::High => "use deeper reasoning for complex work",
+        crate::settings::ThinkingLevel::XHigh => "use extra reasoning for difficult work",
+        crate::settings::ThinkingLevel::Max => "use maximum reasoning depth",
     }
 }
 
@@ -6642,6 +6638,8 @@ mod tests {
         assert!(output.contains(
             "- `/think high` — ◉ high · current · use deeper reasoning for complex work"
         ));
+        assert!(output.contains("`/think xhigh`"));
+        assert!(output.contains("`/think max`"));
         assert!(output.contains("Use `/think <level>` to apply a level directly."));
     }
 

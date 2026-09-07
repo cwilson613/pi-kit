@@ -458,13 +458,7 @@ impl App {
 
         // ── CIC Instrument Panel telemetry update ────
         {
-            let thinking = match self.settings().thinking {
-                crate::settings::ThinkingLevel::Off => "off",
-                crate::settings::ThinkingLevel::Minimal => "minimal",
-                crate::settings::ThinkingLevel::Low => "low",
-                crate::settings::ThinkingLevel::Medium => "medium",
-                crate::settings::ThinkingLevel::High => "high",
-            };
+            let thinking = self.settings().thinking.as_str();
 
             // Consume memory ops accumulated since last telemetry update.
             // These accumulate from ToolEnd events between draws.

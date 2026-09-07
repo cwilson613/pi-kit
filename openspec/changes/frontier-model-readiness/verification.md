@@ -35,4 +35,12 @@ Fifteen Pkl fixtures passed: xhigh/max accepted and preserved, ultra rejected, a
 - Changed-crate Clippy, formatting, registry validation, and the live Anthropic model drift check passed.
 - The earlier preview's generated Sonnet selection was backed up and removed using an exact pre-recorded file hash. Other project preferences remain unchanged; no credentials were cleared.
 
-Installation and capture results follow after completion.
+## Installed artifact and captures
+
+The release build is `omegon 0.29.0-dev (e6ca85d 2026-09-06)`, built from clean revision `e6ca85d2a72e4a6fe12c52726460b91ea11c93b2`. The artifact is `target/release/omegon`, SHA-256 `d5ca48a39a7dca4ec2e0ddcc896a6abf1e1a22431e23d1c247d2c743eaa67689`. Both installed launchers resolve to it; the default channel also resolves to it outside the checkout.
+
+The private PTY capture in `installed-picker-01` passed against that artifact. The normal connected shortlist visibly includes Anthropic: Claude Fable 5.1, OpenAI: GPT-6 Astra, and OpenAI Codex: GPT-6 Astra. The reasoning selector includes xhigh and max. Synthetic credentials were confined to a temporary home. No provider requests or conversation turns occurred. The owned terminal process tree was cleaned up; no GUI windows were created. Artifact, process, capture hashes, dimensions and actions are recorded in its manifest.
+
+`just link` built and installed the binary/companion, launchers, content pack and skills, then stopped at catalog installation: existing maintenance state records home device `16777231`, whereas the current device is `16777233` for the same path and inode. Guard state was preserved. The remaining `just install-codescan-extension` and `just install-default-extensions` steps passed separately. This is a partial link result, not a passing complete link gate. Paid upstream inference and account eligibility were not tested.
+
+The real-home startup check in `operator-home-startup-01` reached Choose a connection and returned to the shell through /quit. It used a temporary project, preserved the absent global profile, and cleaned up the owned process tree. The home identity mismatch is not a core TUI startup blocker, but user skill/plugin scopes and extension discovery fail closed; this install is therefore limited for testing those contributions. Existing OAuth refresh also returned invalid_grant. Neither condition was bypassed or misrepresented as a successful provider connection. The current model routes can be tested after a successful /connect; restoring guarded contributions requires a separate maintenance-state recovery change.

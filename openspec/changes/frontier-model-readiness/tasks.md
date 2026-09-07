@@ -13,4 +13,4 @@
 ## 3. Test drive
 <!-- specs: frontier-models -->
 - [x] Run focused tests, crate gate, Clippy and registry validation; review the integrated change.
-- [ ] Update Unreleased and verification; build/install and verify launcher identity without opening GUI terminals.
+- [x] Update Unreleased and verification; install the model-capable binary and verify launcher identity and captured model controls without opening GUI terminals; record any asset-installation limitation.

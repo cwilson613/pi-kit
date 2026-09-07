@@ -1177,6 +1177,9 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
     }
 
     let mut expired = None;
+    let mut unusable = None;
+    let mut cached = None;
+    let mut expired_accesses = Vec::new();
     crate::auth::trace_auth_store_probe(auth_key, "route_credential_ledger");
 
     if let Some(path) = crate::auth::auth_json_path()
@@ -1187,11 +1190,29 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
                 if let Some(entry) = auth.get(auth_key) {
                     match serde_json::from_value::<crate::auth::OAuthCredentials>(entry.clone()) {
                         Ok(creds) => {
-                            if creds.cred_type == "oauth" && creds.is_expired() {
+                            if creds.access.trim().is_empty() {
+                                unusable = Some(CredentialState::Unreadable {
+                                    source: CredentialSource::AuthJson,
+                                    detail: "credential access token is empty".into(),
+                                    entry_present: true,
+                                });
+                            } else if creds.cred_type == "oauth" && creds.is_expired() {
+                                if crate::auth::cached_refreshed_credentials(auth_key, &creds)
+                                    .is_some()
+                                {
+                                    cached = Some(CredentialState::Valid {
+                                        source: CredentialSource::AuthJson,
+                                        oauth: true,
+                                    });
+                                }
                                 expired = Some(CredentialState::Expired {
                                     source: CredentialSource::AuthJson,
-                                    refreshable: !creds.refresh.is_empty(),
+                                    refreshable: !creds.refresh.is_empty()
+                                        && !crate::auth::refresh_terminally_rejected(
+                                            auth_key, &creds,
+                                        ),
                                 });
+                                expired_accesses.push(creds.access);
                             } else {
                                 return CredentialState::Valid {
                                     source: CredentialSource::AuthJson,
@@ -1224,11 +1245,25 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
 
     probed_sources.push("external".to_string());
     if let Some(creds) = crate::auth::read_external_credentials(auth_key) {
-        if creds.cred_type == "oauth" && creds.is_expired() {
+        if creds.access.trim().is_empty() {
+            unusable.get_or_insert(CredentialState::Unreadable {
+                source: CredentialSource::External,
+                detail: "credential access token is empty".into(),
+                entry_present: true,
+            });
+        } else if creds.cred_type == "oauth" && creds.is_expired() {
+            if crate::auth::cached_refreshed_credentials(auth_key, &creds).is_some() {
+                cached.get_or_insert(CredentialState::Valid {
+                    source: CredentialSource::External,
+                    oauth: true,
+                });
+            }
             expired.get_or_insert(CredentialState::Expired {
                 source: CredentialSource::External,
-                refreshable: !creds.refresh.is_empty(),
+                refreshable: !creds.refresh.is_empty()
+                    && !crate::auth::refresh_terminally_rejected(auth_key, &creds),
             });
+            expired_accesses.push(creds.access);
         } else {
             return CredentialState::Valid {
                 source: CredentialSource::External,
@@ -1237,20 +1272,40 @@ fn probe_provider_credentials(provider: &str) -> CredentialState {
         }
     }
 
+    // A freshly rotated external credential takes precedence over cached refresh
+    // success from an older stored generation.
+    if let Some(cached) = cached {
+        return cached;
+    }
+
     for key in crate::auth::provider_env_vars(provider)
         .iter()
         .copied()
         .filter(|key| crate::auth::provider_env_var_is_oauth(provider, key))
     {
-        if std::env::var(key).ok().is_some_and(|v| !v.is_empty()) {
-            return CredentialState::Valid {
+        if let Ok(value) = std::env::var(key)
+            && !value.is_empty()
+        {
+            let expired_refs = expired_accesses
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if crate::auth::oauth_env_token_usable(&value, &expired_refs) {
+                return CredentialState::Valid {
+                    source: CredentialSource::Environment,
+                    oauth: true,
+                };
+            }
+            expired.get_or_insert(CredentialState::Expired {
                 source: CredentialSource::Environment,
-                oauth: true,
-            };
+                refreshable: false,
+            });
         }
     }
 
-    expired.unwrap_or(CredentialState::Missing { probed_sources })
+    expired
+        .or(unusable)
+        .unwrap_or(CredentialState::Missing { probed_sources })
 }
 
 impl Default for RouteController {
@@ -1444,6 +1499,80 @@ mod tests {
         assert!(matches!(route, ProviderRoute::Disconnected {
             selected, reason: DisconnectedReason::ProviderUnavailable { provider, .. }
         } if selected.as_str().is_empty() && provider.is_empty()));
+    }
+
+    #[test]
+    fn route_credential_probe_rejects_expired_oauth_environment_copy() {
+        const CHILD: &str = "OMEGON_TEST_EXPIRED_ROUTE_ENV";
+        if std::env::var_os(CHILD).is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let auth = home.path().join("auth.json");
+            fs::write(&auth, serde_json::json!({
+                "openai-codex": {"type": "oauth", "access": "expired-copy", "refresh": "fixture-refresh", "expires": 1}
+            }).to_string()).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "route::tests::route_credential_probe_rejects_expired_oauth_environment_copy",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("HOME", home.path())
+                .env("OMEGON_AUTH_JSON_PATH", auth)
+                .env("CHATGPT_OAUTH_TOKEN", "expired-copy")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert!(matches!(
+            probe_provider_credentials("openai-codex"),
+            CredentialState::Expired { .. }
+        ));
+    }
+
+    #[test]
+    fn route_credential_probe_rejects_blank_stored_access() {
+        const CHILD: &str = "OMEGON_TEST_BLANK_ROUTE_ACCESS";
+        if std::env::var_os(CHILD).is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let auth = home.path().join("auth.json");
+            for kind in ["oauth", "api_key"] {
+                fs::write(&auth, serde_json::json!({
+                    "openai-codex": {"type": kind, "access": "  ", "refresh": "", "expires": u64::MAX}
+                }).to_string()).unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "route::tests::route_credential_probe_rejects_blank_stored_access",
+                        "--exact",
+                        "--nocapture",
+                    ])
+                    .env_clear()
+                    .env("HOME", home.path())
+                    .env("OMEGON_AUTH_JSON_PATH", &auth)
+                    .env(CHILD, "1")
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{kind}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            return;
+        }
+        assert!(crate::providers::resolve_api_key_sync("openai-codex").is_none());
+        assert!(!matches!(
+            probe_provider_credentials("openai-codex"),
+            CredentialState::Valid { .. }
+        ));
     }
 
     #[test]

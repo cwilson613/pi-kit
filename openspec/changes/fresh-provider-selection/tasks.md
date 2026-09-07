@@ -20,8 +20,8 @@
 
 ## 4. Acceptance and handoff
 <!-- specs: provider-onboarding -->
-- [ ] Capture unconfigured inline/fullscreen startup and draft-preserving setup using private PTYs.
+- [x] Capture unconfigured inline/fullscreen startup and draft-preserving setup using private PTYs.
 - [x] Review the integrated changes and run crate, Clippy, and applicable script gates.
-- [ ] Update Unreleased, record scenario evidence, validate OpenSpec, and commit focused changes.
+- [x] Update Unreleased, record scenario evidence, validate OpenSpec, and commit focused changes.
 
 - [x] Isolate the existing user-profile capture test after detecting a write to the operator home; verify profile bytes or absence are unchanged.

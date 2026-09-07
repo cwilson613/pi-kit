@@ -114,6 +114,27 @@ def test_unconfigured_session_gate_rejects_admitted_prompts_and_model_requests()
             else:
                 raise AssertionError(f"unconfigured session accepted {event}")
 
+def test_reply_readiness_rejects_active_placeholder_and_publication_overlap():
+    reply = "TUI_FIXTURE_REPLY_2"
+    idle = "Ask anything  / commands  ⏎ send"
+    assert runner.reply_ready(idle, reply, reply, "inline", "active", runtime_idle=True)
+    assert not runner.reply_ready(idle, reply, reply, "inline", "active", runtime_idle=False)
+    assert not runner.reply_ready("Working · Ctrl+C cancel\n" + idle, reply, reply, "inline", "active", runtime_idle=True)
+    assert not runner.reply_ready("Publishing completed output\n" + idle, reply, reply, "inline", "active", runtime_idle=True)
+    assert not runner.reply_ready(idle, reply + "\n" + reply, reply, "inline", "active", runtime_idle=True)
+
+
+def test_runtime_idle_requires_matching_terminal_fact_for_each_started_turn():
+    started = {"event_type": "turn.started", "payload": {"turn_id": "first"}}
+    closed = {"event_type": "turn.closed", "payload": {"turn_id": "first"}}
+    second = {"event_type": "turn.started", "payload": {"turn_id": "second"}}
+    assert not runner.authority_runtime_idle([])
+    assert not runner.authority_runtime_idle([started])
+    assert runner.authority_runtime_idle([started, closed])
+    assert not runner.authority_runtime_idle([started, closed, second])
+    assert runner.authority_runtime_idle([started, closed, second, {"event_type": "turn.closed", "payload": {"turn_id": "second"}}])
+
+
 if __name__ == "__main__":
     command = runner.tui_command(Path("/binary with spaces"), Path("/workspace"), Path("/log"), "inline", "full")
     assert "--tui" in command and "--ui" in command, "fixture must select both axes explicitly"
@@ -133,3 +154,6 @@ if __name__ == "__main__":
     test_unconfigured_startup_gate_rejects_phantom_route_metadata()
     test_unconfigured_cancel_gate_requires_one_unsent_draft()
     test_unconfigured_session_gate_rejects_admitted_prompts_and_model_requests()
+
+    test_reply_readiness_rejects_active_placeholder_and_publication_overlap()
+    test_runtime_idle_requires_matching_terminal_fact_for_each_started_turn()

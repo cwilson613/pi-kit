@@ -33,9 +33,24 @@ def tui_command(binary, workspace, log, presentation="fullscreen", detail="activ
 
 
 def ready_marker(presentation, detail):
-    # Full detail exposes readiness through its composer. The subsequent distinct
-    # provider request proves submission; the compact idle label is not mounted.
+    # Composer visibility alone does not prove idle: reply_ready combines this
+    # marker with authority closure, live-status absence, and publication count.
     return "Ask anything" if presentation == "inline" or detail == "full" else "ready · idle"
+
+
+def authority_runtime_idle(records):
+    started = {record["payload"]["turn_id"] for record in records if record["event_type"] == "turn.started"}
+    closed = {record["payload"]["turn_id"] for record in records if record["event_type"] == "turn.closed"}
+    return bool(started) and started <= closed
+
+
+def reply_ready(current, transcript, marker, presentation, detail, *, runtime_idle):
+    # The empty composer placeholder is visible during streaming too. Require
+    # durable terminalization and its rendered idle state, including publication.
+    return (runtime_idle and ready_marker(presentation, detail) in current
+            and "Working ·" not in current
+            and "Publishing completed output" not in current
+            and transcript.count(marker) == 1)
 
 
 @contextmanager
@@ -272,6 +287,19 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
         if fresh_install and not unconfigured:
             (workspace / ".omegon/profile.json").unlink()
         log = output / "omegon.log"
+
+        def turn_settled(number):
+            records = []
+            for journal in root.rglob("*.authority.jsonl"):
+                contents = journal.read_text()
+                # A writer may still be finishing the last record. Never infer
+                # idle from a partial journal observation.
+                if contents and not contents.endswith("\n"):
+                    return False
+                records.extend(json.loads(line) for line in contents.splitlines() if line)
+            return reply_ready(screen(), history(), f"TUI_FIXTURE_REPLY_{number}", presentation, detail,
+                               runtime_idle=authority_runtime_idle(records))
+
         executable = binary
         if entry:
             executable = root / entry
@@ -435,10 +463,10 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
                     wait_for(lambda: "UNSENT_DRAFT_SURVIVES" in screen(), "draft survives active browsing")
                     capture("stress-return-draft")
                     action("send-keys", "-t", "run:0.0", "C-u")
-                wait_for(lambda: f"TUI_FIXTURE_REPLY_{number}" in history(), f"visible reply {number}")
+                wait_for(lambda: turn_settled(number), f"reply {number} published once and runtime idle")
                 capture(f"0{number + 1}-turn-{number}")
             action("resize-window", "-t", "run:0", "-x", "90", "-y", "30")
-            wait_for(lambda: "TUI_FIXTURE_REPLY_2" in history() and ready_marker(presentation, detail) in screen(), "reply survives resize and runtime becomes idle")
+            wait_for(lambda: turn_settled(2), "reply survives resize exactly once and runtime becomes idle")
             capture("04-resize")
             if presentation == "inline":
                 prior = history()
@@ -482,7 +510,7 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             wait_for(lambda: "Project browser" in screen() and "No active work" in screen() and "Permission required" not in screen(), "return to project work tab after denial")
             capture("07-return-project-work")
             action("send-keys", "-t", "run:0.0", "Escape")
-            wait_for(lambda: "TUI_FIXTURE_REPLY_4" in history() and ready_marker(presentation, detail) in screen(), "denied tool turn completes")
+            wait_for(lambda: turn_settled(4), "denied tool turn completes")
             capture("08-denied-turn-complete")
             assert not Path(provider.tool_path).exists(), "denied write changed the filesystem"
             assert provider.requests == 4, f"unexpected inference requests: {provider.requests}"
@@ -505,7 +533,7 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
                 capture("stress-new-boundary")
                 action("send-keys", "-t", "run:0.0", "-l", "fixture after cancellation and reset")
                 action("send-keys", "-t", "run:0.0", "Enter")
-                wait_for(lambda: "TUI_FIXTURE_REPLY_6" in history() and ready_marker(presentation, detail) in screen(), "next turn after cancel and reset")
+                wait_for(lambda: turn_settled(6), "next turn after cancel and reset")
                 assert provider.requests == 6
                 capture("stress-recovered")
             if digest(binary) != ledger["binary_sha256"]:
@@ -518,6 +546,10 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             ledger["passed"] = True
         finally:
             ledger["provider_requests"] = provider.requests
+            for number, journal in enumerate(sorted(root.rglob("*.authority.jsonl"))):
+                target = output / f"authority-{number}.jsonl"
+                shutil.copy2(journal, target)
+                ledger.setdefault("authority_journals", []).append({"file": target.name, "sha256": digest(target)})
             ledger["finished"] = time.time()
             try:
                 # Only this invocation's private terminal server is terminated.

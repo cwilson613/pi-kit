@@ -50,7 +50,8 @@ automatic scrollback omits them as the plan changes.
 
 While the model streams, complete lines and stable wrapped rows publish in bounded
 batches. You can scroll back through the response before the turn finishes. Only
-the unfinished tail, status, and composer remain in the small live area. Returning
+the unfinished tail and composer remain in the small live area. Running and
+publication status sit in the composer frame, below the response. Returning
 from Project catches up without replaying
 already published output. `/session-export scrollback` is an explicit snapshot and
 can intentionally repeat history; it does not reset automatic publication. After

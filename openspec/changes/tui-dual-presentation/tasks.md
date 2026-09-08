@@ -77,3 +77,9 @@ same revision. That record includes window/process identity and owned-session cl
 - [x] Preserve shared Markdown styles and context through bounded native publication and its live tail; wrap prose at word boundaries with code/list/table structure intact.
 - [x] Verify chunk-boundary, Unicode, budget, resize, completion, cancellation, and second-turn regressions; inspect styled terminal captures before completion.
 - [x] Complete crate and Clippy gates, adversarial review, and specification reconciliation; record the installed operator handoff externally after committing the tested source as described above.
+
+## 9. Uninterrupted response flow
+<!-- specs: tui-inline-publication -->
+
+- [x] Reproduce status appearing between published text and the live tail, then move transient status into the composer frame with completion/backlog coverage.
+- [x] Verify held terminal captures, run crate/Clippy gates, and record the installed in-place operator handoff externally after commit.

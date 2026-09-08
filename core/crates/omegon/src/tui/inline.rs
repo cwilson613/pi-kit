@@ -136,34 +136,37 @@ impl App {
             || self.blocking_owner().is_some()
     }
 
-    pub(super) fn draw_inline(&mut self, frame: &mut Frame) {
-        let area = frame.area();
-        let editor_rows = editor_height_for(&self.editor, area)
-            .clamp(2, 4)
-            .min(area.height);
-        let status = if self.native_publication.automatic.is_degraded() {
+    pub(super) fn inline_composer_status(&self) -> Option<&'static str> {
+        if !self.inline_active {
+            return None;
+        }
+        Some(if self.native_publication.automatic.is_degraded() {
             self.native_publication.automatic.degradation_message()
         } else if self.agent_active {
-            "Working · Ctrl+C cancel · F2 Project"
+            "Working · Ctrl+C cancel"
         } else if self
             .native_publication
             .automatic
             .has_pending(self.publication_boundary)
         {
-            "Publishing completed output · F2 Project"
+            "Publishing completed output"
         } else {
-            ""
-        };
+            return None;
+        })
+    }
+
+    pub(super) fn draw_inline(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        let editor_rows = editor_height_for(&self.editor, area)
+            .clamp(2, 4)
+            .min(area.height);
         let mut lines = Vec::new();
-        if !status.is_empty() {
-            lines.push(Line::styled(status, self.theme.style_dim()));
-        }
         // Only the uncommitted physical row belongs in the live viewport.
         // Stable response rows are retained above it in native scrollback.
         if self.agent_active {
             let preview = self.native_publication.automatic.preview(
                 area.width,
-                area.height.saturating_sub(editor_rows + 2) as usize,
+                area.height.saturating_sub(editor_rows + 1) as usize,
             );
             let tail = self.native_publication.automatic.pending_text();
             if !preview.is_empty() {
@@ -575,6 +578,88 @@ mod tests {
                 assert!(editor.y >= 12 && editor.bottom() <= 12 + height);
                 assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), " ");
                 assert_eq!(app.editor.render_text(), "first 界\nsecond é");
+            }
+        }
+    }
+
+    #[test]
+    fn inline_activity_status_stays_inside_composer_below_response_tail() {
+        use ratatui::backend::TestBackend;
+        for width in [40, 80] {
+            for level in [UiPresentationLevel::Active, UiPresentationLevel::Full] {
+                let mut app = App::new(crate::settings::shared("test"));
+                app.inline_active = true;
+                app.agent_active = true;
+                app.ui_presentation = UiPresentationPolicy::named(level);
+                app.conversation
+                    .append_streaming("Published text\nUnfinished response ");
+                let batch = app
+                    .native_publication
+                    .automatic
+                    .prepare(
+                        app.conversation.publication_generation(),
+                        app.conversation.segments(),
+                        0,
+                        level,
+                        width,
+                        native_publication::PreparationBudget::default(),
+                    )
+                    .unwrap();
+                app.native_publication
+                    .automatic
+                    .settle(batch, native_publication::DeliveryResult::Committed);
+                let mut terminal = Terminal::new(TestBackend::new(width, LIVE_ROWS)).unwrap();
+                terminal.draw(|frame| app.draw_inline(frame)).unwrap();
+                let rows = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(width as usize)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                    .collect::<Vec<_>>();
+                let editor = app.editor_area.unwrap();
+                assert!(rows[0].starts_with("Unfinished response"), "{rows:?}");
+                let status_row = rows.iter().position(|row| row.contains("Working")).unwrap();
+                assert_eq!(status_row, (editor.bottom() - 1) as usize, "{rows:?}");
+                assert!(
+                    !rows[..editor.y as usize]
+                        .iter()
+                        .any(|row| row.contains("Ctrl+C") || row.contains("F2 Project")),
+                    "{rows:?}"
+                );
+                app.agent_active = false;
+                app.publication_boundary = app.conversation.segments().len();
+                terminal.draw(|frame| app.draw_inline(frame)).unwrap();
+                let editor = app.editor_area.unwrap();
+                let rows = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(width as usize)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                    .collect::<Vec<_>>();
+                assert!(
+                    rows[(editor.bottom() - 1) as usize].contains("Publishing completed output"),
+                    "{rows:?}"
+                );
+                assert!(
+                    !rows[..editor.y as usize]
+                        .iter()
+                        .any(|row| row.contains("Publishing")),
+                    "{rows:?}"
+                );
+                app.publication_boundary = 0;
+                terminal.draw(|frame| app.draw_inline(frame)).unwrap();
+                assert!(
+                    !terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .map(|cell| cell.symbol())
+                        .collect::<String>()
+                        .contains("Working")
+                );
             }
         }
     }

@@ -243,6 +243,22 @@ def test_markdown_capture_gate_rejects_raw_markup_broken_words_and_missing_style
             raise AssertionError("Markdown capture accepted unrendered, corrupted, unstyled, or stale-width output")
 
 
+def test_inline_working_status_rejects_response_interruption_and_missing_status():
+    clean = "Published answer\nLive answer tail\n╭ model ─╮\n│ Ask anything │\n╰ Working · Ctrl+C cancel ─╯"
+    runner.assert_inline_working_status(clean)
+    for invalid in (clean.replace("Live answer tail", "Working · Ctrl+C cancel · F2 Project\nLive answer tail"),
+                    clean.replace("Live answer tail", "Working · Ctrl+C cancel\nLive answer tail"),
+                    clean.replace("Working · Ctrl+C cancel", ""),
+                    clean + "\nF2 Project",
+                    clean.replace("╭", " ")):
+        try:
+            runner.assert_inline_working_status(invalid)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("inline status accepted response interruption or missing composer status")
+
+
 def test_markdown_fixture_holds_all_blocks_before_completion():
     import queue
     import threading
@@ -319,3 +335,5 @@ if __name__ == "__main__":
 
     test_markdown_capture_gate_rejects_raw_markup_broken_words_and_missing_style()
     test_markdown_fixture_holds_all_blocks_before_completion()
+
+    test_inline_working_status_rejects_response_interruption_and_missing_status()

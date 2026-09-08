@@ -332,3 +332,29 @@ binding; `logs/clippy-first.log` preserves that initial diagnostic. This cleanup
 does not change rendering behavior; all six native Markdown projector tests also
 pass after that cleanup. Formatting and diff checks pass. Installed
 release evidence and the operator handoff are recorded externally after commit.
+
+## Uninterrupted response flow follow-up
+
+The operator's next capture showed the transient working/cancellation line between
+already published text and the live response tail. The unit regression failed on
+that ordering, and the captured local-provider scenario failed against installed
+release `2f7f89217c5521f3fd8e035d9abbd22d731bb191990645d6ab4f240d7b41071c`
+with `working status interrupts the answer above the composer`. Evidence is kept
+in `../omegon-status-feedback-evidence-01/`, including both failures.
+
+Working/cancellation and completed-output publication status now occupy the
+composer's bottom border. The regression checks Active and Full at 40 and 80
+columns, including publication backlog and completion. Frozen debug artifact
+`973027d8df305917699aeba2a3adc888ab44d800351fbaba4deaf7fb7f23bd92`
+passes captured Active and Full scenarios at four held checkpoints across 120,
+72, and 160 columns. The status stays inside the composer and disappears after
+completion. Markdown styling, table alignment, code indentation, and whole-word
+wrapping checks remain green. Both runs verify cleanup, with no GUI test windows
+or paid inference. All 17 Python fixture tests pass. Read-only adversarial review
+found no blockers; fullscreen behavior and existing command-hint precedence are
+preserved.
+
+The final serialized `just test-crate omegon` passed 5,286 tests with 11 ignored
+across nine targets. `just clippy-changed --base ec730c1d`, formatting, and diff
+checks passed. Installed release acceptance and the in-place operator handoff
+are recorded externally after committing this tested source.

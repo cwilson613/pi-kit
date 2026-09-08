@@ -18,6 +18,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Versioning: [Semantic V
 
 ### Changed
 
+- Inline activity and publication status now sit in the composer frame, keeping working/cancellation hints out of the model response flow.
+
 - Inline assistant replies retain Markdown styling and structure in native scrollback. Prose wraps at word boundaries instead of splitting ordinary words; pending output follows terminal resizing without replaying published rows.
 
 - Inline replies now publish stable text into terminal scrollback during streaming. The small live area retains the unfinished tail and composer; completion does not replay published text. Tool runs preserve conversation order, and Full detail appends labeled reasoning after the streamed answer. Captured acceptance checks live scrollback before completion across long Unicode replies, resize, and a read-tool continuation.

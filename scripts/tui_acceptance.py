@@ -64,6 +64,20 @@ def assert_markdown_rendering(physical, styled, stage, width):
     assert_text_modifier(styled_block, "inline_code", modifier=4)
 
 
+def assert_inline_working_status(viewport):
+    rows = viewport.splitlines()
+    tops = [index for index, row in enumerate(rows) if row.lstrip().startswith(("╭", "┌"))]
+    assert tops, "inline composer frame is missing"
+    top = tops[-1]
+    bottoms = [index for index in range(top + 1, len(rows))
+               if rows[index].lstrip().startswith(("╰", "└"))]
+    assert bottoms, "inline composer bottom frame is missing"
+    assert "Working" not in "\n".join(rows[:top]), "working status interrupts the answer above the composer"
+    frame = "\n".join(rows[top:bottoms[0] + 1])
+    assert "Working · Ctrl+C cancel" in frame, "working status is absent from the composer frame"
+    assert "F2 Project" not in viewport, "legacy project helper remains in the live response surface"
+
+
 def assert_text_modifier(styled, expected, modifier=1):
     enabled = False
     observed = False
@@ -516,6 +530,8 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
                 wait_for(lambda: "live bold emphasis" in live_scrollback(),
                          "unfinished Markdown paragraph reaches native scrollback", seconds=12)
                 capture("markdown-unfinished-paragraph-primary", primary=True)
+                capture("markdown-unfinished-paragraph-viewport")
+                assert_inline_working_status(screen())
                 live_styled = output / "markdown-unfinished-paragraph-styled.ansi"
                 live_styled.write_text(tmux("capture-pane", "-e", "-p", "-S", "-", "-E", "-1", "-t", "run:0.0"))
                 assert "**live bold emphasis**" not in live_scrollback(), "completed inline span remained raw while paragraph was unfinished"
@@ -535,6 +551,8 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
                     wait_for(provider.stream_stages[stage].is_set, f"Markdown stage {stage} held")
                     wait_for(lambda: f"MD_{label}_END" in history(), f"Markdown stage {stage} published")
                     capture(f"markdown-{stage}-primary", primary=True)
+                    capture(f"markdown-{stage}-viewport")
+                    assert_inline_working_status(screen())
                     styled = output / f"markdown-{stage}-styled.ansi"
                     styled.write_text(tmux("capture-pane", "-e", "-p", "-S", "-", "-t", "run:0.0"))
                     ledger.setdefault("markdown_checkpoints", []).append({"stage": stage, "width": width,
@@ -557,6 +575,7 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
                 capture("markdown-complete-primary", primary=True)
                 ledger["markdown_checks"] = {"live_checkpoints": 4, "widths": [120, 72, 160],
                     "word_wrapping": True, "terminal_styles": True, "code_indentation": True,
+                    "working_status_inside_composer": True,
                     "local_requests": provider.requests, "paid_requests": 0}
                 action("send-keys", "-t", "run:0.0", "-l", "/quit")
                 action("send-keys", "-t", "run:0.0", "Enter")

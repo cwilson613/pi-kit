@@ -272,6 +272,15 @@ Stop source admission behind publishable output that cannot drain within the
 current cycle. A single Unicode cluster or unfinished syntax construct exceeding
 the retained-text limit uses the existing explicit text-limit degradation path.
 
+## Activity status placement
+
+Keep transient working, cancellation, and publication guidance in the inline
+composer's bottom border. A standalone status row between native history and the
+live response tail interrupts the reader even when that row is never committed
+to history. The response area therefore contains only pending response/tool
+content. Active status takes precedence over context telemetry in the composer;
+idle restores context telemetry. Fullscreen composition keeps its existing policy.
+
 ## Physical insertion fidelity
 
 The Ratatui insertion adapter also needs physical cell fidelity. In the pinned

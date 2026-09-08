@@ -6,13 +6,9 @@ use ratatui::widgets::Wrap;
 pub(super) const LIVE_ROWS: u16 = 8;
 
 /// Render only the temporary native insertion buffer, never a managed viewport.
-fn render_publication_lines(lines: &[String], buffer: &mut ratatui::buffer::Buffer) {
+fn render_publication_lines(lines: &[Line<'_>], buffer: &mut ratatui::buffer::Buffer) {
     use ratatui::widgets::Widget;
-    let lines = lines
-        .iter()
-        .map(|line| Line::from(line.as_str()))
-        .collect::<Vec<_>>();
-    Paragraph::new(lines).render(buffer.area, buffer);
+    Paragraph::new(lines.to_vec()).render(buffer.area, buffer);
 
     // Ratatui's insert_before emits every cell, unlike ordinary frame diffs.
     // Crossterm prints adjacent cells without repositioning: a printable blank
@@ -97,7 +93,15 @@ impl App {
             if !batch.lines.is_empty() {
                 attempted = true;
                 terminal.insert_before(batch.lines.len() as u16, |buffer| {
-                    render_publication_lines(&batch.lines, buffer);
+                    let mut rows = batch
+                        .lines
+                        .iter()
+                        .map(|line| Line::raw(line.clone()))
+                        .collect::<Vec<_>>();
+                    for (index, row) in &batch.styled {
+                        rows[*index] = row.clone();
+                    }
+                    render_publication_lines(&rows, buffer);
                 })?;
                 terminal.backend_mut().flush()?;
             }
@@ -157,8 +161,14 @@ impl App {
         // Only the uncommitted physical row belongs in the live viewport.
         // Stable response rows are retained above it in native scrollback.
         if self.agent_active {
+            let preview = self.native_publication.automatic.preview(
+                area.width,
+                area.height.saturating_sub(editor_rows + 2) as usize,
+            );
             let tail = self.native_publication.automatic.pending_text();
-            if !tail.is_empty() {
+            if !preview.is_empty() {
+                lines.extend(preview);
+            } else if !tail.is_empty() {
                 lines.push(Line::from(tail.to_owned()));
             } else if let Some(segments::Segment {
                 content:
@@ -209,7 +219,7 @@ mod tests {
         for text in ["界é steady output ".repeat(6), "👩\u{200d}💻 界é".repeat(8)] {
             let width = text.width() as u16;
             let mut buffer = Buffer::empty(Rect::new(0, 0, width, 1));
-            render_publication_lines(std::slice::from_ref(&text), &mut buffer);
+            render_publication_lines(&[Line::raw(text.clone())], &mut buffer);
             let mut bytes = Vec::new();
             {
                 let mut backend = CrosstermBackend::new(&mut bytes);

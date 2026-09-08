@@ -281,3 +281,54 @@ ignored, including authoritative lifecycle recovery and all integration targets.
 crate run completed the filesystem-watcher test without intervention. Release
 installation and operator-window identity are recorded externally after this
 tested source is committed, preserving an exact artifact-to-commit handoff.
+
+## Markdown and word-wrapping follow-up
+
+The next operator capture exposed a presentation gap in that retention-only
+verification: assistant Markdown was published as raw strings and ordinary words
+were split at cell capacity. The original WezTerm capture and installed artifact
+identity are retained in `../omegon-markdown-feedback-evidence-01/`. That window
+had grown from 117 to 203 columns after the earlier rows were printed; its existing
+hard line breaks also illustrate why new-width checks must examine new output.
+
+The added `--markdown` local-provider scenario failed against installed release
+`39094ec59b8a5cc3ec399829100186639083fdbf392d8bddf50e6c60db8c56a3`
+with `literal Markdown leaked into rendered output: **` before completion.
+`before-markdown/` retains the physical rows, SGR capture, process/build identity,
+and failed manifest. A stricter `before-markdown-live/` run also fails while a
+long paragraph remains unterminated: completed bold text still appears as raw
+syntax in primary history. Both runs cleaned up their owned terminals. This is a
+separate regression gate from the 160-line payload test.
+
+The corrected frozen debug artifact is
+`ec9a294358aa7c42dcb2114615596f9bace7f0357e53161b6683ff9948675f75`.
+`debug-artifact.json` identifies its source diff and `acceptance-summary.json`
+indexes the passing Markdown Active, Markdown Full, and streaming Active runs.
+Each Markdown run passes four held checkpoints: an unfinished long paragraph
+followed by formatted blocks at 120, 72, and 160 columns. Physical rows establish
+packed whole-word wrapping and table alignment; SGR captures establish bold
+headings/emphasis and underlined inline code. Fenced indentation and source order
+remain intact. Streaming Active again preserves 160 Unicode payloads through a
+read-tool continuation and two turns. `debug-stress/` passes cancellation,
+browsing, draft restoration, denial, export, and session reset through six local
+requests. All four passing runs verified cleanup without GUI windows or paid
+inference. All 16 Python fixture tests pass.
+
+Nine Rust streaming/projector regressions and the terminal inline-code style
+regression pass. The combined TUI run initially passed 1,324 tests and failed 12
+glyph/snapshot tests under inherited color/glyph environment overrides. That
+failed log remains in `logs/tui-focused.log`; the landing crate run explicitly
+unsets those overrides and serializes tests. Read-only adversarial review found
+no remaining blockers after corrections to stable row tails, table backpressure,
+pending previews, width changes, and shared inline-code styling.
+
+The final `just test-crate omegon` run passed 5,285 tests with 11 ignored across
+nine targets. The filesystem watcher and daemon integration completed naturally;
+no test process was interrupted to obtain a pass. The first full run failed only
+because the oversized-text regression still expected the previous limit message;
+`logs/crate-first.log` preserves it. The corrected assertion passed in the final
+run. `just clippy-changed --base 4ce9c731` passed after removing a redundant local
+binding; `logs/clippy-first.log` preserves that initial diagnostic. This cleanup
+does not change rendering behavior; all six native Markdown projector tests also
+pass after that cleanup. Formatting and diff checks pass. Installed
+release evidence and the operator handoff are recorded externally after commit.

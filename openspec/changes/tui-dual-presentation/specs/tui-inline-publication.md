@@ -82,6 +82,50 @@ When the operator switches its base to inline
 Then work completed since attachment is published in bounded ordered batches
 And history predating attachment is not automatically replayed
 
+### Requirement: Inline assistant output retains Markdown presentation and word boundaries
+
+Inline assistant output uses the shared Markdown presentation vocabulary and
+terminal theme. Publication preserves styled spans through native insertion.
+Ordinary prose wraps between words when a word fits within the available width;
+only oversized tokens require grapheme-safe splitting. Markdown context survives
+provider chunks and publication batches. Completed output does not replay earlier
+rows merely to apply formatting. Pending output uses the current terminal width;
+already published physical rows remain terminal history.
+
+#### Scenario: Styled prose before response completion
+Given a streamed answer with a heading, bold prose, inline code, and a list
+When the provider pauses after those constructs and before completing the turn
+Then native history contains readable formatted content with the corresponding styles
+And heading and emphasis delimiters are not printed as literal Markdown syntax
+And list continuations retain their indentation
+And normal words that fit within a row are not split across rows
+
+#### Scenario: Markdown syntax crosses transport boundaries
+Given emphasis delimiters, inline code, and fence markers split across provider chunks
+When successive chunks complete those constructs
+Then formatting depends on the source document rather than transport chunk boundaries
+And committed text is neither lost nor duplicated at completion
+
+#### Scenario: Code and tables retain structure
+Given a streamed fenced code block with indentation and a Markdown table
+When each structure becomes eligible for publication
+Then code indentation and literal code contents remain readable
+And table headings and cells use the shared table presentation
+And prose wrapping does not collapse code indentation or split table syntax into unrelated paragraphs
+
+#### Scenario: Long table makes progress before its final row
+Given a streamed table with a complete header, separator, and body rows
+When the provider pauses before ending the table
+Then completed rows already appear in native history
+And later rows preserve the pinned column layout or use a lossless narrow-width presentation
+And table length does not require retaining the entire table in publication scratch
+
+#### Scenario: Resize during styled prose
+Given an inline reply partly published at one terminal width
+When the terminal changes width while more prose arrives
+Then pending prose wraps at the new available width with styles intact
+And previously published rows are not replayed to simulate historical reflow
+
 ### Requirement: Publication preparation and allocation are bounded
 
 Each loop cycle admits input and authoritative lifecycle events before at most one

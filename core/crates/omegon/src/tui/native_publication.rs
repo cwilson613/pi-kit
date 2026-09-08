@@ -93,6 +93,7 @@ struct InlineCursor {
     summary: Option<String>,
     summary_end: Option<usize>,
     pending_line: String,
+    markdown: super::markdown_publication::NativeMarkdown,
     control: ControlState,
 }
 
@@ -198,6 +199,7 @@ pub(super) struct InlineBatch {
     base: InlineCursor,
     next: InlineCursor,
     pub(super) lines: Vec<String>,
+    pub(super) styled: Vec<(usize, ratatui::text::Line<'static>)>,
 }
 
 pub(super) fn safe_inline_text(text: &str) -> String {
@@ -229,6 +231,7 @@ impl AutomaticPublication {
                 self.cursor.scan = None;
                 self.cursor.summary_end = None;
                 self.cursor.pending_line.clear();
+                self.cursor.markdown = Default::default();
                 self.cursor.control = ControlState::Ground;
             }
             if let Some(end) = &mut self.cursor.summary_end
@@ -295,12 +298,20 @@ impl AutomaticPublication {
     }
 
     pub(super) fn pending_text(&self) -> &str {
-        &self.cursor.pending_line
+        if self.cursor.markdown.pending.is_empty() {
+            &self.cursor.pending_line
+        } else {
+            &self.cursor.markdown.pending
+        }
+    }
+
+    pub(super) fn preview(&self, width: u16, rows: usize) -> Vec<ratatui::text::Line<'static>> {
+        self.cursor.markdown.preview(width, rows)
     }
 
     pub(super) fn degradation_message(&self) -> &'static str {
         if self.unsupported_grapheme.get() {
-            "Text cluster exceeds inline limit · fullscreen or /session-export for complete output"
+            "Text exceeds inline buffer limit · fullscreen or /session-export for complete output"
         } else if self.source_changed {
             "Conversation changed · inline publication paused · fullscreen or /session-export for history"
         } else {
@@ -385,11 +396,31 @@ impl AutomaticPublication {
         }
         let mut next = self.cursor.clone();
         let mut lines = Vec::new();
+        let mut styled = Vec::new();
         let mut line = std::mem::take(&mut next.pending_line);
 
         let mut bytes = 0;
         let mut records = 0;
         let max_rows = budget.max_rows.min(65_536 / usize::from(width));
+        next.markdown.push("", width);
+        drain_markdown(
+            &mut next.markdown,
+            &mut lines,
+            &mut styled,
+            width,
+            max_rows,
+            DEFAULT_MAX_BYTES,
+            budget.max_elapsed,
+            &mut elapsed,
+        );
+        if next.markdown.has_publishable(width) {
+            return (next != self.cursor).then(|| InlineBatch {
+                base: self.cursor.clone(),
+                next,
+                lines,
+                styled,
+            });
+        }
         while line.width() > usize::from(width)
             && lines.len() < max_rows
             && bytes < budget.max_bytes
@@ -420,6 +451,7 @@ impl AutomaticPublication {
                 base: self.cursor.clone(),
                 next,
                 lines,
+                styled,
             });
         }
         'records: while (next.notice.is_some() || next.segment < segments.len())
@@ -611,6 +643,8 @@ impl AutomaticPublication {
                     break 'records;
                 }
                 let field = fields[next.field];
+                let markdown = matches!(segment.content, SegmentContent::AssistantText { .. })
+                    && next.field == 0;
                 if next.byte > field.len() || !field.is_char_boundary(next.byte) {
                     return None;
                 }
@@ -642,6 +676,34 @@ impl AutomaticPublication {
                     }
                     let mut control = next.control;
                     let visible = control.consume(grapheme);
+                    if markdown {
+                        if next.markdown.pending.len().saturating_add(visible.len())
+                            > DEFAULT_MAX_BYTES
+                        {
+                            self.unsupported_grapheme.set(true);
+                            return None;
+                        }
+                        let produced = next.markdown.push(&visible, width);
+                        next.byte += grapheme.len();
+                        bytes += grapheme.len();
+                        next.control = control;
+                        if produced {
+                            drain_markdown(
+                                &mut next.markdown,
+                                &mut lines,
+                                &mut styled,
+                                width,
+                                max_rows,
+                                DEFAULT_MAX_BYTES,
+                                budget.max_elapsed,
+                                &mut elapsed,
+                            );
+                        }
+                        if next.markdown.has_publishable(width) {
+                            break 'records;
+                        }
+                        continue;
+                    }
                     let mut candidate = line.clone();
                     if !visible.contains('\n') {
                         candidate.push_str(&visible);
@@ -676,6 +738,28 @@ impl AutomaticPublication {
                 }
                 if streaming || truncated {
                     break 'records;
+                }
+                if markdown {
+                    next.markdown.finish(width);
+                    drain_markdown(
+                        &mut next.markdown,
+                        &mut lines,
+                        &mut styled,
+                        width,
+                        max_rows,
+                        DEFAULT_MAX_BYTES,
+                        budget.max_elapsed,
+                        &mut elapsed,
+                    );
+                    // Do not advance beyond the source until all its rendered
+                    // rows have been delivered under the same cursor settlement.
+                    if next.markdown.has_ready() {
+                        break 'records;
+                    }
+                    next.markdown = Default::default();
+                    // finish() supplies the final line; the following separator
+                    // field would otherwise add an extra blank after every reply.
+                    next.field += 1;
                 }
                 next.field += 1;
                 next.byte = 0;
@@ -715,6 +799,7 @@ impl AutomaticPublication {
                 base: self.cursor.clone(),
                 next,
                 lines,
+                styled,
             })
         }
     }
@@ -729,6 +814,33 @@ impl AutomaticPublication {
             DeliveryResult::Ambiguous => self.degraded = true,
         }
         true
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // One cooperative publication budget spans source consumption and row delivery.
+fn drain_markdown(
+    markdown: &mut super::markdown_publication::NativeMarkdown,
+    lines: &mut Vec<String>,
+    styled: &mut Vec<(usize, ratatui::text::Line<'static>)>,
+    width: u16,
+    max_rows: usize,
+    max_bytes: usize,
+    max_elapsed: Duration,
+    elapsed: &mut impl FnMut() -> Duration,
+) {
+    let mut bytes = lines.iter().map(String::len).sum::<usize>();
+    while lines.len() < max_rows && bytes < max_bytes && elapsed() < max_elapsed {
+        let Some(row) = markdown.pop_row(width, max_bytes - bytes) else {
+            break;
+        };
+        let plain = row
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        bytes += plain.len();
+        styled.push((lines.len(), row));
+        lines.push(plain);
     }
 }
 
@@ -1263,7 +1375,11 @@ mod tests {
                 .is_none()
         );
         assert!(cursor.is_degraded());
-        assert!(cursor.degradation_message().contains("Text cluster"));
+        assert!(
+            cursor
+                .degradation_message()
+                .contains("Text exceeds inline buffer limit")
+        );
         cursor.attach(1, 0);
         assert!(!cursor.is_degraded());
         let batch = cursor
@@ -1311,6 +1427,95 @@ mod tests {
                 .lines,
             ["ready row"]
         );
+    }
+
+    #[test]
+    fn streaming_markdown_source_backpressure_bounds_ready_table_rows() {
+        use super::super::segments::{Segment, SegmentContent};
+        use crate::surfaces::layout::UiPresentationLevel::Active;
+        let mut source = vec![Segment::assistant_text()];
+        if let SegmentContent::AssistantText { text, .. } = &mut source[0].content {
+            *text = "| Name | Long content |\n| --- | --- |\n".into();
+            for index in 0..100 {
+                text.push_str(&format!(
+                    "| entry{index:03} | {} |\n",
+                    "ordinary words ".repeat(40)
+                ));
+            }
+        }
+        let mut cursor = AutomaticPublication::default();
+        let mut delivered = String::new();
+        for _ in 0..10_000 {
+            let Some(batch) = cursor.prepare(
+                0,
+                &source,
+                0,
+                Active,
+                80,
+                PreparationBudget {
+                    max_rows: 1,
+                    max_elapsed: Duration::from_secs(1),
+                    ..Default::default()
+                },
+            ) else {
+                break;
+            };
+            assert!(batch.lines.len() <= 1);
+            assert!(
+                batch.next.markdown.retained_bytes() < 8192,
+                "one-row sink must stop source admission instead of buffering the whole table"
+            );
+            delivered.push_str(&batch.lines.concat());
+            assert!(cursor.settle(batch, DeliveryResult::Committed));
+        }
+        for index in 0..100 {
+            assert_eq!(delivered.matches(&format!("entry{index:03}")).count(), 1);
+        }
+        assert!(!cursor.is_degraded());
+    }
+
+    #[test]
+    fn streaming_markdown_renders_heading_emphasis_and_code_before_completion() {
+        use super::super::segments::{Segment, SegmentContent};
+        use crate::surfaces::layout::UiPresentationLevel::Active;
+        let mut source = vec![Segment::assistant_text()];
+        if let SegmentContent::AssistantText { text, .. } = &mut source[0].content {
+            *text = "## What distinguishes it\nThis is **Omegon** with `cargo test`.\n\n".into();
+        }
+        let output = drain_stream(&mut AutomaticPublication::default(), &source, 0, 80, Active);
+        assert_eq!(
+            output,
+            [
+                "What distinguishes it",
+                "This is Omegon with cargo test.",
+                ""
+            ]
+        );
+    }
+
+    #[test]
+    fn streaming_markdown_wraps_prose_at_words_before_completion() {
+        use super::super::segments::{Segment, SegmentContent};
+        use crate::surfaces::layout::UiPresentationLevel::Active;
+        let mut source = vec![Segment::assistant_text()];
+        if let SegmentContent::AssistantText { text, .. } = &mut source[0].content {
+            *text = "Persistent project context keeps engineering decisions readable.\n".into();
+        }
+        let output = drain_stream(&mut AutomaticPublication::default(), &source, 0, 24, Active);
+        for word in [
+            "Persistent",
+            "project",
+            "context",
+            "keeps",
+            "engineering",
+            "decisions",
+            "readable.",
+        ] {
+            assert!(
+                output.iter().any(|line| line.contains(word)),
+                "word split: {word}; {output:?}"
+            );
+        }
     }
 
     #[test]

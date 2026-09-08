@@ -8,6 +8,7 @@ import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -20,6 +21,69 @@ import uuid
 
 FIXTURE_MODEL = "openai:omegon-tui-fixture"
 STREAMING_LINE_BODY = "steady output 界é " * 12
+MARKDOWN_PROSE = "persistent structured engineering execution knowledge conversation interfaces " * 8
+MARKDOWN_LIVE_PREFIX = "TUI_FIXTURE_REPLY_1\n\nMD_LIVE_BEGIN\n\n**live bold emphasis** " + MARKDOWN_PROSE * 12 + "**pending emph"
+
+
+def markdown_fixture(stage):
+    label = ("WIDE", "NARROW", "GROWN")[stage]
+    return (f"## MD_{label}_HEADING\n\n"
+            f"An **intentional emphasis** and `inline_code` remain readable.\n\n"
+            f"PROSE_BEGIN_{label}\n\n{MARKDOWN_PROSE}\n\nPROSE_END_{label}\n\n"
+            "- First list item with **strong words**.\n- Second list item.\n\n"
+            "| System | Purpose |\n| --- | --- |\n| Memory | Durable knowledge |\n"
+            "| Tools | Execute work |\n\n"
+            "```rust\nfn example() {\n    let preserved = 7;\n}\n```\n\n"
+            f"MD_{label}_END\n\n")
+
+
+def assert_markdown_rendering(physical, styled, stage, width):
+    label = ("WIDE", "NARROW", "GROWN")[stage]
+    heading = physical.index(f"MD_{label}_HEADING")
+    start = physical.rfind("\n", 0, heading) + 1
+    end = physical.index(f"MD_{label}_END", start)
+    block = physical[start:end]
+    for raw in ("**", "`", "## ", "| ---"):
+        assert raw not in block, f"literal Markdown leaked into rendered output: {raw}"
+    prose = block.split(f"PROSE_BEGIN_{label}", 1)[1].split(f"PROSE_END_{label}", 1)[0]
+    assert prose.split() == MARKDOWN_PROSE.split(), "prose dropped text or wrapped inside an ordinary word"
+    prose_rows = [line for line in prose.splitlines() if line.strip()]
+    assert max(map(len, prose_rows)) >= width - 24, "prose uses stale/narrow viewport width"
+    minimum_filled = width - max(map(len, MARKDOWN_PROSE.split())) - 3
+    assert all(len(line) >= minimum_filled for line in prose_rows[:-1]), "ordinary paragraph fractured into prematurely short rows"
+    assert "    let preserved = 7;" in block, "fenced code indentation was lost"
+    for expected in ("First list item", "Second list item", "Memory", "Durable knowledge", "Tools", "Execute work"):
+        assert expected in block, f"Markdown content lost: {expected}"
+    table_columns = [next(line.index(cell) for line in block.splitlines() if cell in line)
+                     for cell in ("Purpose", "Durable knowledge", "Execute work")]
+    assert len(set(table_columns)) == 1, "Markdown table columns do not align"
+    # Inspect the SGR state of content itself, not unrelated composer styling.
+    assert_text_modifier(styled, f"MD_{label}_HEADING")
+    styled_block = styled[styled.index(f"MD_{label}_HEADING"):styled.index(f"MD_{label}_END")]
+    assert_text_modifier(styled_block, "intentional emphasis")
+    assert_text_modifier(styled_block, "inline_code", modifier=4)
+
+
+def assert_text_modifier(styled, expected, modifier=1):
+    enabled = False
+    observed = False
+    for piece in re.split(r"(\x1b\[[0-9;]*m)", styled):
+        if piece.startswith("\x1b["):
+            params = [int(value or 0) for value in piece[2:-1].split(";")]
+            index = 0
+            while index < len(params):
+                param = params[index]
+                if param in (0, {1: 22, 4: 24}[modifier]):
+                    enabled = False
+                elif param == modifier:
+                    enabled = True
+                elif param in (38, 48, 58) and index + 1 < len(params):
+                    # Color channels can equal 1; they are not bold modifiers.
+                    index += 4 if params[index + 1] == 2 else 2
+                index += 1
+        elif expected in piece:
+            observed = enabled
+    assert observed, f"content has no terminal modifier {modifier}: {expected}"
 
 
 def tui_command(binary, workspace, log, presentation="fullscreen", detail="active", *, unconfigured=False):
@@ -97,6 +161,33 @@ def fixture_provider():
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
+            if server.markdown:
+                try:
+                    for offset in range(0, len(MARKDOWN_LIVE_PREFIX), 7):
+                        event = {"choices": [{"index": 0, "delta": {"content": MARKDOWN_LIVE_PREFIX[offset:offset + 7]}, "finish_reason": None}]}
+                        self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+                        self.wfile.flush()
+                    server.markdown_prefix_waiting.set()
+                    if not server.release_markdown_prefix.wait(timeout=60):
+                        return
+                    for stage in range(3):
+                        content = markdown_fixture(stage)
+                        if stage == 0:
+                            content = "asis**\n\nMD_LIVE_END\n\n" + content
+                        # Deliberately split syntax tokens across transport chunks.
+                        for offset in range(0, len(content), 7):
+                            event = {"choices": [{"index": 0, "delta": {"content": content[offset:offset + 7]}, "finish_reason": None}]}
+                            self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+                            self.wfile.flush()
+                        server.stream_stages[stage].set()
+                        if not server.release_stages[stage].wait(timeout=60):
+                            return
+                    event = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                    self.wfile.write(("data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n").encode())
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             if server.streaming:
                 try:
                     stages = range(3) if number == 1 else [3 if number == 2 else 4]
@@ -157,6 +248,9 @@ def fixture_provider():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.stress = False
     server.streaming = False
+    server.markdown = False
+    server.markdown_prefix_waiting = threading.Event()
+    server.release_markdown_prefix = threading.Event()
     server.stream_stages = [threading.Event() for _ in range(5)]
     server.release_stages = [threading.Event() for _ in range(5)]
     server.stream_read_path = None
@@ -178,6 +272,7 @@ def fixture_provider():
     finally:
         for release in server.release_stages:
             release.set()
+        server.release_markdown_prefix.set()
         server.release_tool.set()
         server.release_stream.set()
         server.release_cancel.set()
@@ -290,7 +385,9 @@ def assert_streaming_payload(transcript, markers):
         assert normalized.count(marker + body) == 1, f"streamed payload lost or altered nonwhitespace characters: {marker}"
 
 
-def run(binary: Path, output: Path, presentation="fullscreen", detail="active", entry=None, stress=False, fresh_install=False, unconfigured=False, streaming=False):
+def run(binary: Path, output: Path, presentation="fullscreen", detail="active", entry=None, stress=False, fresh_install=False, unconfigured=False, streaming=False, markdown=False):
+    if markdown and (presentation != "inline" or unconfigured or stress or streaming):
+        raise ValueError("Markdown acceptance requires configured inline layout without another scenario")
     if streaming and (presentation != "inline" or unconfigured or stress):
         raise ValueError("streaming acceptance requires configured inline layout without stress")
     if unconfigured and stress:
@@ -305,7 +402,7 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
               "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip(),
               "dirty": subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout, text=True),
               "captures": [], "passed": False, "tui": presentation, "ui": detail, "entry": entry, "stress": stress, "fresh_install": fresh_install,
-              "unconfigured": unconfigured, "streaming": streaming, "terminal_owner": "private-headless-tmux", "gui_windows_created": 0}
+              "unconfigured": unconfigured, "streaming": streaming, "markdown": markdown, "terminal_owner": "private-headless-tmux", "gui_windows_created": 0}
 
     diff = subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=checkout)
     (output / "source.diff").write_bytes(diff)
@@ -352,6 +449,7 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
         root = Path(temporary)
         provider.stress = stress
         provider.streaming = streaming
+        provider.markdown = markdown
         workspace = prepare_unconfigured_workspace(root) if unconfigured else prepare_fixture_workspace(root, provider)
         if fresh_install and not unconfigured:
             (workspace / ".omegon/profile.json").unlink()
@@ -409,6 +507,64 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             if "semantic frontend is unavailable" in screen():
                 raise AssertionError("startup exposed an unavailable session projection")
             capture("01-startup")
+            if markdown:
+                action("send-keys", "-t", "run:0.0", "-l", "render the deterministic Markdown fixture")
+                action("send-keys", "-t", "run:0.0", "Enter")
+                wait_for(provider.markdown_prefix_waiting.is_set, "Markdown unfinished paragraph held")
+                def live_scrollback():
+                    return tmux("capture-pane", "-p", "-S", "-", "-E", "-1", "-t", "run:0.0")
+                wait_for(lambda: "live bold emphasis" in live_scrollback(),
+                         "unfinished Markdown paragraph reaches native scrollback", seconds=12)
+                capture("markdown-unfinished-paragraph-primary", primary=True)
+                live_styled = output / "markdown-unfinished-paragraph-styled.ansi"
+                live_styled.write_text(tmux("capture-pane", "-e", "-p", "-S", "-", "-E", "-1", "-t", "run:0.0"))
+                assert "**live bold emphasis**" not in live_scrollback(), "completed inline span remained raw while paragraph was unfinished"
+                assert_text_modifier(live_styled.read_text(), "live bold emphasis")
+                live_prose = live_scrollback().split("live bold emphasis", 1)[1]
+                live_words = live_prose.split()
+                assert live_words == (MARKDOWN_PROSE.split() * 12)[:len(live_words)], "unfinished paragraph broke or dropped ordinary words"
+                live_rows = [line for line in live_prose.splitlines() if line.strip()]
+                assert all(len(line) >= 120 - max(map(len, MARKDOWN_PROSE.split())) - 3
+                           for line in live_rows[1:-1]), "unfinished paragraph published prematurely short rows"
+                assert not provider.release_markdown_prefix.is_set(), "paragraph observation was not live"
+                ledger["markdown_live_paragraph"] = {"provider_held": True, "paragraph_newline_sent": False,
+                    "open_emphasis_at_tail": True, "styled_file": live_styled.name, "sha256": digest(live_styled)}
+                provider.release_markdown_prefix.set()
+                for stage, width in enumerate((120, 72, 160)):
+                    label = ("WIDE", "NARROW", "GROWN")[stage]
+                    wait_for(provider.stream_stages[stage].is_set, f"Markdown stage {stage} held")
+                    wait_for(lambda: f"MD_{label}_END" in history(), f"Markdown stage {stage} published")
+                    capture(f"markdown-{stage}-primary", primary=True)
+                    styled = output / f"markdown-{stage}-styled.ansi"
+                    styled.write_text(tmux("capture-pane", "-e", "-p", "-S", "-", "-t", "run:0.0"))
+                    ledger.setdefault("markdown_checkpoints", []).append({"stage": stage, "width": width,
+                        "provider_held": not provider.release_stages[stage].is_set(),
+                        "styled_file": styled.name, "sha256": digest(styled)})
+                    assert_markdown_rendering(history(), styled.read_text(), stage, width)
+                    if stage < 2:
+                        action("resize-window", "-t", "run:0", "-x", str((72, 160)[stage]), "-y", "40")
+                        next_width = (72, 160)[stage]
+                        wait_for(lambda: any(line.startswith(("╰", "└")) and line.endswith(("╯", "┘"))
+                                             and len(line) >= next_width - 3 for line in screen().splitlines()),
+                                 "Markdown composer redrawn at resized width")
+                    provider.release_stages[stage].set()
+                wait_for(lambda: turn_settled(1), "Markdown turn completed")
+                complete = history()
+                for label in ("WIDE", "NARROW", "GROWN"):
+                    assert complete.count(f"MD_{label}_HEADING") == 1, "Markdown block replayed on completion/resize"
+                assert provider.requests == 1, "unexpected Markdown inference requests"
+                assert digest(binary) == ledger["binary_sha256"], "binary changed during Markdown acceptance"
+                capture("markdown-complete-primary", primary=True)
+                ledger["markdown_checks"] = {"live_checkpoints": 4, "widths": [120, 72, 160],
+                    "word_wrapping": True, "terminal_styles": True, "code_indentation": True,
+                    "local_requests": provider.requests, "paid_requests": 0}
+                action("send-keys", "-t", "run:0.0", "-l", "/quit")
+                action("send-keys", "-t", "run:0.0", "Enter")
+                wait_for(lambda: "TUI_EXIT_0" in screen(), "Markdown clean TUI exit")
+                assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}:#{mouse_any_flag}").strip() == "0:0"
+                capture("markdown-shell-return")
+                ledger["passed"] = True
+                return
             if streaming:
                 def scrollback():
                     assert tmux("display-message", "-p", "-t", "run:0.0", "#{alternate_on}").strip() == "0"
@@ -717,7 +873,7 @@ def run(binary: Path, output: Path, presentation="fullscreen", detail="active", 
             raise
         finally:
             ledger["provider_requests"] = provider.requests
-            if streaming:
+            if streaming or markdown:
                 ledger["streaming_fixture"] = {"stages_sent": [event.is_set() for event in provider.stream_stages],
                     "stages_released": [event.is_set() for event in provider.release_stages]}
             for number, journal in enumerate(sorted(root.rglob("*.authority.jsonl"))):
@@ -759,9 +915,10 @@ if __name__ == "__main__":
     parser.add_argument("--tui", choices=["inline", "fullscreen"], default="fullscreen")
     parser.add_argument("--ui", choices=["active", "full"], default="active")
     parser.add_argument("--entry", choices=["om", "omegon"], help="test the fixed-build launcher default without UI flags")
+    parser.add_argument("--markdown", action="store_true", help="gate live Markdown styles, word wrapping, code indentation, and resize")
     parser.add_argument("--streaming", action="store_true", help="gate stable streamed lines in primary scrollback before completion, resize, and interleave a read tool")
     parser.add_argument("--stress", action="store_true", help="gate a large stream, cancel from Project, and replace the conversation")
     parser.add_argument("--fresh-install", action="store_true", help="verify profile-free non-child startup without a posture wizard")
     parser.add_argument("--unconfigured", action="store_true", help="verify no-model, no-credential startup and draft preservation through connection cancellation")
     arguments = parser.parse_args()
-    run(arguments.binary, arguments.output.resolve(), arguments.tui, arguments.ui, arguments.entry, arguments.stress, arguments.fresh_install, arguments.unconfigured, arguments.streaming)
+    run(arguments.binary, arguments.output.resolve(), arguments.tui, arguments.ui, arguments.entry, arguments.stress, arguments.fresh_install, arguments.unconfigured, arguments.streaming, arguments.markdown)

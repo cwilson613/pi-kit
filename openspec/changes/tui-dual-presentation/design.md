@@ -240,6 +240,38 @@ retirement, including exclusive code and animation scheduling, is planned in
 Active/Full remain evidence preferences; future telemetry is an optional addon
 capability rather than a reason to retain core instrument panels.
 
+## Markdown and wrapping follow-up
+
+Operator captures after the live-publication fix exposed a separate presentation
+failure: the automatic adapter passed plain strings to native insertion and split
+them at cell capacity. Consequently it printed Markdown delimiters and split
+ordinary words. Text-retention checks did not establish readable presentation.
+
+Keep the canonical cursor and delivery-settlement boundary. Carry styled lines
+through native insertion, reuse shared Markdown presentation, and retain bounded
+unfinished syntax/context across preparation cycles. Prose should prefer word
+boundaries; code and table structure need their own existing rendering semantics.
+No whole-response wait or replay-at-completion is acceptable. Capture styled
+terminal output as well as plain payloads, including a held response, normal words
+near a wrap boundary, split Markdown delimiters, and a width change. New output
+uses the current width; immutable physical history is not retroactively reflowed.
+
+Reuse the shared heading and inline-style helpers, but do not reuse a preview
+table's cell truncation for permanent history. A table must retain its values
+through wrapping or a narrow-width stacked presentation. Bound retained table
+source and rendered scratch before expansion. The header and separator establish
+column widths; completed body rows publish without waiting for the table to end.
+A width change or a row that cannot fit the pinned layout uses labeled cells
+without dropping values. Keep each paragraph's final wrapped
+row pending until further text or a logical boundary makes it stable; publishing
+that short row at every transport boundary would fragment otherwise intact prose.
+
+Source consumption and styled output have separate byte limits: a small source
+slice can expand into a wider physical row through indentation or table padding.
+Stop source admission behind publishable output that cannot drain within the
+current cycle. A single Unicode cluster or unfinished syntax construct exceeding
+the retained-text limit uses the existing explicit text-limit degradation path.
+
 ## Physical insertion fidelity
 
 The Ratatui insertion adapter also needs physical cell fidelity. In the pinned

@@ -218,6 +218,75 @@ def test_streaming_history_gate_rejects_viewport_only_and_replay():
             raise AssertionError("viewport-only, missing, or replayed streaming text accepted")
 
 
+def test_markdown_capture_gate_rejects_raw_markup_broken_words_and_missing_style():
+    import textwrap
+    prose = textwrap.fill(runner.MARKDOWN_PROSE, width=120)
+    clean = ("MD_WIDE_HEADING\nintentional emphasis inline_code\nPROSE_BEGIN_WIDE\n"
+             + prose + "\nPROSE_END_WIDE\nFirst list item\nSecond list item\n"
+             "System  Purpose\nMemory  Durable knowledge\nTools   Execute work\n    let preserved = 7;\nMD_WIDE_END")
+    styled = "\x1b[1mMD_WIDE_HEADING\x1b[0m\n\x1b[1mintentional emphasis\x1b[0m\n\x1b[4minline_code\x1b[0m\nMD_WIDE_END"
+    runner.assert_markdown_rendering(clean, styled, 0, 120)
+    for invalid, style in ((clean.replace("MD_WIDE_HEADING", "## MD_WIDE_HEADING"), styled),
+                           (clean.replace("intentional emphasis", "**intentional emphasis**"), styled),
+                           (clean.replace("persistent", "persis\ntent", 1), styled),
+                           (clean.replace("persistent structured", "persistent\nstructured", 1), styled),
+                           (clean.replace("    let preserved", "let preserved"), styled),
+                           (clean.replace("Tools   Execute", "Tools Execute"), styled),
+                           (clean, "MD_WIDE_HEADING"),
+                           (clean, styled.replace("\x1b[4m", "")),
+                           (clean.replace(prose, textwrap.fill(runner.MARKDOWN_PROSE, width=72)), styled)):
+        try:
+            runner.assert_markdown_rendering(invalid, style, 0, 120)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Markdown capture accepted unrendered, corrupted, unstyled, or stale-width output")
+
+
+def test_markdown_fixture_holds_all_blocks_before_completion():
+    import queue
+    import threading
+    events = queue.Queue()
+    with runner.fixture_provider() as server:
+        server.markdown = True
+        def consume():
+            request = Request(server.url + "/v1/chat/completions", data=b'{"messages": []}', headers={"Content-Type": "application/json"})
+            with urlopen(request, timeout=5) as response:
+                for line in response:
+                    if line.startswith(b"data: "):
+                        events.put(line.decode())
+        reader = threading.Thread(target=consume)
+        reader.start()
+        try:
+            assert server.markdown_prefix_waiting.wait(2)
+            prefix = ""
+            while len(prefix) < len(runner.MARKDOWN_LIVE_PREFIX):
+                event = json.loads(events.get(timeout=2)[6:])
+                prefix += event["choices"][0]["delta"]["content"]
+                assert event["choices"][0]["finish_reason"] is None
+            assert prefix == runner.MARKDOWN_LIVE_PREFIX
+            assert prefix.endswith("**pending emph") and reader.is_alive()
+            server.release_markdown_prefix.set()
+            for stage, label in enumerate(("WIDE", "NARROW", "GROWN")):
+                assert server.stream_stages[stage].wait(2)
+                content = ""
+                while f"MD_{label}_END\n\n" not in content:
+                    event = json.loads(events.get(timeout=2)[6:])
+                    content += event["choices"][0]["delta"]["content"]
+                    assert event["choices"][0]["finish_reason"] is None
+                assert runner.markdown_fixture(stage) in content
+                assert reader.is_alive(), "Markdown provider completed before release"
+                server.release_stages[stage].set()
+            assert '"finish_reason": "stop"' in events.get(timeout=2)
+            assert "[DONE]" in events.get(timeout=2)
+        finally:
+            server.release_markdown_prefix.set()
+            for release in server.release_stages:
+                release.set()
+            reader.join(5)
+        assert not reader.is_alive()
+
+
 if __name__ == "__main__":
     command = runner.tui_command(Path("/binary with spaces"), Path("/workspace"), Path("/log"), "inline", "full")
     assert "--tui" in command and "--ui" in command, "fixture must select both axes explicitly"
@@ -247,3 +316,6 @@ if __name__ == "__main__":
     test_streaming_fixture_interleaves_read_tool_and_followup_response()
 
     test_streaming_payload_preserves_nonwhitespace_across_wraps()
+
+    test_markdown_capture_gate_rejects_raw_markup_broken_words_and_missing_style()
+    test_markdown_fixture_holds_all_blocks_before_completion()

@@ -61,9 +61,16 @@ If a source rewrite invalidates the position of already streamed text, publicati
 pauses with a conversation-changed notice. Fullscreen history and explicit export
 retain access to the current source.
 
-An individual text cluster larger than the inline buffer limit stops automatic
-publication with a text-limit notice. Complete source text remains in fullscreen
-history and explicit export. A new conversation clears that text-limit condition.
+Assistant replies retain Markdown formatting in scrollback: headings, emphasis,
+inline code, lists, fenced code, and tables use the shared terminal presentation.
+Prose wraps between words; a token wider than the available row is split at a
+Unicode grapheme boundary. New output follows the current terminal width. Rows
+already printed into terminal history keep their original wrapping.
+
+An individual text cluster or unfinished Markdown construct larger than the inline
+buffer limit stops automatic publication with a text-limit notice. Complete source
+text remains in fullscreen history and explicit export. A new conversation clears
+that text-limit condition.
 
 See [captured acceptance](tui-captured-acceptance.md) for automated fixture runs and
 [terminal compatibility](tui-terminal-compatibility.md) for native client evidence.

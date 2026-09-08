@@ -69,3 +69,11 @@ items include their focused validation; final landing work is tracked separately
 Record the installed operator handoff in the external evidence directory after
 committing the tested source, so the release artifact and launcher identify the
 same revision. That record includes window/process identity and owned-session cleanup.
+
+## 8. Readable Markdown and prose wrapping
+<!-- specs: tui-inline-publication -->
+
+- [x] Reproduce raw Markdown and mid-word wrapping in unit tests and a captured local-provider run; retain the failing artifact and observations.
+- [x] Preserve shared Markdown styles and context through bounded native publication and its live tail; wrap prose at word boundaries with code/list/table structure intact.
+- [x] Verify chunk-boundary, Unicode, budget, resize, completion, cancellation, and second-turn regressions; inspect styled terminal captures before completion.
+- [x] Complete crate and Clippy gates, adversarial review, and specification reconciliation; record the installed operator handoff externally after committing the tested source as described above.
